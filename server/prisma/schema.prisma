@@ -1,0 +1,105 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = "file:./dev.db"
+}
+
+model User {
+  id         String   @id @default(uuid())
+  username   String   @unique
+  name       String
+  email      String?  @unique
+  password   String
+  role       String
+  schoolName String?
+  createdAt  DateTime @default(now())
+
+  taughtClasses   Class[]   @relation("TeacherClasses")
+  ownedSections   Section[] @relation("TeacherSections")
+  sectionId       String?
+  section         Section?  @relation("StudentSection", fields: [sectionId], references: [id])
+  submissions     Submission[]
+  gradingExamples GradingExample[]
+}
+
+model Section {
+  id        String   @id @default(uuid())
+  name      String
+  teacherId String
+  createdAt DateTime @default(now())
+
+  teacher  User    @relation("TeacherSections", fields: [teacherId], references: [id])
+  students User[]  @relation("StudentSection")
+  classes  Class[]
+}
+
+model Class {
+  id         String   @id @default(uuid())
+  name       String
+  gradeLevel String?
+  subject    String?
+  schoolYear String
+  teacherId  String
+  sectionId  String
+  createdAt  DateTime @default(now())
+
+  teacher    User       @relation("TeacherClasses", fields: [teacherId], references: [id])
+  section    Section    @relation(fields: [sectionId], references: [id])
+  activities Activity[]
+}
+
+model Activity {
+  id              String   @id @default(uuid())
+  title           String
+  type            String
+  points          Int
+  classId         String
+  instructions    String?
+  deadline        String?
+  submissionMode  String   @default("TEACHER_UPLOAD")
+  additionalFiles String?
+  rubric          String?
+  createdAt       DateTime @default(now())
+
+  class       Class        @relation(fields: [classId], references: [id])
+  submissions Submission[]
+}
+
+model Submission {
+  id              String   @id @default(uuid())
+  activityId      String
+  studentId       String
+  imageUrl        String?
+  aiScore         Int?
+  hitlScore       Int?
+  aiFeedback      String?
+  hitlFeedback    String?
+  readingStrategy String?
+  rubricData      String?
+  skillScores     String?  // JSON: { vocabulary, punctuation, thematicFlow, sentenceStructure }
+  covData         String?  // JSON: { originalScore, verifiedScore, conflict }
+  status          String   @default("PENDING")
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  activity Activity @relation(fields: [activityId], references: [id])
+  student  User     @relation(fields: [studentId], references: [id])
+}
+
+// Mini-RAG: stores meaningful teacher edits as few-shot grading examples
+model GradingExample {
+  id              String   @id @default(uuid())
+  teacherId       String
+  activityType    String   // "Essay", "Journal", etc.
+  gradeLevel      String?
+  aiFeedback      String
+  teacherFeedback String
+  aiScore         Int
+  teacherScore    Int
+  createdAt       DateTime @default(now())
+
+  teacher User @relation(fields: [teacherId], references: [id])
+}

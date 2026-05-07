@@ -1,0 +1,76 @@
+import { Link, Outlet, useLocation } from 'react-router-dom';
+import { Home, Star, User, LogOut, Upload } from 'lucide-react';
+import { clsx } from 'clsx';
+import { twMerge } from 'tailwind-merge';
+
+function cn(...inputs) {
+  return twMerge(clsx(inputs));
+}
+
+export default function StudentLayout() {
+  const location = useLocation();
+  
+  const navItems = [
+    { name: 'Home', path: '/student/dashboard', icon: Home },
+    { name: 'Submit', path: '/student/submit', icon: Upload },
+    { name: 'Awards', path: '/student/awards', icon: Star },
+    { name: 'Profile', path: '/student/profile', icon: User },
+  ];
+
+  return (
+    <div className="min-h-screen bg-brand-bg flex flex-col pb-16 md:pb-0 md:flex-row">
+      <main className="flex-1 overflow-y-auto">
+        <Outlet />
+      </main>
+
+      {/* Mobile Bottom Nav */}
+      <nav className="fixed bottom-0 left-0 right-0 bg-white border-t border-slate-200 flex justify-around p-2 md:hidden z-50">
+        {navItems.map((item) => {
+          const isActive = location.pathname.startsWith(item.path);
+          return (
+            <Link
+              key={item.name}
+              to={item.path}
+              className={cn(
+                "flex flex-col items-center p-2 text-xs font-medium rounded-lg transition-colors",
+                isActive ? "text-brand-green" : "text-slate-400 hover:text-brand-slate"
+              )}
+            >
+              <item.icon className={cn("w-6 h-6 mb-1", isActive && "fill-brand-green/20")} />
+              {item.name}
+            </Link>
+          );
+        })}
+      </nav>
+
+      {/* Desktop Side Nav */}
+      <nav className="hidden md:flex flex-col w-64 bg-white border-r border-slate-200">
+        <div className="p-4 font-bold text-xl text-brand-green border-b border-slate-200">TulongGuro</div>
+        <div className="flex-1 py-4">
+          {navItems.map((item) => {
+            const isActive = location.pathname.startsWith(item.path);
+            return (
+              <Link
+                key={item.name}
+                to={item.path}
+                className={cn(
+                  "flex items-center px-4 py-3 text-sm font-medium",
+                  isActive ? "bg-green-50 text-brand-green border-r-4 border-brand-green" : "text-slate-600 hover:bg-slate-50"
+                )}
+              >
+                <item.icon className={cn("w-5 h-5 mr-3", isActive && "fill-brand-green/20")} />
+                {item.name}
+              </Link>
+            );
+          })}
+        </div>
+        <div className="p-4 border-t border-slate-200">
+          <Link to="/" className="flex items-center text-sm font-medium text-slate-600 hover:text-red-600">
+            <LogOut className="w-5 h-5 mr-3" />
+            Sign Out
+          </Link>
+        </div>
+      </nav>
+    </div>
+  );
+}
