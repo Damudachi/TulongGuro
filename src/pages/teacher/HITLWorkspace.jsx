@@ -149,6 +149,32 @@ export default function HITLWorkspace() {
       <div className="w-full md:w-7/12 lg:w-1/2 flex flex-col bg-white max-h-screen overflow-y-auto">
         <div className="p-6 md:p-8 flex-1 space-y-6">
 
+          {/* AI Failure Banner — shows when AI grading failed (score 0 + error feedback) */}
+          {submission?.aiFeedback?.startsWith('⚠') && (
+            <div className="flex items-start gap-3 p-4 bg-red-50 border-2 border-red-300 rounded-xl text-sm">
+              <span className="text-xl shrink-0">🚫</span>
+              <div>
+                <p className="font-bold text-red-800">AI Grading Unavailable</p>
+                <p className="text-red-700 text-xs mt-0.5">{submission.aiFeedback}</p>
+                <p className="text-red-600 text-xs mt-1 font-medium">Please grade this submission manually using the rubric sliders below.</p>
+              </div>
+            </div>
+          )}
+
+          {/* No Text Detected Banner */}
+          {submission?.aiScore === 0 && !submission?.aiFeedback?.startsWith('⚠') && (
+            <div className="flex items-start gap-3 p-4 bg-amber-50 border-2 border-amber-300 rounded-xl text-sm">
+              <span className="text-xl shrink-0">📄</span>
+              <div>
+                <p className="font-bold text-amber-800">No Readable Text Detected</p>
+                <p className="text-amber-700 text-xs mt-0.5">
+                  {submission.aiFeedback || 'The AI could not find readable handwritten or printed text in this image. The image may be blank, contain only drawings, or be too blurry.'}
+                </p>
+                <p className="text-amber-600 text-xs mt-1 font-medium">You can re-upload a clearer photo or grade manually.</p>
+              </div>
+            </div>
+          )}
+
           {/* CoV Conflict Banner */}
           {covData?.conflict && (
             <div className="flex items-start gap-3 p-3 bg-amber-50 border border-amber-300 rounded-xl text-sm">

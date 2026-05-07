@@ -8,7 +8,9 @@ function cn(...cls) { return cls.filter(Boolean).join(' '); }
 const STATUS = {
   waiting:    { label: 'Waiting',    color: 'bg-slate-100 text-slate-500',   icon: Clock },
   processing: { label: 'Processing', color: 'bg-blue-100 text-blue-600',     icon: Loader2 },
-  ready:      { label: 'Ready',      color: 'bg-green-100 text-green-600',   icon: CheckCircle2 },
+  ready:      { label: 'AI Graded',  color: 'bg-green-100 text-green-600',   icon: CheckCircle2 },
+  mock:       { label: 'AI Failed',  color: 'bg-red-100 text-red-600',       icon: X },
+  notext:     { label: 'No Text',    color: 'bg-amber-100 text-amber-700',   icon: Clock },
   queued:     { label: 'Queued',     color: 'bg-amber-100 text-amber-700',   icon: Clock },
   error:      { label: 'Error',      color: 'bg-red-100 text-red-600',       icon: X },
 };
@@ -84,10 +86,23 @@ export default function BatchUpload() {
         const res = await fetch('http://localhost:3000/api/teacher/upload', { method: 'POST', body: formData });
         const data = await res.json();
         if (data.success) {
-          setFiles(prev => prev.map(f => f.id === fileItem.id ? { ...f, status: 'ready', submissionId: data.submission.id } : f));
+          // Determine actual status from AI response
+          let fileStatus = 'ready';
+          let statusDetail = `✅ AI Score: ${data.aiResult?.score}/100`;
+          if (data.aiSource === 'mock') {
+            fileStatus = 'mock';
+            statusDetail = `⚠ AI unavailable: ${(data.aiError || 'Unknown error').slice(0, 80)}`;
+          } else if (data.noTextDetected) {
+            fileStatus = 'notext';
+            statusDetail = '⚠ No readable text detected in image';
+          }
+          setFiles(prev => prev.map(f => f.id === fileItem.id ? {
+            ...f, status: fileStatus, submissionId: data.submission.id,
+            aiSource: data.aiSource, aiScore: data.aiResult?.score, statusDetail
+          } : f));
           newResults.push(data.submission);
         } else {
-          setFiles(prev => prev.map(f => f.id === fileItem.id ? { ...f, status: 'error' } : f));
+          setFiles(prev => prev.map(f => f.id === fileItem.id ? { ...f, status: 'error', statusDetail: data.error || 'Upload failed' } : f));
         }
       } catch {
         // Network error — queue it
@@ -211,9 +226,15 @@ export default function BatchUpload() {
                 <div key={item.id} className="relative group aspect-[3/4] rounded-xl overflow-hidden border-2 border-slate-200 bg-slate-100 shadow-sm">
                   <img src={item.preview} alt="essay" className="absolute inset-0 w-full h-full object-cover" />
                   <div className="absolute inset-0 bg-black/30" />
-                  <div className={cn('absolute bottom-2 left-2 right-2 flex items-center gap-1 text-xs font-bold px-2 py-1 rounded-full', cfg.color)}>
-                    <StatusIcon className={cn('w-3 h-3', item.status === 'processing' && 'animate-spin')} />
-                    {cfg.label}
+                  <div className={cn('absolute bottom-2 left-2 right-2 flex flex-col gap-1')}>  
+                    <div className={cn('flex items-center gap-1 text-xs font-bold px-2 py-1 rounded-full', cfg.color)}>
+                      <StatusIcon className={cn('w-3 h-3', item.status === 'processing' && 'animate-spin')} />
+                      {cfg.label}
+                      {item.aiScore !== undefined && item.status === 'ready' && <span className="ml-auto">{item.aiScore}/100</span>}
+                    </div>
+                    {item.statusDetail && (item.status === 'mock' || item.status === 'notext' || item.status === 'error') && (
+                      <div className="text-[9px] bg-black/70 text-white px-2 py-0.5 rounded-full truncate">{item.statusDetail}</div>
+                    )}
                   </div>
                   {item.status === 'waiting' && (
                     <button onClick={() => removeFile(item.id)}

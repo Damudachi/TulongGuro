@@ -27,8 +27,8 @@ const storage = multer.diskStorage({
 const upload = multer({ storage });
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || 'mock');
-const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
-const modelLite = genAI.getGenerativeModel({ model: 'gemini-2.0-flash-lite' });
+const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
+const modelLite = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
 
 // ─────────────────────────────────────────
 // AUTH
@@ -243,13 +243,13 @@ app.post('/api/teacher/upload', upload.single('image'), async (req, res) => {
 
     const imageUrl = `/uploads/${imageFile.filename}`;
 
-    // 1) Preprocess the image for better VLM readability
+    // 1) Preprocess the image
     const processedPath = await preprocessImage(imageFile.path);
     const processedUrl = processedPath !== imageFile.path
       ? `/uploads/${path.basename(processedPath)}`
       : imageUrl;
 
-    // 2) Fetch activity rubric context if available
+    // 2) Fetch activity rubric context
     let rubricContext = 'Use standard DepEd essay rubric: Content & Ideas (40 pts), Organization (30 pts), Language & Grammar (30 pts).';
     let activityContext = '';
     if (activityId && activityId !== 'mock-activity-id') {
@@ -267,7 +267,7 @@ app.post('/api/teacher/upload', upload.single('image'), async (req, res) => {
       }
     }
 
-    // 3) FEATURE 5: Mini-RAG — fetch teacher's past grading examples to guide tone
+    // 3) Mini-RAG — fetch teacher's past grading examples
     let fewShotExamples = '';
     if (activityId && activityId !== 'mock-activity-id') {
       const activity = await prisma.activity.findUnique({ where: { id: activityId }, include: { class: true } });
@@ -285,41 +285,44 @@ app.post('/api/teacher/upload', upload.single('image'), async (req, res) => {
       }
     }
 
-    // 4) Build the One-Step Inference prompt (grading + literacy strategy in one call)
+    // 4) Build the prompt — includes no-text detection
     const prompt = `You are an expert essay grader for Philippine public schools (DepEd K-12 curriculum).
 
 ${activityContext}
 ${rubricContext}${fewShotExamples}
 
-TASK: Read the handwritten student essay in the image. In ONE step:
-1. Grade it against the rubric
-2. Identify specific writing weaknesses (vocabulary gaps, punctuation errors, thematic issues, sentence structure)
-3. Generate a personalized reading intervention strategy targeting those weaknesses (Reciprocal Literacy Engine)
+IMPORTANT RULES:
+- First, check if the image contains readable handwritten or printed text. 
+- If the image is BLANK, contains only drawings/art with no text, is too blurry to read, or has NO readable written content, you MUST set score to 0 and explain the issue in the feedback field (e.g. "No readable text was found in this image. The photo appears to be blank/a drawing/too blurry. Please re-upload a clearer photo of the student's written work.").
+- If you CAN read text, grade it normally against the rubric.
+
+TASK: In ONE step:
+1. Grade the handwritten student essay against the rubric
+2. Identify specific writing weaknesses
+3. Generate a personalized reading intervention strategy
 
 Respond with JSON ONLY (no markdown, no code fences). Use this exact schema:
 {
-  "score": <total 0-100>,
+  "score": <total 0-100, use 0 if no readable text>,
   "contentScore": <number>, "contentMax": <number>,
   "organizationScore": <number>, "organizationMax": <number>,
   "grammarScore": <number>, "grammarMax": <number>,
-  "feedback": "<warm, constructive, 3 sentences max, match teacher's tone from examples if given>",
-  "readingStrategy": "<personalized 2-sentence strategy targeting the student's specific weaknesses>",
+  "feedback": "<warm, constructive, 3 sentences max>",
+  "readingStrategy": "<personalized 2-sentence reading strategy, or 'N/A' if no text found>",
+  "noTextDetected": <true if image has no readable text, false otherwise>,
   "skillScores": {
-    "vocabulary": <0-25, how rich and varied is the vocabulary>,
-    "punctuation": <0-25, accuracy of punctuation>,
-    "thematicFlow": <0-25, logical connection of ideas>,
-    "sentenceStructure": <0-25, variety and correctness of sentences>
+    "vocabulary": <0-25>,
+    "punctuation": <0-25>,
+    "thematicFlow": <0-25>,
+    "sentenceStructure": <0-25>
   }
 }`;
 
-    let aiResult = {
-      score: 85, contentScore: 35, contentMax: 40,
-      organizationScore: 25, organizationMax: 30,
-      grammarScore: 25, grammarMax: 30,
-      feedback: 'Good effort on the topic. The ideas are clear but transitions between paragraphs could be smoother.',
-      readingStrategy: "Focus on 'Signpost Words' (however, therefore, consequently) to understand how authors connect ideas.",
-      skillScores: { vocabulary: 18, punctuation: 20, thematicFlow: 22, sentenceStructure: 19 }
-    };
+    // Track AI source for transparency
+    let aiSource = 'mock';  // 'gemini' | 'gemini-lite' | 'mock'
+    let aiError = null;
+
+    let aiResult = null;
 
     async function callGemini(m, parts) {
       const result = await m.generateContent(parts);
@@ -333,18 +336,39 @@ Respond with JSON ONLY (no markdown, no code fences). Use this exact schema:
     // Primary grading call
     try {
       aiResult = await callGemini(model, [prompt, ...imageParts]);
-      console.log('✅ Gemini graded (pass 1):', aiResult.score, '/ 100');
+      aiSource = 'gemini';
+      console.log('✅ Gemini graded:', aiResult.score, '/ 100', aiResult.noTextDetected ? '(NO TEXT DETECTED)' : '');
     } catch (e) {
-      console.log('⚠ Primary model failed, trying lite:', e.message?.slice(0, 80));
-      try { aiResult = await callGemini(modelLite, [prompt, ...imageParts]); console.log('✅ Lite graded:', aiResult.score); }
-      catch (e2) { console.log('⚠ Both failed, using mock.', e2.message?.slice(0, 60)); }
+      const errMsg = e.message || String(e);
+      console.log('⚠ Primary model failed:', errMsg.slice(0, 200));
+      // Try lite model
+      try {
+        aiResult = await callGemini(modelLite, [prompt, ...imageParts]);
+        aiSource = 'gemini-lite';
+        console.log('✅ Gemini-lite graded:', aiResult.score, '/ 100');
+      } catch (e2) {
+        const errMsg2 = e2.message || String(e2);
+        console.log('⚠ Lite model also failed:', errMsg2.slice(0, 200));
+        aiError = `AI grading failed. Primary: ${errMsg.slice(0, 100)} | Lite: ${errMsg2.slice(0, 100)}`;
+        // Use placeholder — but mark it clearly as mock
+        aiResult = {
+          score: 0, contentScore: 0, contentMax: 40,
+          organizationScore: 0, organizationMax: 30,
+          grammarScore: 0, grammarMax: 30,
+          feedback: `⚠ AI grading is currently unavailable. Error: ${errMsg.slice(0, 120)}. The teacher will need to grade this manually.`,
+          readingStrategy: 'AI was unable to analyze this submission. Manual review required.',
+          noTextDetected: false,
+          skillScores: { vocabulary: 0, punctuation: 0, thematicFlow: 0, sentenceStructure: 0 }
+        };
+      }
     }
 
-    // FEATURE 8: Chain-of-Verification — second AI call to self-check the grade
+    // Chain-of-Verification — only run if primary AI succeeded
     let covData = null;
-    const originalScore = aiResult.score;
-    try {
-      const covPrompt = `You previously graded this handwritten student essay and produced this result:
+    if (aiSource !== 'mock' && !aiResult.noTextDetected) {
+      const originalScore = aiResult.score;
+      try {
+        const covPrompt = `You previously graded this handwritten student essay and produced this result:
 - Content: ${aiResult.contentScore}/${aiResult.contentMax}
 - Organization: ${aiResult.organizationScore}/${aiResult.organizationMax}
 - Grammar: ${aiResult.grammarScore}/${aiResult.grammarMax}
@@ -353,23 +377,24 @@ Respond with JSON ONLY (no markdown, no code fences). Use this exact schema:
 
 ${rubricContext}
 
-Now VERIFY: Re-examine the image carefully. Is this grade fair and accurate to the rubric?
+Now VERIFY: Re-examine the image carefully. Is this grade fair and accurate?
 If correct, return the same scores. If you find an error, correct it.
-Respond with JSON ONLY using the same schema as before (score, contentScore, contentMax, organizationScore, organizationMax, grammarScore, grammarMax, feedback, readingStrategy, skillScores).`;
+Respond with JSON ONLY using the same schema as before.`;
 
-      const verifiedResult = await callGemini(model, [covPrompt, ...imageParts]);
-      const scoreDelta = Math.abs(verifiedResult.score - originalScore);
-      const conflict = scoreDelta > 10;
-      covData = { originalScore, verifiedScore: verifiedResult.score, conflict, delta: scoreDelta };
+        const verifiedResult = await callGemini(model, [covPrompt, ...imageParts]);
+        const scoreDelta = Math.abs(verifiedResult.score - originalScore);
+        const conflict = scoreDelta > 10;
+        covData = { originalScore, verifiedScore: verifiedResult.score, conflict, delta: scoreDelta };
 
-      if (conflict) {
-        console.log(`🔍 CoV conflict detected: ${originalScore} → ${verifiedResult.score} (Δ${scoreDelta})`);
-        aiResult = verifiedResult; // Use the corrected score
-      } else {
-        console.log(`✅ CoV passed: score confirmed at ${aiResult.score}`);
+        if (conflict) {
+          console.log(`🔍 CoV conflict: ${originalScore} → ${verifiedResult.score} (Δ${scoreDelta})`);
+          aiResult = verifiedResult;
+        } else {
+          console.log(`✅ CoV confirmed: ${aiResult.score}`);
+        }
+      } catch (e) {
+        console.log('⚠ CoV skipped:', e.message?.slice(0, 80));
       }
-    } catch (e) {
-      console.log('⚠ CoV call failed (non-blocking):', e.message?.slice(0, 80));
     }
 
     const submission = await prisma.submission.create({
@@ -392,8 +417,17 @@ Respond with JSON ONLY using the same schema as before (score, contentScore, con
       }
     });
 
-    res.json({ success: true, submission, aiResult, covData });
+    res.json({
+      success: true,
+      submission,
+      aiResult,
+      covData,
+      aiSource,           // 'gemini' | 'gemini-lite' | 'mock'
+      aiError,            // null if AI worked, error string if it failed
+      noTextDetected: aiResult.noTextDetected || false
+    });
   } catch (e) {
+    console.log('❌ Upload endpoint error:', e.message);
     res.status(500).json({ success: false, error: e.message });
   }
 });
