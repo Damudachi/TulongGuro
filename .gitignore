@@ -1,24 +1,29 @@
+# Dependencies
+node_modules/
+server/node_modules/
+
+# Environment
+.env
+server/.env
+
+# Build output
+dist/
+
+# Database (local dev)
+server/prisma/dev.db
+server/prisma/dev.db-journal
+
+# Uploaded files (local dev)
+server/uploads/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
 # Logs
-logs
 *.log
 npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-pnpm-debug.log*
-lerna-debug.log*
-
-node_modules
-dist
-dist-ssr
-*.local
-
-# Editor directories and files
-.vscode/*
-!.vscode/extensions.json
-.idea
-.DS_Store
-*.suo
-*.ntvs*
-*.njsproj
-*.sln
-*.sw?

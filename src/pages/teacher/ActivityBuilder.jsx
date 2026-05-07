@@ -1,6 +1,7 @@
 import { useState, useRef } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { ArrowLeft, CheckCircle2, Plus, Camera, Users, Sparkles, Upload, FileText, X, Loader2, Trash2 } from 'lucide-react';
+import { API_URL } from '../../config';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
 
@@ -43,7 +44,7 @@ export default function ActivityBuilder() {
   const handleGenerateRubric = async () => {
     setIsGeneratingRubric(true);
     try {
-      const res = await fetch('http://localhost:3000/api/teacher/generate-rubric', {
+      const res = await fetch(`${API_URL}/api/teacher/generate-rubric`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ instructions: form.instructions, activityType: form.type, points: form.points })
@@ -75,7 +76,7 @@ export default function ActivityBuilder() {
       additionalFiles.forEach(f => fd.append('additionalFiles', f.file));
       if (rubricFile && rubricMode === 'upload') fd.append('additionalFiles', rubricFile);
 
-      const res = await fetch('http://localhost:3000/api/teacher/activities', { method: 'POST', body: fd });
+      const res = await fetch(`${API_URL}/api/teacher/activities`, { method: 'POST', body: fd });
       const data = await res.json();
       if (data.success) navigate(-1);
       else alert('Error: ' + data.error);

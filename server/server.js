@@ -3,6 +3,7 @@ const cors = require('cors');
 const multer = require('multer');
 const { PrismaClient } = require('@prisma/client');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
+const { createClient } = require('@supabase/supabase-js');
 const path = require('path');
 const fs = require('fs');
 const sharp = require('sharp');
@@ -15,7 +16,17 @@ const port = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json());
 
-// Serve uploaded images statically
+// File storage: Supabase Storage in production, local disk in development
+const useSupabase = !!(process.env.SUPABASE_URL && process.env.SUPABASE_KEY);
+let supabase = null;
+if (useSupabase) {
+  supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
+  console.log('☁ Using Supabase Storage for file uploads');
+} else {
+  console.log('📁 Using local disk for file uploads (set SUPABASE_URL/KEY for cloud)');
+}
+
+// Local uploads dir (used in dev or as temp staging for sharp)
 const uploadsDir = path.join(__dirname, 'uploads');
 if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir);
 app.use('/uploads', express.static(uploadsDir));
@@ -25,6 +36,26 @@ const storage = multer.diskStorage({
   filename: (req, file, cb) => cb(null, `${Date.now()}-${file.originalname}`)
 });
 const upload = multer({ storage });
+
+// Helper: upload a local file to Supabase Storage and return public URL
+async function uploadToCloud(localPath, filename) {
+  if (!useSupabase) return `/uploads/${filename}`;
+  const buffer = fs.readFileSync(localPath);
+  const remotePath = `submissions/${filename}`;
+  const { data, error } = await supabase.storage
+    .from('uploads')
+    .upload(remotePath, buffer, { contentType: 'image/jpeg', upsert: true });
+  if (error) {
+    console.log('⚠ Supabase upload failed, using local:', error.message);
+    return `/uploads/${filename}`;
+  }
+  const { data: urlData } = supabase.storage.from('uploads').getPublicUrl(remotePath);
+  // Clean up local temp file in production
+  if (process.env.NODE_ENV === 'production') {
+    try { fs.unlinkSync(localPath); } catch {}
+  }
+  return urlData.publicUrl;
+}
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || 'mock');
 const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
@@ -57,12 +88,13 @@ app.post('/api/auth/login', async (req, res) => {
 });
 
 // ─────────────────────────────────────────
-// SECTIONS
+// SECTIONS (school-wide, shared between teachers)
 // ─────────────────────────────────────────
+// Returns ALL sections — sections are homeroom groups, not teacher-owned
 app.get('/api/teacher/:teacherId/sections', async (req, res) => {
   const sections = await prisma.section.findMany({
-    where: { teacherId: req.params.teacherId },
-    include: { _count: { select: { students: true } }, students: { select: { id: true, name: true, username: true } } }
+    include: { _count: { select: { students: true } }, students: { select: { id: true, name: true, username: true } } },
+    orderBy: { name: 'asc' }
   });
   res.json({ success: true, sections });
 });
@@ -70,22 +102,84 @@ app.get('/api/teacher/:teacherId/sections', async (req, res) => {
 app.post('/api/teacher/sections', async (req, res) => {
   try {
     const { name, teacherId, studentsList } = req.body;
-    const section = await prisma.section.create({ data: { name, teacherId } });
 
+    // 1) Check if a section with this exact name already exists
+    let section = await prisma.section.findFirst({ where: { name: name.trim() } });
+    let isExisting = false;
+
+    if (section) {
+      isExisting = true;
+    } else {
+      section = await prisma.section.create({ data: { name: name.trim(), teacherId } });
+    }
+
+    // 2) For each student name, check if they already exist ANYWHERE in the system
+    //    A student should only have ONE account across all subjects/teachers
     const createdStudents = [];
-    let count = 1;
+    const skippedStudents = [];
+    const linkedStudents = [];
+
+    // Get existing students already in this section for numbering
+    const sectionStudents = await prisma.user.findMany({
+      where: { sectionId: section.id, role: 'STUDENT' }
+    });
+    const sectionNamesSet = new Set(sectionStudents.map(s => s.name.toLowerCase().trim()));
+    let count = sectionStudents.length + 1;
+
     for (const studentName of studentsList) {
       if (!studentName.trim()) continue;
+      const normalizedName = studentName.toLowerCase().trim();
+
+      // Already in this section? Skip entirely
+      if (sectionNamesSet.has(normalizedName)) {
+        skippedStudents.push({ name: studentName.trim(), reason: 'Already in this section' });
+        continue;
+      }
+
+      // Check if student exists ANYWHERE in the system (global dedup)
+      const allStudents = await prisma.user.findMany({
+        where: { role: 'STUDENT' }
+      });
+      const globalMatch = allStudents.find(s => s.name.toLowerCase().trim() === normalizedName);
+
+      if (globalMatch) {
+        // Student exists globally — move them to this section (their homeroom)
+        await prisma.user.update({
+          where: { id: globalMatch.id },
+          data: { sectionId: section.id }
+        });
+        linkedStudents.push({ name: studentName.trim(), username: globalMatch.username, from: 'existing account' });
+        sectionNamesSet.add(normalizedName);
+        continue;
+      }
+
+      // Truly new student — create account
       const paddedNum = String(count).padStart(3, '0');
       const prefix = name.split('-')[1]?.trim().toUpperCase().replace(/[^A-Z]/g, '').slice(0, 6) || 'SEC';
-      const studentId = `${prefix}-${paddedNum}`;
+      let studentId = `${prefix}-${paddedNum}`;
+
+      // Ensure username is unique
+      while (await prisma.user.findUnique({ where: { username: studentId } })) {
+        count++;
+        studentId = `${prefix}-${String(count).padStart(3, '0')}`;
+      }
+
       const user = await prisma.user.create({
         data: { name: studentName.trim(), username: studentId, password: 'password123', role: 'STUDENT', sectionId: section.id }
       });
       createdStudents.push(user);
+      sectionNamesSet.add(normalizedName);
       count++;
     }
-    res.json({ success: true, section, createdStudents });
+
+    let message = isExisting
+      ? `Section "${section.name}" already exists. `
+      : `Created section "${section.name}". `;
+    if (createdStudents.length > 0) message += `${createdStudents.length} new account(s) created. `;
+    if (linkedStudents.length > 0) message += `${linkedStudents.length} existing account(s) linked. `;
+    if (skippedStudents.length > 0) message += `${skippedStudents.length} already in section.`;
+
+    res.json({ success: true, section, createdStudents, skippedStudents, linkedStudents, message: message.trim() });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
   }
@@ -180,14 +274,14 @@ Create 3-5 criteria that sum to ${points || 100} points total. Make criteria rel
 
     try {
       const result = await model.generateContent(prompt);
-      const text = result.response.text().replace(/```json/g,'').replace(/```/g,'').trim();
+      const text = result.response.text().replace(/```json/g, '').replace(/```/g, '').trim();
       const parsed = JSON.parse(text);
       criteria = parsed.criteria;
     } catch (e) {
       console.log('⚠ Primary rubric gen failed, trying lite:', e.message?.slice(0, 80));
       try {
         const result = await modelLite.generateContent(prompt);
-        const text = result.response.text().replace(/```json/g,'').replace(/```/g,'').trim();
+        const text = result.response.text().replace(/```json/g, '').replace(/```/g, '').trim();
         const parsed = JSON.parse(text);
         criteria = parsed.criteria;
       } catch (e2) {
@@ -224,7 +318,7 @@ async function preprocessImage(inputPath) {
       .toFile(outputPath);
     const origSize = fs.statSync(inputPath).size;
     const newSize = fs.statSync(outputPath).size;
-    console.log(`📷 Preprocessed: ${Math.round(origSize/1024)}KB → ${Math.round(newSize/1024)}KB`);
+    console.log(`📷 Preprocessed: ${Math.round(origSize / 1024)}KB → ${Math.round(newSize / 1024)}KB`);
     return outputPath;
   } catch (e) {
     console.log('⚠ Image preprocessing fallback (using original):', e.message);
@@ -245,9 +339,9 @@ app.post('/api/teacher/upload', upload.single('image'), async (req, res) => {
 
     // 1) Preprocess the image
     const processedPath = await preprocessImage(imageFile.path);
-    const processedUrl = processedPath !== imageFile.path
-      ? `/uploads/${path.basename(processedPath)}`
-      : imageUrl;
+    const processedFilename = path.basename(processedPath);
+    // Upload to Supabase Storage in production, local path in dev
+    const processedUrl = await uploadToCloud(processedPath, processedFilename);
 
     // 2) Fetch activity rubric context
     let rubricContext = 'Use standard DepEd essay rubric: Content & Ideas (40 pts), Organization (30 pts), Language & Grammar (30 pts).';
@@ -262,7 +356,7 @@ app.post('/api/teacher/upload', upload.single('image'), async (req, res) => {
             if (parsed.criteria?.length) {
               rubricContext = 'Use this rubric: ' + parsed.criteria.map(c => `${c.name} (${c.points} pts): ${c.description || ''}`).join('; ') + '.';
             }
-          } catch {}
+          } catch { }
         }
       }
     }
@@ -280,7 +374,7 @@ app.post('/api/teacher/upload', upload.single('image'), async (req, res) => {
         });
         if (examples.length > 0) {
           fewShotExamples = '\n\nIMPORTANT — TEACHER GRADING STYLE EXAMPLES (adapt your feedback to match this teacher\'s tone and expectations):\n' +
-            examples.map((ex, i) => `Example ${i+1}: AI originally wrote: "${ex.aiFeedback}" | Teacher changed it to: "${ex.teacherFeedback}" | AI score was ${ex.aiScore}, teacher gave ${ex.teacherScore}`).join('\n');
+            examples.map((ex, i) => `Example ${i + 1}: AI originally wrote: "${ex.aiFeedback}" | Teacher changed it to: "${ex.teacherFeedback}" | AI score was ${ex.aiScore}, teacher gave ${ex.teacherScore}`).join('\n');
         }
       }
     }
@@ -327,7 +421,7 @@ Respond with JSON ONLY (no markdown, no code fences). Use this exact schema:
     async function callGemini(m, parts) {
       const result = await m.generateContent(parts);
       const text = result.response.text();
-      return JSON.parse(text.replace(/```json/g,'').replace(/```/g,'').trim());
+      return JSON.parse(text.replace(/```json/g, '').replace(/```/g, '').trim());
     }
 
     const imgBuffer = fs.readFileSync(processedPath);
@@ -363,9 +457,11 @@ Respond with JSON ONLY (no markdown, no code fences). Use this exact schema:
       }
     }
 
-    // Chain-of-Verification — only run if primary AI succeeded
+    // Chain-of-Verification — SKIPPED by default during upload for speed
+    // Teacher can trigger verification from the HITL review page via /api/teacher/submissions/:id/verify
     let covData = null;
-    if (aiSource !== 'mock' && !aiResult.noTextDetected) {
+    const runCoV = req.query.verify === 'true' || req.body.verify === true;
+    if (runCoV && aiSource !== 'mock' && !aiResult.noTextDetected) {
       const originalScore = aiResult.score;
       try {
         const covPrompt = `You previously graded this handwritten student essay and produced this result:
@@ -584,7 +680,7 @@ app.get('/api/teacher/:teacherId/analytics', async (req, res) => {
     const classAvgSkills = {};
     SKILLS.forEach(skill => {
       const vals = studentTrends.map(st => st.skillScores?.[skill] || 0).filter(v => v > 0);
-      classAvgSkills[skill] = vals.length ? Math.round(vals.reduce((a,b) => a+b, 0) / vals.length) : 0;
+      classAvgSkills[skill] = vals.length ? Math.round(vals.reduce((a, b) => a + b, 0) / vals.length) : 0;
     });
 
     res.json({ success: true, warnings, studentTrends, classAvgSkills, warningCount: warnings.length });
@@ -653,12 +749,20 @@ app.get('/api/student/:studentId/activities', async (req, res) => {
   try {
     const student = await prisma.user.findUnique({
       where: { id: req.params.studentId },
-      include: { section: { include: { classes: { include: {
-        activities: {
-          where: { submissionMode: 'STUDENT_SUBMIT' }, // Only show student-submit activities
-          orderBy: { createdAt: 'desc' }
+      include: {
+        section: {
+          include: {
+            classes: {
+              include: {
+                activities: {
+                  where: { submissionMode: 'STUDENT_SUBMIT' }, // Only show student-submit activities
+                  orderBy: { createdAt: 'desc' }
+                }
+              }
+            }
+          }
         }
-      } } } } }
+      }
     });
     const activities = student?.section?.classes?.flatMap(c =>
       c.activities.map(a => ({ ...a, className: c.name }))
@@ -750,11 +854,11 @@ app.post('/api/dev/seed', async (req, res) => {
       await prisma.submission.create({
         data: {
           studentId: student.id, activityId: activity.id,
-          aiScore: 80 - i*8, hitlScore: 82 - i*8,
-          aiFeedback: `Submission ${i+1} AI feedback.`,
-          hitlFeedback: `Submission ${i+1} teacher feedback.`,
+          aiScore: 80 - i * 8, hitlScore: 82 - i * 8,
+          aiFeedback: `Submission ${i + 1} AI feedback.`,
+          hitlFeedback: `Submission ${i + 1} teacher feedback.`,
           readingStrategy: 'Focus on signpost words.',
-          rubricData: JSON.stringify({ content: { score: 35-i*3, max: 40 }, organization: { score: 25-i*2, max: 30 }, grammar: { score: 22-i*3, max: 30 } }),
+          rubricData: JSON.stringify({ content: { score: 35 - i * 3, max: 40 }, organization: { score: 25 - i * 2, max: 30 }, grammar: { score: 22 - i * 3, max: 30 } }),
           skillScores: JSON.stringify(skillSets[i]),
           status: 'GRADED'
         }

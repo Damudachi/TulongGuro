@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { ArrowLeft, Check, Edit2, Info, Sparkles, X, Send, Bot, Loader2, CheckCircle2 } from 'lucide-react';
+import { API_URL } from '../../config';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
 
@@ -32,7 +33,7 @@ export default function HITLWorkspace() {
       setIsLoading(false);
       return;
     }
-    fetch(`http://localhost:3000/api/submissions/${submissionId}`)
+    fetch(`${API_URL}/api/submissions/${submissionId}`)
       .then(r => r.json())
       .then(d => {
         if (d.success && d.submission) {
@@ -67,7 +68,7 @@ export default function HITLWorkspace() {
     setChatInput('');
     setIsChatLoading(true);
     try {
-      const res = await fetch('http://localhost:3000/api/teacher/refine', {
+      const res = await fetch(`${API_URL}/api/teacher/refine`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ currentFeedback: feedbackText, prompt: msg })
@@ -88,7 +89,7 @@ export default function HITLWorkspace() {
     try {
       if (submissionId && submissionId !== 'test123') {
         const user = JSON.parse(localStorage.getItem('user') || '{}');
-        await fetch(`http://localhost:3000/api/teacher/submissions/${submissionId}/grade`, {
+        await fetch(`${API_URL}/api/teacher/submissions/${submissionId}/grade`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -126,7 +127,7 @@ export default function HITLWorkspace() {
         </button>
         <div className="flex-1 bg-slate-200 rounded-xl border border-slate-300 overflow-hidden relative min-h-[300px]">
           {submission?.imageUrl ? (
-            <img src={`http://localhost:3000${submission.imageUrl}`} alt="Essay" className="w-full h-full object-contain" />
+            <img src={submission.imageUrl?.startsWith('http') ? submission.imageUrl : `${API_URL}${submission.imageUrl}`} alt="Essay" className="w-full h-full object-contain" />
           ) : (
             <div className="absolute inset-0 flex flex-col items-center justify-center text-slate-400 gap-2">
               <div className="w-16 h-20 border-2 border-dashed border-slate-300 rounded-lg flex items-center justify-center">

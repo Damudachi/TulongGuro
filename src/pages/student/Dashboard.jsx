@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { BookOpen, Award, CheckCircle2, Star, Loader2, Lightbulb, ChevronRight, Bell, Upload } from 'lucide-react';
+import { API_URL } from '../../config';
 
 export default function StudentDashboard() {
   const [data, setData] = useState(null);
@@ -9,7 +10,7 @@ export default function StudentDashboard() {
   useEffect(() => {
     const user = JSON.parse(localStorage.getItem('user') || '{}');
     if (!user.id) return setIsLoading(false);
-    fetch(`http://localhost:3000/api/student/${user.id}/dashboard`)
+    fetch(`${API_URL}/api/student/${user.id}/dashboard`)
       .then(r => r.json())
       .then(d => { if (d.success) setData(d); })
       .finally(() => setIsLoading(false));

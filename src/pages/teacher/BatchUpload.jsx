@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { ArrowLeft, Camera, UploadCloud, X, Play, CheckCircle2, Clock, Loader2, User, Wifi, WifiOff, Trash2 } from 'lucide-react';
 import { getQueue, buildJob, enqueue, flushQueue } from '../../utils/offlineQueue';
+import { API_URL } from '../../config';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
 
@@ -33,7 +34,7 @@ export default function BatchUpload() {
 
   useEffect(() => {
     if (classId) {
-      fetch(`http://localhost:3000/api/classes/${classId}`)
+      fetch(`${API_URL}/api/classes/${classId}`)
         .then(r => r.json())
         .then(d => { if (d.success) setStudents(d.classData?.section?.students || []); });
     }
@@ -72,7 +73,7 @@ export default function BatchUpload() {
 
       if (!navigator.onLine) {
         // Queue for later
-        const job = buildJob('http://localhost:3000/api/teacher/upload', {
+        const job = buildJob(`${API_URL}/api/teacher/upload`, {
           studentId: selectedStudent || students[0]?.id || 'mock-student-id',
           activityId: activityId || 'mock-activity-id'
         }, fileItem.file);
@@ -83,7 +84,7 @@ export default function BatchUpload() {
       }
 
       try {
-        const res = await fetch('http://localhost:3000/api/teacher/upload', { method: 'POST', body: formData });
+        const res = await fetch(`${API_URL}/api/teacher/upload`, { method: 'POST', body: formData });
         const data = await res.json();
         if (data.success) {
           // Determine actual status from AI response
@@ -106,7 +107,7 @@ export default function BatchUpload() {
         }
       } catch {
         // Network error — queue it
-        const job = buildJob('http://localhost:3000/api/teacher/upload', {
+        const job = buildJob(`${API_URL}/api/teacher/upload`, {
           studentId: selectedStudent || students[0]?.id || 'mock-student-id',
           activityId: activityId || 'mock-activity-id'
         }, fileItem.file);

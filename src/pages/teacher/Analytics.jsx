@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { AlertTriangle, TrendingDown, BarChart2, Users, ChevronDown, ChevronUp, Loader2, ShieldAlert } from 'lucide-react';
+import { API_URL } from '../../config';
 
 const SKILL_LABELS = {
   vocabulary: 'Vocabulary',
@@ -61,7 +62,7 @@ export default function Analytics() {
   useEffect(() => {
     const user = JSON.parse(localStorage.getItem('user') || '{}');
     if (!user.id) return setIsLoading(false);
-    fetch(`http://localhost:3000/api/teacher/${user.id}/analytics`)
+    fetch(`${API_URL}/api/teacher/${user.id}/analytics`)
       .then(r => r.json())
       .then(d => { if (d.success) setData(d); })
       .finally(() => setIsLoading(false));
