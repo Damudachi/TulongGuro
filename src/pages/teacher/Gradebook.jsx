@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { BookOpen, Filter, Download, ChevronDown, Users, BarChart2 } from 'lucide-react';
+import { API_URL } from '../../config';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
 
@@ -27,8 +28,8 @@ export default function Gradebook() {
     const user = JSON.parse(localStorage.getItem('user') || '{}');
     if (!user.id) return setIsLoading(false);
     const url = selectedClassId
-      ? `http://localhost:3000/api/teacher/${user.id}/gradebook?classId=${selectedClassId}`
-      : `http://localhost:3000/api/teacher/${user.id}/gradebook`;
+      ? `${API_URL}/api/teacher/${user.id}/gradebook?classId=${selectedClassId}`
+      : `${API_URL}/api/teacher/${user.id}/gradebook`;
     fetch(url)
       .then(r => r.json())
       .then(d => { if (d.success) setData(d); })

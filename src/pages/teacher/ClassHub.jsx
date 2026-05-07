@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import { Plus, Search, FileText, User, ArrowLeft, Clock, CheckCircle2, AlertCircle, UploadCloud } from 'lucide-react';
+import { API_URL } from '../../config';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
 
@@ -21,7 +22,7 @@ export default function ClassHub() {
   const [newActivity, setNewActivity] = useState({ title: '', type: 'Essay', points: 100, instructions: '', deadline: '', submissionMode: 'TEACHER_UPLOAD' });
 
   useEffect(() => {
-    fetch(`http://localhost:3000/api/classes/${classId}`)
+    fetch(`${API_URL}/api/classes/${classId}`)
       .then(r => r.json())
       .then(d => { if (d.success) setClassData(d.classData); })
       .finally(() => setIsLoading(false));
@@ -29,7 +30,7 @@ export default function ClassHub() {
 
   const handleCreateActivity = async (e) => {
     e.preventDefault();
-    const res = await fetch('http://localhost:3000/api/teacher/activities', {
+    const res = await fetch(`${API_URL}/api/teacher/activities`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ ...newActivity, classId })

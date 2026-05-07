@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Trophy, Star, Lock, Zap, BookOpen, Award } from 'lucide-react';
+import { API_URL } from '../../config';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
 
@@ -18,7 +19,7 @@ export default function Awards() {
   useEffect(() => {
     const user = JSON.parse(localStorage.getItem('user') || '{}');
     if (user.id) {
-      fetch(`http://localhost:3000/api/student/${user.id}/dashboard`)
+      fetch(`${API_URL}/api/student/${user.id}/dashboard`)
         .then(r => r.json())
         .then(d => {
           if (d.success) {

@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { BookOpen, UserCircle, GraduationCap } from 'lucide-react';
+import { API_URL } from '../config';
 
 export default function Login() {
   const [role, setRole] = useState('teacher'); // 'teacher' | 'student'
@@ -14,7 +15,7 @@ export default function Login() {
     e.preventDefault();
     setErrorMsg('');
     try {
-      const response = await fetch('http://localhost:3000/api/auth/login', {
+      const response = await fetch(`${API_URL}/api/auth/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username: identifier, password, role: role.toUpperCase() })

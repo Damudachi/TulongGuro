@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: tulongguro-api
+    runtime: node
+    buildCommand: cd server && npm install && npx prisma generate && npx prisma db push
+    startCommand: cd server && node server.js
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_KEY
+        sync: false
+      - key: NODE_ENV
+        value: production

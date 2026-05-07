@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { ArrowLeft, Lightbulb, Trophy, Image as ImageIcon, Loader2 } from 'lucide-react';
+import { API_URL } from '../../config';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
 
@@ -25,7 +26,7 @@ export default function OutputDetails() {
       setIsLoading(false);
       return;
     }
-    fetch(`http://localhost:3000/api/submissions/${outputId}`)
+    fetch(`${API_URL}/api/submissions/${outputId}`)
       .then(r => r.json())
       .then(d => { if (d.success) setSub(d.submission); })
       .finally(() => setIsLoading(false));
@@ -111,7 +112,7 @@ export default function OutputDetails() {
           </button>
           {showImage && (
             <div className="mt-4 rounded-2xl overflow-hidden border border-slate-200 shadow">
-              <img src={`http://localhost:3000${sub.imageUrl}`} alt="Original essay" className="w-full" />
+              <img src={sub.imageUrl?.startsWith('http') ? sub.imageUrl : `${API_URL}${sub.imageUrl}`} alt="Original essay" className="w-full" />
             </div>
           )}
         </div>

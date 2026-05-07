@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ArrowLeft, Camera, UploadCloud, FileText, CheckCircle2, Clock, Loader2, Sparkles, ChevronRight } from 'lucide-react';
+import { API_URL } from '../../config';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
 
@@ -23,7 +24,7 @@ export default function SubmitWork() {
   useEffect(() => {
     const user = JSON.parse(localStorage.getItem('user') || '{}');
     if (!user.id) return setIsLoading(false);
-    fetch(`http://localhost:3000/api/student/${user.id}/activities`)
+    fetch(`${API_URL}/api/student/${user.id}/activities`)
       .then(r => r.json())
       .then(d => { if (d.success) setActivities(d.activities); })
       .finally(() => setIsLoading(false));
@@ -47,12 +48,12 @@ export default function SubmitWork() {
       formData.append('studentId', user.id);
       formData.append('activityId', selected.id);
 
-      const res = await fetch('http://localhost:3000/api/student/submit', { method: 'POST', body: formData });
+      const res = await fetch(`${API_URL}/api/student/submit`, { method: 'POST', body: formData });
       const data = await res.json();
       if (data.success) {
         setResult(data);
         // Refresh activity list
-        const activitiesRes = await fetch(`http://localhost:3000/api/student/${user.id}/activities`);
+        const activitiesRes = await fetch(`${API_URL}/api/student/${user.id}/activities`);
         const activitiesData = await activitiesRes.json();
         if (activitiesData.success) setActivities(activitiesData.activities);
       } else {

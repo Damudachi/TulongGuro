@@ -4,6 +4,7 @@ import { clsx } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 import { useState, useEffect } from 'react';
 import { initOfflineQueueListener, getQueue } from '../utils/offlineQueue';
+import { API_URL } from '../config';
 
 function cn(...inputs) {
   return twMerge(clsx(inputs));
@@ -19,7 +20,7 @@ export default function TeacherLayout() {
     // Fetch warning count for badge
     const user = JSON.parse(localStorage.getItem('user') || '{}');
     if (user.id) {
-      fetch(`http://localhost:3000/api/teacher/${user.id}/analytics`)
+      fetch(`${API_URL}/api/teacher/${user.id}/analytics`)
         .then(r => r.json())
         .then(d => { if (d.success) setWarningCount(d.warningCount || 0); })
         .catch(() => {});

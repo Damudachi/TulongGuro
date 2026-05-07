@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { Plus, Users, FileText, BookOpen } from 'lucide-react';
+import { API_URL } from '../../config';
 
 const GRADE_LEVELS = ['Grade 7','Grade 8','Grade 9','Grade 10','Grade 11','Grade 12'];
 const SUBJECTS = ['Filipino','English','Mathematics','Science','Araling Panlipunan','MAPEH','TLE','ESP','Pagsasaling-wika','Reading & Literacy'];
@@ -17,8 +18,8 @@ export default function TeacherDashboard() {
     const user = JSON.parse(localStorage.getItem('user') || '{}');
     if (!user.id) return setIsLoading(false);
     Promise.all([
-      fetch(`http://localhost:3000/api/teacher/${user.id}/classes`).then(r => r.json()),
-      fetch(`http://localhost:3000/api/teacher/${user.id}/sections`).then(r => r.json())
+      fetch(`${API_URL}/api/teacher/${user.id}/classes`).then(r => r.json()),
+      fetch(`${API_URL}/api/teacher/${user.id}/sections`).then(r => r.json())
     ]).then(([clsData, secData]) => {
       if (clsData.success) setClasses(clsData.classes);
       if (secData.success) setSections(secData.sections);
@@ -32,7 +33,7 @@ export default function TeacherDashboard() {
       const user = JSON.parse(localStorage.getItem('user') || '{}');
       // Auto-generate class name if not manually set
       const name = form.name || `${form.subject} ${form.gradeLevel}`.trim();
-      const res = await fetch('http://localhost:3000/api/teacher/classes', {
+      const res = await fetch(`${API_URL}/api/teacher/classes`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name, gradeLevel: form.gradeLevel, subject: form.subject, schoolYear: form.schoolYear, teacherId: user.id, sectionId: form.sectionId })
