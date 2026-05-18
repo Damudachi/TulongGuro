@@ -1,27 +1,14 @@
 import { useState, useEffect } from 'react';
-import { AlertTriangle, TrendingDown, BarChart2, Users, ChevronDown, ChevronUp, Loader2, ShieldAlert } from 'lucide-react';
+import { AlertTriangle, TrendingDown, BarChart2, Users, ChevronDown, ChevronUp, Loader2, ShieldAlert, ArrowLeft, FileText, ChevronRight } from 'lucide-react';
 import { API_URL } from '../../config';
 
-const SKILL_LABELS = {
-  vocabulary: 'Vocabulary',
-  punctuation: 'Punctuation',
-  thematicFlow: 'Thematic Flow',
-  sentenceStructure: 'Sentence Structure'
-};
-
-const SKILL_COLORS = {
-  vocabulary: 'bg-purple-500',
-  punctuation: 'bg-blue-500',
-  thematicFlow: 'bg-amber-500',
-  sentenceStructure: 'bg-green-500'
-};
-
+const SKILL_LABELS = { vocabulary: 'Vocabulary', punctuation: 'Punctuation', thematicFlow: 'Thematic Flow', sentenceStructure: 'Sentence Structure' };
 const SEVERITY_CONFIG = {
   HIGH: { bg: 'bg-red-50', border: 'border-red-300', text: 'text-red-700', badge: 'bg-red-100 text-red-700', icon: '🔴' },
   MEDIUM: { bg: 'bg-amber-50', border: 'border-amber-300', text: 'text-amber-700', badge: 'bg-amber-100 text-amber-700', icon: '🟡' }
 };
 
-function SkillBar({ label, value, max = 25, colorClass }) {
+function SkillBar({ label, value, max = 25 }) {
   const pct = Math.min(100, (value / max) * 100);
   const color = pct >= 70 ? 'bg-green-400' : pct >= 50 ? 'bg-amber-400' : 'bg-red-400';
   return (
@@ -58,15 +45,30 @@ export default function Analytics() {
   const [data, setData] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
   const [expanded, setExpanded] = useState({});
+  const [selectedSectionId, setSelectedSectionId] = useState(null);
+  const [selectedStudent, setSelectedStudent] = useState(null);
+  const [studentData, setStudentData] = useState(null);
+  const [loadingStudent, setLoadingStudent] = useState(false);
 
   useEffect(() => {
     const user = JSON.parse(localStorage.getItem('user') || '{}');
     if (!user.id) return setIsLoading(false);
-    fetch(`${API_URL}/api/teacher/${user.id}/analytics`)
-      .then(r => r.json())
+    const url = selectedSectionId
+      ? `${API_URL}/api/teacher/${user.id}/analytics?sectionId=${selectedSectionId}`
+      : `${API_URL}/api/teacher/${user.id}/analytics`;
+    fetch(url).then(r => r.json())
       .then(d => { if (d.success) setData(d); })
       .finally(() => setIsLoading(false));
-  }, []);
+  }, [selectedSectionId]);
+
+  const loadStudentDetail = (student) => {
+    setSelectedStudent(student);
+    setLoadingStudent(true);
+    fetch(`${API_URL}/api/teacher/student/${student.id}/analytics`)
+      .then(r => r.json())
+      .then(d => { if (d.success) setStudentData(d); })
+      .finally(() => setLoadingStudent(false));
+  };
 
   const toggleExpand = (id) => setExpanded(prev => ({ ...prev, [id]: !prev[id] }));
 
@@ -83,16 +85,124 @@ export default function Analytics() {
     </div>
   );
 
-  const { warnings, studentTrends, classAvgSkills, warningCount } = data;
+  const { warnings, studentTrends, classAvgSkills, warningCount, sections } = data;
+
+  // Student Detail View
+  if (selectedStudent) {
+    return (
+      <div className="p-4 md:p-8 max-w-5xl mx-auto space-y-6">
+        <button onClick={() => { setSelectedStudent(null); setStudentData(null); }}
+          className="flex items-center gap-2 text-sm font-medium text-brand-navy hover:text-blue-900">
+          <ArrowLeft className="w-4 h-4" /> Back to Analytics
+        </button>
+
+        <div className="bg-white border border-slate-200 rounded-xl p-6">
+          <div className="flex items-center gap-4 mb-4">
+            <div className="w-14 h-14 rounded-full bg-brand-navy/10 text-brand-navy flex items-center justify-center font-bold text-xl">
+              {selectedStudent.name.charAt(0)}
+            </div>
+            <div>
+              <h1 className="text-xl font-bold text-brand-slate">{selectedStudent.name}</h1>
+              <p className="text-sm text-slate-500">{selectedStudent.username}</p>
+            </div>
+          </div>
+
+          {loadingStudent ? (
+            <div className="flex items-center justify-center py-12 text-slate-400">
+              <Loader2 className="w-5 h-5 animate-spin mr-2" /> Loading student data...
+            </div>
+          ) : studentData ? (
+            <div className="space-y-6">
+              {/* Summary */}
+              <div className="grid grid-cols-3 gap-4">
+                <div className="bg-blue-50 rounded-xl p-4 text-center">
+                  <p className="text-2xl font-extrabold text-brand-navy">{studentData.avgScore}</p>
+                  <p className="text-xs text-slate-500">Avg Score</p>
+                </div>
+                <div className="bg-slate-50 rounded-xl p-4 text-center">
+                  <p className="text-2xl font-extrabold text-brand-slate">{studentData.totalSubmissions}</p>
+                  <p className="text-xs text-slate-500">Submissions</p>
+                </div>
+                <div className="bg-green-50 rounded-xl p-4 text-center">
+                  <p className="text-2xl font-extrabold text-green-600">
+                    {studentData.submissions.filter(s => s.status === 'GRADED').length}
+                  </p>
+                  <p className="text-xs text-slate-500">Graded</p>
+                </div>
+              </div>
+
+              {/* Skill Averages */}
+              <div>
+                <h3 className="text-sm font-bold text-brand-slate mb-3">Skill Averages</h3>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  {Object.entries(studentData.avgSkills).map(([skill, avg]) => (
+                    <SkillBar key={skill} label={SKILL_LABELS[skill]} value={avg} max={25} />
+                  ))}
+                </div>
+              </div>
+
+              {/* Paper Works */}
+              <div>
+                <h3 className="text-sm font-bold text-brand-slate mb-3">Paper Works</h3>
+                <div className="space-y-2">
+                  {studentData.submissions.length === 0 ? (
+                    <p className="text-sm text-slate-400 py-4 text-center">No submissions yet.</p>
+                  ) : studentData.submissions.map(sub => {
+                    const score = sub.hitlScore ?? sub.aiScore;
+                    const pct = score !== null && sub.points ? (score / sub.points) * 100 : null;
+                    const scoreColor = pct === null ? 'text-slate-400' : pct >= 80 ? 'text-green-600' : pct >= 65 ? 'text-amber-600' : 'text-red-600';
+                    return (
+                      <div key={sub.id} className="flex items-center gap-3 p-3 bg-slate-50 rounded-lg">
+                        <div className="w-10 h-10 bg-white border border-slate-200 rounded-lg flex items-center justify-center shrink-0">
+                          <FileText className="w-5 h-5 text-slate-400" />
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-medium text-brand-slate truncate">{sub.activityTitle}</p>
+                          <p className="text-[11px] text-slate-400">{sub.className} • {sub.activityType} • {new Date(sub.createdAt).toLocaleDateString()}</p>
+                        </div>
+                        <div className="text-right shrink-0">
+                          <p className={`text-sm font-bold ${scoreColor}`}>
+                            {score !== null ? `${score}/${sub.points}` : '—'}
+                          </p>
+                          <p className="text-[10px] text-slate-400">{sub.status}</p>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+          ) : null}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="p-4 md:p-8 max-w-6xl mx-auto space-y-8">
-
-      {/* Header */}
       <div>
         <h1 className="text-2xl font-bold text-brand-slate">Predictive Analytics</h1>
         <p className="text-slate-500 text-sm mt-1">Early warning system — tracks skill trends across submissions</p>
       </div>
+
+      {/* Section Picker */}
+      {sections && sections.length > 0 && (
+        <div>
+          <h2 className="text-sm font-bold text-slate-500 uppercase tracking-wider mb-3">Filter by Section</h2>
+          <div className="flex flex-wrap gap-2">
+            <button onClick={() => setSelectedSectionId(null)}
+              className={`px-4 py-2 rounded-lg text-sm font-medium border transition-colors ${!selectedSectionId ? 'bg-brand-navy text-white border-brand-navy' : 'bg-white text-slate-600 border-slate-200 hover:border-brand-navy'}`}>
+              All Sections
+            </button>
+            {sections.map(sec => (
+              <button key={sec.id} onClick={() => setSelectedSectionId(sec.id)}
+                className={`px-4 py-2 rounded-lg text-sm font-medium border transition-colors ${selectedSectionId === sec.id ? 'bg-brand-navy text-white border-brand-navy' : 'bg-white text-slate-600 border-slate-200 hover:border-brand-navy'}`}>
+                {sec.name} <span className="text-xs opacity-75">({sec.studentCount})</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Summary Cards */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
@@ -138,9 +248,7 @@ export default function Analytics() {
                       </div>
                     </div>
                     <div className="flex items-center gap-2">
-                      <span className={`text-xs font-bold px-2 py-1 rounded-full ${cfg.badge}`}>
-                        {cfg.icon} {topSeverity}
-                      </span>
+                      <span className={`text-xs font-bold px-2 py-1 rounded-full ${cfg.badge}`}>{cfg.icon} {topSeverity}</span>
                       {isOpen ? <ChevronUp className="w-4 h-4 text-slate-500" /> : <ChevronDown className="w-4 h-4 text-slate-500" />}
                     </div>
                   </button>
@@ -157,15 +265,9 @@ export default function Analytics() {
                           </div>
                           <div className="flex items-center gap-2 text-xs text-slate-600">
                             Scores: {warn.trend.join(' → ')} out of 25
-                            <span className={`ml-auto font-bold px-2 py-0.5 rounded-full ${SEVERITY_CONFIG[warn.severity].badge}`}>
-                              {warn.severity === 'HIGH' ? 'Intervene now' : 'Monitor closely'}
-                            </span>
                           </div>
                         </div>
                       ))}
-                      <p className="text-xs text-slate-500 italic">
-                        💡 Recommended: Schedule a one-on-one reading session focusing on {studentWarns.map(w => SKILL_LABELS[w.skill]).join(', ')}.
-                      </p>
                     </div>
                   )}
                 </div>
@@ -175,72 +277,60 @@ export default function Analytics() {
         </div>
       )}
 
-      {/* Class Average Skill Bars */}
+      {/* Section Average Skill Bars */}
       <div className="bg-white border border-slate-200 rounded-xl p-6">
-        <h2 className="text-base font-bold text-brand-slate mb-4">Class Skill Averages</h2>
+        <h2 className="text-base font-bold text-brand-slate mb-4">
+          {selectedSectionId ? 'Section' : 'Overall'} Skill Averages
+        </h2>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           {Object.entries(classAvgSkills).map(([skill, avg]) => (
-            <SkillBar key={skill} label={SKILL_LABELS[skill]} value={avg} max={25}
-              colorClass={SKILL_COLORS[skill]} />
+            <SkillBar key={skill} label={SKILL_LABELS[skill]} value={avg} max={25} />
           ))}
         </div>
       </div>
 
-      {/* Student Skill Heatmap */}
+      {/* Student List — Clickable */}
       {studentTrends.length > 0 && (
         <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
           <div className="p-4 border-b border-slate-100">
-            <h2 className="text-base font-bold text-brand-slate">Student Skill Heatmap</h2>
-            <p className="text-xs text-slate-500">Latest skill scores per student (0-25). 🔴 Low 🟡 Fair 🟢 Good</p>
+            <h2 className="text-base font-bold text-brand-slate">Students</h2>
+            <p className="text-xs text-slate-500">Click a student to view their detailed analytics and paper works</p>
           </div>
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="bg-slate-50 text-xs font-bold text-slate-500 uppercase tracking-wider">
-                  <th className="text-left p-3 sticky left-0 bg-slate-50">Student</th>
-                  {Object.values(SKILL_LABELS).map(l => <th key={l} className="p-3 text-center whitespace-nowrap">{l}</th>)}
-                  <th className="p-3 text-center">Latest Score</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100">
-                {studentTrends.map(({ student, skillScores, latestScore, history }) => {
-                  const hasWarning = warnings.some(w => w.student.id === student.id);
-                  return (
-                    <tr key={student.id} className={hasWarning ? 'bg-red-50/40' : 'hover:bg-slate-50'}>
-                      <td className="p-3 sticky left-0 bg-inherit">
-                        <div className="flex items-center gap-2">
-                          {hasWarning && <AlertTriangle className="w-3.5 h-3.5 text-red-500 shrink-0" />}
-                          <div>
-                            <p className="font-semibold text-brand-slate text-xs">{student.name}</p>
-                            <p className="text-slate-400 text-[10px]">{student.username}</p>
-                          </div>
-                        </div>
-                      </td>
+          <div className="divide-y divide-slate-100">
+            {studentTrends.map(({ student, skillScores, latestScore }) => {
+              const hasWarning = warnings.some(w => w.student.id === student.id);
+              return (
+                <button key={student.id} onClick={() => loadStudentDetail(student)}
+                  className={`w-full p-4 flex items-center justify-between text-left hover:bg-blue-50/50 transition-colors ${hasWarning ? 'bg-red-50/30' : ''}`}>
+                  <div className="flex items-center gap-3">
+                    {hasWarning && <AlertTriangle className="w-4 h-4 text-red-500 shrink-0" />}
+                    <div className="w-9 h-9 rounded-full bg-blue-100 text-brand-navy flex items-center justify-center font-bold text-sm shrink-0">
+                      {student.name.charAt(0)}
+                    </div>
+                    <div>
+                      <p className="font-semibold text-brand-slate text-sm">{student.name}</p>
+                      <p className="text-[11px] text-slate-400">{student.username}</p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-4">
+                    <div className="hidden sm:flex gap-2">
                       {Object.keys(SKILL_LABELS).map(skill => {
                         const val = skillScores?.[skill] || 0;
-                        const hist = history.map(h => h?.[skill] || 0);
-                        const dropping = hist.length >= 2 && hist[hist.length-1] < hist[0];
                         const pct = (val / 25) * 100;
                         const cell = pct >= 70 ? 'bg-green-100 text-green-800' : pct >= 50 ? 'bg-amber-100 text-amber-800' : 'bg-red-100 text-red-800';
                         return (
-                          <td key={skill} className="p-3 text-center">
-                            <div className={`inline-flex items-center gap-1 px-2 py-1 rounded-lg font-bold text-xs ${cell}`}>
-                              {val}/25
-                              {dropping && <TrendingDown className="w-3 h-3" />}
-                            </div>
-                          </td>
+                          <span key={skill} className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${cell}`}>{val}</span>
                         );
                       })}
-                      <td className="p-3 text-center">
-                        <span className={`font-extrabold text-sm ${latestScore >= 80 ? 'text-green-600' : latestScore >= 65 ? 'text-amber-600' : 'text-red-600'}`}>
-                          {latestScore}
-                        </span>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+                    </div>
+                    <span className={`text-sm font-bold ${latestScore >= 80 ? 'text-green-600' : latestScore >= 65 ? 'text-amber-600' : 'text-red-600'}`}>
+                      {latestScore}
+                    </span>
+                    <ChevronRight className="w-4 h-4 text-slate-300" />
+                  </div>
+                </button>
+              );
+            })}
           </div>
         </div>
       )}

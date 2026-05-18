@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { ArrowLeft, Camera, UploadCloud, X, Play, CheckCircle2, Clock, Loader2, User, Wifi, WifiOff, Trash2 } from 'lucide-react';
 import { getQueue, buildJob, enqueue, flushQueue } from '../../utils/offlineQueue';
 import { API_URL } from '../../config';
@@ -16,6 +16,12 @@ const STATUS = {
   error:      { label: 'Error',      color: 'bg-red-100 text-red-600',       icon: X },
 };
 
+const SUBMISSION_STATUS = {
+  PENDING: { label: 'Needs Review', color: 'bg-amber-100 text-amber-700' },
+  GRADED: { label: 'Graded', color: 'bg-green-100 text-green-700' },
+  NONE: { label: 'No Upload Yet', color: 'bg-slate-100 text-slate-600' },
+};
+
 export default function BatchUpload() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
@@ -25,6 +31,11 @@ export default function BatchUpload() {
   const [files, setFiles] = useState([]);
   const [students, setStudents] = useState([]);
   const [selectedStudent, setSelectedStudent] = useState('');
+  const [selectValue, setSelectValue] = useState('');
+  const [studentSearch, setStudentSearch] = useState('');
+  const [activityMeta, setActivityMeta] = useState(null);
+  const [activitySubmissions, setActivitySubmissions] = useState([]);
+  const [isLoadingSubmissions, setIsLoadingSubmissions] = useState(false);
   const [isRunning, setIsRunning] = useState(false);
   const [results, setResults] = useState([]);
   const [isOnline, setIsOnline] = useState(navigator.onLine);
@@ -36,7 +47,12 @@ export default function BatchUpload() {
     if (classId) {
       fetch(`${API_URL}/api/classes/${classId}`)
         .then(r => r.json())
-        .then(d => { if (d.success) setStudents(d.classData?.section?.students || []); });
+        .then(d => {
+          if (!d.success) return;
+          setStudents(d.classData?.section?.students || []);
+          const activity = d.classData?.activities?.find(a => a.id === activityId) || null;
+          setActivityMeta(activity);
+        });
     }
     const goOnline = () => { setIsOnline(true); setQueuedCount(getQueue().length); };
     const goOffline = () => setIsOnline(false);
@@ -44,6 +60,15 @@ export default function BatchUpload() {
     window.addEventListener('offline', goOffline);
     return () => { window.removeEventListener('online', goOnline); window.removeEventListener('offline', goOffline); };
   }, [classId]);
+
+  useEffect(() => {
+    if (!activityId || activityMeta?.submissionMode !== 'STUDENT_SUBMIT') return;
+    setIsLoadingSubmissions(true);
+    fetch(`${API_URL}/api/activities/${activityId}/submissions`)
+      .then(r => r.json())
+      .then(d => { if (d.success) setActivitySubmissions(d.submissions || []); })
+      .finally(() => setIsLoadingSubmissions(false));
+  }, [activityId, activityMeta?.submissionMode]);
 
   const handleFileDrop = (e) => {
     e.preventDefault();
@@ -132,18 +157,35 @@ export default function BatchUpload() {
 
   const hasWaiting = files.some(f => f.status === 'waiting');
   const hasQueued = files.some(f => f.status === 'queued');
+  const normalizedSearch = studentSearch.trim().toLowerCase();
+  const filteredStudents = students.filter((s) => {
+    if (!normalizedSearch) return true;
+    return s.name.toLowerCase().includes(normalizedSearch) || s.username.toLowerCase().includes(normalizedSearch);
+  });
+  const selectedStudentLabel = selectedStudent
+    ? students.find(s => s.id === selectedStudent)
+    : null;
+  const selectedStudentDisplay = selectedStudentLabel
+    ? `${selectedStudentLabel.name} (${selectedStudentLabel.username})`
+    : '';
+  const showSearchResults = normalizedSearch && studentSearch !== selectedStudentDisplay;
+  const isStudentSubmitMode = activityMeta?.submissionMode === 'STUDENT_SUBMIT';
+  const submissionsByStudentId = activitySubmissions.reduce((map, sub) => {
+    map[sub.studentId] = sub;
+    return map;
+  }, {});
 
   return (
     <div className="p-4 md:p-8 max-w-4xl mx-auto flex flex-col gap-6">
 
       {/* Offline Banner */}
-      {!isOnline && (
+      {!isStudentSubmitMode && !isOnline && (
         <div className="flex items-center gap-2 p-3 bg-amber-50 border border-amber-300 rounded-xl text-sm text-amber-800">
           <WifiOff className="w-4 h-4 shrink-0" />
           <span><strong>You're offline.</strong> Essays will be queued locally and uploaded automatically when you're back online.</span>
         </div>
       )}
-      {isOnline && queuedCount > 0 && (
+      {!isStudentSubmitMode && isOnline && queuedCount > 0 && (
         <div className="flex items-center justify-between gap-2 p-3 bg-blue-50 border border-blue-200 rounded-xl text-sm text-blue-800">
           <div className="flex items-center gap-2">
             <Wifi className="w-4 h-4 shrink-0 text-blue-500" />
@@ -160,14 +202,14 @@ export default function BatchUpload() {
         <button onClick={() => navigate(-1)} className="flex items-center text-sm text-slate-500 hover:text-brand-slate">
           <ArrowLeft className="w-4 h-4 mr-1" /> Back
         </button>
-        {hasWaiting && !isRunning && (
+        {!isStudentSubmitMode && hasWaiting && !isRunning && (
           <button onClick={handleGrade}
             className="bg-brand-navy text-white px-4 py-2 rounded-lg text-sm font-bold flex items-center hover:bg-blue-900 shadow-md">
             <Play className="w-4 h-4 mr-2" />
             {isOnline ? `Start AI Grading (${files.filter(f => f.status === 'waiting').length})` : `Queue for Upload (${files.filter(f => f.status === 'waiting').length})`}
           </button>
         )}
-        {isRunning && (
+        {!isStudentSubmitMode && isRunning && (
           <span className="flex items-center text-brand-navy text-sm font-semibold">
             <Loader2 className="w-4 h-4 mr-2 animate-spin" /> {isOnline ? 'Analyzing with Gemini...' : 'Saving to queue...'}
           </span>
@@ -175,44 +217,159 @@ export default function BatchUpload() {
       </div>
 
       <div>
-        <h1 className="text-2xl font-bold text-brand-slate">Scan Essays</h1>
-        <p className="text-slate-500 text-sm">Upload handwritten essay photos for AI grading • Works offline</p>
+        <h1 className="text-2xl font-bold text-brand-slate">
+          {isStudentSubmitMode ? 'Student Submissions' : 'Scan Essays'}
+        </h1>
+        <p className="text-slate-500 text-sm">
+          {isStudentSubmitMode
+            ? 'Review student-submitted outputs for this activity.'
+            : 'Upload handwritten essay photos for AI grading • Works offline'}
+        </p>
       </div>
 
       {/* Student Selector */}
-      {students.length > 0 && (
+      {!isStudentSubmitMode && students.length > 0 && (
         <div className="bg-white p-4 rounded-xl border border-slate-200">
           <label className="block text-sm font-medium text-slate-700 mb-2 flex items-center gap-2">
             <User className="w-4 h-4" /> Assign to Student
           </label>
-          <select value={selectedStudent} onChange={e => setSelectedStudent(e.target.value)}
-            className="w-full border border-slate-200 p-2 rounded-lg outline-none focus:ring-2 focus:ring-brand-navy text-sm">
-            <option value="">-- Select student --</option>
-            {students.map(s => <option key={s.id} value={s.id}>{s.name} ({s.username})</option>)}
-          </select>
+          <input
+            type="text"
+            value={studentSearch || selectedStudentDisplay}
+            onChange={(e) => setStudentSearch(e.target.value)}
+            placeholder="Select a student (search by name or ID)"
+            className="w-full border border-slate-200 p-2 rounded-lg outline-none focus:ring-2 focus:ring-brand-navy text-sm mb-2"
+          />
+          {showSearchResults && (
+            <div className="border border-slate-200 rounded-lg max-h-40 overflow-auto bg-white mb-2">
+              {filteredStudents.length === 0 ? (
+                <p className="text-xs text-amber-600 px-3 py-2">No students match your search.</p>
+              ) : (
+                filteredStudents.slice(0, 8).map((s) => (
+                  <button
+                    key={s.id}
+                    type="button"
+                    onClick={() => {
+                      setSelectedStudent(s.id);
+                      setStudentSearch('');
+                      setSelectValue('');
+                    }}
+                    className="w-full text-left px-3 py-2 text-sm hover:bg-blue-50"
+                  >
+                    <span className="font-medium text-brand-slate">{s.name}</span>
+                    <span className="text-xs text-slate-500"> ({s.username})</span>
+                  </button>
+                ))
+              )}
+            </div>
+          )}
+          {!normalizedSearch && (
+            <select
+              value={selectValue}
+              onChange={(e) => {
+                const pickedId = e.target.value;
+                setSelectedStudent(pickedId);
+                setStudentSearch('');
+                setSelectValue('');
+              }}
+              className="w-full border border-slate-200 p-2 rounded-lg outline-none focus:ring-2 focus:ring-brand-navy text-sm">
+              <option value="">-- Select student --</option>
+              {filteredStudents.map(s => <option key={s.id} value={s.id}>{s.name} ({s.username})</option>)}
+            </select>
+          )}
+          {selectedStudentLabel && (
+            <p className="text-xs text-slate-500 mt-2">
+              Selected: <span className="font-semibold text-brand-slate">{selectedStudentLabel.name}</span> ({selectedStudentLabel.username})
+            </p>
+          )}
+        </div>
+      )}
+
+      {/* Student Submissions */}
+      {isStudentSubmitMode && (
+        <div className="bg-white border border-slate-200 rounded-2xl p-4">
+          {isLoadingSubmissions ? (
+            <div className="flex items-center justify-center h-32 text-slate-400">
+              <Loader2 className="w-5 h-5 animate-spin mr-2" /> Loading submissions...
+            </div>
+          ) : students.length === 0 ? (
+            <div className="text-center py-12 text-slate-400">
+              <FileText className="w-10 h-10 mx-auto mb-2 opacity-30" />
+              <p className="font-medium">No students found</p>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {students.map((student) => {
+                const sub = submissionsByStudentId[student.id] || null;
+                const statusKey = sub?.status || 'NONE';
+                const statusCfg = SUBMISSION_STATUS[statusKey] || SUBMISSION_STATUS.NONE;
+                return (
+                  <div key={student.id} className="flex items-center gap-4 border border-slate-200 rounded-xl p-3">
+                    <div className="w-20 h-24 rounded-lg overflow-hidden bg-slate-100 border border-slate-200 shrink-0">
+                      {sub?.imageUrl ? (
+                        <img
+                          src={sub.imageUrl.startsWith('http') ? sub.imageUrl : `${API_URL}${sub.imageUrl}`}
+                          alt="submission"
+                          className="w-full h-full object-cover"
+                        />
+                      ) : (
+                        <div className="w-full h-full flex items-center justify-center text-slate-400 text-xs">
+                          No upload
+                        </div>
+                      )}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="font-semibold text-brand-slate truncate">{student.name}</p>
+                      <p className="text-xs text-slate-500">{student.username}</p>
+                      {sub?.createdAt && (
+                        <p className="text-xs text-slate-400 mt-0.5">
+                          Submitted {new Date(sub.createdAt).toLocaleDateString('en-PH', { month: 'short', day: 'numeric' })}
+                        </p>
+                      )}
+                      <span className={`inline-flex mt-2 text-[11px] font-bold px-2 py-0.5 rounded-full ${statusCfg.color}`}>
+                        {statusCfg.label}
+                      </span>
+                    </div>
+                    {sub?.id ? (
+                      <Link
+                        to={`/teacher/review/${sub.id}`}
+                        className="text-xs bg-brand-navy text-white px-3 py-1.5 rounded-md font-medium hover:bg-blue-900 shrink-0"
+                      >
+                        Review
+                      </Link>
+                    ) : (
+                      <span className="text-xs text-slate-400 font-medium shrink-0">No submission</span>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </div>
       )}
 
       {/* Drop Zone */}
-      <div
-        onClick={() => fileInputRef.current?.click()}
-        onDrop={handleFileDrop}
-        onDragOver={e => e.preventDefault()}
-        className="border-2 border-dashed border-slate-300 rounded-2xl p-10 flex flex-col items-center justify-center bg-white hover:bg-blue-50 hover:border-brand-navy transition-all cursor-pointer">
-        <div className="bg-blue-50 p-4 rounded-full mb-4">
-          <Camera className="w-8 h-8 text-brand-navy" />
+      {!isStudentSubmitMode && (
+        <div
+          onClick={() => fileInputRef.current?.click()}
+          onDrop={handleFileDrop}
+          onDragOver={e => e.preventDefault()}
+          className="border-2 border-dashed border-slate-300 rounded-2xl p-10 flex flex-col items-center justify-center bg-white hover:bg-blue-50 hover:border-brand-navy transition-all cursor-pointer">
+          <div className="bg-blue-50 p-4 rounded-full mb-4">
+            <Camera className="w-8 h-8 text-brand-navy" />
+          </div>
+          <h3 className="font-bold text-brand-slate text-lg mb-1">Take Photos or Browse Files</h3>
+          <p className="text-slate-400 text-sm">Drag & drop handwritten essays here</p>
+          <p className="text-xs text-slate-300 mt-1">Auto-rotation & compression applied automatically</p>
+          <div className="flex items-center text-brand-navy font-medium text-sm mt-3 bg-blue-50 px-4 py-2 rounded-full">
+            <UploadCloud className="w-4 h-4 mr-2" /> Browse Files
+          </div>
+          <input ref={fileInputRef} type="file" multiple accept="image/*" capture="environment" className="hidden" onChange={handleFileDrop} />
         </div>
-        <h3 className="font-bold text-brand-slate text-lg mb-1">Take Photos or Browse Files</h3>
-        <p className="text-slate-400 text-sm">Drag & drop handwritten essays here</p>
-        <p className="text-xs text-slate-300 mt-1">Auto-rotation & compression applied automatically</p>
-        <div className="flex items-center text-brand-navy font-medium text-sm mt-3 bg-blue-50 px-4 py-2 rounded-full">
-          <UploadCloud className="w-4 h-4 mr-2" /> Browse Files
-        </div>
-        <input ref={fileInputRef} type="file" multiple accept="image/*" capture="environment" className="hidden" onChange={handleFileDrop} />
-      </div>
+      )}
 
       {/* Queue Status Grid */}
-      {files.length > 0 && (
+      {!isStudentSubmitMode && files.length > 0 && (
         <div>
           <h3 className="font-bold text-slate-700 mb-3 text-sm uppercase tracking-wider flex items-center gap-2">
             Scanned Papers ({files.length})

@@ -14,6 +14,7 @@ import Settings from './pages/teacher/Settings';
 import ManageSections from './pages/teacher/ManageSections';
 import Gradebook from './pages/teacher/Gradebook';
 import Analytics from './pages/teacher/Analytics';
+import RubricManager from './pages/teacher/RubricManager';
 
 // Student Pages
 import StudentDashboard from './pages/student/Dashboard';
@@ -40,6 +41,7 @@ function App() {
           <Route path="sections" element={<ManageSections />} />
           <Route path="gradebook" element={<Gradebook />} />
           <Route path="analytics" element={<Analytics />} />
+          <Route path="rubrics" element={<RubricManager />} />
           <Route path="settings" element={<Settings />} />
         </Route>
 

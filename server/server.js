@@ -255,6 +255,23 @@ app.post('/api/teacher/activities', (req, res, next) => {
   }
 });
 
+// Update activity details (deadline, instructions)
+app.put('/api/teacher/activities/:activityId', async (req, res) => {
+  try {
+    const { deadline, instructions } = req.body;
+    const updated = await prisma.activity.update({
+      where: { id: req.params.activityId },
+      data: {
+        deadline: deadline ? String(deadline) : null,
+        instructions: instructions ? String(instructions) : null
+      }
+    });
+    res.json({ success: true, activity: updated });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
 // AI Rubric Generation
 app.post('/api/teacher/generate-rubric', async (req, res) => {
   try {
@@ -379,8 +396,15 @@ app.post('/api/teacher/upload', upload.single('image'), async (req, res) => {
       }
     }
 
-    // 4) Build the prompt — includes no-text detection
-    const prompt = `You are an expert essay grader for Philippine public schools (DepEd K-12 curriculum).
+    // 4) Build the prompt — includes no-text detection + tutor persona
+    // Get grade level from activity context for age-appropriate feedback
+    let gradeLevelForPrompt = 'Grade 6';
+    if (activityId && activityId !== 'mock-activity-id') {
+      const actForLevel = await prisma.activity.findUnique({ where: { id: activityId }, include: { class: { select: { gradeLevel: true } } } });
+      if (actForLevel?.class?.gradeLevel) gradeLevelForPrompt = actForLevel.class.gradeLevel;
+    }
+
+    const prompt = `You are a warm, encouraging Filipino tutor giving constructive feedback to a ${gradeLevelForPrompt} student in a Philippine public school (DepEd K-12 curriculum). Your tone should be supportive and age-appropriate — like a caring teacher who wants to help the student improve. Use simple language for Grades 1-3, and more detailed academic feedback for Grades 4-6.
 
 ${activityContext}
 ${rubricContext}${fewShotExamples}
@@ -617,10 +641,14 @@ app.put('/api/teacher/submissions/:id/grade', async (req, res) => {
 // ─────────────────────────────────────────
 app.get('/api/teacher/:teacherId/analytics', async (req, res) => {
   try {
-    const { classId } = req.query;
+    const { classId, sectionId } = req.query;
+    // Get all classes for this teacher, optionally filtered
+    const whereClause = { teacherId: req.params.teacherId };
+    if (classId) whereClause.id = classId;
+    if (sectionId) whereClause.sectionId = sectionId;
     // Get all classes for this teacher
     const classes = await prisma.class.findMany({
-      where: classId ? { id: classId, teacherId: req.params.teacherId } : { teacherId: req.params.teacherId },
+      where: whereClause,
       include: { section: { include: { students: { select: { id: true, name: true, username: true } } } } }
     });
 
@@ -683,7 +711,64 @@ app.get('/api/teacher/:teacherId/analytics', async (req, res) => {
       classAvgSkills[skill] = vals.length ? Math.round(vals.reduce((a, b) => a + b, 0) / vals.length) : 0;
     });
 
-    res.json({ success: true, warnings, studentTrends, classAvgSkills, warningCount: warnings.length });
+    // Get sections for the section picker
+    const allSections = classes.reduce((acc, c) => {
+      if (c.section && !acc.find(s => s.id === c.section.id)) {
+        acc.push({ id: c.section.id, name: c.section.name, studentCount: c.section.students?.length || 0 });
+      }
+      return acc;
+    }, []);
+
+    res.json({ success: true, warnings, studentTrends, classAvgSkills, warningCount: warnings.length, sections: allSections });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// Per-student analytics detail
+app.get('/api/teacher/student/:studentId/analytics', async (req, res) => {
+  try {
+    const student = await prisma.user.findUnique({
+      where: { id: req.params.studentId },
+      select: { id: true, name: true, username: true }
+    });
+    if (!student) return res.status(404).json({ success: false, error: 'Student not found' });
+
+    const submissions = await prisma.submission.findMany({
+      where: { studentId: student.id },
+      orderBy: { createdAt: 'asc' },
+      include: { activity: { select: { title: true, type: true, points: true, classId: true, class: { select: { name: true } } } } }
+    });
+
+    const SKILLS = ['vocabulary', 'punctuation', 'thematicFlow', 'sentenceStructure'];
+    const skillHistory = submissions
+      .filter(s => s.skillScores)
+      .map(s => {
+        try { return { ...JSON.parse(s.skillScores), activityTitle: s.activity?.title, date: s.createdAt }; }
+        catch { return null; }
+      }).filter(Boolean);
+
+    // Calculate averages
+    const avgScore = submissions.length
+      ? Math.round(submissions.reduce((sum, s) => sum + (s.hitlScore ?? s.aiScore ?? 0), 0) / submissions.length)
+      : 0;
+
+    const avgSkills = {};
+    SKILLS.forEach(skill => {
+      const vals = skillHistory.map(h => h[skill] || 0).filter(v => v > 0);
+      avgSkills[skill] = vals.length ? Math.round(vals.reduce((a, b) => a + b, 0) / vals.length) : 0;
+    });
+
+    res.json({
+      success: true, student, submissions: submissions.map(s => ({
+        id: s.id, activityTitle: s.activity?.title, activityType: s.activity?.type,
+        className: s.activity?.class?.name, points: s.activity?.points,
+        aiScore: s.aiScore, hitlScore: s.hitlScore, status: s.status,
+        imageUrl: s.imageUrl, aiFeedback: s.aiFeedback, hitlFeedback: s.hitlFeedback,
+        createdAt: s.createdAt
+      })),
+      skillHistory, avgScore, avgSkills, totalSubmissions: submissions.length
+    });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
   }

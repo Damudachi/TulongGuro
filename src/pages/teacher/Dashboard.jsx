@@ -1,9 +1,9 @@
 import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
-import { Plus, Users, FileText, BookOpen } from 'lucide-react';
+import { Plus, Users, FileText, BookOpen, Filter } from 'lucide-react';
 import { API_URL } from '../../config';
 
-const GRADE_LEVELS = ['Grade 7','Grade 8','Grade 9','Grade 10','Grade 11','Grade 12'];
+const GRADE_LEVELS = ['Grade 1','Grade 2','Grade 3','Grade 4','Grade 5','Grade 6'];
 const SUBJECTS = ['Filipino','English','Mathematics','Science','Araling Panlipunan','MAPEH','TLE','ESP','Pagsasaling-wika','Reading & Literacy'];
 const SCHOOL_YEARS = ['2024-2025','2025-2026','2026-2027'];
 
@@ -12,6 +12,7 @@ export default function TeacherDashboard() {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [sections, setSections] = useState([]);
   const [form, setForm] = useState({ name: '', gradeLevel: '', subject: '', schoolYear: '2024-2025', sectionId: '' });
+  const [filters, setFilters] = useState({ gradeLevel: '', subject: '' });
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
@@ -53,6 +54,12 @@ export default function TeacherDashboard() {
 
   if (isLoading) return <div className="flex items-center justify-center h-64 text-slate-400 animate-pulse">Loading...</div>;
 
+  const filteredClasses = classes.filter((cls) => {
+    if (filters.gradeLevel && cls.gradeLevel !== filters.gradeLevel) return false;
+    if (filters.subject && cls.subject !== filters.subject) return false;
+    return true;
+  });
+
   return (
     <div className="p-4 md:p-8 max-w-6xl mx-auto">
       <div className="flex flex-col md:flex-row md:items-center justify-between mb-8 gap-4">
@@ -65,8 +72,58 @@ export default function TeacherDashboard() {
         </Link>
       </div>
 
+      {/* Quick Access — Rubrics */}
+      <Link to="/teacher/rubrics" className="block mb-6 bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-200 rounded-xl p-4 hover:shadow-md transition-shadow group">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-lg bg-brand-navy/10 flex items-center justify-center">
+              <span className="text-lg">📋</span>
+            </div>
+            <div>
+              <p className="font-bold text-brand-slate text-sm">Set Up Your Grading Rubrics</p>
+              <p className="text-xs text-slate-500">Use DepEd-standard rubrics for consistent, standardized grading across your classes.</p>
+            </div>
+          </div>
+          <span className="text-brand-navy font-medium text-sm group-hover:underline">Go to Rubrics →</span>
+        </div>
+      </Link>
+
+      <div className="bg-white border border-slate-200 rounded-xl p-4 mb-6">
+        <div className="flex items-center gap-2 text-sm font-semibold text-brand-slate mb-3">
+          <Filter className="w-4 h-4" /> Filter
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <div>
+            <label className="block text-xs font-semibold text-slate-500 mb-1">Grade Level</label>
+            <select
+              value={filters.gradeLevel}
+              onChange={(e) => setFilters((prev) => ({ ...prev, gradeLevel: e.target.value }))}
+              className="w-full border border-slate-200 p-2 rounded-lg outline-none focus:ring-2 focus:ring-brand-navy text-sm"
+            >
+              <option value="">All grade levels</option>
+              {GRADE_LEVELS.map((g) => (
+                <option key={g}>{g}</option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="block text-xs font-semibold text-slate-500 mb-1">Subject</label>
+            <select
+              value={filters.subject}
+              onChange={(e) => setFilters((prev) => ({ ...prev, subject: e.target.value }))}
+              className="w-full border border-slate-200 p-2 rounded-lg outline-none focus:ring-2 focus:ring-brand-navy text-sm"
+            >
+              <option value="">All subjects</option>
+              {SUBJECTS.map((s) => (
+                <option key={s}>{s}</option>
+              ))}
+            </select>
+          </div>
+        </div>
+      </div>
+
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-        {classes.map((cls) => (
+        {filteredClasses.map((cls) => (
           <Link key={cls.id} to={`/teacher/class/${cls.id}`}
             className="block bg-white border border-slate-200 rounded-xl p-6 hover:shadow-md transition-shadow relative overflow-hidden group">
             <div className="absolute top-0 left-0 w-1 h-full bg-brand-navy group-hover:w-2 transition-all" />
