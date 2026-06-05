@@ -5,8 +5,7 @@ import { API_URL } from '../../config';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
 
-const TYPE_LABELS = { Activity: 'Activity', Assignment: 'Assignment', Quiz: 'Quiz' };
-const TYPES = ['Activity', 'Assignment', 'Quiz'];
+// Derive activity types from backend data so custom types (Essay, Journal, etc.) show up
 
 export default function Gradebook() {
   const [searchParams] = useSearchParams();
@@ -46,20 +45,21 @@ export default function Gradebook() {
   // Build score lookup: studentId → activityId → submission
   const scoreMap = {};
   allActivities.forEach(activity => {
-    activity.submissions.forEach(sub => {
+    (activity.submissions || []).forEach(sub => {
       if (!scoreMap[sub.studentId]) scoreMap[sub.studentId] = {};
       scoreMap[sub.studentId][activity.id] = sub;
     });
   });
 
-  // Group activities by type and compute per-student type averages
+  // Group activities by their actual type values (handles Essay, Journal, Quiz, etc.)
+  const allTypes = Array.from(new Set(allActivities.map(a => a.type || 'Activity')));
   const typeGroups = {};
-  TYPES.forEach(type => {
+  allTypes.forEach(type => {
     typeGroups[type] = allActivities.filter(a => (a.type || 'Activity') === type);
   });
 
   // Only show types that have activities
-  const activeTypes = TYPES.filter(type => typeGroups[type].length > 0);
+  const activeTypes = allTypes.filter(type => typeGroups[type].length > 0);
 
   // Compute per-student averages per type
   function getStudentTypeAvg(studentId, type) {
@@ -120,7 +120,7 @@ export default function Gradebook() {
                 </th>
                 {activeTypes.map(type => (
                   <th key={type} className="px-6 py-3 text-center font-bold text-slate-700 min-w-[140px]">
-                    <div className="text-sm">{TYPE_LABELS[type]} Avg</div>
+                    <div className="text-sm">{type} Avg</div>
                     <div className="text-[10px] text-slate-400 font-normal">{typeGroups[type].length} item{typeGroups[type].length !== 1 ? 's' : ''}</div>
                   </th>
                 ))}

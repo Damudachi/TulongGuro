@@ -79,7 +79,11 @@ app.post('/api/auth/register', async (req, res) => {
 app.post('/api/auth/login', async (req, res) => {
   try {
     const { username, password, role } = req.body;
-    const user = await prisma.user.findFirst({ where: { username, password, role } });
+    // Include related section data so clients receive up-to-date section info on login
+    const user = await prisma.user.findFirst({
+      where: { username, password, role },
+      include: { section: true }
+    });
     if (!user) return res.status(401).json({ success: false, error: 'Invalid credentials' });
     res.json({ success: true, user });
   } catch (e) {
@@ -193,7 +197,13 @@ app.get('/api/teacher/:teacherId/classes', async (req, res) => {
     where: { teacherId: req.params.teacherId },
     include: {
       section: { include: { _count: { select: { students: true } } } },
-      _count: { select: { activities: true } }
+      _count: { select: { activities: true } },
+      // Include recent activities so the teacher dashboard can show them directly
+      activities: {
+        include: { _count: { select: { submissions: true } } },
+        orderBy: { createdAt: 'desc' },
+        take: 10
+      }
     }
   });
   res.json({ success: true, classes });

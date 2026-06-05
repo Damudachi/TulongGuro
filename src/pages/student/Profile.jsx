@@ -35,7 +35,7 @@ export default function StudentProfile() {
         </div>
         <div>
           <h2 className="text-2xl font-bold">{student.name || 'Student'}</h2>
-          <p className="text-green-100 text-sm">{student.section?.name || data?.student?.section?.name || '—'}</p>
+          <p className="text-green-100 text-sm">{student.section?.name || '—'}</p>
           <div className="flex items-center gap-1 mt-2 text-yellow-300 text-sm font-bold">
             <Star className="w-4 h-4 fill-yellow-300" /> {stars} Stars
           </div>
@@ -62,7 +62,7 @@ export default function StudentProfile() {
           <div className="bg-amber-50 p-3 rounded-xl"><School className="w-5 h-5 text-brand-amber" /></div>
           <div>
             <p className="text-xs text-slate-400 font-medium uppercase tracking-wider">Section</p>
-            <p className="font-bold text-brand-slate">{data?.student?.section?.name || '—'}</p>
+            <p className="font-bold text-brand-slate">{student.section?.name || '—'}</p>
           </div>
         </div>
       </div>
