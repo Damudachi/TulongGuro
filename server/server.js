@@ -282,44 +282,7 @@ app.put('/api/teacher/activities/:activityId', async (req, res) => {
   }
 });
 
-// AI Rubric Generation
-app.post('/api/teacher/generate-rubric', async (req, res) => {
-  try {
-    const { instructions, activityType, points } = req.body;
-    const prompt = `You are an educational rubric designer for Philippine schools (DepEd standards). Create a grading rubric for a ${activityType || 'essay'} activity worth ${points || 100} points.
-
-Activity instructions: "${instructions || 'General essay activity'}"
-
-Respond with JSON ONLY: {"criteria":[{"name":"string","description":"string","points":number}]}
-Create 3-5 criteria that sum to ${points || 100} points total. Make criteria relevant to the instructions.`;
-
-    let criteria = [
-      { name: 'Content & Ideas', description: 'Depth and relevance of ideas presented', points: 40 },
-      { name: 'Organization', description: 'Logical flow and structure of the response', points: 30 },
-      { name: 'Language & Grammar', description: 'Correct grammar, punctuation, and vocabulary', points: 30 }
-    ];
-
-    try {
-      const result = await model.generateContent(prompt);
-      const text = result.response.text().replace(/```json/g, '').replace(/```/g, '').trim();
-      const parsed = JSON.parse(text);
-      criteria = parsed.criteria;
-    } catch (e) {
-      console.log('⚠ Primary rubric gen failed, trying lite:', e.message?.slice(0, 80));
-      try {
-        const result = await modelLite.generateContent(prompt);
-        const text = result.response.text().replace(/```json/g, '').replace(/```/g, '').trim();
-        const parsed = JSON.parse(text);
-        criteria = parsed.criteria;
-      } catch (e2) {
-        console.log('⚠ Both rubric gen models failed:', e2.message?.slice(0, 80));
-      }
-    }
-    res.json({ success: true, criteria });
-  } catch (e) {
-    res.status(500).json({ success: false, error: e.message });
-  }
-});
+// Rubric generation removed — teachers must create rubrics manually or upload files.
 
 app.get('/api/activities/:activityId/submissions', async (req, res) => {
   const submissions = await prisma.submission.findMany({

@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
-import { Link, useSearchParams } from 'react-router-dom';
-import { BookOpen, ChevronDown, Users, BarChart2 } from 'lucide-react';
+import { Link, useSearchParams, useNavigate } from 'react-router-dom';
+import { Users, BarChart2, Plus, Search } from 'lucide-react';
 import { API_URL } from '../../config';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
@@ -13,7 +13,10 @@ export default function Gradebook() {
   const [data, setData] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
   const [selectedClassId, setSelectedClassId] = useState(classIdParam);
+  const [teacherClasses, setTeacherClasses] = useState([]); // classes list for section/class picker
+  const [selectedSectionId, setSelectedSectionId] = useState('');
   const [search, setSearch] = useState('');
+  const navigate = useNavigate();
 
   useEffect(() => {
     if (classIdParam) setSelectedClassId(classIdParam);
@@ -22,18 +25,35 @@ export default function Gradebook() {
   useEffect(() => {
     const user = JSON.parse(localStorage.getItem('user') || '{}');
     if (!user.id) return setIsLoading(false);
-    const url = selectedClassId
-      ? `${API_URL}/api/teacher/${user.id}/gradebook?classId=${selectedClassId}`
-      : `${API_URL}/api/teacher/${user.id}/gradebook`;
-    fetch(url).then(r => r.json())
-      .then(d => { if (d.success) setData(d); })
-      .finally(() => setIsLoading(false));
+    // Fetch teacher-level classes for section & class selectors
+    fetch(`${API_URL}/api/teacher/${user.id}/classes`).then(r => r.json()).then(d => { if (d.success) setTeacherClasses(d.classes || []); }).catch(() => {});
+    // Only fetch gradebook data when a specific class is selected
+    if (selectedClassId) {
+      const url = `${API_URL}/api/teacher/${user.id}/gradebook?classId=${selectedClassId}`;
+      setIsLoading(true);
+      fetch(url).then(r => r.json())
+        .then(d => { if (d.success) setData(d); })
+        .finally(() => setIsLoading(false));
+    } else {
+      // Clear gradebook view until a class is chosen
+      setData(null);
+      setIsLoading(false);
+    }
   }, [selectedClassId]);
 
   if (isLoading) return <div className="flex items-center justify-center h-64 text-slate-400 animate-pulse">Loading gradebook...</div>;
 
   const allActivities = data?.activities || [];
   const classes = data?.classes || [];
+
+  // Derive section list from teacherClasses
+  const sections = Array.from(new Map((teacherClasses || []).map(c => [c.section?.id, c.section])).values()).filter(Boolean);
+  const classesInSection = selectedSectionId ? (teacherClasses || []).filter(c => c.sectionId === selectedSectionId) : teacherClasses;
+  const filteredSections = sections.filter(s => {
+    if (!search) return true;
+    const q = search.toLowerCase();
+    return (s.name || '').toLowerCase().includes(q) || (s._count?.students || (s.students || []).length || 0).toString() === q;
+  });
 
   const relevantClasses = selectedClassId ? classes.filter(c => c.id === selectedClassId) : classes;
   const allStudents = relevantClasses.flatMap(c => c.section?.students || []);
@@ -89,26 +109,70 @@ export default function Gradebook() {
           </h1>
           <p className="text-slate-500 text-sm">Student averages grouped by Activity, Assignment, and Quiz</p>
         </div>
-        <div className="flex gap-3 flex-wrap">
-          <div className="relative">
-            <select value={selectedClassId} onChange={e => setSelectedClassId(e.target.value)}
-              className="appearance-none bg-white border border-slate-200 text-slate-700 py-2 pl-4 pr-8 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand-navy">
-              <option value="">All Classes</option>
-              {classes.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-            </select>
-            <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 pointer-events-none" />
-          </div>
-          <input value={search} onChange={e => setSearch(e.target.value)}
-            placeholder="Search student..."
-            className="border border-slate-200 px-4 py-2 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand-navy w-48" />
-        </div>
+        {/* top area intentionally left minimal; sections render inside main prompt when no class selected */}
       </div>
 
-      {activeTypes.length === 0 ? (
+      {!selectedClassId ? (
+        <div className="max-w-6xl mx-auto p-8 border-2 border-dashed border-slate-200 rounded-2xl text-slate-400">
+          <div className="flex items-start justify-between mb-6">
+            <div className="flex items-center gap-2">
+              <input value={search} onChange={e => setSearch(e.target.value)}
+                placeholder="Search sections..."
+                onKeyDown={(e) => { if (e.key === 'Enter') e.preventDefault(); }}
+                className="border border-slate-200 px-4 py-2 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand-navy w-80" />
+              <button onClick={() => { /* no-op: filtering is live */ }} className="px-3 py-2 bg-slate-100 rounded-lg text-slate-700 hover:bg-slate-200">
+                <Search className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 justify-center">
+            {filteredSections.length === 0 && (
+              <div className="text-center text-slate-400 py-6">No sections available</div>
+            )}
+
+            {filteredSections.map(s => {
+              const sel = s.id === selectedSectionId;
+              return (
+                <div key={s.id} className={cn('block bg-white border border-slate-200 rounded-xl p-6 hover:shadow-md transition-shadow relative overflow-hidden group min-h-[160px]', sel ? 'ring-2 ring-brand-navy/30' : '')}>
+                      <button onClick={() => { navigate(`/teacher/gradebook/section/${s.id}`); }} className="w-full text-left">
+                    <div className="mb-2 flex items-center justify-between">
+                      <div>
+                        <h3 className="font-bold text-lg text-brand-slate">{s.name}</h3>
+                        <span className="text-xs text-slate-500">{s._count?.students || (s.students || []).length} students</span>
+                      </div>
+                      <div className="text-sm text-slate-400">Section</div>
+                    </div>
+                  </button>
+
+                  {sel && (
+                    <div className="mt-3 flex gap-2 flex-wrap">
+                      {classesInSection.length === 0 && <div className="text-sm text-slate-400">No classes in this section</div>}
+                      {classesInSection.map(c => (
+                        <button key={c.id} onClick={() => setSelectedClassId(c.id)}
+                          className={cn('px-3 py-2 rounded-lg border text-sm', c.id === selectedClassId ? 'bg-brand-navy text-white border-brand-navy' : 'bg-white border-slate-200 text-slate-700')}
+                        >
+                          {c.name}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+
+            <div className="border-2 border-dashed border-slate-300 rounded-xl p-6 flex flex-col items-center justify-center text-slate-500 hover:text-brand-navy hover:border-brand-navy hover:bg-blue-50 transition-colors min-h-[160px]">
+              <Plus className="w-8 h-8 mb-2" />
+              <span className="font-medium">Add Block Section</span>
+            </div>
+          </div>
+
+          
+        </div>
+      ) : activeTypes.length === 0 ? (
         <div className="text-center py-20 border-2 border-dashed border-slate-200 rounded-2xl text-slate-400">
-          <BookOpen className="w-12 h-12 mx-auto mb-3 opacity-30" />
-          <p className="font-medium">No activities yet</p>
-          <p className="text-sm">Create activities in your classes to see grades here</p>
+          <p className="font-medium">No activities yet for this class</p>
+          <p className="text-sm">Create activities in this class to see grades here</p>
         </div>
       ) : (
         <div className="overflow-x-auto rounded-2xl border border-slate-200 shadow-sm">
@@ -120,7 +184,7 @@ export default function Gradebook() {
                 </th>
                 {activeTypes.map(type => (
                   <th key={type} className="px-6 py-3 text-center font-bold text-slate-700 min-w-[140px]">
-                    <div className="text-sm">{type} Avg</div>
+                    <div className="text-sm">{type}</div>
                     <div className="text-[10px] text-slate-400 font-normal">{typeGroups[type].length} item{typeGroups[type].length !== 1 ? 's' : ''}</div>
                   </th>
                 ))}

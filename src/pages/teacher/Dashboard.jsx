@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import { Plus, Users, FileText, BookOpen, Filter } from 'lucide-react';
 import { API_URL } from '../../config';
 
-const GRADE_LEVELS = ['Grade 1','Grade 2','Grade 3','Grade 4','Grade 5','Grade 6'];
+const GRADE_LEVELS = ['Grade 1','Grade 2','Grade 3','Grade 4','Grade 5','Grade 6','Grade 7','Grade 8','Grade 9','Grade 10'];
 const SUBJECTS = ['Filipino','English','Mathematics','Science','Araling Panlipunan','MAPEH','TLE','ESP','Pagsasaling-wika','Reading & Literacy'];
 const SCHOOL_YEARS = ['2024-2025','2025-2026','2026-2027'];
 
