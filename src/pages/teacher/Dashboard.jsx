@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import { Plus, Users, FileText, BookOpen, Filter } from 'lucide-react';
 import { API_URL } from '../../config';
 
-const GRADE_LEVELS = ['Grade 1','Grade 2','Grade 3','Grade 4','Grade 5','Grade 6'];
+const GRADE_LEVELS = ['Grade 1','Grade 2','Grade 3','Grade 4','Grade 5','Grade 6','Grade 7','Grade 8','Grade 9','Grade 10'];
 const SUBJECTS = ['Filipino','English','Mathematics','Science','Araling Panlipunan','MAPEH','TLE','ESP','Pagsasaling-wika','Reading & Literacy'];
 const SCHOOL_YEARS = ['2024-2025','2025-2026','2026-2027'];
 
@@ -150,6 +150,20 @@ export default function TeacherDashboard() {
                 <span className="bg-slate-100 text-slate-500 text-xs font-bold px-2 py-1 rounded-full">No activities</span>
               )}
             </div>
+            {/* Activities list (recent) */}
+            {cls.activities && cls.activities.length > 0 && (
+              <div className="mt-3 text-sm text-slate-600">
+                <div className="text-xs text-slate-400 mb-1">Recent activities</div>
+                <ul className="space-y-1">
+                  {cls.activities.map(a => (
+                    <li key={a.id} className="flex items-center justify-between">
+                      <span className="truncate">{a.title} <span className="text-[11px] text-slate-400">• {a.type}</span></span>
+                      <span className="text-[11px] text-slate-400">{a._count?.submissions || 0}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
           </Link>
         ))}
 

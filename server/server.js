@@ -79,7 +79,11 @@ app.post('/api/auth/register', async (req, res) => {
 app.post('/api/auth/login', async (req, res) => {
   try {
     const { username, password, role } = req.body;
-    const user = await prisma.user.findFirst({ where: { username, password, role } });
+    // Include related section data so clients receive up-to-date section info on login
+    const user = await prisma.user.findFirst({
+      where: { username, password, role },
+      include: { section: true }
+    });
     if (!user) return res.status(401).json({ success: false, error: 'Invalid credentials' });
     res.json({ success: true, user });
   } catch (e) {
@@ -193,7 +197,13 @@ app.get('/api/teacher/:teacherId/classes', async (req, res) => {
     where: { teacherId: req.params.teacherId },
     include: {
       section: { include: { _count: { select: { students: true } } } },
-      _count: { select: { activities: true } }
+      _count: { select: { activities: true } },
+      // Include recent activities so the teacher dashboard can show them directly
+      activities: {
+        include: { _count: { select: { submissions: true } } },
+        orderBy: { createdAt: 'desc' },
+        take: 10
+      }
     }
   });
   res.json({ success: true, classes });
@@ -272,44 +282,7 @@ app.put('/api/teacher/activities/:activityId', async (req, res) => {
   }
 });
 
-// AI Rubric Generation
-app.post('/api/teacher/generate-rubric', async (req, res) => {
-  try {
-    const { instructions, activityType, points } = req.body;
-    const prompt = `You are an educational rubric designer for Philippine schools (DepEd standards). Create a grading rubric for a ${activityType || 'essay'} activity worth ${points || 100} points.
-
-Activity instructions: "${instructions || 'General essay activity'}"
-
-Respond with JSON ONLY: {"criteria":[{"name":"string","description":"string","points":number}]}
-Create 3-5 criteria that sum to ${points || 100} points total. Make criteria relevant to the instructions.`;
-
-    let criteria = [
-      { name: 'Content & Ideas', description: 'Depth and relevance of ideas presented', points: 40 },
-      { name: 'Organization', description: 'Logical flow and structure of the response', points: 30 },
-      { name: 'Language & Grammar', description: 'Correct grammar, punctuation, and vocabulary', points: 30 }
-    ];
-
-    try {
-      const result = await model.generateContent(prompt);
-      const text = result.response.text().replace(/```json/g, '').replace(/```/g, '').trim();
-      const parsed = JSON.parse(text);
-      criteria = parsed.criteria;
-    } catch (e) {
-      console.log('⚠ Primary rubric gen failed, trying lite:', e.message?.slice(0, 80));
-      try {
-        const result = await modelLite.generateContent(prompt);
-        const text = result.response.text().replace(/```json/g, '').replace(/```/g, '').trim();
-        const parsed = JSON.parse(text);
-        criteria = parsed.criteria;
-      } catch (e2) {
-        console.log('⚠ Both rubric gen models failed:', e2.message?.slice(0, 80));
-      }
-    }
-    res.json({ success: true, criteria });
-  } catch (e) {
-    res.status(500).json({ success: false, error: e.message });
-  }
-});
+// Rubric generation removed — teachers must create rubrics manually or upload files.
 
 app.get('/api/activities/:activityId/submissions', async (req, res) => {
   const submissions = await prisma.submission.findMany({
@@ -793,108 +766,7 @@ app.get('/api/student/:studentId/dashboard', async (req, res) => {
       : 0;
     const stars = submissions.filter(s => (s.hitlScore || s.aiScore || 0) >= 90).length * 3
       + submissions.filter(s => { const sc = s.hitlScore || s.aiScore || 0; return sc >= 75 && sc < 90; }).length;
-    // Parse skill scores from latest submissions
-    const SKILLS = ['vocabulary', 'punctuation', 'thematicFlow', 'sentenceStructure'];
-    const skillHistory = submissions
-      .filter(s => s.skillScores)
-      .map(s => { try { return JSON.parse(s.skillScores); } catch { return null; } })
-      .filter(Boolean);
-    const latestSkills = skillHistory.length > 0 ? skillHistory[0] : {};
-    const avgSkills = {};
-    SKILLS.forEach(skill => {
-      const vals = skillHistory.map(h => h[skill] || 0).filter(v => v > 0);
-      avgSkills[skill] = vals.length ? Math.round(vals.reduce((a, b) => a + b, 0) / vals.length) : 0;
-    });
-
-    // Get upcoming deadlines (all activities from classes the student is enrolled in)
-    let upcomingDeadlines = [];
-    if (student?.sectionId) {
-      const classes = await prisma.class.findMany({
-        where: { sectionId: student.sectionId },
-        include: {
-          activities: {
-            where: { deadline: { gte: new Date() } },
-            orderBy: { deadline: 'asc' },
-            take: 10
-          }
-        }
-      });
-      upcomingDeadlines = classes.flatMap(c =>
-        c.activities.map(a => ({ ...a, className: c.name, subject: c.subject }))
-      ).sort((a, b) => new Date(a.deadline) - new Date(b.deadline)).slice(0, 8);
-    }
-
-    // Latest reading strategy
-    const latestStrategy = submissions.find(s => s.readingStrategy)?.readingStrategy || null;
-
-    res.json({ success: true, student, submissions, avgGrade, stars, latestSkills, avgSkills, upcomingDeadlines, latestStrategy });
-  } catch (e) {
-    res.status(500).json({ success: false, error: e.message });
-  }
-});
-
-// Student subjects — all classes with activities, grades, and feedback
-app.get('/api/student/:studentId/subjects', async (req, res) => {
-  try {
-    const student = await prisma.user.findUnique({
-      where: { id: req.params.studentId },
-      include: { section: true }
-    });
-    if (!student?.sectionId) return res.json({ success: true, subjects: [] });
-
-    const classes = await prisma.class.findMany({
-      where: { sectionId: student.sectionId },
-      include: {
-        activities: {
-          orderBy: { createdAt: 'desc' },
-          include: {
-            submissions: {
-              where: { studentId: req.params.studentId },
-              select: {
-                id: true, aiScore: true, hitlScore: true, status: true,
-                aiFeedback: true, hitlFeedback: true, readingStrategy: true,
-                skillScores: true, createdAt: true, updatedAt: true
-              }
-            }
-          }
-        },
-        teacher: { select: { name: true } }
-      }
-    });
-
-    const subjects = classes.map(cls => {
-      const activities = cls.activities.map(a => {
-        const sub = a.submissions?.[0] || null;
-        return {
-          id: a.id, title: a.title, type: a.type, points: a.points,
-          deadline: a.deadline, instructions: a.instructions,
-          createdAt: a.createdAt,
-          submission: sub ? {
-            id: sub.id, score: sub.hitlScore ?? sub.aiScore ?? null,
-            status: sub.status,
-            feedback: sub.hitlFeedback || sub.aiFeedback || '',
-            readingStrategy: sub.readingStrategy,
-            skillScores: sub.skillScores ? JSON.parse(sub.skillScores) : null,
-            gradedAt: sub.updatedAt
-          } : null
-        };
-      });
-
-      const gradedActivities = activities.filter(a => a.submission?.status === 'GRADED');
-      const overallGrade = gradedActivities.length
-        ? Math.round(gradedActivities.reduce((sum, a) => sum + (a.submission.score || 0), 0) / gradedActivities.length)
-        : null;
-
-      return {
-        id: cls.id, name: cls.name, subject: cls.subject,
-        gradeLevel: cls.gradeLevel, schoolYear: cls.schoolYear,
-        teacherName: cls.teacher?.name || 'Teacher',
-        activities, activityCount: activities.length,
-        gradedCount: gradedActivities.length, overallGrade
-      };
-    });
-
-    res.json({ success: true, subjects });
+    res.json({ success: true, student, submissions, avgGrade, stars });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
   }

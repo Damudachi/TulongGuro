@@ -43,21 +43,43 @@ function SparkTrend({ values }) {
 
 export default function Analytics() {
   const [data, setData] = useState(null);
+  const [sectionsList, setSectionsList] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
   const [expanded, setExpanded] = useState({});
   const [selectedSectionId, setSelectedSectionId] = useState(null);
+  const [showSelector, setShowSelector] = useState(true);
   const [selectedStudent, setSelectedStudent] = useState(null);
   const [studentData, setStudentData] = useState(null);
   const [loadingStudent, setLoadingStudent] = useState(false);
 
+  // Load sections list on mount and initial analytics only after a selection
   useEffect(() => {
     const user = JSON.parse(localStorage.getItem('user') || '{}');
     if (!user.id) return setIsLoading(false);
+
+    // fetch available sections for the teacher
+    fetch(`${API_URL}/api/teacher/${user.id}/sections`)
+      .then(r => r.json())
+      .then(d => {
+        if (d.success) setSectionsList(d.sections || []);
+      })
+      .catch(() => {})
+      .finally(() => {
+        // keep loading false here; analytics fetch will show its own loader
+        setIsLoading(false);
+      });
+  }, []);
+
+  // Fetch analytics whenever a section is selected (or All). Always load overall metrics
+  useEffect(() => {
+    const user = JSON.parse(localStorage.getItem('user') || '{}');
+    if (!user.id) return;
+    setIsLoading(true);
     const url = selectedSectionId
       ? `${API_URL}/api/teacher/${user.id}/analytics?sectionId=${selectedSectionId}`
       : `${API_URL}/api/teacher/${user.id}/analytics`;
     fetch(url).then(r => r.json())
-      .then(d => { if (d.success) setData(d); })
+      .then(d => { if (d.success) setData(d); else setData(null); })
       .finally(() => setIsLoading(false));
   }, [selectedSectionId]);
 
@@ -78,14 +100,15 @@ export default function Analytics() {
     </div>
   );
 
-  if (!data) return (
+  // If there's no analytics data yet, show the section selector first (if enabled).
+  if (!data && !showSelector) return (
     <div className="p-8 text-center text-slate-500">
       <BarChart2 className="w-10 h-10 mx-auto mb-3 text-slate-300" />
       <p>No analytics data available yet. Grade more submissions to see trends.</p>
     </div>
   );
 
-  const { warnings, studentTrends, classAvgSkills, warningCount, sections } = data;
+  const { warnings = [], studentTrends = [], classAvgSkills = {}, warningCount = 0, sections = [] } = data || {};
 
   // Student Detail View
   if (selectedStudent) {
@@ -180,29 +203,44 @@ export default function Analytics() {
 
   return (
     <div className="p-4 md:p-8 max-w-6xl mx-auto space-y-8">
-      <div>
-        <h1 className="text-2xl font-bold text-brand-slate">Predictive Analytics</h1>
-        <p className="text-slate-500 text-sm mt-1">Early warning system — tracks skill trends across submissions</p>
+      <div className="flex items-start justify-between">
+        <div className="flex items-center gap-4">
+          {!showSelector && (
+            <button aria-label="Back to section chooser" onClick={() => { setShowSelector(true); setSelectedSectionId(null); }}
+              className="w-10 h-10 rounded-full bg-white border border-slate-200 text-brand-navy flex items-center justify-center shadow-sm hover:bg-brand-navy/5">
+              <ArrowLeft className="w-4 h-4" />
+            </button>
+          )}
+          <div>
+            <h1 className="text-2xl font-bold text-brand-slate">Predictive Analytics</h1>
+            <p className="text-slate-500 text-sm mt-1">Early warning system — tracks skill trends across submissions</p>
+          </div>
+        </div>
       </div>
 
-      {/* Section Picker */}
-      {sections && sections.length > 0 && (
-        <div>
-          <h2 className="text-sm font-bold text-slate-500 uppercase tracking-wider mb-3">Filter by Section</h2>
-          <div className="flex flex-wrap gap-2">
-            <button onClick={() => setSelectedSectionId(null)}
-              className={`px-4 py-2 rounded-lg text-sm font-medium border transition-colors ${!selectedSectionId ? 'bg-brand-navy text-white border-brand-navy' : 'bg-white text-slate-600 border-slate-200 hover:border-brand-navy'}`}>
-              All Sections
+      {/* Initial Section Choices Panel */}
+      {showSelector && (
+        <div className="bg-white border border-slate-200 rounded-xl p-6">
+          <h2 className="text-lg font-bold text-brand-slate mb-2">Choose a Section</h2>
+          <p className="text-sm text-slate-500 mb-4">Select which section's analytics you want to view.</p>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <button onClick={() => { setSelectedSectionId(null); setShowSelector(false); }}
+              className="text-left p-4 rounded-lg border border-slate-200 hover:border-brand-navy transition-colors bg-white">
+              <div className="font-bold">All Sections</div>
+              <div className="text-xs text-slate-400">View analytics across all sections</div>
             </button>
-            {sections.map(sec => (
-              <button key={sec.id} onClick={() => setSelectedSectionId(sec.id)}
-                className={`px-4 py-2 rounded-lg text-sm font-medium border transition-colors ${selectedSectionId === sec.id ? 'bg-brand-navy text-white border-brand-navy' : 'bg-white text-slate-600 border-slate-200 hover:border-brand-navy'}`}>
-                {sec.name} <span className="text-xs opacity-75">({sec.studentCount})</span>
+            {sectionsList.map(sec => (
+              <button key={sec.id} onClick={() => { setSelectedSectionId(sec.id); setShowSelector(false); }}
+                className="text-left p-4 rounded-lg border border-slate-200 hover:border-brand-navy transition-colors bg-white">
+                <div className="font-bold">{sec.name}</div>
+                <div className="text-xs text-slate-400">{sec._count?.students ?? sec.studentCount ?? 0} students</div>
               </button>
             ))}
           </div>
         </div>
       )}
+
+      {/* Section filtering removed — section choices handled by the chooser above */}
 
       {/* Summary Cards */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
@@ -224,8 +262,8 @@ export default function Analytics() {
         ))}
       </div>
 
-      {/* Warning Cards */}
-      {warnings.length > 0 && (
+      {/* Warning Cards (only for a specific section) */}
+      {selectedSectionId && warnings.length > 0 && (
         <div>
           <h2 className="text-base font-bold text-brand-slate mb-3 flex items-center gap-2">
             <AlertTriangle className="w-5 h-5 text-red-500" /> Students Needing Intervention
@@ -289,8 +327,8 @@ export default function Analytics() {
         </div>
       </div>
 
-      {/* Student List — Clickable */}
-      {studentTrends.length > 0 && (
+      {/* Student List — Clickable (only for a specific section) */}
+      {selectedSectionId && studentTrends.length > 0 && (
         <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
           <div className="p-4 border-b border-slate-100">
             <h2 className="text-base font-bold text-brand-slate">Students</h2>
