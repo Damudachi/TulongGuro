@@ -255,6 +255,23 @@ app.post('/api/teacher/activities', (req, res, next) => {
   }
 });
 
+// Update activity details (deadline, instructions)
+app.put('/api/teacher/activities/:activityId', async (req, res) => {
+  try {
+    const { deadline, instructions } = req.body;
+    const updated = await prisma.activity.update({
+      where: { id: req.params.activityId },
+      data: {
+        deadline: deadline ? String(deadline) : null,
+        instructions: instructions ? String(instructions) : null
+      }
+    });
+    res.json({ success: true, activity: updated });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
 // AI Rubric Generation
 app.post('/api/teacher/generate-rubric', async (req, res) => {
   try {
@@ -379,8 +396,15 @@ app.post('/api/teacher/upload', upload.single('image'), async (req, res) => {
       }
     }
 
-    // 4) Build the prompt — includes no-text detection
-    const prompt = `You are an expert essay grader for Philippine public schools (DepEd K-12 curriculum).
+    // 4) Build the prompt — includes no-text detection + tutor persona
+    // Get grade level from activity context for age-appropriate feedback
+    let gradeLevelForPrompt = 'Grade 6';
+    if (activityId && activityId !== 'mock-activity-id') {
+      const actForLevel = await prisma.activity.findUnique({ where: { id: activityId }, include: { class: { select: { gradeLevel: true } } } });
+      if (actForLevel?.class?.gradeLevel) gradeLevelForPrompt = actForLevel.class.gradeLevel;
+    }
+
+    const prompt = `You are a warm, encouraging Filipino tutor giving constructive feedback to a ${gradeLevelForPrompt} student in a Philippine public school (DepEd K-12 curriculum). Your tone should be supportive and age-appropriate — like a caring teacher who wants to help the student improve. Use simple language for Grades 1-3, and more detailed academic feedback for Grades 4-6.
 
 ${activityContext}
 ${rubricContext}${fewShotExamples}
@@ -617,10 +641,14 @@ app.put('/api/teacher/submissions/:id/grade', async (req, res) => {
 // ─────────────────────────────────────────
 app.get('/api/teacher/:teacherId/analytics', async (req, res) => {
   try {
-    const { classId } = req.query;
+    const { classId, sectionId } = req.query;
+    // Get all classes for this teacher, optionally filtered
+    const whereClause = { teacherId: req.params.teacherId };
+    if (classId) whereClause.id = classId;
+    if (sectionId) whereClause.sectionId = sectionId;
     // Get all classes for this teacher
     const classes = await prisma.class.findMany({
-      where: classId ? { id: classId, teacherId: req.params.teacherId } : { teacherId: req.params.teacherId },
+      where: whereClause,
       include: { section: { include: { students: { select: { id: true, name: true, username: true } } } } }
     });
 
@@ -683,7 +711,64 @@ app.get('/api/teacher/:teacherId/analytics', async (req, res) => {
       classAvgSkills[skill] = vals.length ? Math.round(vals.reduce((a, b) => a + b, 0) / vals.length) : 0;
     });
 
-    res.json({ success: true, warnings, studentTrends, classAvgSkills, warningCount: warnings.length });
+    // Get sections for the section picker
+    const allSections = classes.reduce((acc, c) => {
+      if (c.section && !acc.find(s => s.id === c.section.id)) {
+        acc.push({ id: c.section.id, name: c.section.name, studentCount: c.section.students?.length || 0 });
+      }
+      return acc;
+    }, []);
+
+    res.json({ success: true, warnings, studentTrends, classAvgSkills, warningCount: warnings.length, sections: allSections });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// Per-student analytics detail
+app.get('/api/teacher/student/:studentId/analytics', async (req, res) => {
+  try {
+    const student = await prisma.user.findUnique({
+      where: { id: req.params.studentId },
+      select: { id: true, name: true, username: true }
+    });
+    if (!student) return res.status(404).json({ success: false, error: 'Student not found' });
+
+    const submissions = await prisma.submission.findMany({
+      where: { studentId: student.id },
+      orderBy: { createdAt: 'asc' },
+      include: { activity: { select: { title: true, type: true, points: true, classId: true, class: { select: { name: true } } } } }
+    });
+
+    const SKILLS = ['vocabulary', 'punctuation', 'thematicFlow', 'sentenceStructure'];
+    const skillHistory = submissions
+      .filter(s => s.skillScores)
+      .map(s => {
+        try { return { ...JSON.parse(s.skillScores), activityTitle: s.activity?.title, date: s.createdAt }; }
+        catch { return null; }
+      }).filter(Boolean);
+
+    // Calculate averages
+    const avgScore = submissions.length
+      ? Math.round(submissions.reduce((sum, s) => sum + (s.hitlScore ?? s.aiScore ?? 0), 0) / submissions.length)
+      : 0;
+
+    const avgSkills = {};
+    SKILLS.forEach(skill => {
+      const vals = skillHistory.map(h => h[skill] || 0).filter(v => v > 0);
+      avgSkills[skill] = vals.length ? Math.round(vals.reduce((a, b) => a + b, 0) / vals.length) : 0;
+    });
+
+    res.json({
+      success: true, student, submissions: submissions.map(s => ({
+        id: s.id, activityTitle: s.activity?.title, activityType: s.activity?.type,
+        className: s.activity?.class?.name, points: s.activity?.points,
+        aiScore: s.aiScore, hitlScore: s.hitlScore, status: s.status,
+        imageUrl: s.imageUrl, aiFeedback: s.aiFeedback, hitlFeedback: s.hitlFeedback,
+        createdAt: s.createdAt
+      })),
+      skillHistory, avgScore, avgSkills, totalSubmissions: submissions.length
+    });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
   }
@@ -708,7 +793,108 @@ app.get('/api/student/:studentId/dashboard', async (req, res) => {
       : 0;
     const stars = submissions.filter(s => (s.hitlScore || s.aiScore || 0) >= 90).length * 3
       + submissions.filter(s => { const sc = s.hitlScore || s.aiScore || 0; return sc >= 75 && sc < 90; }).length;
-    res.json({ success: true, student, submissions, avgGrade, stars });
+    // Parse skill scores from latest submissions
+    const SKILLS = ['vocabulary', 'punctuation', 'thematicFlow', 'sentenceStructure'];
+    const skillHistory = submissions
+      .filter(s => s.skillScores)
+      .map(s => { try { return JSON.parse(s.skillScores); } catch { return null; } })
+      .filter(Boolean);
+    const latestSkills = skillHistory.length > 0 ? skillHistory[0] : {};
+    const avgSkills = {};
+    SKILLS.forEach(skill => {
+      const vals = skillHistory.map(h => h[skill] || 0).filter(v => v > 0);
+      avgSkills[skill] = vals.length ? Math.round(vals.reduce((a, b) => a + b, 0) / vals.length) : 0;
+    });
+
+    // Get upcoming deadlines (all activities from classes the student is enrolled in)
+    let upcomingDeadlines = [];
+    if (student?.sectionId) {
+      const classes = await prisma.class.findMany({
+        where: { sectionId: student.sectionId },
+        include: {
+          activities: {
+            where: { deadline: { gte: new Date() } },
+            orderBy: { deadline: 'asc' },
+            take: 10
+          }
+        }
+      });
+      upcomingDeadlines = classes.flatMap(c =>
+        c.activities.map(a => ({ ...a, className: c.name, subject: c.subject }))
+      ).sort((a, b) => new Date(a.deadline) - new Date(b.deadline)).slice(0, 8);
+    }
+
+    // Latest reading strategy
+    const latestStrategy = submissions.find(s => s.readingStrategy)?.readingStrategy || null;
+
+    res.json({ success: true, student, submissions, avgGrade, stars, latestSkills, avgSkills, upcomingDeadlines, latestStrategy });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// Student subjects — all classes with activities, grades, and feedback
+app.get('/api/student/:studentId/subjects', async (req, res) => {
+  try {
+    const student = await prisma.user.findUnique({
+      where: { id: req.params.studentId },
+      include: { section: true }
+    });
+    if (!student?.sectionId) return res.json({ success: true, subjects: [] });
+
+    const classes = await prisma.class.findMany({
+      where: { sectionId: student.sectionId },
+      include: {
+        activities: {
+          orderBy: { createdAt: 'desc' },
+          include: {
+            submissions: {
+              where: { studentId: req.params.studentId },
+              select: {
+                id: true, aiScore: true, hitlScore: true, status: true,
+                aiFeedback: true, hitlFeedback: true, readingStrategy: true,
+                skillScores: true, createdAt: true, updatedAt: true
+              }
+            }
+          }
+        },
+        teacher: { select: { name: true } }
+      }
+    });
+
+    const subjects = classes.map(cls => {
+      const activities = cls.activities.map(a => {
+        const sub = a.submissions?.[0] || null;
+        return {
+          id: a.id, title: a.title, type: a.type, points: a.points,
+          deadline: a.deadline, instructions: a.instructions,
+          createdAt: a.createdAt,
+          submission: sub ? {
+            id: sub.id, score: sub.hitlScore ?? sub.aiScore ?? null,
+            status: sub.status,
+            feedback: sub.hitlFeedback || sub.aiFeedback || '',
+            readingStrategy: sub.readingStrategy,
+            skillScores: sub.skillScores ? JSON.parse(sub.skillScores) : null,
+            gradedAt: sub.updatedAt
+          } : null
+        };
+      });
+
+      const gradedActivities = activities.filter(a => a.submission?.status === 'GRADED');
+      const overallGrade = gradedActivities.length
+        ? Math.round(gradedActivities.reduce((sum, a) => sum + (a.submission.score || 0), 0) / gradedActivities.length)
+        : null;
+
+      return {
+        id: cls.id, name: cls.name, subject: cls.subject,
+        gradeLevel: cls.gradeLevel, schoolYear: cls.schoolYear,
+        teacherName: cls.teacher?.name || 'Teacher',
+        activities, activityCount: activities.length,
+        gradedCount: gradedActivities.length, overallGrade
+      };
+    });
+
+    res.json({ success: true, subjects });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
   }

@@ -20,6 +20,10 @@ export default function ClassHub() {
   const [isLoading, setIsLoading] = useState(true);
   const [showActivityForm, setShowActivityForm] = useState(false);
   const [newActivity, setNewActivity] = useState({ title: '', type: 'Essay', points: 100, instructions: '', deadline: '', submissionMode: 'TEACHER_UPLOAD' });
+  const [isEditOpen, setIsEditOpen] = useState(false);
+  const [editActivity, setEditActivity] = useState(null);
+  const [editForm, setEditForm] = useState({ deadline: '', instructions: '' });
+  const [isSavingEdit, setIsSavingEdit] = useState(false);
 
   useEffect(() => {
     fetch(`${API_URL}/api/classes/${classId}`)
@@ -40,6 +44,54 @@ export default function ClassHub() {
       setClassData(prev => ({ ...prev, activities: [data.activity, ...prev.activities] }));
       setShowActivityForm(false);
       setNewActivity({ title: '', type: 'Essay', points: 100, instructions: '', deadline: '', submissionMode: 'TEACHER_UPLOAD' });
+    }
+  };
+
+  const openEditModal = (activity) => {
+    setEditActivity(activity);
+    setEditForm({
+      deadline: activity.deadline ? String(activity.deadline).split('T')[0] : '',
+      instructions: activity.instructions || ''
+    });
+    setIsEditOpen(true);
+  };
+
+  const closeEditModal = () => {
+    setIsEditOpen(false);
+    setEditActivity(null);
+  };
+
+  const handleSaveEdit = async (e) => {
+    e.preventDefault();
+    if (!editActivity) return;
+    setIsSavingEdit(true);
+    try {
+      const res = await fetch(`${API_URL}/api/teacher/activities/${editActivity.id}`,
+        {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            deadline: editForm.deadline,
+            instructions: editForm.instructions
+          })
+        }
+      );
+      const data = await res.json();
+      if (data.success) {
+        setClassData(prev => ({
+          ...prev,
+          activities: prev.activities.map(a => a.id === editActivity.id
+            ? { ...a, deadline: data.activity.deadline, instructions: data.activity.instructions }
+            : a)
+        }));
+        closeEditModal();
+      } else {
+        alert('Failed: ' + data.error);
+      }
+    } catch (e) {
+      alert('Network error');
+    } finally {
+      setIsSavingEdit(false);
     }
   };
 
@@ -81,10 +133,6 @@ export default function ClassHub() {
               <input type="text" placeholder="Search activities..." value={search} onChange={e => setSearch(e.target.value)}
                 className="w-full pl-10 pr-4 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand-navy" />
             </div>
-            <button onClick={() => setShowActivityForm(true)}
-              className="flex items-center bg-slate-100 text-slate-700 border border-slate-200 px-4 py-2 rounded-lg text-sm font-medium hover:bg-slate-200 transition-colors">
-              <Plus className="w-4 h-4 mr-2" /> Quick Create
-            </button>
             <Link to={`/teacher/activity/new?classId=${classId}`}
               className="flex items-center bg-brand-navy text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-900 transition-colors">
               <Plus className="w-4 h-4 mr-2" /> Full Builder
@@ -100,7 +148,7 @@ export default function ClassHub() {
           )}
 
           {filteredActivities.map(activity => {
-            const subCount = activity._count?.submissions || 0;
+            const subCount = activity.submissions?.length ?? activity._count?.submissions ?? 0;
             const isStudentSubmit = activity.submissionMode === 'STUDENT_SUBMIT';
             // Show proper status: check if submissions exist and their status
             const pendingCount = activity.submissions?.filter(s => s.status === 'PENDING').length || 0;
@@ -111,7 +159,14 @@ export default function ClassHub() {
             const StatusIcon = cfg.icon;
             const isPastDeadline = activity.deadline && new Date(activity.deadline) < new Date();
             return (
-              <div key={activity.id} className="bg-white p-4 rounded-xl border border-slate-200 flex items-center justify-between hover:shadow-sm transition-shadow">
+              <div
+                key={activity.id}
+                role="button"
+                tabIndex={0}
+                onClick={() => openEditModal(activity)}
+                onKeyDown={(e) => { if (e.key === 'Enter') openEditModal(activity); }}
+                className="bg-white p-4 rounded-xl border border-slate-200 flex items-center justify-between hover:shadow-sm transition-shadow cursor-pointer"
+              >
                 <div className="flex items-start">
                   <div className={`p-3 rounded-lg mr-4 shrink-0 ${isStudentSubmit ? 'bg-green-50' : 'bg-blue-50'}`}>
                     <FileText className={`w-6 h-6 ${isStudentSubmit ? 'text-brand-green' : 'text-brand-navy'}`} />
@@ -136,16 +191,19 @@ export default function ClassHub() {
                 {isStudentSubmit ? (
                   <div className="flex flex-col gap-1 shrink-0">
                     <Link to={`/teacher/batch-upload?activityId=${activity.id}&classId=${classId}`}
+                      onClick={(e) => e.stopPropagation()}
                       className="text-xs bg-brand-navy text-white px-3 py-1.5 rounded-md font-medium hover:bg-blue-900 transition-colors flex items-center gap-1">
                       <UploadCloud className="w-3.5 h-3.5" /> Grade Papers
                     </Link>
-                    <Link to={`/teacher/gradebook?classId=${classId}`}
+                    <Link to={`/teacher/gradebook?classId=${classId}&activityId=${activity.id}`}
+                      onClick={(e) => e.stopPropagation()}
                       className="text-xs bg-slate-100 text-slate-700 px-3 py-1.5 rounded-md font-medium hover:bg-slate-200 transition-colors text-center">
                       View Grades
                     </Link>
                   </div>
                 ) : (
                   <Link to={`/teacher/batch-upload?activityId=${activity.id}&classId=${classId}`}
+                    onClick={(e) => e.stopPropagation()}
                     className="shrink-0 text-sm bg-brand-navy text-white px-3 py-1.5 rounded-md font-medium hover:bg-blue-900 transition-colors flex items-center gap-1">
                     <UploadCloud className="w-4 h-4" /> Grade
                   </Link>
@@ -234,6 +292,63 @@ export default function ClassHub() {
                 <button type="button" onClick={() => setShowActivityForm(false)}
                   className="flex-1 py-2 border border-slate-200 rounded-lg text-slate-600 font-medium hover:bg-slate-50">Cancel</button>
                 <button type="submit" className="flex-1 py-2 bg-brand-navy text-white rounded-lg font-medium hover:bg-blue-900">Create Activity</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Edit Activity Modal */}
+      {isEditOpen && editActivity && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl p-6 w-full max-w-lg shadow-xl">
+            <div className="mb-4">
+              <h2 className="text-xl font-bold text-brand-slate">Assignment Details</h2>
+              <p className="text-xs text-slate-500">Update the deadline and instructions for this activity.</p>
+            </div>
+
+            <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 mb-4">
+              <p className="font-bold text-brand-slate">{editActivity.title}</p>
+              <p className="text-xs text-slate-500">
+                {editActivity.type} • {editActivity.points} pts • {editActivity.submissionMode === 'STUDENT_SUBMIT' ? 'Student Submits' : 'Teacher Uploads'}
+              </p>
+            </div>
+
+            <form onSubmit={handleSaveEdit} className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">Deadline</label>
+                <input
+                  type="date"
+                  value={editForm.deadline}
+                  onChange={(e) => setEditForm((prev) => ({ ...prev, deadline: e.target.value }))}
+                  className="w-full border border-slate-200 p-2 rounded-lg outline-none focus:ring-2 focus:ring-brand-navy"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">Details</label>
+                <textarea
+                  rows={4}
+                  value={editForm.instructions}
+                  onChange={(e) => setEditForm((prev) => ({ ...prev, instructions: e.target.value }))}
+                  className="w-full border border-slate-200 p-2 rounded-lg outline-none focus:ring-2 focus:ring-brand-navy resize-none"
+                  placeholder="Add or update assignment details for students..."
+                />
+              </div>
+              <div className="flex gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={closeEditModal}
+                  className="flex-1 py-2 rounded-lg border border-slate-200 text-slate-600 font-medium hover:bg-slate-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={isSavingEdit}
+                  className="flex-1 py-2 rounded-lg bg-brand-navy text-white font-medium hover:bg-blue-900 disabled:opacity-70"
+                >
+                  {isSavingEdit ? 'Saving...' : 'Save Changes'}
+                </button>
               </div>
             </form>
           </div>

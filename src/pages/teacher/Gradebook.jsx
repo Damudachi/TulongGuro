@@ -1,28 +1,24 @@
 import { useState, useEffect } from 'react';
-import { Link } from 'react-router-dom';
-import { BookOpen, Filter, Download, ChevronDown, Users, BarChart2 } from 'lucide-react';
+import { Link, useSearchParams } from 'react-router-dom';
+import { BookOpen, ChevronDown, Users, BarChart2 } from 'lucide-react';
 import { API_URL } from '../../config';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
 
-function ScoreCell({ score, max }) {
-  if (score === null || score === undefined) return <td className="px-3 py-3 text-center text-slate-300 text-sm">—</td>;
-  const pct = (score / (max || 100)) * 100;
-  const color = pct >= 90 ? 'text-green-600 bg-green-50' : pct >= 75 ? 'text-amber-600 bg-amber-50' : 'text-red-600 bg-red-50';
-  return (
-    <td className="px-3 py-3 text-center">
-      <span className={cn('inline-block px-2 py-0.5 rounded-full text-xs font-bold', color)}>
-        {score}/{max || 100}
-      </span>
-    </td>
-  );
-}
+const TYPE_LABELS = { Activity: 'Activity', Assignment: 'Assignment', Quiz: 'Quiz' };
+const TYPES = ['Activity', 'Assignment', 'Quiz'];
 
 export default function Gradebook() {
+  const [searchParams] = useSearchParams();
+  const classIdParam = searchParams.get('classId') || '';
   const [data, setData] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
-  const [selectedClassId, setSelectedClassId] = useState('');
+  const [selectedClassId, setSelectedClassId] = useState(classIdParam);
   const [search, setSearch] = useState('');
+
+  useEffect(() => {
+    if (classIdParam) setSelectedClassId(classIdParam);
+  }, [classIdParam]);
 
   useEffect(() => {
     const user = JSON.parse(localStorage.getItem('user') || '{}');
@@ -30,18 +26,16 @@ export default function Gradebook() {
     const url = selectedClassId
       ? `${API_URL}/api/teacher/${user.id}/gradebook?classId=${selectedClassId}`
       : `${API_URL}/api/teacher/${user.id}/gradebook`;
-    fetch(url)
-      .then(r => r.json())
+    fetch(url).then(r => r.json())
       .then(d => { if (d.success) setData(d); })
       .finally(() => setIsLoading(false));
   }, [selectedClassId]);
 
   if (isLoading) return <div className="flex items-center justify-center h-64 text-slate-400 animate-pulse">Loading gradebook...</div>;
 
-  const activities = data?.activities || [];
+  const allActivities = data?.activities || [];
   const classes = data?.classes || [];
 
-  // Build student roster from selected class or all classes
   const relevantClasses = selectedClassId ? classes.filter(c => c.id === selectedClassId) : classes;
   const allStudents = relevantClasses.flatMap(c => c.section?.students || []);
   const uniqueStudents = [...new Map(allStudents.map(s => [s.id, s])).values()];
@@ -51,18 +45,39 @@ export default function Gradebook() {
 
   // Build score lookup: studentId → activityId → submission
   const scoreMap = {};
-  activities.forEach(activity => {
+  allActivities.forEach(activity => {
     activity.submissions.forEach(sub => {
       if (!scoreMap[sub.studentId]) scoreMap[sub.studentId] = {};
       scoreMap[sub.studentId][activity.id] = sub;
     });
   });
 
-  // Calculate class average per activity
-  const activityAverages = activities.map(a => {
-    const graded = a.submissions.filter(s => s.hitlScore !== null || s.aiScore !== null);
-    const avg = graded.length ? Math.round(graded.reduce((sum, s) => sum + (s.hitlScore ?? s.aiScore ?? 0), 0) / graded.length) : null;
-    return { ...a, avg, gradedCount: graded.length };
+  // Group activities by type and compute per-student type averages
+  const typeGroups = {};
+  TYPES.forEach(type => {
+    typeGroups[type] = allActivities.filter(a => (a.type || 'Activity') === type);
+  });
+
+  // Only show types that have activities
+  const activeTypes = TYPES.filter(type => typeGroups[type].length > 0);
+
+  // Compute per-student averages per type
+  function getStudentTypeAvg(studentId, type) {
+    const acts = typeGroups[type];
+    if (!acts.length) return null;
+    const scores = acts.map(a => {
+      const sub = scoreMap[studentId]?.[a.id];
+      return sub ? (sub.hitlScore ?? sub.aiScore ?? null) : null;
+    }).filter(s => s !== null);
+    if (!scores.length) return null;
+    return Math.round(scores.reduce((a, b) => a + b, 0) / scores.length);
+  }
+
+  // Compute type class averages
+  const typeClassAvg = {};
+  activeTypes.forEach(type => {
+    const allAvgs = uniqueStudents.map(s => getStudentTypeAvg(s.id, type)).filter(a => a !== null);
+    typeClassAvg[type] = allAvgs.length ? Math.round(allAvgs.reduce((a, b) => a + b, 0) / allAvgs.length) : null;
   });
 
   return (
@@ -72,10 +87,9 @@ export default function Gradebook() {
           <h1 className="text-2xl font-bold text-brand-slate flex items-center gap-2">
             <BarChart2 className="w-6 h-6 text-brand-navy" /> Gradebook
           </h1>
-          <p className="text-slate-500 text-sm">All student scores across activities</p>
+          <p className="text-slate-500 text-sm">Student averages grouped by Activity, Assignment, and Quiz</p>
         </div>
         <div className="flex gap-3 flex-wrap">
-          {/* Class Filter */}
           <div className="relative">
             <select value={selectedClassId} onChange={e => setSelectedClassId(e.target.value)}
               className="appearance-none bg-white border border-slate-200 text-slate-700 py-2 pl-4 pr-8 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand-navy">
@@ -84,14 +98,13 @@ export default function Gradebook() {
             </select>
             <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 pointer-events-none" />
           </div>
-          {/* Search */}
           <input value={search} onChange={e => setSearch(e.target.value)}
             placeholder="Search student..."
             className="border border-slate-200 px-4 py-2 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand-navy w-48" />
         </div>
       </div>
 
-      {activities.length === 0 ? (
+      {activeTypes.length === 0 ? (
         <div className="text-center py-20 border-2 border-dashed border-slate-200 rounded-2xl text-slate-400">
           <BookOpen className="w-12 h-12 mx-auto mb-3 opacity-30" />
           <p className="font-medium">No activities yet</p>
@@ -100,35 +113,27 @@ export default function Gradebook() {
       ) : (
         <div className="overflow-x-auto rounded-2xl border border-slate-200 shadow-sm">
           <table className="w-full bg-white text-sm">
-            {/* Header */}
             <thead>
               <tr className="bg-slate-50 border-b border-slate-200">
-                <th className="px-4 py-3 text-left font-bold text-slate-700 sticky left-0 bg-slate-50 min-w-[180px]">
+                <th className="px-4 py-3 text-left font-bold text-slate-700 sticky left-0 bg-slate-50 min-w-[200px]">
                   <div className="flex items-center gap-2"><Users className="w-4 h-4" /> Student</div>
                 </th>
-                {activityAverages.map(a => (
-                  <th key={a.id} className="px-3 py-3 text-center font-semibold text-slate-600 min-w-[120px]">
-                    <div className="text-xs truncate max-w-[110px] mx-auto" title={a.title}>{a.title}</div>
-                    <div className="text-[10px] text-slate-400 font-normal">{a.class?.name} • {a.points}pts</div>
-                    {a.avg !== null && (
-                      <div className="text-[10px] text-brand-navy font-bold mt-0.5">Avg: {a.avg}</div>
-                    )}
+                {activeTypes.map(type => (
+                  <th key={type} className="px-6 py-3 text-center font-bold text-slate-700 min-w-[140px]">
+                    <div className="text-sm">{TYPE_LABELS[type]} Avg</div>
+                    <div className="text-[10px] text-slate-400 font-normal">{typeGroups[type].length} item{typeGroups[type].length !== 1 ? 's' : ''}</div>
                   </th>
                 ))}
-                <th className="px-3 py-3 text-center font-bold text-slate-700 min-w-[80px]">Overall</th>
+                <th className="px-4 py-3 text-center font-bold text-slate-700 min-w-[100px]">Overall</th>
               </tr>
             </thead>
             <tbody>
               {filteredStudents.length === 0 ? (
-                <tr><td colSpan={activities.length + 2} className="py-12 text-center text-slate-400">No students found</td></tr>
+                <tr><td colSpan={activeTypes.length + 2} className="py-12 text-center text-slate-400">No students found</td></tr>
               ) : filteredStudents.map((student, idx) => {
-                const studentScores = scoreMap[student.id] || {};
-                const gradedScores = activityAverages
-                  .map(a => { const s = studentScores[a.id]; return s ? (s.hitlScore ?? s.aiScore ?? null) : null; })
-                  .filter(s => s !== null);
-                const overall = gradedScores.length
-                  ? Math.round(gradedScores.reduce((a, b) => a + b, 0) / gradedScores.length)
-                  : null;
+                const typeAvgs = activeTypes.map(type => getStudentTypeAvg(student.id, type));
+                const validAvgs = typeAvgs.filter(a => a !== null);
+                const overall = validAvgs.length ? Math.round(validAvgs.reduce((a, b) => a + b, 0) / validAvgs.length) : null;
                 const overallColor = overall === null ? 'text-slate-300' : overall >= 90 ? 'text-green-600 font-extrabold' : overall >= 75 ? 'text-amber-600 font-bold' : 'text-red-600 font-bold';
 
                 return (
@@ -144,44 +149,34 @@ export default function Gradebook() {
                         </div>
                       </div>
                     </td>
-                    {activityAverages.map(a => {
-                      const sub = studentScores[a.id];
-                      const score = sub ? (sub.hitlScore ?? sub.aiScore ?? null) : null;
-                      const isGraded = sub?.status === 'GRADED';
+                    {activeTypes.map((type, i) => {
+                      const avg = typeAvgs[i];
+                      if (avg === null) return <td key={type} className="px-6 py-3 text-center text-slate-300">—</td>;
+                      const color = avg >= 90 ? 'text-green-600 bg-green-50' : avg >= 75 ? 'text-amber-600 bg-amber-50' : 'text-red-600 bg-red-50';
                       return (
-                        <td key={a.id} className="px-3 py-3 text-center">
-                          {score !== null ? (
-                            <Link to={`/teacher/review/${sub.id}`}
-                              className={cn('inline-block px-2 py-0.5 rounded-full text-xs font-bold hover:opacity-75 transition-opacity cursor-pointer',
-                                isGraded ? (score >= 90 ? 'text-green-600 bg-green-50' : score >= 75 ? 'text-amber-600 bg-amber-50' : 'text-red-600 bg-red-50') : 'text-blue-600 bg-blue-50'
-                              )}>
-                              {score}/{a.points}
-                              {!isGraded && <span className="ml-1 text-[9px] opacity-70">AI</span>}
-                            </Link>
-                          ) : (
-                            <span className="text-slate-300 text-xs">—</span>
-                          )}
+                        <td key={type} className="px-6 py-3 text-center">
+                          <span className={cn('inline-block px-3 py-1 rounded-full text-xs font-bold', color)}>{avg}%</span>
                         </td>
                       );
                     })}
-                    <td className={cn('px-3 py-3 text-center text-sm', overallColor)}>
+                    <td className={cn('px-4 py-3 text-center text-sm', overallColor)}>
                       {overall !== null ? `${overall}%` : '—'}
                     </td>
                   </tr>
                 );
               })}
             </tbody>
-            {/* Footer — class averages */}
             <tfoot>
               <tr className="bg-brand-navy/5 border-t-2 border-brand-navy/10">
                 <td className="px-4 py-3 font-bold text-brand-navy text-sm sticky left-0 bg-brand-navy/5">Class Average</td>
-                {activityAverages.map(a => (
-                  <td key={a.id} className="px-3 py-3 text-center">
-                    <span className="text-xs font-bold text-brand-navy">{a.avg !== null ? `${a.avg}/${a.points}` : '—'}</span>
-                    <div className="text-[10px] text-slate-400">{a.gradedCount} graded</div>
+                {activeTypes.map(type => (
+                  <td key={type} className="px-6 py-3 text-center">
+                    <span className="text-sm font-bold text-brand-navy">
+                      {typeClassAvg[type] !== null ? `${typeClassAvg[type]}%` : '—'}
+                    </span>
                   </td>
                 ))}
-                <td className="px-3 py-3 text-center text-sm font-bold text-brand-navy">—</td>
+                <td className="px-4 py-3 text-center text-sm font-bold text-brand-navy">—</td>
               </tr>
             </tfoot>
           </table>

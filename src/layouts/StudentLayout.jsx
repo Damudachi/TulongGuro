@@ -1,5 +1,5 @@
 import { Link, Outlet, useLocation } from 'react-router-dom';
-import { Home, Star, User, LogOut, Upload } from 'lucide-react';
+import { Home, BookOpen, Star, User, LogOut } from 'lucide-react';
 import { clsx } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 
@@ -12,7 +12,7 @@ export default function StudentLayout() {
   
   const navItems = [
     { name: 'Home', path: '/student/dashboard', icon: Home },
-    { name: 'Submit', path: '/student/submit', icon: Upload },
+    { name: 'Subjects', path: '/student/subjects', icon: BookOpen },
     { name: 'Awards', path: '/student/awards', icon: Star },
     { name: 'Profile', path: '/student/profile', icon: User },
   ];

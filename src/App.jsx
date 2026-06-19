@@ -14,13 +14,14 @@ import Settings from './pages/teacher/Settings';
 import ManageSections from './pages/teacher/ManageSections';
 import Gradebook from './pages/teacher/Gradebook';
 import Analytics from './pages/teacher/Analytics';
+import RubricManager from './pages/teacher/RubricManager';
 
 // Student Pages
 import StudentDashboard from './pages/student/Dashboard';
 import OutputDetails from './pages/student/OutputDetails';
 import Awards from './pages/student/Awards';
 import Profile from './pages/student/Profile';
-import SubmitWork from './pages/student/SubmitWork';
+import Subjects from './pages/student/Subjects';
 
 function App() {
   return (
@@ -40,6 +41,7 @@ function App() {
           <Route path="sections" element={<ManageSections />} />
           <Route path="gradebook" element={<Gradebook />} />
           <Route path="analytics" element={<Analytics />} />
+          <Route path="rubrics" element={<RubricManager />} />
           <Route path="settings" element={<Settings />} />
         </Route>
 
@@ -48,9 +50,9 @@ function App() {
           <Route index element={<Navigate to="dashboard" />} />
           <Route path="dashboard" element={<StudentDashboard />} />
           <Route path="output/:outputId" element={<OutputDetails />} />
+          <Route path="subjects" element={<Subjects />} />
           <Route path="awards" element={<Awards />} />
           <Route path="profile" element={<Profile />} />
-          <Route path="submit" element={<SubmitWork />} />
         </Route>
       </Routes>
     </Router>

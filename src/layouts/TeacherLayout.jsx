@@ -1,5 +1,5 @@
 import { Link, Outlet, useLocation } from 'react-router-dom';
-import { Home, Users, Settings, LogOut, BarChart2, TrendingUp, AlertTriangle } from 'lucide-react';
+import { Home, Users, Settings, LogOut, BarChart2, TrendingUp, AlertTriangle, ClipboardList } from 'lucide-react';
 import { clsx } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 import { useState, useEffect } from 'react';
@@ -43,6 +43,7 @@ export default function TeacherLayout() {
     { name: 'Sections', path: '/teacher/sections', icon: Users },
     { name: 'Gradebook', path: '/teacher/gradebook', icon: BarChart2 },
     { name: 'Analytics', path: '/teacher/analytics', icon: TrendingUp, badge: warningCount },
+    { name: 'Rubrics', path: '/teacher/rubrics', icon: ClipboardList },
     { name: 'Settings', path: '/teacher/settings', icon: Settings },
   ];
 
