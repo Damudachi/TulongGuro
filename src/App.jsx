@@ -23,7 +23,11 @@ import StudentDashboard from './pages/student/Dashboard';
 import OutputDetails from './pages/student/OutputDetails';
 import Awards from './pages/student/Awards';
 import Profile from './pages/student/Profile';
+import SubmitWork from './pages/student/SubmitWork';
+import StudentSettings from './pages/student/Settings';
 import Subjects from './pages/student/Subjects';
+import SubjectActivities from './pages/student/SubjectActivities';
+import SubjectGradebook from './pages/student/SubjectGradebook';
 
 function App() {
   return (
@@ -57,8 +61,12 @@ function App() {
           <Route path="dashboard" element={<StudentDashboard />} />
           <Route path="output/:outputId" element={<OutputDetails />} />
           <Route path="subjects" element={<Subjects />} />
+          <Route path="subjects/activities" element={<SubjectActivities />} />
+          <Route path="subjects/gradebook" element={<SubjectGradebook />} />
           <Route path="awards" element={<Awards />} />
           <Route path="profile" element={<Profile />} />
+          <Route path="submit" element={<SubmitWork />} />
+          <Route path="settings" element={<StudentSettings />} />
         </Route>
       </Routes>
     </Router>
