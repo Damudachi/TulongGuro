@@ -58,8 +58,15 @@ async function uploadToCloud(localPath, filename) {
 }
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || 'mock');
-const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
-const modelLite = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
+const model = genAI.getGenerativeModel({
+  model: 'gemini-2.5-flash',
+  generationConfig: { responseMimeType: 'application/json' }
+});
+const modelLite = genAI.getGenerativeModel({
+  model: 'gemini-2.5-flash',
+  generationConfig: { responseMimeType: 'application/json' }
+});
+const chatModel = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
 
 // ─────────────────────────────────────────
 // AUTH
@@ -369,7 +376,7 @@ app.post('/api/teacher/upload', upload.single('image'), async (req, res) => {
       }
     }
 
-    // 4) Build the prompt — includes no-text detection + tutor persona
+    // 4) Build the prompt — includes no-text detection + pedagogical tutor persona
     // Get grade level from activity context for age-appropriate feedback
     let gradeLevelForPrompt = 'Grade 6';
     if (activityId && activityId !== 'mock-activity-id') {
@@ -377,29 +384,57 @@ app.post('/api/teacher/upload', upload.single('image'), async (req, res) => {
       if (actForLevel?.class?.gradeLevel) gradeLevelForPrompt = actForLevel.class.gradeLevel;
     }
 
-    const prompt = `You are a warm, encouraging Filipino tutor giving constructive feedback to a ${gradeLevelForPrompt} student in a Philippine public school (DepEd K-12 curriculum). Your tone should be supportive and age-appropriate — like a caring teacher who wants to help the student improve. Use simple language for Grades 1-3, and more detailed academic feedback for Grades 4-6.
+    // Determine language complexity based on grade level
+    const gradeNum = parseInt(gradeLevelForPrompt.replace(/\D/g, '')) || 6;
+    const languageGuide = gradeNum <= 3
+      ? 'Use very simple, encouraging language. Short sentences. Think of how a kind Ate/Kuya would talk to a young child.'
+      : 'Use clear academic language appropriate for upper elementary students. Be specific but not overwhelming.';
+
+    const prompt = `You are a warm, encouraging Filipino tutor ("Guro") giving constructive feedback to a ${gradeLevelForPrompt} student in a Philippine public school (DepEd K-12 curriculum).
+
+YOUR TEACHING PHILOSOPHY:
+- Always start with genuine praise — find something the student did well, no matter how small.
+- When pointing out mistakes, SHOW the student their exact words so they can see the error themselves.
+- Give bite-sized, concrete action steps — not vague advice like "improve your grammar."
+- ${languageGuide}
 
 ${activityContext}
 ${rubricContext}${fewShotExamples}
 
 IMPORTANT RULES:
-- First, check if the image contains readable handwritten or printed text. 
-- If the image is BLANK, contains only drawings/art with no text, is too blurry to read, or has NO readable written content, you MUST set score to 0 and explain the issue in the feedback field (e.g. "No readable text was found in this image. The photo appears to be blank/a drawing/too blurry. Please re-upload a clearer photo of the student's written work.").
-- If you CAN read text, grade it normally against the rubric.
+- First, check if the image contains readable handwritten or printed text.
+- If the image is BLANK, contains only drawings/art with no text, is too blurry to read, or has NO readable written content, you MUST set score to 0, set noTextDetected to true, provide a short explanation in strengths, and leave areasForGrowth and actionableSteps as empty arrays.
+- If you CAN read text, grade it normally against the rubric using the structured feedback format below.
 
 TASK: In ONE step:
-1. Grade the handwritten student essay against the rubric
-2. Identify specific writing weaknesses
-3. Generate a personalized reading intervention strategy
+1. Read and transcribe the handwritten student essay from the image.
+2. Grade it against the rubric.
+3. Provide structured, evidence-based tutoring feedback.
+4. Generate a personalized reading intervention strategy connected to the weaknesses found.
 
-Respond with JSON ONLY (no markdown, no code fences). Use this exact schema:
+You MUST respond with valid JSON matching this exact schema:
 {
   "score": <total 0-100, use 0 if no readable text>,
   "contentScore": <number>, "contentMax": <number>,
   "organizationScore": <number>, "organizationMax": <number>,
   "grammarScore": <number>, "grammarMax": <number>,
-  "feedback": "<warm, constructive, 3 sentences max>",
-  "readingStrategy": "<personalized 2-sentence reading strategy, or 'N/A' if no text found>",
+  "strengths": "<1-3 sentences about what the student did well. Be specific — reference their actual ideas or phrases.>",
+  "areasForGrowth": [
+    {
+      "studentQuote": "<Copy the EXACT sentence or phrase from the student's essay that contains the error. Must be a real quote from their writing.>",
+      "explanation": "<In simple terms, explain what's wrong and how to fix it. Be kind.>"
+    }
+  ],
+  "actionableSteps": [
+    "<A concrete, bite-sized task the student can do to improve. e.g., 'Try rewriting your second sentence using the word Because to connect your ideas.'>"
+  ],
+  "skillExplanations": {
+    "vocabulary": "<1 sentence explaining why you gave this vocabulary score>",
+    "punctuation": "<1 sentence explaining why you gave this punctuation score>",
+    "thematicFlow": "<1 sentence explaining why you gave this thematic flow score>",
+    "sentenceStructure": "<1 sentence explaining why you gave this sentence structure score>"
+  },
+  "readingStrategy": "<Personalized 2-sentence reading strategy directly connected to the weaknesses above. Or 'N/A' if no text found.>",
   "noTextDetected": <true if image has no readable text, false otherwise>,
   "skillScores": {
     "vocabulary": <0-25>,
@@ -407,7 +442,21 @@ Respond with JSON ONLY (no markdown, no code fences). Use this exact schema:
     "thematicFlow": <0-25>,
     "sentenceStructure": <0-25>
   }
-}`;
+}
+
+RULES FOR areasForGrowth:
+- Include 1-3 items. Focus on the most impactful issues.
+- studentQuote MUST be copied exactly from the student's handwriting (even if it has errors — that's the point).
+- Do NOT invent quotes. If you cannot read a specific phrase, say so honestly.
+
+RULES FOR actionableSteps:
+- Include 1-2 items maximum.
+- Each step must be something the student can do in 5 minutes or less.
+- Be specific: "Rewrite your opening sentence to include the word 'dahil'" is better than "Work on your transitions."
+
+RULES FOR skillExplanations:
+- Each explanation should reference specific evidence from the essay.
+- Keep each to 1 sentence.`;
 
     // Track AI source for transparency
     let aiSource = 'mock';  // 'gemini' | 'gemini-lite' | 'mock'
@@ -415,10 +464,30 @@ Respond with JSON ONLY (no markdown, no code fences). Use this exact schema:
 
     let aiResult = null;
 
-    async function callGemini(m, parts) {
-      const result = await m.generateContent(parts);
-      const text = result.response.text();
-      return JSON.parse(text.replace(/```json/g, '').replace(/```/g, '').trim());
+    // Robust JSON parsing with retry logic
+    async function callGemini(m, parts, retries = 2) {
+      for (let attempt = 0; attempt <= retries; attempt++) {
+        try {
+          const result = await m.generateContent(parts);
+          const text = result.response.text();
+          // Clean up common Gemini output artifacts
+          let cleaned = text
+            .replace(/```json\s*/gi, '')
+            .replace(/```\s*/g, '')
+            .replace(/^[^{]*/, '')  // Remove anything before the first {
+            .replace(/[^}]*$/, '')  // Remove anything after the last }
+            .trim();
+          return JSON.parse(cleaned);
+        } catch (parseErr) {
+          if (attempt < retries) {
+            console.log(`⚠ JSON parse attempt ${attempt + 1} failed, retrying... (${parseErr.message?.slice(0, 60)})`);
+            // Small delay before retry
+            await new Promise(r => setTimeout(r, 500 * (attempt + 1)));
+          } else {
+            throw parseErr;
+          }
+        }
+      }
     }
 
     const imgBuffer = fs.readFileSync(processedPath);
@@ -446,7 +515,10 @@ Respond with JSON ONLY (no markdown, no code fences). Use this exact schema:
           score: 0, contentScore: 0, contentMax: 40,
           organizationScore: 0, organizationMax: 30,
           grammarScore: 0, grammarMax: 30,
-          feedback: `⚠ AI grading is currently unavailable. Error: ${errMsg.slice(0, 120)}. The teacher will need to grade this manually.`,
+          strengths: `⚠ AI grading is currently unavailable. Error: ${errMsg.slice(0, 120)}. The teacher will need to grade this manually.`,
+          areasForGrowth: [],
+          actionableSteps: [],
+          skillExplanations: { vocabulary: 'N/A', punctuation: 'N/A', thematicFlow: 'N/A', sentenceStructure: 'N/A' },
           readingStrategy: 'AI was unable to analyze this submission. Manual review required.',
           noTextDetected: false,
           skillScores: { vocabulary: 0, punctuation: 0, thematicFlow: 0, sentenceStructure: 0 }
@@ -466,7 +538,7 @@ Respond with JSON ONLY (no markdown, no code fences). Use this exact schema:
 - Organization: ${aiResult.organizationScore}/${aiResult.organizationMax}
 - Grammar: ${aiResult.grammarScore}/${aiResult.grammarMax}
 - Total: ${aiResult.score}/100
-- Feedback: "${aiResult.feedback}"
+- Feedback: "${aiResult.strengths}"
 
 ${rubricContext}
 
@@ -490,6 +562,14 @@ Respond with JSON ONLY using the same schema as before.`;
       }
     }
 
+    // Serialize the structured feedback as JSON string for storage
+    const structuredFeedback = JSON.stringify({
+      strengths: aiResult.strengths || '',
+      areasForGrowth: aiResult.areasForGrowth || [],
+      actionableSteps: aiResult.actionableSteps || [],
+      skillExplanations: aiResult.skillExplanations || {}
+    });
+
     const submission = await prisma.submission.create({
       data: {
         studentId: studentId || 'mock-student-id',
@@ -497,7 +577,7 @@ Respond with JSON ONLY using the same schema as before.`;
         imageUrl: processedUrl,
         aiScore: aiResult.score,
         hitlScore: aiResult.score,
-        aiFeedback: aiResult.feedback,
+        aiFeedback: structuredFeedback,
         readingStrategy: aiResult.readingStrategy,
         rubricData: JSON.stringify({
           content: { score: aiResult.contentScore, max: aiResult.contentMax },
@@ -551,16 +631,10 @@ Teacher's instruction: ${teacherPrompt}`;
 
     let refinedFeedback = `Here is an improved version: ${currentFeedback} This student shows great potential!`;
     try {
-      const result = await model.generateContent(sys);
+      const result = await chatModel.generateContent(sys);
       refinedFeedback = result.response.text().trim();
     } catch (e) {
-      console.log('⚠ AI refine primary model failed, trying lite:', e.message?.slice(0, 80));
-      try {
-        const result = await modelLite.generateContent(sys);
-        refinedFeedback = result.response.text().trim();
-      } catch (e2) {
-        console.log('⚠ AI refine both models failed:', e2.message?.slice(0, 80));
-      }
+      console.log('⚠ AI refine failed:', e.message?.slice(0, 80));
     }
     res.json({ success: true, refinedFeedback });
   } catch (e) {
@@ -870,6 +944,117 @@ app.post('/api/student/submit', upload.single('image'), async (req, res) => {
 });
 
 // ─────────────────────────────────────────
+// STUDENT CHATBOT (AI Study Buddy)
+// ─────────────────────────────────────────
+app.post('/api/student/chat', async (req, res) => {
+  try {
+    const { studentId, message, conversationHistory = [] } = req.body;
+    if (!message?.trim()) return res.status(400).json({ success: false, error: 'Message is required' });
+
+    // Fetch student context: recent submissions, skills, feedback
+    let studentContext = '';
+    if (studentId) {
+      const student = await prisma.user.findUnique({
+        where: { id: studentId },
+        select: { name: true, section: { select: { name: true } } }
+      });
+
+      const recentSubs = await prisma.submission.findMany({
+        where: { studentId, status: 'GRADED' },
+        orderBy: { updatedAt: 'desc' },
+        take: 5,
+        include: { activity: { select: { title: true, type: true, class: { select: { name: true, gradeLevel: true } } } } }
+      });
+
+      if (student) {
+        studentContext += `\nSTUDENT PROFILE:\n- Name: ${student.name}\n- Section: ${student.section?.name || 'Unknown'}\n`;
+      }
+
+      if (recentSubs.length > 0) {
+        const gradeLevel = recentSubs[0]?.activity?.class?.gradeLevel || 'Grade 6';
+        studentContext += `- Grade Level: ${gradeLevel}\n`;
+        studentContext += `\nRECENT GRADES (most recent first):\n`;
+        for (const sub of recentSubs) {
+          const score = sub.hitlScore ?? sub.aiScore ?? 0;
+          let feedbackSummary = '';
+          try {
+            const fb = JSON.parse(sub.hitlFeedback || sub.aiFeedback || '{}');
+            feedbackSummary = fb.strengths || fb.areasForGrowth?.[0]?.explanation || '';
+          } catch {
+            feedbackSummary = (sub.hitlFeedback || sub.aiFeedback || '').slice(0, 100);
+          }
+          studentContext += `  - "${sub.activity?.title}" (${sub.activity?.class?.name}): Score ${score}/100. Feedback: "${feedbackSummary.slice(0, 120)}"\n`;
+
+          // Include skill scores if available
+          if (sub.skillScores) {
+            try {
+              const skills = JSON.parse(sub.skillScores);
+              studentContext += `    Skills: Vocabulary ${skills.vocabulary}/25, Punctuation ${skills.punctuation}/25, Thematic Flow ${skills.thematicFlow}/25, Sentence Structure ${skills.sentenceStructure}/25\n`;
+            } catch {}
+          }
+        }
+      }
+    }
+
+    // Build the conversation for Gemini
+    const systemPrompt = `You are "Study Buddy," an encouraging, localized Socratic tutor for a student in a Philippine public school. You speak warmly, like a supportive Ate or Kuya.
+
+YOUR ABSOLUTE RULES:
+1. You are STRICTLY FORBIDDEN from writing essays, answers, paragraphs, or any homework content for the student. NEVER do the student's work.
+2. If the student asks you to write something for them, kindly refuse and instead ask a guiding question.
+3. Use the Socratic method: ask leading questions to help the student discover the answer themselves.
+4. Celebrate effort and progress — even small wins.
+5. Keep responses SHORT (2-4 sentences max). Students lose attention with long messages.
+6. If the student asks about their grades or feedback, reference their ACTUAL data below — do not make up scores.
+7. You may use simple Filipino/Taglish phrases naturally (e.g., "Magaling!", "Kaya mo 'yan!") to feel more relatable.
+8. If the student seems frustrated, validate their feelings first, then gently guide them.
+
+${studentContext}
+
+Remember: You are a tutor, not a homework machine. Guide, don't give answers.`;
+
+    // Build conversation history for multi-turn chat
+    const contents = [];
+
+    // Add system instruction as the first user turn
+    contents.push({ role: 'user', parts: [{ text: systemPrompt }] });
+    contents.push({ role: 'model', parts: [{ text: "Understood! I'm Study Buddy — I'll guide and encourage, never give answers directly. How can I help you today? 😊" }] });
+
+    // Add previous conversation turns
+    for (const turn of conversationHistory.slice(-10)) { // Limit to last 10 turns
+      contents.push({
+        role: turn.role === 'user' ? 'user' : 'model',
+        parts: [{ text: turn.text }]
+      });
+    }
+
+    // Add the current message
+    contents.push({ role: 'user', parts: [{ text: message }] });
+
+    let reply = "I'm having a little trouble right now. Can you try asking again? 😊";
+    try {
+      const result = await chatModel.generateContent({ contents });
+      reply = result.response.text().trim();
+    } catch (e) {
+      console.log('⚠ Student chat AI error:', e.message?.slice(0, 100));
+      // Try with a simpler single-turn call
+      try {
+        const fallbackPrompt = `${systemPrompt}\n\nStudent says: "${message}"\n\nRespond as Study Buddy (2-4 sentences, encouraging, Socratic):`;
+        const result = await chatModel.generateContent(fallbackPrompt);
+        reply = result.response.text().trim();
+      } catch (e2) {
+        console.log('⚠ Student chat fallback also failed:', e2.message?.slice(0, 80));
+      }
+    }
+
+    res.json({ success: true, reply });
+  } catch (e) {
+    console.log('❌ Student chat error:', e.message);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// ─────────────────────────────────────────
 // DEV SEED
 // ─────────────────────────────────────────
 app.post('/api/dev/seed', async (req, res) => {
@@ -913,8 +1098,18 @@ app.post('/api/dev/seed', async (req, res) => {
         data: {
           studentId: student.id, activityId: activity.id,
           aiScore: 80 - i * 8, hitlScore: 82 - i * 8,
-          aiFeedback: `Submission ${i + 1} AI feedback.`,
-          hitlFeedback: `Submission ${i + 1} teacher feedback.`,
+          aiFeedback: JSON.stringify({
+            strengths: `Submission ${i + 1} AI feedback. You did well on this part.`,
+            areasForGrowth: [{ studentQuote: "An example mistake from the essay.", explanation: "This needs improvement." }],
+            actionableSteps: ["Review your vocabulary.", "Check your punctuation."],
+            skillExplanations: { vocabulary: "Good words.", punctuation: "Some errors.", thematicFlow: "Okay.", sentenceStructure: "Good." }
+          }),
+          hitlFeedback: JSON.stringify({
+            strengths: `Submission ${i + 1} teacher feedback. Great job!`,
+            areasForGrowth: [{ studentQuote: "An example mistake from the essay.", explanation: "This needs improvement." }],
+            actionableSteps: ["Review your vocabulary.", "Check your punctuation."],
+            skillExplanations: { vocabulary: "Good words.", punctuation: "Some errors.", thematicFlow: "Okay.", sentenceStructure: "Good." }
+          }),
           readingStrategy: 'Focus on signpost words.',
           rubricData: JSON.stringify({ content: { score: 35 - i * 3, max: 40 }, organization: { score: 25 - i * 2, max: 30 }, grammar: { score: 22 - i * 3, max: 30 } }),
           skillScores: JSON.stringify(skillSets[i]),
