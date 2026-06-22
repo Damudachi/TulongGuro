@@ -948,7 +948,7 @@ app.post('/api/student/submit', upload.single('image'), async (req, res) => {
 // ─────────────────────────────────────────
 app.post('/api/student/chat', async (req, res) => {
   try {
-    const { studentId, message, conversationHistory = [] } = req.body;
+    const { studentId, message, conversationHistory = [], context: specificContext } = req.body;
     if (!message?.trim()) return res.status(400).json({ success: false, error: 'Message is required' });
 
     // Fetch student context: recent submissions, skills, feedback
@@ -994,6 +994,10 @@ app.post('/api/student/chat', async (req, res) => {
           }
         }
       }
+    }
+
+    if (specificContext) {
+      studentContext += `\nCURRENT CONTEXT THE STUDENT IS ASKING ABOUT:\n${JSON.stringify(specificContext, null, 2)}\n`;
     }
 
     // Build the conversation for Gemini

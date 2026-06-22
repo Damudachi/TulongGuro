@@ -50,9 +50,17 @@ export default function StudentChatbot({ initialMessage }) {
 
   // Deep-link: listen for 'open-study-buddy' events from other components (e.g., OutputDetails)
   const sendMessageRef = useRef(null);
+  const contextRef = useRef(null);
+
   useEffect(() => {
     const handleDeepLink = (e) => {
       const msg = e.detail?.message;
+      const ctx = e.detail?.context;
+      
+      if (ctx) {
+        contextRef.current = ctx;
+      }
+
       if (msg) {
         setIsOpen(true);
         // Small delay to ensure drawer is rendered before sending
@@ -93,10 +101,17 @@ export default function StudentChatbot({ initialMessage }) {
           text: m.text,
         }));
 
+        const payload = {
+          studentId,
+          message: text.trim(),
+          conversationHistory,
+          context: contextRef.current // Send the specific assignment context if available
+        };
+
         const res = await fetch(`${API_URL}/api/student/chat`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ studentId, message: text.trim(), conversationHistory }),
+          body: JSON.stringify(payload),
         });
 
         const data = await res.json();
