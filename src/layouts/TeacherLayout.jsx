@@ -13,16 +13,22 @@ function cn(...inputs) {
 export default function TeacherLayout() {
   const location = useLocation();
   const [warningCount, setWarningCount] = useState(0);
+  const [totalGraded, setTotalGraded] = useState(0);
   const [queueCount, setQueueCount] = useState(0);
   const [onlineStatus, setOnlineStatus] = useState(navigator.onLine);
 
   useEffect(() => {
-    // Fetch warning count for badge
+    // Fetch warning count for badge & total graded for progressive disclosure
     const user = JSON.parse(localStorage.getItem('user') || '{}');
     if (user.id) {
       fetch(`${API_URL}/api/teacher/${user.id}/analytics`)
         .then(r => r.json())
-        .then(d => { if (d.success) setWarningCount(d.warningCount || 0); })
+        .then(d => { 
+          if (d.success) {
+            setWarningCount(d.warningCount || 0); 
+            setTotalGraded(d.totalGradedSubmissions || 0);
+          }
+        })
         .catch(() => {});
     }
     // Offline queue badge
@@ -41,8 +47,8 @@ export default function TeacherLayout() {
   const navItems = [
     { name: 'Dashboard', path: '/teacher/dashboard', icon: Home },
     { name: 'Sections', path: '/teacher/sections', icon: Users },
-    { name: 'Gradebook', path: '/teacher/gradebook', icon: BarChart2 },
-    { name: 'Analytics', path: '/teacher/analytics', icon: TrendingUp, badge: warningCount },
+    { name: 'Gradebook', path: '/teacher/gradebook', icon: BarChart2, requiresData: true },
+    { name: 'Analytics', path: '/teacher/analytics', icon: TrendingUp, badge: warningCount, requiresData: true },
     { name: 'Rubrics', path: '/teacher/rubrics', icon: ClipboardList },
     { name: 'Settings', path: '/teacher/settings', icon: Settings },
   ];
@@ -64,6 +70,9 @@ export default function TeacherLayout() {
       {/* Mobile Bottom Nav */}
       <nav className="fixed bottom-0 left-0 right-0 bg-white border-t border-slate-200 flex justify-around p-2 md:hidden z-40">
         {navItems.map((item) => {
+          const isLocked = item.requiresData && totalGraded === 0;
+          if (isLocked) return null; // Hide on mobile to save space
+          
           const isActive = location.pathname.startsWith(item.path);
           return (
             <Link key={item.name} to={item.path}
@@ -89,14 +98,18 @@ export default function TeacherLayout() {
         </div>
         <div className="flex-1 py-4">
           {navItems.map((item) => {
-            const isActive = location.pathname.startsWith(item.path);
+            const isLocked = item.requiresData && totalGraded === 0;
+            const isActive = location.pathname.startsWith(item.path) && !isLocked;
             return (
-              <Link key={item.name} to={item.path}
-                className={cn("flex items-center px-4 py-3 text-sm font-medium relative",
+              <Link key={item.name} to={isLocked ? '#' : item.path}
+                title={isLocked ? "Unlocks after grading your first activity" : ""}
+                className={cn("flex items-center px-4 py-3 text-sm font-medium relative transition-colors",
+                  isLocked ? "text-slate-300 cursor-not-allowed opacity-50" : 
                   isActive ? "bg-blue-50 text-brand-navy border-r-4 border-brand-navy" : "text-slate-600 hover:bg-slate-50")}>
                 <item.icon className="w-5 h-5 mr-3" />
                 {item.name}
-                {item.badge > 0 && (
+                {isLocked && <span className="ml-auto text-[10px] bg-slate-100 text-slate-400 px-2 py-1 rounded">Locked</span>}
+                {item.badge > 0 && !isLocked && (
                   <span className="ml-auto bg-red-500 text-white text-[10px] font-extrabold px-1.5 py-0.5 rounded-full flex items-center gap-0.5">
                     <AlertTriangle className="w-2.5 h-2.5" /> {item.badge}
                   </span>

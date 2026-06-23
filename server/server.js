@@ -77,6 +77,42 @@ app.post('/api/auth/register', async (req, res) => {
     const user = await prisma.user.create({
       data: { name, email, username: email, password, role: 'TEACHER', schoolName }
     });
+
+    // Auto-seed Demo Sandbox for Onboarding
+    try {
+      const demoSection = await prisma.section.create({ data: { name: 'Grade 6 - Demo Section', teacherId: user.id } });
+      const demoStudent = await prisma.user.create({
+        data: { name: 'Demo Student', username: `DEMO-${Date.now()}`, password: 'password', role: 'STUDENT', sectionId: demoSection.id }
+      });
+      const demoClass = await prisma.class.create({
+        data: { name: 'Sandbox Demo Class', gradeLevel: 'Grade 6', subject: 'English', schoolYear: '2024-2025', teacherId: user.id, sectionId: demoSection.id }
+      });
+      const demoActivity = await prisma.activity.create({
+        data: { title: 'Demo Activity: The Boy Who Cried Wolf', type: 'Essay', points: 100, classId: demoClass.id, instructions: 'Write a short summary.', submissionMode: 'TEACHER_UPLOAD' }
+      });
+      
+      const aiFeedbackObj = JSON.stringify({
+        strengths: "Great job completing your first assignment! You summarized the story well.",
+        areasForGrowth: [{ studentQuote: "He was cry wolf.", explanation: "Make sure to use the correct past tense: 'He cried wolf'." }],
+        actionableSteps: ["Review your verb tenses."],
+        skillExplanations: { vocabulary: "Good basic words.", punctuation: "Mostly correct.", thematicFlow: "Easy to follow.", sentenceStructure: "A bit choppy." }
+      });
+
+      await prisma.submission.create({
+        data: {
+          studentId: demoStudent.id,
+          activityId: demoActivity.id,
+          aiScore: 85,
+          aiFeedback: aiFeedbackObj,
+          rubricData: JSON.stringify({ content: { score: 35, max: 40 }, organization: { score: 25, max: 30 }, grammar: { score: 25, max: 30 } }),
+          skillScores: JSON.stringify({ vocabulary: 20, punctuation: 20, thematicFlow: 20, sentenceStructure: 20 }),
+          status: 'PENDING_REVIEW' // Leave it pending so the teacher can try the HITL Workspace
+        }
+      });
+    } catch (seedErr) {
+      console.error('Failed to seed demo class:', seedErr);
+    }
+
     res.json({ success: true, user });
   } catch (e) {
     res.status(400).json({ success: false, error: e.message });

@@ -72,7 +72,14 @@ export default function HITLWorkspace() {
   const [isApproved, setIsApproved] = useState(false);
   const [covData, setCovData] = useState(null);
   const [skillAnalysisOpen, setSkillAnalysisOpen] = useState(false);
+  const [showTooltip, setShowTooltip] = useState(false);
   const chatEndRef = useRef(null);
+
+  useEffect(() => {
+    if (!localStorage.getItem('hasSeenAICopilotTooltip')) {
+      setShowTooltip(true);
+    }
+  }, []);
 
   // Computed feedbackText for AI Co-Pilot & backwards compat
   const feedbackText = isStructured ? flattenFeedback(structuredFeedback) : legacyFeedbackText;
@@ -388,10 +395,27 @@ export default function HITLWorkspace() {
           <div>
             <div className="flex items-center justify-between mb-3">
               <h3 className="text-sm font-bold text-slate-400 uppercase tracking-wider">Qualitative Feedback</h3>
-              <button onClick={() => setIsChatOpen(true)}
-                className="flex items-center text-xs font-bold text-brand-navy bg-blue-50 hover:bg-blue-100 px-3 py-1.5 rounded-full transition-colors border border-blue-200">
-                <Sparkles className="w-3.5 h-3.5 mr-1" /> Refine with AI Co-Pilot
-              </button>
+              <div className="relative">
+                <button 
+                  onClick={() => {
+                    setIsChatOpen(true);
+                    if (showTooltip) {
+                      setShowTooltip(false);
+                      localStorage.setItem('hasSeenAICopilotTooltip', 'true');
+                    }
+                  }}
+                  className="flex items-center text-xs font-bold text-brand-navy bg-blue-50 hover:bg-blue-100 px-3 py-1.5 rounded-full transition-colors border border-blue-200">
+                  <Sparkles className="w-3.5 h-3.5 mr-1" /> Refine with AI Co-Pilot
+                </button>
+                {showTooltip && (
+                  <div className="absolute right-0 top-full mt-2 w-48 bg-brand-navy text-white text-xs font-medium p-3 rounded-xl shadow-xl z-20 animate-fade-in-up">
+                    <div className="absolute -top-1 right-8 w-3 h-3 bg-brand-navy rotate-45" />
+                    Try asking the AI to make this feedback sound more encouraging!
+                    <div className="absolute -top-1 -right-1 w-3 h-3 bg-blue-400 rounded-full animate-ping" />
+                    <div className="absolute -top-1 -right-1 w-3 h-3 bg-blue-500 rounded-full" />
+                  </div>
+                )}
+              </div>
             </div>
 
             {isStructured ? (

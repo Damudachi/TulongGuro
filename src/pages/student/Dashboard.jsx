@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
-import { Award, CheckCircle2, Star, Loader2, Lightbulb, ChevronRight, Clock, BookOpen, TrendingUp } from 'lucide-react';
+import { Award, CheckCircle2, Star, Loader2, Lightbulb, ChevronRight, Clock, BookOpen, TrendingUp, Bot, Sparkles } from 'lucide-react';
 import { API_URL } from '../../config';
 
 const SKILL_LABELS = { vocabulary: 'Vocabulary', punctuation: 'Punctuation', thematicFlow: 'Thematic Flow', sentenceStructure: 'Sentence Structure' };
@@ -24,8 +24,13 @@ function SkillBar({ label, value, max = 25 }) {
 export default function StudentDashboard() {
   const [data, setData] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [showWelcome, setShowWelcome] = useState(false);
+  const [welcomeStep, setWelcomeStep] = useState(0);
 
   useEffect(() => {
+    if (!localStorage.getItem('hasSeenStudentWelcome')) {
+      setShowWelcome(true);
+    }
     const user = JSON.parse(localStorage.getItem('user') || '{}');
     if (!user.id) return setIsLoading(false);
     fetch(`${API_URL}/api/student/${user.id}/dashboard`)
@@ -48,6 +53,69 @@ export default function StudentDashboard() {
 
   return (
     <div className="p-4 md:p-8 max-w-4xl mx-auto pb-24">
+      {/* Student Onboarding Welcome Modal */}
+      {showWelcome && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-sm">
+          <div className="bg-white rounded-3xl w-full max-w-md overflow-hidden shadow-2xl animate-fade-in-up">
+            <div className="p-8 text-center relative">
+              {welcomeStep === 0 && (
+                <div className="animate-fade-in">
+                  <div className="w-20 h-20 bg-emerald-100 text-brand-green rounded-full flex items-center justify-center mx-auto mb-6">
+                    <Award className="w-10 h-10" />
+                  </div>
+                  <h2 className="text-2xl font-bold text-brand-slate mb-3">Welcome to TulongGuro! 🎉</h2>
+                  <p className="text-slate-600 leading-relaxed">
+                    TulongGuro uses AI to help your teacher grade faster, but <span className="font-bold text-brand-slate">your teacher always makes the final decision.</span>
+                  </p>
+                </div>
+              )}
+              {welcomeStep === 1 && (
+                <div className="animate-fade-in">
+                  <div className="w-20 h-20 bg-blue-100 text-blue-600 rounded-full flex items-center justify-center mx-auto mb-6">
+                    <Bot className="w-10 h-10" />
+                  </div>
+                  <h2 className="text-2xl font-bold text-brand-slate mb-3">Meet your Study Buddy 🤖</h2>
+                  <p className="text-slate-600 leading-relaxed">
+                    It won't do your homework, but it <span className="font-bold text-brand-slate">will help you understand your mistakes.</span> Just tap the floating chat icon!
+                  </p>
+                </div>
+              )}
+              {welcomeStep === 2 && (
+                <div className="animate-fade-in">
+                  <div className="w-20 h-20 bg-amber-100 text-amber-500 rounded-full flex items-center justify-center mx-auto mb-6">
+                    <Lightbulb className="w-10 h-10" />
+                  </div>
+                  <h2 className="text-2xl font-bold text-brand-slate mb-3">Reading Strategies 💡</h2>
+                  <p className="text-slate-600 leading-relaxed">
+                    Look out for the <span className="font-bold text-amber-600">orange cards</span>—these are personalized reading tips just for you to help you improve!
+                  </p>
+                </div>
+              )}
+
+              <div className="mt-10 flex flex-col gap-4">
+                <div className="flex justify-center gap-2 mb-2">
+                  {[0, 1, 2].map(step => (
+                    <div key={step} className={`h-2 rounded-full transition-all ${welcomeStep === step ? 'w-8 bg-brand-green' : 'w-2 bg-slate-200'}`} />
+                  ))}
+                </div>
+                <button
+                  onClick={() => {
+                    if (welcomeStep < 2) setWelcomeStep(prev => prev + 1);
+                    else {
+                      setShowWelcome(false);
+                      localStorage.setItem('hasSeenStudentWelcome', 'true');
+                    }
+                  }}
+                  className="w-full bg-brand-green text-white font-bold py-3.5 rounded-xl hover:bg-emerald-600 transition-colors shadow-lg shadow-brand-green/20"
+                >
+                  {welcomeStep < 2 ? 'Next' : "Let's Go!"}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Hero */}
       <div className="bg-gradient-to-br from-brand-green to-emerald-600 text-white p-6 rounded-2xl mb-6 relative overflow-hidden shadow-lg">
         <div className="absolute top-0 right-0 p-4 opacity-10"><Award className="w-40 h-40" /></div>

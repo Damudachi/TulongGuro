@@ -72,107 +72,93 @@ export default function TeacherDashboard() {
         </Link>
       </div>
 
-      {/* Quick Access — Rubrics */}
-      <Link to="/teacher/rubrics" className="block mb-6 bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-200 rounded-xl p-4 hover:shadow-md transition-shadow group">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-lg bg-brand-navy/10 flex items-center justify-center">
-              <span className="text-lg">📋</span>
+      {classes.length > 4 && (
+        <div className="bg-white border border-slate-200 rounded-xl p-4 mb-6">
+          <div className="flex items-center gap-2 text-sm font-semibold text-brand-slate mb-3">
+            <Filter className="w-4 h-4" /> Filter
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-semibold text-slate-500 mb-1">Grade Level</label>
+              <select
+                value={filters.gradeLevel}
+                onChange={(e) => setFilters((prev) => ({ ...prev, gradeLevel: e.target.value }))}
+                className="w-full text-sm p-2 bg-slate-50 border border-slate-200 rounded-lg focus:border-brand-navy focus:ring-1 focus:ring-brand-navy outline-none"
+              >
+                <option value="">All Grades</option>
+                {GRADE_LEVELS.map(g => <option key={g} value={g}>{g}</option>)}
+              </select>
             </div>
             <div>
-              <p className="font-bold text-brand-slate text-sm">Set Up Your Grading Rubrics</p>
-              <p className="text-xs text-slate-500">Use DepEd-standard rubrics for consistent, standardized grading across your classes.</p>
+              <label className="block text-xs font-semibold text-slate-500 mb-1">Subject</label>
+              <select
+                value={filters.subject}
+                onChange={(e) => setFilters((prev) => ({ ...prev, subject: e.target.value }))}
+                className="w-full text-sm p-2 bg-slate-50 border border-slate-200 rounded-lg focus:border-brand-navy focus:ring-1 focus:ring-brand-navy outline-none"
+              >
+                <option value="">All Subjects</option>
+                {SUBJECTS.map(s => <option key={s} value={s}>{s}</option>)}
+              </select>
             </div>
           </div>
-          <span className="text-brand-navy font-medium text-sm group-hover:underline">Go to Rubrics →</span>
         </div>
-      </Link>
+      )}
 
-      <div className="bg-white border border-slate-200 rounded-xl p-4 mb-6">
-        <div className="flex items-center gap-2 text-sm font-semibold text-brand-slate mb-3">
-          <Filter className="w-4 h-4" /> Filter
-        </div>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-          <div>
-            <label className="block text-xs font-semibold text-slate-500 mb-1">Grade Level</label>
-            <select
-              value={filters.gradeLevel}
-              onChange={(e) => setFilters((prev) => ({ ...prev, gradeLevel: e.target.value }))}
-              className="w-full border border-slate-200 p-2 rounded-lg outline-none focus:ring-2 focus:ring-brand-navy text-sm"
-            >
-              <option value="">All grade levels</option>
-              {GRADE_LEVELS.map((g) => (
-                <option key={g}>{g}</option>
-              ))}
-            </select>
+      {classes.length === 0 && !isLoading ? (
+        <div className="flex flex-col items-center justify-center py-16 px-4 bg-white border border-slate-200 rounded-2xl text-center shadow-sm">
+          <div className="w-20 h-20 bg-blue-50 rounded-full flex items-center justify-center mb-6">
+            <span className="text-4xl">👋</span>
           </div>
-          <div>
-            <label className="block text-xs font-semibold text-slate-500 mb-1">Subject</label>
-            <select
-              value={filters.subject}
-              onChange={(e) => setFilters((prev) => ({ ...prev, subject: e.target.value }))}
-              className="w-full border border-slate-200 p-2 rounded-lg outline-none focus:ring-2 focus:ring-brand-navy text-sm"
-            >
-              <option value="">All subjects</option>
-              {SUBJECTS.map((s) => (
-                <option key={s}>{s}</option>
-              ))}
-            </select>
-          </div>
-        </div>
-      </div>
-
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-        {filteredClasses.map((cls) => (
-          <Link key={cls.id} to={`/teacher/class/${cls.id}`}
-            className="block bg-white border border-slate-200 rounded-xl p-6 hover:shadow-md transition-shadow relative overflow-hidden group">
-            <div className="absolute top-0 left-0 w-1 h-full bg-brand-navy group-hover:w-2 transition-all" />
-            <div className="mb-2">
-              {(cls.gradeLevel || cls.subject) && (
-                <div className="flex gap-2 mb-2 flex-wrap">
-                  {cls.gradeLevel && <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-blue-50 text-blue-600 border border-blue-100">{cls.gradeLevel}</span>}
-                  {cls.subject && <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-50 text-amber-600 border border-amber-100">{cls.subject}</span>}
-                </div>
-              )}
-              <h3 className="font-bold text-lg text-brand-slate">{cls.name}</h3>
-              <span className="text-xs text-slate-500">{cls.schoolYear} • {cls.section?.name}</span>
-            </div>
-            <div className="flex items-center justify-between mt-4 pt-4 border-t border-slate-100">
-              <div className="text-sm text-slate-600 flex items-center gap-1">
-                <Users className="w-4 h-4 text-slate-400" />
-                <span className="font-semibold text-brand-slate">{cls.section?._count?.students || 0}</span> Students
-              </div>
-              {cls._count?.activities > 0 ? (
-                <span className="bg-amber-100 text-brand-amber text-xs font-bold px-2 py-1 rounded-full">
-                  {cls._count.activities} activities
-                </span>
-              ) : (
-                <span className="bg-slate-100 text-slate-500 text-xs font-bold px-2 py-1 rounded-full">No activities</span>
-              )}
-            </div>
-            {/* Activities list (recent) */}
-            {cls.activities && cls.activities.length > 0 && (
-              <div className="mt-3 text-sm text-slate-600">
-                <div className="text-xs text-slate-400 mb-1">Recent activities</div>
-                <ul className="space-y-1">
-                  {cls.activities.map(a => (
-                    <li key={a.id} className="flex items-center justify-between">
-                      <span className="truncate">{a.title} <span className="text-[11px] text-slate-400">• {a.type}</span></span>
-                      <span className="text-[11px] text-slate-400">{a._count?.submissions || 0}</span>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
+          <h2 className="text-2xl font-bold text-brand-slate mb-2">Welcome to TulongGuro!</h2>
+          <p className="text-slate-500 max-w-md mb-8">
+            To get started with AI grading, you first need to create a Block Section and add your subject.
+          </p>
+          <Link to="/teacher/sections" className="bg-brand-navy text-white px-6 py-3 rounded-xl font-bold hover:bg-blue-900 shadow-lg shadow-blue-900/20 transition-all flex items-center gap-2">
+            <Plus className="w-5 h-5" /> Let's Setup Your First Class
           </Link>
-        ))}
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+          {filteredClasses.map((cls) => (
+            <Link key={cls.id} to={`/teacher/class/${cls.id}`}
+              className="block bg-white border border-slate-200 rounded-xl p-6 hover:shadow-md transition-shadow relative overflow-hidden group">
+              <div className="absolute top-0 left-0 w-1 h-full bg-brand-navy group-hover:w-2 transition-all" />
+              <div className="mb-2">
+                {(cls.gradeLevel || cls.subject) && (
+                  <div className="flex gap-2 mb-2 flex-wrap">
+                    {cls.gradeLevel && <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-blue-50 text-blue-600 border border-blue-100">{cls.gradeLevel}</span>}
+                    {cls.subject && <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-50 text-amber-600 border border-amber-100">{cls.subject}</span>}
+                  </div>
+                )}
+                <h3 className="font-bold text-lg text-brand-slate">{cls.name}</h3>
+                <span className="text-xs text-slate-500">{cls.schoolYear} • {cls.section?.name}</span>
+              </div>
+              <div className="flex items-center justify-between mt-4 pt-4 border-t border-slate-100">
+                <div className="text-sm text-slate-600 flex items-center gap-1">
+                  <Users className="w-4 h-4 text-slate-400" />
+                  <span className="font-semibold text-brand-slate">{cls.section?._count?.students || 0}</span> Students
+                </div>
+                {cls._count?.activities > 0 ? (
+                  <span className="bg-amber-100 text-brand-amber text-xs font-bold px-2 py-1 rounded-full">
+                    {cls._count.activities} activities
+                  </span>
+                ) : (
+                  <span className="bg-slate-100 text-slate-500 text-xs font-bold px-2 py-1 rounded-full">No activities</span>
+                )}
+              </div>
+              <div className="flex items-center justify-between mt-6 pt-4 border-t border-slate-100">
+                <span className="text-xs font-bold text-brand-navy group-hover:text-blue-700">Open Class Hub →</span>
+              </div>
+            </Link>
+          ))}
 
-        <button onClick={() => setIsModalOpen(true)}
-          className="border-2 border-dashed border-slate-300 rounded-xl p-6 flex flex-col items-center justify-center text-slate-500 hover:text-brand-navy hover:border-brand-navy hover:bg-blue-50 transition-colors min-h-[160px]">
-          <Plus className="w-8 h-8 mb-2" />
-          <span className="font-medium">Add Subject Class</span>
-        </button>
-      </div>
+          <button onClick={() => setIsModalOpen(true)}
+            className="border-2 border-dashed border-slate-300 rounded-xl p-6 flex flex-col items-center justify-center text-slate-500 hover:text-brand-navy hover:border-brand-navy hover:bg-blue-50 transition-colors min-h-[160px]">
+            <Plus className="w-8 h-8 mb-2" />
+            <span className="font-medium">Add Subject Class</span>
+          </button>
+        </div>
+      )}
 
       {/* Add Class Modal */}
       {isModalOpen && (
