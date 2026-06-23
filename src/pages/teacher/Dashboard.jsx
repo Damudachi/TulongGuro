@@ -1,7 +1,119 @@
 import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
-import { Plus, Users, FileText, BookOpen, Filter } from 'lucide-react';
+import { Plus, Users, FileText, BookOpen, Filter, ChevronRight, Loader2 } from 'lucide-react';
 import { API_URL } from '../../config';
+
+function WizardEmptyState({ onComplete }) {
+  const [step, setStep] = useState(1);
+  const [sectionName, setSectionName] = useState('');
+  const [subject, setSubject] = useState('');
+  const [gradeLevel, setGradeLevel] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [error, setError] = useState('');
+
+  const handleCreate = async () => {
+    setError('');
+    setIsSubmitting(true);
+    try {
+      const user = JSON.parse(localStorage.getItem('user') || '{}');
+      const res = await fetch(`${API_URL}/api/teacher/quick-setup`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ teacherId: user.id, sectionName, subject, gradeLevel, schoolYear: '2024-2025' })
+      });
+      const data = await res.json();
+      if (data.success) {
+        onComplete();
+      } else {
+        setError(data.error || 'Something went wrong.');
+      }
+    } catch {
+      setError('Network error. Please try again.');
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden max-w-lg mx-auto">
+      {/* Progress Header */}
+      <div className="bg-gradient-to-r from-brand-navy to-blue-700 p-6 text-white">
+        <h2 className="text-xl font-bold mb-1">Welcome to TulongGuro! 👋</h2>
+        <p className="text-blue-200 text-sm">Let's set up your first class in 2 quick steps.</p>
+        <div className="flex gap-2 mt-4">
+          <div className={`h-1.5 rounded-full flex-1 transition-all ${step >= 1 ? 'bg-white' : 'bg-white/30'}`} />
+          <div className={`h-1.5 rounded-full flex-1 transition-all ${step >= 2 ? 'bg-white' : 'bg-white/30'}`} />
+        </div>
+      </div>
+
+      <div className="p-6">
+        {step === 1 && (
+          <div className="animate-fade-in">
+            <label className="block text-sm font-bold text-brand-slate mb-1">Step 1: Name your Block Section</label>
+            <p className="text-xs text-slate-500 mb-3">This is your homeroom group, e.g. "Grade 6 — Sampaguita"</p>
+            <input
+              type="text"
+              value={sectionName}
+              onChange={e => setSectionName(e.target.value)}
+              placeholder="e.g. Grade 6 — Sampaguita"
+              className="w-full border-2 border-slate-200 p-3 rounded-xl text-sm focus:border-brand-navy focus:ring-2 focus:ring-brand-navy/10 outline-none transition-all"
+              autoFocus
+            />
+            <button
+              onClick={() => { if (sectionName.trim()) setStep(2); }}
+              disabled={!sectionName.trim()}
+              className="mt-4 w-full bg-brand-navy text-white py-3 rounded-xl font-bold hover:bg-blue-900 disabled:opacity-40 disabled:cursor-not-allowed transition-all flex items-center justify-center gap-2"
+            >
+              Next <ChevronRight className="w-4 h-4" />
+            </button>
+          </div>
+        )}
+
+        {step === 2 && (
+          <div className="animate-fade-in">
+            <label className="block text-sm font-bold text-brand-slate mb-1">Step 2: Choose your Subject & Grade</label>
+            <p className="text-xs text-slate-500 mb-3">For section "{sectionName}"</p>
+            <div className="grid grid-cols-2 gap-3 mb-4">
+              <div>
+                <label className="block text-xs font-semibold text-slate-500 mb-1">Grade Level</label>
+                <select
+                  value={gradeLevel}
+                  onChange={e => setGradeLevel(e.target.value)}
+                  className="w-full border-2 border-slate-200 p-3 rounded-xl text-sm focus:border-brand-navy outline-none"
+                >
+                  <option value="">-- Grade --</option>
+                  {['Grade 1','Grade 2','Grade 3','Grade 4','Grade 5','Grade 6','Grade 7','Grade 8','Grade 9','Grade 10'].map(g => <option key={g} value={g}>{g}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-slate-500 mb-1">Subject</label>
+                <select
+                  value={subject}
+                  onChange={e => setSubject(e.target.value)}
+                  className="w-full border-2 border-slate-200 p-3 rounded-xl text-sm focus:border-brand-navy outline-none"
+                >
+                  <option value="">-- Subject --</option>
+                  {['Filipino','English','Mathematics','Science','Araling Panlipunan','MAPEH','TLE','ESP'].map(s => <option key={s} value={s}>{s}</option>)}
+                </select>
+              </div>
+            </div>
+            {error && <p className="text-xs text-red-500 mb-3">{error}</p>}
+            <div className="flex gap-2">
+              <button onClick={() => setStep(1)} className="flex-1 py-3 rounded-xl border-2 border-slate-200 text-slate-600 font-medium hover:bg-slate-50 transition-colors">Back</button>
+              <button
+                onClick={handleCreate}
+                disabled={!subject || !gradeLevel || isSubmitting}
+                className="flex-1 bg-brand-navy text-white py-3 rounded-xl font-bold hover:bg-blue-900 disabled:opacity-40 disabled:cursor-not-allowed transition-all flex items-center justify-center gap-2"
+              >
+                {isSubmitting ? <><Loader2 className="w-4 h-4 animate-spin" /> Creating...</> : <><Plus className="w-4 h-4" /> Create My First Class</>}
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
 
 const GRADE_LEVELS = ['Grade 1','Grade 2','Grade 3','Grade 4','Grade 5','Grade 6','Grade 7','Grade 8','Grade 9','Grade 10'];
 const SUBJECTS = ['Filipino','English','Mathematics','Science','Araling Panlipunan','MAPEH','TLE','ESP','Pagsasaling-wika','Reading & Literacy'];
@@ -105,18 +217,7 @@ export default function TeacherDashboard() {
       )}
 
       {classes.length === 0 && !isLoading ? (
-        <div className="flex flex-col items-center justify-center py-16 px-4 bg-white border border-slate-200 rounded-2xl text-center shadow-sm">
-          <div className="w-20 h-20 bg-blue-50 rounded-full flex items-center justify-center mb-6">
-            <span className="text-4xl">👋</span>
-          </div>
-          <h2 className="text-2xl font-bold text-brand-slate mb-2">Welcome to TulongGuro!</h2>
-          <p className="text-slate-500 max-w-md mb-8">
-            To get started with AI grading, you first need to create a Block Section and add your subject.
-          </p>
-          <Link to="/teacher/sections" className="bg-brand-navy text-white px-6 py-3 rounded-xl font-bold hover:bg-blue-900 shadow-lg shadow-blue-900/20 transition-all flex items-center gap-2">
-            <Plus className="w-5 h-5" /> Let's Setup Your First Class
-          </Link>
-        </div>
+        <WizardEmptyState onComplete={() => window.location.reload()} />
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
           {filteredClasses.map((cls) => (

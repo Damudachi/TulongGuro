@@ -85,7 +85,7 @@ app.post('/api/auth/register', async (req, res) => {
         data: { name: 'Demo Student', username: `DEMO-${Date.now()}`, password: 'password', role: 'STUDENT', sectionId: demoSection.id }
       });
       const demoClass = await prisma.class.create({
-        data: { name: 'Sandbox Demo Class', gradeLevel: 'Grade 6', subject: 'English', schoolYear: '2024-2025', teacherId: user.id, sectionId: demoSection.id }
+        data: { name: '[DEMO] Sandbox Demo Class', gradeLevel: 'Grade 6', subject: 'English', schoolYear: '2024-2025', teacherId: user.id, sectionId: demoSection.id }
       });
       const demoActivity = await prisma.activity.create({
         data: { title: 'Demo Activity: The Boy Who Cried Wolf', type: 'Essay', points: 100, classId: demoClass.id, instructions: 'Write a short summary.', submissionMode: 'TEACHER_UPLOAD' }
@@ -102,6 +102,7 @@ app.post('/api/auth/register', async (req, res) => {
         data: {
           studentId: demoStudent.id,
           activityId: demoActivity.id,
+          imageUrl: '/demo-essay.png',
           aiScore: 85,
           aiFeedback: aiFeedbackObj,
           rubricData: JSON.stringify({ content: { score: 35, max: 40 }, organization: { score: 25, max: 30 }, grammar: { score: 25, max: 30 } }),
@@ -128,8 +129,142 @@ app.post('/api/auth/login', async (req, res) => {
       include: { section: true }
     });
     if (!user) return res.status(401).json({ success: false, error: 'Invalid credentials' });
+
+    // ── Student Sandbox: Auto-seed a demo graded essay on first login ──
+    if (user.role === 'STUDENT') {
+      try {
+        const subCount = await prisma.submission.count({ where: { studentId: user.id } });
+        if (subCount === 0 && user.sectionId) {
+          // Find or create a system-level demo class linked to the student's section
+          let demoClass = await prisma.class.findFirst({
+            where: { name: '[STUDENT-DEMO] Sample Graded Work', sectionId: user.sectionId }
+          });
+          if (!demoClass) {
+            // Need a teacher — find the section's teacher or any teacher
+            const section = await prisma.section.findUnique({ where: { id: user.sectionId } });
+            const teacherId = section?.teacherId || (await prisma.user.findFirst({ where: { role: 'TEACHER' } }))?.id;
+            if (teacherId) {
+              demoClass = await prisma.class.create({
+                data: { name: '[STUDENT-DEMO] Sample Graded Work', gradeLevel: 'Grade 6', subject: 'English', schoolYear: '2024-2025', teacherId, sectionId: user.sectionId }
+              });
+            }
+          }
+          if (demoClass) {
+            let demoActivity = await prisma.activity.findFirst({ where: { classId: demoClass.id } });
+            if (!demoActivity) {
+              demoActivity = await prisma.activity.create({
+                data: { title: 'Sample Essay: My Favorite Place', type: 'Essay', points: 100, classId: demoClass.id, instructions: 'Write about your favorite place.', submissionMode: 'TEACHER_UPLOAD' }
+              });
+            }
+
+            const demoFeedback = JSON.stringify({
+              strengths: "You described your favorite place with a lot of feeling! Your teacher could really picture the scenery.",
+              areasForGrowth: [{ studentQuote: "I go their every summer.", explanation: "The word 'their' should be 'there'. 'Their' shows ownership, 'there' shows a place." }],
+              actionableSteps: ["Practice the difference between 'there', 'their', and 'they're'."],
+              skillExplanations: { vocabulary: "Good use of descriptive words!", punctuation: "Most sentences end with periods.", thematicFlow: "Your ideas connect well.", sentenceStructure: "Try combining short sentences." }
+            });
+
+            await prisma.submission.create({
+              data: {
+                studentId: user.id,
+                activityId: demoActivity.id,
+                imageUrl: '/demo-essay.png',
+                aiScore: 88,
+                hitlScore: 90,
+                aiFeedback: demoFeedback,
+                hitlFeedback: demoFeedback,
+                readingStrategy: "When you see an unfamiliar word, try breaking it into smaller parts (syllables) to sound it out.",
+                rubricData: JSON.stringify({ content: { score: 36, max: 40 }, organization: { score: 27, max: 30 }, grammar: { score: 27, max: 30 } }),
+                skillScores: JSON.stringify({ vocabulary: 22, punctuation: 21, thematicFlow: 23, sentenceStructure: 22 }),
+                status: 'GRADED'
+              }
+            });
+          }
+        }
+      } catch (seedErr) {
+        console.error('Student sandbox seed error:', seedErr);
+      }
+    }
+
     res.json({ success: true, user });
   } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// ─────────────────────────────────────────
+// ONBOARDING: Quick Setup (creates Section + Class in one shot)
+// ─────────────────────────────────────────
+app.post('/api/teacher/quick-setup', async (req, res) => {
+  try {
+    const { teacherId, sectionName, subject, gradeLevel, schoolYear } = req.body;
+    if (!teacherId || !sectionName || !subject || !gradeLevel) {
+      return res.status(400).json({ success: false, error: 'Missing required fields' });
+    }
+
+    const result = await prisma.$transaction(async (tx) => {
+      const section = await tx.section.create({
+        data: { name: sectionName.trim(), teacherId }
+      });
+      const cls = await tx.class.create({
+        data: {
+          name: `${subject} — ${gradeLevel}`,
+          gradeLevel,
+          subject,
+          schoolYear: schoolYear || '2024-2025',
+          teacherId,
+          sectionId: section.id
+        }
+      });
+      return { section, class: cls };
+    });
+
+    res.json({ success: true, ...result });
+  } catch (e) {
+    console.error('Quick setup error:', e);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// ─────────────────────────────────────────
+// ONBOARDING: Delete Demo Data (child-first to avoid FK crash)
+// ─────────────────────────────────────────
+app.delete('/api/teacher/demo-data/:classId', async (req, res) => {
+  try {
+    const { classId } = req.params;
+    const cls = await prisma.class.findUnique({
+      where: { id: classId },
+      include: { activities: { include: { submissions: true } }, section: true }
+    });
+    if (!cls) return res.status(404).json({ success: false, error: 'Class not found' });
+
+    // Delete in FK-safe order: Submissions → Activities → Class → Demo Student → Section
+    await prisma.$transaction(async (tx) => {
+      // 1. Delete all submissions for all activities in this class
+      const activityIds = cls.activities.map(a => a.id);
+      if (activityIds.length > 0) {
+        await tx.submission.deleteMany({ where: { activityId: { in: activityIds } } });
+      }
+      // 2. Delete all activities
+      await tx.activity.deleteMany({ where: { classId } });
+      // 3. Delete the class
+      await tx.class.delete({ where: { id: classId } });
+      // 4. Delete demo students in the section (only DEMO-* usernames)
+      if (cls.sectionId) {
+        await tx.user.deleteMany({
+          where: { sectionId: cls.sectionId, username: { startsWith: 'DEMO-' } }
+        });
+        // 5. Delete the section if no other classes reference it
+        const otherClasses = await tx.class.count({ where: { sectionId: cls.sectionId } });
+        if (otherClasses === 0) {
+          await tx.section.delete({ where: { id: cls.sectionId } });
+        }
+      }
+    });
+
+    res.json({ success: true, message: 'Demo data deleted successfully' });
+  } catch (e) {
+    console.error('Delete demo data error:', e);
     res.status(500).json({ success: false, error: e.message });
   }
 });

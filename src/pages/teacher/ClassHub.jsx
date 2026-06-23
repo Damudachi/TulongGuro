@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
-import { Plus, Search, FileText, User, ArrowLeft, Clock, CheckCircle2, AlertCircle, UploadCloud } from 'lucide-react';
+import { Plus, Search, FileText, User, ArrowLeft, Clock, CheckCircle2, AlertCircle, UploadCloud, Trash2 } from 'lucide-react';
 import { API_URL } from '../../config';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
@@ -112,6 +112,30 @@ export default function ClassHub() {
         <h1 className="text-2xl font-bold text-brand-slate">{classData.name}</h1>
         <p className="text-slate-500 text-sm">{classData.schoolYear} • {classData.section?.name} • {students.length} Students</p>
       </div>
+
+      {/* Demo Data Banner */}
+      {classData.name.includes('[DEMO]') && (
+        <div className="mb-6 bg-amber-50 border-2 border-amber-200 rounded-xl p-4 flex items-center justify-between">
+          <div>
+            <p className="font-bold text-amber-800 text-sm">🧪 This is a Demo Class</p>
+            <p className="text-xs text-amber-600">Explore the AI grading workflow here. When you're ready for real data, delete this sandbox.</p>
+          </div>
+          <button
+            onClick={async () => {
+              if (!confirm('Delete all demo data? This cannot be undone.')) return;
+              try {
+                const res = await fetch(`${API_URL}/api/teacher/demo-data/${classId}`, { method: 'DELETE' });
+                const data = await res.json();
+                if (data.success) navigate('/teacher/dashboard');
+                else alert('Error: ' + data.error);
+              } catch { alert('Network error'); }
+            }}
+            className="shrink-0 bg-red-500 hover:bg-red-600 text-white text-sm font-bold px-4 py-2 rounded-lg flex items-center gap-2 transition-colors shadow-sm"
+          >
+            <Trash2 className="w-4 h-4" /> Delete Demo Data
+          </button>
+        </div>
+      )}
 
       {/* Tabs */}
       <div className="flex border-b border-slate-200 mb-6">

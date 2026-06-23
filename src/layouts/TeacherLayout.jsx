@@ -49,7 +49,7 @@ export default function TeacherLayout() {
     { name: 'Sections', path: '/teacher/sections', icon: Users },
     { name: 'Gradebook', path: '/teacher/gradebook', icon: BarChart2, requiresData: true },
     { name: 'Analytics', path: '/teacher/analytics', icon: TrendingUp, badge: warningCount, requiresData: true },
-    { name: 'Rubrics', path: '/teacher/rubrics', icon: ClipboardList },
+    { name: 'Rubrics', path: '/teacher/rubrics', icon: ClipboardList, requiresData: true },
     { name: 'Settings', path: '/teacher/settings', icon: Settings },
   ];
 
