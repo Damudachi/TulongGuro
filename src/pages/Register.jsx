@@ -11,9 +11,13 @@ export default function Register() {
     password: '',
     schoolName: ''
   });
+  const [error, setError] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   const handleRegister = async (e) => {
     e.preventDefault();
+    setError('');
+    setIsSubmitting(true);
     try {
       const response = await fetch(`${API_URL}/api/auth/register`, {
         method: 'POST',
@@ -25,10 +29,12 @@ export default function Register() {
         localStorage.setItem('user', JSON.stringify(data.user));
         navigate('/teacher/dashboard');
       } else {
-        alert("Registration failed: " + data.error);
+        setError(data.error || 'Registration failed. Please try again.');
       }
     } catch (e) {
-      alert("Network Error");
+      setError('Network Error. Please check your connection.');
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
@@ -87,11 +93,19 @@ export default function Register() {
               />
             </div>
             
+            {error && (
+              <div className="bg-red-50 border border-red-200 text-red-700 text-sm rounded-lg p-3 flex items-start gap-2">
+                <span className="shrink-0">⚠️</span>
+                <span>{error}</span>
+              </div>
+            )}
+
             <button
               type="submit"
-              className="w-full py-3 mt-4 rounded-lg text-white font-medium bg-brand-navy hover:bg-blue-900 transition-all shadow-md"
+              disabled={isSubmitting}
+              className="w-full py-3 mt-4 rounded-lg text-white font-medium bg-brand-navy hover:bg-blue-900 transition-all shadow-md disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              Sign Up as Teacher
+              {isSubmitting ? 'Creating account...' : 'Sign Up as Teacher'}
             </button>
           </form>
 

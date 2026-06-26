@@ -14,24 +14,6 @@ export default {
           slate: '#334155',    // Typography
           bg: '#F8FAFC',       // Background
         }
-      },
-      keyframes: {
-        'fade-in-up': {
-          '0%': { opacity: '0', transform: 'translateY(10px)' },
-          '100%': { opacity: '1', transform: 'translateY(0)' },
-        },
-        'shine': {
-          '100%': { transform: 'translateX(100%)' },
-        },
-        'confetti-fall': {
-          '0%': { transform: 'translateY(-10px) rotate(0deg)' },
-          '100%': { transform: 'translateY(100vh) rotate(720deg)' },
-        }
-      },
-      animation: {
-        'fade-in-up': 'fade-in-up 0.4s ease-out forwards',
-        'shine': 'shine 2s infinite linear',
-        'confetti-fall': 'confetti-fall linear forwards',
       }
     },
   },

@@ -5,9 +5,6 @@ import { twMerge } from 'tailwind-merge';
 import { useState, useEffect } from 'react';
 import { initOfflineQueueListener, getQueue } from '../utils/offlineQueue';
 import { API_URL } from '../config';
-import GuidedTour from '../components/GuidedTour';
-import MilestoneToast from '../components/MilestoneToast';
-import OnboardingChecklist from '../components/OnboardingChecklist';
 
 function cn(...inputs) {
   return twMerge(clsx(inputs));
@@ -57,12 +54,8 @@ export default function TeacherLayout() {
   ];
 
   return (
-    <div className="min-h-screen bg-brand-bg flex flex-col pb-16 md:pb-0 md:flex-row relative">
-      <GuidedTour />
-      <MilestoneToast />
-      <OnboardingChecklist />
-      
-      <main className="flex-1 overflow-y-auto relative z-0">
+    <div className="min-h-screen bg-brand-bg flex flex-col pb-16 md:pb-0 md:flex-row">
+      <main className="flex-1 overflow-y-auto">
         {/* Offline / Queue Banner */}
         {(!onlineStatus || queueCount > 0) && (
           <div className={`px-4 py-2 text-xs font-bold flex items-center gap-2 ${!onlineStatus ? 'bg-amber-500 text-white' : 'bg-blue-600 text-white'}`}>

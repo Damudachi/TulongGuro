@@ -1,10 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { ArrowLeft, Check, Edit2, Info, Sparkles, X, Send, Bot, Loader2, CheckCircle2, ChevronDown, Plus, Trash2, Eye } from 'lucide-react';
+import { ArrowLeft, Check, Edit2, Info, Sparkles, X, Send, Bot, Loader2, CheckCircle2, ChevronDown, Plus, Trash2 } from 'lucide-react';
 import { API_URL } from '../../config';
-import { hasSeenFlag, markFlagSeen, FLAGS } from '../../utils/onboardingState';
-import { triggerMilestone } from '../../components/MilestoneToast';
-import StudentPreviewModal from '../../components/StudentPreviewModal';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
 
@@ -71,19 +68,15 @@ export default function HITLWorkspace() {
   ]);
   const [chatInput, setChatInput] = useState('');
   const [isChatLoading, setIsChatLoading] = useState(false);
-  
-  // Student Preview Modal State
-  const [showPreviewModal, setShowPreviewModal] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [isApproved, setIsApproved] = useState(false);
   const [covData, setCovData] = useState(null);
   const [skillAnalysisOpen, setSkillAnalysisOpen] = useState(false);
   const [showTooltip, setShowTooltip] = useState(false);
-  const [isEditing, setIsEditing] = useState(false);
   const chatEndRef = useRef(null);
 
   useEffect(() => {
-    if (!hasSeenFlag(FLAGS.AI_COPILOT_TOOLTIP)) {
+    if (!localStorage.getItem('hasSeenAICopilotTooltip')) {
       setShowTooltip(true);
     }
   }, []);
@@ -224,7 +217,7 @@ export default function HITLWorkspace() {
         const hitlFeedback = isStructured
           ? serializeStructuredFeedback(structuredFeedback)
           : legacyFeedbackText;
-        const res = await fetch(`${API_URL}/api/teacher/submissions/${submissionId}/grade`, {
+        await fetch(`${API_URL}/api/teacher/submissions/${submissionId}/grade`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -235,13 +228,8 @@ export default function HITLWorkspace() {
             rubricData: { content: { score: scores.content, max: 40 }, organization: { score: scores.organization, max: 30 }, grammar: { score: scores.grammar, max: 30 } }
           })
         });
-        if (res.ok) {
-          setIsApproved(true);
-          triggerMilestone('FIRST_VALIDATE');
-        } else {
-          alert('Failed to save assessment');
-        }
       }
+      setIsApproved(true);
     } catch (e) {
       alert('Save failed. Please try again.');
     } finally {
@@ -349,29 +337,9 @@ export default function HITLWorkspace() {
                 </span>
               )}
             </div>
-            <div className="flex flex-col items-end gap-3">
-              <div className="text-center bg-blue-50 px-4 py-2 rounded-xl border border-blue-100">
-                <span className="block text-xs font-bold text-brand-navy uppercase tracking-wider mb-1">Total Score</span>
-                <span className="text-3xl font-bold text-brand-navy">{totalScore}<span className="text-xl text-blue-300">/100</span></span>
-              </div>
-              <div className="flex gap-2">
-                <button 
-                  onClick={() => setShowPreviewModal(true)}
-                  className="bg-white border border-slate-200 text-slate-700 px-3 py-2 rounded-lg text-xs font-bold hover:bg-slate-50 flex items-center transition-colors shadow-sm"
-                >
-                  <Eye className="w-3.5 h-3.5 mr-1.5" /> Preview
-                </button>
-                {!isApproved && (
-                  <button
-                    onClick={() => setIsEditing(!isEditing)}
-                    className={cn("text-xs font-bold px-3 py-2 rounded-lg border flex items-center transition-colors shadow-sm", 
-                      isEditing ? "bg-slate-100 text-slate-600 border-slate-200 hover:bg-slate-200" : "bg-white text-brand-navy border-blue-200 hover:bg-blue-50")}
-                  >
-                    {isEditing ? <X className="w-3.5 h-3.5 mr-1.5" /> : <Edit2 className="w-3.5 h-3.5 mr-1.5" />}
-                    {isEditing ? "Cancel Edit" : "Edit Assessment"}
-                  </button>
-                )}
-              </div>
+            <div className="text-center bg-blue-50 px-4 py-2 rounded-xl border border-blue-100">
+              <span className="block text-xs font-bold text-brand-navy uppercase tracking-wider mb-1">Total Score</span>
+              <span className="text-3xl font-bold text-brand-navy">{totalScore}<span className="text-xl text-blue-300">/100</span></span>
             </div>
           </div>
 
@@ -387,8 +355,7 @@ export default function HITLWorkspace() {
                   </div>
                   <input type="range" min={0} max={item.max} value={scores[item.key]}
                     onChange={e => setScores(prev => ({ ...prev, [item.key]: parseInt(e.target.value) }))}
-                    disabled={!isEditing}
-                    className={cn("w-full accent-brand-navy", !isEditing && "opacity-60 cursor-not-allowed")} />
+                    className="w-full accent-brand-navy" />
                   <div className="w-full bg-slate-100 rounded-full h-2 mt-1">
                     <div className={cn('h-2 rounded-full transition-all', item.color)} style={{ width: `${(scores[item.key] / item.max) * 100}%` }} />
                   </div>
@@ -434,7 +401,7 @@ export default function HITLWorkspace() {
                     setIsChatOpen(true);
                     if (showTooltip) {
                       setShowTooltip(false);
-                      markFlagSeen(FLAGS.AI_COPILOT_TOOLTIP);
+                      localStorage.setItem('hasSeenAICopilotTooltip', 'true');
                     }
                   }}
                   className="flex items-center text-xs font-bold text-brand-navy bg-blue-50 hover:bg-blue-100 px-3 py-1.5 rounded-full transition-colors border border-blue-200">
@@ -458,10 +425,8 @@ export default function HITLWorkspace() {
                 <div>
                   <label className="block text-sm font-semibold text-slate-700 mb-1.5">✅ Strengths</label>
                   <textarea
-                    className={cn("w-full p-4 border-2 rounded-xl text-sm outline-none transition-all leading-relaxed resize-none",
-                      isEditing ? "bg-white border-emerald-200 text-slate-700 focus:border-brand-green focus:ring-4 focus:ring-brand-green/10" : "bg-slate-50 border-slate-200 text-slate-600")}
+                    className="w-full p-4 bg-white border-2 border-emerald-200 rounded-xl text-sm text-slate-700 focus:border-brand-green focus:ring-4 focus:ring-brand-green/10 outline-none transition-all leading-relaxed resize-none"
                     rows={3}
-                    readOnly={!isEditing}
                     value={structuredFeedback.strengths}
                     onChange={e => updateStrengths(e.target.value)}
                   />
@@ -471,44 +436,36 @@ export default function HITLWorkspace() {
                 <div>
                   <div className="flex items-center justify-between mb-2">
                     <label className="text-sm font-semibold text-slate-700">📝 Areas for Growth</label>
-                    {isEditing && (
-                      <button onClick={addAreaForGrowth} className="flex items-center text-xs font-bold text-brand-navy bg-blue-50 hover:bg-blue-100 px-2.5 py-1 rounded-full transition-colors border border-blue-200">
-                        <Plus className="w-3 h-3 mr-1" /> Add
-                      </button>
-                    )}
+                    <button onClick={addAreaForGrowth} className="flex items-center text-xs font-bold text-brand-navy bg-blue-50 hover:bg-blue-100 px-2.5 py-1 rounded-full transition-colors border border-blue-200">
+                      <Plus className="w-3 h-3 mr-1" /> Add
+                    </button>
                   </div>
                   <div className="space-y-3">
                     {structuredFeedback.areasForGrowth.map((area, idx) => (
-                      <div key={idx} className={cn("relative border rounded-xl p-4 group", isEditing ? "bg-slate-50 border-slate-200" : "bg-slate-50/50 border-slate-100")}>
-                        {isEditing && (
-                          <button
-                            onClick={() => removeAreaForGrowth(idx)}
-                            className="absolute top-2 right-2 p-1 rounded-full text-slate-300 hover:text-red-500 hover:bg-red-50 transition-colors opacity-0 group-hover:opacity-100"
-                            title="Remove"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
-                        )}
+                      <div key={idx} className="relative bg-slate-50 border border-slate-200 rounded-xl p-4 group">
+                        <button
+                          onClick={() => removeAreaForGrowth(idx)}
+                          className="absolute top-2 right-2 p-1 rounded-full text-slate-300 hover:text-red-500 hover:bg-red-50 transition-colors opacity-0 group-hover:opacity-100"
+                          title="Remove"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
                         {/* Student quote highlighted */}
                         <div className="bg-amber-50 border-l-4 border-amber-400 rounded-r-lg px-3 py-2 mb-2">
                           <p className="text-[10px] font-bold text-amber-600 uppercase tracking-wider mb-0.5">Student wrote:</p>
                           <textarea
-                            className={cn("w-full bg-transparent text-sm italic outline-none resize-none leading-relaxed",
-                              isEditing ? "text-amber-900" : "text-amber-800/80")}
+                            className="w-full bg-transparent text-sm text-amber-900 italic outline-none resize-none leading-relaxed"
                             rows={1}
-                            readOnly={!isEditing}
                             value={area.studentQuote}
                             onChange={e => updateAreaForGrowth(idx, 'studentQuote', e.target.value)}
                             placeholder="Exact quote from essay..."
                           />
                         </div>
                         {/* Explanation */}
-                          <textarea
-                            className={cn("w-full border rounded-lg px-3 py-2 text-sm outline-none resize-none leading-relaxed",
-                              isEditing ? "bg-white border-slate-200 text-slate-700 focus:border-brand-navy focus:ring-2 focus:ring-brand-navy/10" : "bg-transparent border-transparent text-slate-600 px-0 py-0")}
-                            rows={2}
-                            readOnly={!isEditing}
-                            value={area.explanation}
+                        <textarea
+                          className="w-full bg-white border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-700 outline-none focus:border-brand-navy focus:ring-2 focus:ring-brand-navy/10 resize-none leading-relaxed"
+                          rows={2}
+                          value={area.explanation}
                           onChange={e => updateAreaForGrowth(idx, 'explanation', e.target.value)}
                           placeholder="Why this needs improvement..."
                         />
@@ -524,11 +481,9 @@ export default function HITLWorkspace() {
                 <div>
                   <div className="flex items-center justify-between mb-2">
                     <label className="text-sm font-semibold text-slate-700">🎯 Action Steps</label>
-                    {isEditing && (
-                      <button onClick={addActionStep} className="flex items-center text-xs font-bold text-brand-navy bg-blue-50 hover:bg-blue-100 px-2.5 py-1 rounded-full transition-colors border border-blue-200">
-                        <Plus className="w-3 h-3 mr-1" /> Add
-                      </button>
-                    )}
+                    <button onClick={addActionStep} className="flex items-center text-xs font-bold text-brand-navy bg-blue-50 hover:bg-blue-100 px-2.5 py-1 rounded-full transition-colors border border-blue-200">
+                      <Plus className="w-3 h-3 mr-1" /> Add
+                    </button>
                   </div>
                   <div className="space-y-2">
                     {structuredFeedback.actionableSteps.map((step, idx) => (
@@ -538,22 +493,18 @@ export default function HITLWorkspace() {
                         </span>
                         <input
                           type="text"
-                          className={cn("flex-1 px-3 py-2 border rounded-lg text-sm outline-none",
-                            isEditing ? "bg-white border-slate-200 text-slate-700 focus:border-brand-navy focus:ring-2 focus:ring-brand-navy/10" : "bg-transparent border-transparent text-slate-600 px-0")}
-                          readOnly={!isEditing}
+                          className="flex-1 px-3 py-2 bg-white border border-slate-200 rounded-lg text-sm text-slate-700 outline-none focus:border-brand-navy focus:ring-2 focus:ring-brand-navy/10"
                           value={step}
                           onChange={e => updateActionStep(idx, e.target.value)}
                           placeholder="Action step..."
                         />
-                        {isEditing && (
-                          <button
-                            onClick={() => removeActionStep(idx)}
-                            className="shrink-0 p-1.5 rounded-full text-slate-300 hover:text-red-500 hover:bg-red-50 transition-colors opacity-0 group-hover:opacity-100 mt-0.5"
-                            title="Remove"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
-                        )}
+                        <button
+                          onClick={() => removeActionStep(idx)}
+                          className="shrink-0 p-1.5 rounded-full text-slate-300 hover:text-red-500 hover:bg-red-50 transition-colors opacity-0 group-hover:opacity-100 mt-0.5"
+                          title="Remove"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
                       </div>
                     ))}
                     {structuredFeedback.actionableSteps.length === 0 && (
@@ -565,10 +516,8 @@ export default function HITLWorkspace() {
             ) : (
               /* Legacy plain-text fallback */
               <textarea
-                className={cn("w-full p-4 border-2 rounded-xl text-sm outline-none transition-all leading-relaxed resize-none",
-                  isEditing ? "bg-white border-slate-200 text-slate-700 focus:border-brand-navy focus:ring-4 focus:ring-brand-navy/10" : "bg-slate-50 border-slate-200 text-slate-600")}
+                className="w-full p-4 bg-white border-2 border-slate-200 rounded-xl text-sm text-slate-700 focus:border-brand-navy focus:ring-4 focus:ring-brand-navy/10 outline-none transition-all leading-relaxed resize-none"
                 rows={4}
-                readOnly={!isEditing}
                 value={legacyFeedbackText}
                 onChange={e => setLegacyFeedbackText(e.target.value)}
               />
@@ -584,9 +533,8 @@ export default function HITLWorkspace() {
               </h3>
               <Edit2 className="w-4 h-4 text-brand-amber" />
             </div>
-            <textarea className={cn("w-full p-4 ml-2 border-2 rounded-xl text-sm outline-none transition-all leading-relaxed resize-none",
-              isEditing ? "bg-amber-50/50 border-brand-amber/30 text-slate-800 focus:border-brand-amber focus:ring-4 focus:ring-brand-amber/20" : "bg-amber-50/30 border-transparent text-slate-700")}
-              rows={3} readOnly={!isEditing} value={readingStrategy} onChange={e => setReadingStrategy(e.target.value)} />
+            <textarea className="w-full p-4 ml-2 bg-amber-50/50 border-2 border-brand-amber/30 rounded-xl text-sm text-slate-800 focus:border-brand-amber focus:ring-4 focus:ring-brand-amber/20 outline-none transition-all leading-relaxed resize-none"
+              rows={3} value={readingStrategy} onChange={e => setReadingStrategy(e.target.value)} />
           </div>
         </div>
 
@@ -662,13 +610,6 @@ export default function HITLWorkspace() {
         </div>
       </div>
       {isChatOpen && <div className="fixed inset-0 bg-black/20 z-40 md:hidden" onClick={() => setIsChatOpen(false)} />}
-      
-      {showPreviewModal && (
-        <StudentPreviewModal 
-          submission={{...submission, hitlFeedback: JSON.stringify(isStructured ? serializeStructuredFeedback(structuredFeedback) : { strengths: legacyFeedbackText, readingStrategy }), hitlScore: scores.total}} 
-          onClose={() => setShowPreviewModal(false)} 
-        />
-      )}
     </div>
   );
 }

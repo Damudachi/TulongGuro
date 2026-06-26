@@ -1,8 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Link, useSearchParams, useNavigate } from 'react-router-dom';
-import { Users, BarChart2, Plus, Search, BookOpen } from 'lucide-react';
+import { Users, BarChart2, Plus, Search } from 'lucide-react';
 import { API_URL } from '../../config';
-import EmptyStateCoach from '../../components/EmptyStateCoach';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
 
@@ -171,11 +170,10 @@ export default function Gradebook() {
           
         </div>
       ) : activeTypes.length === 0 ? (
-        <EmptyStateCoach
-          icon={<BookOpen className="w-10 h-10 text-brand-navy" />}
-          title="No Grades Yet"
-          description="There are no graded activities for this class yet. Create an activity and grade submissions to see them in the gradebook."
-        />
+        <div className="text-center py-20 border-2 border-dashed border-slate-200 rounded-2xl text-slate-400">
+          <p className="font-medium">No activities yet for this class</p>
+          <p className="text-sm">Create activities in this class to see grades here</p>
+        </div>
       ) : (
         <div className="overflow-x-auto rounded-2xl border border-slate-200 shadow-sm">
           <table className="w-full bg-white text-sm">

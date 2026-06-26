@@ -1,7 +1,6 @@
 import { useState, useEffect } from 'react';
 import { AlertTriangle, TrendingDown, BarChart2, Users, ChevronDown, ChevronUp, Loader2, ShieldAlert, ArrowLeft, FileText, ChevronRight } from 'lucide-react';
 import { API_URL } from '../../config';
-import EmptyStateCoach from '../../components/EmptyStateCoach';
 
 const SKILL_LABELS = { vocabulary: 'Vocabulary', punctuation: 'Punctuation', thematicFlow: 'Thematic Flow', sentenceStructure: 'Sentence Structure' };
 const SEVERITY_CONFIG = {
@@ -103,13 +102,10 @@ export default function Analytics() {
 
   // If there's no analytics data yet, show the section selector first (if enabled).
   if (!data && !showSelector) return (
-    <EmptyStateCoach
-      icon={<BarChart2 className="w-10 h-10 text-brand-navy" />}
-      title="No Analytics Data"
-      description="Grade your first essay to unlock insights and analytics for your classes."
-      ctaText="Go to Dashboard"
-      ctaLink="/teacher/dashboard"
-    />
+    <div className="p-8 text-center text-slate-500">
+      <BarChart2 className="w-10 h-10 mx-auto mb-3 text-slate-300" />
+      <p>No analytics data available yet. Grade more submissions to see trends.</p>
+    </div>
   );
 
   const { warnings = [], studentTrends = [], classAvgSkills = {}, warningCount = 0, sections = [] } = data || {};

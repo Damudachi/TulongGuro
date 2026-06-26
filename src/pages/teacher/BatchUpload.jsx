@@ -31,8 +31,8 @@ export default function BatchUpload() {
   const [files, setFiles] = useState([]);
   const [students, setStudents] = useState([]);
   const [selectedStudent, setSelectedStudent] = useState('');
+  const [selectValue, setSelectValue] = useState('');
   const [studentSearch, setStudentSearch] = useState('');
-  const [isDropdownOpen, setIsDropdownOpen] = useState(false);
   const [activityMeta, setActivityMeta] = useState(null);
   const [activitySubmissions, setActivitySubmissions] = useState([]);
   const [isLoadingSubmissions, setIsLoadingSubmissions] = useState(false);
@@ -41,7 +41,6 @@ export default function BatchUpload() {
   const [isOnline, setIsOnline] = useState(navigator.onLine);
   const [queuedCount, setQueuedCount] = useState(getQueue().length);
   const [isFlushing, setIsFlushing] = useState(false);
-  const [isExtractingName, setIsExtractingName] = useState(false);
   const fileInputRef = useRef(null);
 
   useEffect(() => {
@@ -71,43 +70,14 @@ export default function BatchUpload() {
       .finally(() => setIsLoadingSubmissions(false));
   }, [activityId, activityMeta?.submissionMode]);
 
-  const handleFileDrop = async (e) => {
+  const handleFileDrop = (e) => {
     e.preventDefault();
     const dropped = Array.from(e.dataTransfer?.files || e.target.files || []);
     const imageFiles = dropped.filter(f => f.type.startsWith('image/'));
-    
-    if (imageFiles.length === 0) return;
-
     setFiles(prev => [...prev, ...imageFiles.map(f => ({
       file: f, id: Math.random().toString(36).slice(2),
       status: 'waiting', preview: URL.createObjectURL(f)
     }))]);
-
-    if (!selectedStudent && navigator.onLine && !isStudentSubmitMode) {
-      try {
-        setIsExtractingName(true);
-        const formData = new FormData();
-        formData.append('image', imageFiles[0]);
-        const res = await fetch(`${API_URL}/api/teacher/extract-name`, { method: 'POST', body: formData });
-        const data = await res.json();
-        
-        if (data.success && data.name) {
-          const extracted = data.name.toLowerCase();
-          // Find closest student by basic substring match
-          const match = students.find(s => {
-            const sn = s.name.toLowerCase();
-            return sn.includes(extracted) || extracted.includes(sn);
-          });
-          if (match) {
-            setSelectedStudent(match.id);
-          }
-        }
-      } catch (e) {
-        console.error('Name extraction failed', e);
-      } finally {
-        setIsExtractingName(false);
-      }
-    }
   };
 
   const removeFile = (id) => setFiles(prev => prev.filter(f => f.id !== id));
@@ -260,58 +230,53 @@ export default function BatchUpload() {
       {/* Student Selector */}
       {!isStudentSubmitMode && students.length > 0 && (
         <div className="bg-white p-4 rounded-xl border border-slate-200">
-          <label className="block text-sm font-medium text-slate-700 mb-2 flex items-center justify-between">
-            <span className="flex items-center gap-2"><User className="w-4 h-4" /> Assign to Student</span>
-            {isExtractingName && <span className="text-xs text-brand-navy flex items-center gap-1 animate-pulse"><Loader2 className="w-3 h-3 animate-spin" /> Auto-detecting name...</span>}
+          <label className="block text-sm font-medium text-slate-700 mb-2 flex items-center gap-2">
+            <User className="w-4 h-4" /> Assign to Student
           </label>
-          <div className="relative">
-            <input
-              type="text"
-              value={studentSearch || selectedStudentDisplay}
+          <input
+            type="text"
+            value={studentSearch || selectedStudentDisplay}
+            onChange={(e) => setStudentSearch(e.target.value)}
+            placeholder="Select a student (search by name or ID)"
+            className="w-full border border-slate-200 p-2 rounded-lg outline-none focus:ring-2 focus:ring-brand-navy text-sm mb-2"
+          />
+          {showSearchResults && (
+            <div className="border border-slate-200 rounded-lg max-h-40 overflow-auto bg-white mb-2">
+              {filteredStudents.length === 0 ? (
+                <p className="text-xs text-amber-600 px-3 py-2">No students match your search.</p>
+              ) : (
+                filteredStudents.slice(0, 8).map((s) => (
+                  <button
+                    key={s.id}
+                    type="button"
+                    onClick={() => {
+                      setSelectedStudent(s.id);
+                      setStudentSearch('');
+                      setSelectValue('');
+                    }}
+                    className="w-full text-left px-3 py-2 text-sm hover:bg-blue-50"
+                  >
+                    <span className="font-medium text-brand-slate">{s.name}</span>
+                    <span className="text-xs text-slate-500"> ({s.username})</span>
+                  </button>
+                ))
+              )}
+            </div>
+          )}
+          {!normalizedSearch && (
+            <select
+              value={selectValue}
               onChange={(e) => {
-                setStudentSearch(e.target.value);
-                if (selectedStudent) setSelectedStudent('');
-                setIsDropdownOpen(true);
+                const pickedId = e.target.value;
+                setSelectedStudent(pickedId);
+                setStudentSearch('');
+                setSelectValue('');
               }}
-              onFocus={() => setIsDropdownOpen(true)}
-              onBlur={() => setTimeout(() => setIsDropdownOpen(false), 200)}
-              placeholder="Search by name or ID..."
-              className="w-full border border-slate-200 p-2 pr-8 rounded-lg outline-none focus:ring-2 focus:ring-brand-navy text-sm mb-2"
-            />
-            {selectedStudent && (
-              <button 
-                onClick={() => { setSelectedStudent(''); setStudentSearch(''); }} 
-                className="absolute right-3 top-2.5 text-slate-400 hover:text-slate-600"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            )}
-            
-            {isDropdownOpen && (
-              <div className="absolute top-full left-0 right-0 z-10 border border-slate-200 rounded-lg max-h-48 overflow-auto bg-white shadow-lg mt-1">
-                {filteredStudents.length === 0 ? (
-                  <p className="text-xs text-amber-600 px-3 py-2">No students match your search.</p>
-                ) : (
-                  filteredStudents.map((s) => (
-                    <button
-                      key={s.id}
-                      type="button"
-                      onMouseDown={(e) => { // use onMouseDown so it fires before input onBlur
-                        e.preventDefault();
-                        setSelectedStudent(s.id);
-                        setStudentSearch('');
-                        setIsDropdownOpen(false);
-                      }}
-                      className={cn("w-full text-left px-3 py-2 text-sm hover:bg-blue-50 transition-colors", selectedStudent === s.id ? "bg-blue-50 font-medium" : "")}
-                    >
-                      <span className="text-brand-slate">{s.name}</span>
-                      <span className="text-xs text-slate-500"> ({s.username})</span>
-                    </button>
-                  ))
-                )}
-              </div>
-            )}
-          </div>
+              className="w-full border border-slate-200 p-2 rounded-lg outline-none focus:ring-2 focus:ring-brand-navy text-sm">
+              <option value="">-- Select student --</option>
+              {filteredStudents.map(s => <option key={s.id} value={s.id}>{s.name} ({s.username})</option>)}
+            </select>
+          )}
           {selectedStudentLabel && (
             <p className="text-xs text-slate-500 mt-2">
               Selected: <span className="font-semibold text-brand-slate">{selectedStudentLabel.name}</span> ({selectedStudentLabel.username})

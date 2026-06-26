@@ -126,6 +126,8 @@ export default function TeacherDashboard() {
   const [form, setForm] = useState({ name: '', gradeLevel: '', subject: '', schoolYear: '2024-2025', sectionId: '' });
   const [filters, setFilters] = useState({ gradeLevel: '', subject: '' });
   const [isLoading, setIsLoading] = useState(true);
+  const [showWalkthrough, setShowWalkthrough] = useState(() => !localStorage.getItem('hasSeenTeacherWalkthrough'));
+  const [walkthroughStep, setWalkthroughStep] = useState(0);
 
   useEffect(() => {
     const user = JSON.parse(localStorage.getItem('user') || '{}');
@@ -166,11 +168,36 @@ export default function TeacherDashboard() {
 
   if (isLoading) return <div className="flex items-center justify-center h-64 text-slate-400 animate-pulse">Loading...</div>;
 
+  const hasDemo = classes.some(c => c.name.includes('[DEMO]'));
+
   const filteredClasses = classes.filter((cls) => {
     if (filters.gradeLevel && cls.gradeLevel !== filters.gradeLevel) return false;
     if (filters.subject && cls.subject !== filters.subject) return false;
     return true;
   });
+
+  const walkthroughSteps = [
+    {
+      emoji: '👋',
+      title: 'Welcome, Teacher!',
+      text: 'We\'ve set up a Demo Class for you so you can experience TulongGuro\'s AI grading right away — no setup needed.',
+    },
+    {
+      emoji: '📝',
+      title: 'Step 1: Open the Demo Class',
+      text: 'Click on the "[DEMO] Sandbox Demo Class" card below. Inside, you\'ll find a pre-loaded essay from a "Demo Student" waiting for your review.',
+    },
+    {
+      emoji: '🤖',
+      title: 'Step 2: Try the HITL Workspace',
+      text: 'Click on the pending submission to open the grading workspace. You\'ll see the AI\'s suggested score, feedback, and a scanned essay. Adjust anything you want — the AI is your co-pilot, not the final judge.',
+    },
+    {
+      emoji: '✅',
+      title: 'Step 3: You\'re Ready!',
+      text: 'Once you\'re comfortable, delete the Demo Class and create your own using the quick setup wizard. Add your real students and start grading!',
+    },
+  ];
 
   return (
     <div className="p-4 md:p-8 max-w-6xl mx-auto">
@@ -183,6 +210,53 @@ export default function TeacherDashboard() {
           Manage Block Sections
         </Link>
       </div>
+
+      {/* Interactive Walkthrough Banner */}
+      {hasDemo && showWalkthrough && (
+        <div className="mb-6 bg-gradient-to-r from-blue-50 to-indigo-50 border-2 border-blue-200 rounded-2xl overflow-hidden shadow-sm">
+          <div className="p-5">
+            <div className="flex items-start gap-4">
+              <div className="w-12 h-12 bg-brand-navy/10 rounded-xl flex items-center justify-center text-2xl shrink-0">
+                {walkthroughSteps[walkthroughStep].emoji}
+              </div>
+              <div className="flex-1 min-w-0">
+                <h3 className="font-bold text-brand-slate text-base mb-1">{walkthroughSteps[walkthroughStep].title}</h3>
+                <p className="text-sm text-slate-600 leading-relaxed">{walkthroughSteps[walkthroughStep].text}</p>
+              </div>
+              <button
+                onClick={() => { setShowWalkthrough(false); localStorage.setItem('hasSeenTeacherWalkthrough', 'true'); }}
+                className="text-slate-400 hover:text-slate-600 text-xs font-medium shrink-0"
+              >
+                Dismiss
+              </button>
+            </div>
+            <div className="flex items-center justify-between mt-4 pt-3 border-t border-blue-200/50">
+              <div className="flex gap-1.5">
+                {walkthroughSteps.map((_, i) => (
+                  <div key={i} className={`h-1.5 rounded-full transition-all ${walkthroughStep === i ? 'w-6 bg-brand-navy' : 'w-1.5 bg-slate-300'}`} />
+                ))}
+              </div>
+              <div className="flex gap-2">
+                {walkthroughStep > 0 && (
+                  <button onClick={() => setWalkthroughStep(s => s - 1)} className="text-xs font-medium text-slate-500 hover:text-slate-700 px-3 py-1.5 rounded-lg hover:bg-white transition-colors">Back</button>
+                )}
+                {walkthroughStep < walkthroughSteps.length - 1 ? (
+                  <button onClick={() => setWalkthroughStep(s => s + 1)} className="text-xs font-bold text-white bg-brand-navy px-4 py-1.5 rounded-lg hover:bg-blue-900 transition-colors flex items-center gap-1">
+                    Next <ChevronRight className="w-3 h-3" />
+                  </button>
+                ) : (
+                  <button
+                    onClick={() => { setShowWalkthrough(false); localStorage.setItem('hasSeenTeacherWalkthrough', 'true'); }}
+                    className="text-xs font-bold text-white bg-brand-green px-4 py-1.5 rounded-lg hover:bg-emerald-600 transition-colors"
+                  >
+                    Got it! Let's go 🚀
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {classes.length > 4 && (
         <div className="bg-white border border-slate-200 rounded-xl p-4 mb-6">
@@ -220,10 +294,15 @@ export default function TeacherDashboard() {
         <WizardEmptyState onComplete={() => window.location.reload()} />
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-          {filteredClasses.map((cls) => (
+          {filteredClasses.map((cls) => {
+            const isDemo = cls.name.includes('[DEMO]');
+            return (
             <Link key={cls.id} to={`/teacher/class/${cls.id}`}
-              className="block bg-white border border-slate-200 rounded-xl p-6 hover:shadow-md transition-shadow relative overflow-hidden group">
-              <div className="absolute top-0 left-0 w-1 h-full bg-brand-navy group-hover:w-2 transition-all" />
+              className={`block rounded-xl p-6 hover:shadow-md transition-shadow relative overflow-hidden group ${isDemo ? 'bg-amber-50 border-2 border-amber-300 ring-2 ring-amber-200/50' : 'bg-white border border-slate-200'}`}>
+              <div className={`absolute top-0 left-0 w-1 h-full ${isDemo ? 'bg-amber-500 group-hover:w-2' : 'bg-brand-navy group-hover:w-2'} transition-all`} />
+              {isDemo && (
+                <span className="absolute top-3 right-3 bg-amber-500 text-white text-[10px] font-extrabold px-2.5 py-1 rounded-full animate-pulse">🧪 Try Me!</span>
+              )}
               <div className="mb-2">
                 {(cls.gradeLevel || cls.subject) && (
                   <div className="flex gap-2 mb-2 flex-wrap">
@@ -251,7 +330,7 @@ export default function TeacherDashboard() {
                 <span className="text-xs font-bold text-brand-navy group-hover:text-blue-700">Open Class Hub →</span>
               </div>
             </Link>
-          ))}
+          )})}
 
           <button onClick={() => setIsModalOpen(true)}
             className="border-2 border-dashed border-slate-300 rounded-xl p-6 flex flex-col items-center justify-center text-slate-500 hover:text-brand-navy hover:border-brand-navy hover:bg-blue-50 transition-colors min-h-[160px]">

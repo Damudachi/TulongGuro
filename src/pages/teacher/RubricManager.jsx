@@ -9,36 +9,9 @@ const DEPED_RUBRICS = [
     description: 'Standard DepEd rubric for evaluating essay compositions in English and Filipino.',
     gradeRange: 'Grades 4-6',
     criteria: [
-      { 
-        name: 'Content & Ideas', points: 40, description: 'Depth of ideas, relevance to the topic, supporting details, and understanding of the prompt.',
-        scoringBands: [
-          { range: '36-40', label: 'Excellent', description: 'Rich, well-developed ideas with strong supporting details directly connected to the prompt.', color: 'bg-green-100 text-green-700' },
-          { range: '28-35', label: 'Proficient', description: 'Clear ideas with adequate supporting details. Minor gaps in development.', color: 'bg-blue-100 text-blue-700' },
-          { range: '20-27', label: 'Developing', description: 'Basic ideas present but underdeveloped. Limited or generic supporting details.', color: 'bg-amber-100 text-amber-700' },
-          { range: '10-19', label: 'Beginning', description: 'Vague or off-topic ideas. Few or no supporting details.', color: 'bg-orange-100 text-orange-700' },
-          { range: '0-9', label: 'Minimal', description: 'No clear ideas. Does not address the prompt.', color: 'bg-red-100 text-red-700' },
-        ]
-      },
-      { 
-        name: 'Organization', points: 30, description: 'Logical flow, paragraph structure, clear introduction, body, and conclusion. Use of transitions.',
-        scoringBands: [
-          { range: '27-30', label: 'Excellent', description: 'Clear introduction, body, and conclusion. Smooth transitions. Logical paragraph flow.', color: 'bg-green-100 text-green-700' },
-          { range: '21-26', label: 'Proficient', description: 'Recognizable structure with minor lapses in transitions or sequencing.', color: 'bg-blue-100 text-blue-700' },
-          { range: '15-20', label: 'Developing', description: 'Attempt at structure but ideas may be jumbled. Weak or missing transitions.', color: 'bg-amber-100 text-amber-700' },
-          { range: '8-14', label: 'Beginning', description: 'Little to no organizational structure. Reader struggles to follow.', color: 'bg-orange-100 text-orange-700' },
-          { range: '0-7', label: 'Minimal', description: 'No discernible organization.', color: 'bg-red-100 text-red-700' },
-        ]
-      },
-      { 
-        name: 'Language & Grammar', points: 30, description: 'Correct grammar, spelling, punctuation, sentence structure, and vocabulary usage.',
-        scoringBands: [
-          { range: '27-30', label: 'Excellent', description: 'Near-perfect grammar. Varied sentence structures. Rich vocabulary for grade level.', color: 'bg-green-100 text-green-700' },
-          { range: '21-26', label: 'Proficient', description: 'Minor grammatical errors that don\'t impede understanding. Good vocabulary.', color: 'bg-blue-100 text-blue-700' },
-          { range: '15-20', label: 'Developing', description: 'Frequent errors but meaning is still conveyed. Basic vocabulary.', color: 'bg-amber-100 text-amber-700' },
-          { range: '8-14', label: 'Beginning', description: 'Significant errors that impede comprehension. Very limited vocabulary.', color: 'bg-orange-100 text-orange-700' },
-          { range: '0-7', label: 'Minimal', description: 'Errors make text largely unreadable.', color: 'bg-red-100 text-red-700' },
-        ]
-      }
+      { name: 'Content & Ideas', points: 40, description: 'Depth of ideas, relevance to the topic, supporting details, and understanding of the prompt.' },
+      { name: 'Organization', points: 30, description: 'Logical flow, paragraph structure, clear introduction, body, and conclusion. Use of transitions.' },
+      { name: 'Language & Grammar', points: 30, description: 'Correct grammar, spelling, punctuation, sentence structure, and vocabulary usage.' }
     ]
   },
   {
@@ -172,31 +145,16 @@ export default function RubricManager() {
               {/* Expanded — Criteria Details */}
               {isOpen && (
                 <div className="border-t border-slate-100 px-5 pb-5 pt-4">
-                  <div className="space-y-4 mb-5">
+                  <div className="space-y-3 mb-5">
                     {rubric.criteria.map((c, i) => (
-                      <div key={i} className="flex flex-col bg-slate-50 rounded-xl overflow-hidden border border-slate-200">
-                        <div className="flex items-start gap-3 p-4">
-                          <div className="w-12 h-12 rounded-lg bg-brand-navy/10 text-brand-navy flex items-center justify-center font-extrabold text-sm shrink-0">
-                            {c.points}
-                          </div>
-                          <div>
-                            <p className="font-semibold text-brand-slate text-sm">{c.name}</p>
-                            <p className="text-xs text-slate-500 mt-0.5">{c.description}</p>
-                          </div>
+                      <div key={i} className="flex items-start gap-3 p-3 bg-slate-50 rounded-lg">
+                        <div className="w-12 h-12 rounded-lg bg-brand-navy/10 text-brand-navy flex items-center justify-center font-extrabold text-sm shrink-0">
+                          {c.points}
                         </div>
-                        {c.scoringBands && (
-                          <div className="bg-white border-t border-slate-200 p-3 grid grid-cols-1 md:grid-cols-5 gap-2">
-                            {c.scoringBands.map((band, bIdx) => (
-                              <div key={bIdx} className="p-2.5 rounded-lg border border-slate-100 bg-slate-50 flex flex-col h-full">
-                                <div className="flex items-center gap-1.5 mb-1 flex-wrap">
-                                  <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${band.color}`}>{band.range}</span>
-                                  <span className="text-[11px] font-bold text-slate-700">{band.label}</span>
-                                </div>
-                                <p className="text-[10px] text-slate-500 leading-relaxed flex-1 mt-1">{band.description}</p>
-                              </div>
-                            ))}
-                          </div>
-                        )}
+                        <div>
+                          <p className="font-semibold text-brand-slate text-sm">{c.name}</p>
+                          <p className="text-xs text-slate-500 mt-0.5">{c.description}</p>
+                        </div>
                       </div>
                     ))}
                   </div>

@@ -2,7 +2,6 @@ import { useState, useEffect } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import { Plus, Search, FileText, User, ArrowLeft, Clock, CheckCircle2, AlertCircle, UploadCloud, Trash2 } from 'lucide-react';
 import { API_URL } from '../../config';
-import EmptyStateCoach from '../../components/EmptyStateCoach';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
 
@@ -165,11 +164,11 @@ export default function ClassHub() {
           </div>
 
           {filteredActivities.length === 0 && (
-            <EmptyStateCoach
-              icon={<FileText className="w-10 h-10 text-brand-navy" />}
-              title="No Activities Yet"
-              description="Create an activity to start collecting and grading student submissions for this class."
-            />
+            <div className="text-center py-16 border-2 border-dashed border-slate-200 rounded-2xl text-slate-400">
+              <FileText className="w-12 h-12 mx-auto mb-3 opacity-30" />
+              <p className="font-medium">No activities yet</p>
+              <p className="text-sm">Create the first activity for this class</p>
+            </div>
           )}
 
           {filteredActivities.map(activity => {
