@@ -74,6 +74,13 @@ const chatModel = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
 app.post('/api/auth/register', async (req, res) => {
   try {
     const { name, email, password, schoolName } = req.body;
+
+    // Check for existing email before attempting to create
+    const existing = await prisma.user.findFirst({ where: { email } });
+    if (existing) {
+      return res.status(400).json({ success: false, error: 'An account with this email already exists. Please log in instead.' });
+    }
+
     const user = await prisma.user.create({
       data: { name, email, username: email, password, role: 'TEACHER', schoolName }
     });
