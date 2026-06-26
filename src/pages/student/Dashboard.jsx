@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { Award, CheckCircle2, Star, Loader2, Lightbulb, ChevronRight, Clock, BookOpen, TrendingUp, Bot, Sparkles } from 'lucide-react';
 import { API_URL } from '../../config';
+import { hasSeenFlag, markFlagSeen, FLAGS } from '../../utils/onboardingState';
 
 const SKILL_LABELS = { vocabulary: 'Vocabulary', punctuation: 'Punctuation', thematicFlow: 'Thematic Flow', sentenceStructure: 'Sentence Structure' };
 
@@ -28,7 +29,7 @@ export default function StudentDashboard() {
   const [welcomeStep, setWelcomeStep] = useState(0);
 
   useEffect(() => {
-    if (!localStorage.getItem('hasSeenStudentWelcome')) {
+    if (!hasSeenFlag(FLAGS.STUDENT_WELCOME)) {
       setShowWelcome(true);
     }
     const user = JSON.parse(localStorage.getItem('user') || '{}');
@@ -103,7 +104,7 @@ export default function StudentDashboard() {
                     if (welcomeStep < 2) setWelcomeStep(prev => prev + 1);
                     else {
                       setShowWelcome(false);
-                      localStorage.setItem('hasSeenStudentWelcome', 'true');
+                      markFlagSeen(FLAGS.STUDENT_WELCOME);
                     }
                   }}
                   className="w-full bg-brand-green text-white font-bold py-3.5 rounded-xl hover:bg-emerald-600 transition-colors shadow-lg shadow-brand-green/20"

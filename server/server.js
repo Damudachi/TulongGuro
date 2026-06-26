@@ -495,6 +495,31 @@ async function preprocessImage(inputPath) {
 }
 
 // ─────────────────────────────────────────
+// FEATURE 5: OCR Name Extraction (Fast Path)
+// ─────────────────────────────────────────
+app.post('/api/teacher/extract-name', upload.single('image'), async (req, res) => {
+  try {
+    const imageFile = req.file;
+    if (!imageFile) return res.status(400).json({ error: 'No image provided' });
+
+    const processedPath = await preprocessImage(imageFile.path);
+    const imgBuffer = fs.readFileSync(processedPath);
+    const imageParts = [{ inlineData: { data: imgBuffer.toString('base64'), mimeType: 'image/jpeg' } }];
+
+    const prompt = 'Extract the student name written at the top of this paper. Return ONLY the name, nothing else. If you cannot find any name, return exactly "NONE".';
+    
+    // Use the faster modelLite for just OCR
+    const result = await modelLite.generateContent([prompt, ...imageParts]);
+    const text = result.response.text().trim();
+    
+    res.json({ success: true, name: text === 'NONE' ? null : text });
+  } catch (e) {
+    console.error('OCR Extraction Error:', e);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// ─────────────────────────────────────────
 // VLM UPLOAD (Gemini Vision)
 // ─────────────────────────────────────────
 app.post('/api/teacher/upload', upload.single('image'), async (req, res) => {
@@ -512,17 +537,35 @@ app.post('/api/teacher/upload', upload.single('image'), async (req, res) => {
     const processedUrl = await uploadToCloud(processedPath, processedFilename);
 
     // 2) Fetch activity rubric context
-    let rubricContext = 'Use standard DepEd essay rubric: Content & Ideas (40 pts), Organization (30 pts), Language & Grammar (30 pts).';
+    let rubricContext = 'Use standard DepEd essay rubric with these scoring bands:\n' +
+      '- Content & Ideas (40 pts): 36-40 Excellent (rich ideas, strong details), 28-35 Proficient (clear ideas, adequate details), 20-27 Developing (basic, underdeveloped), 10-19 Beginning (vague, off-topic), 0-9 Minimal (no clear ideas)\n' +
+      '- Organization (30 pts): 27-30 Excellent (clear structure, smooth transitions), 21-26 Proficient (recognizable structure), 15-20 Developing (jumbled ideas), 8-14 Beginning (no structure), 0-7 Minimal\n' +
+      '- Language & Grammar (30 pts): 27-30 Excellent (near-perfect, varied sentences), 21-26 Proficient (minor errors), 15-20 Developing (frequent errors), 8-14 Beginning (significant errors), 0-7 Minimal.';
     let activityContext = '';
+    let gradeLevelForPrompt = 'Grade 6';
+    let subjectForPrompt = 'English';
+
     if (activityId && activityId !== 'mock-activity-id') {
-      const activity = await prisma.activity.findUnique({ where: { id: activityId } });
+      const activity = await prisma.activity.findUnique({ 
+        where: { id: activityId }, 
+        include: { class: { include: { section: true } } } 
+      });
       if (activity) {
         activityContext = `Activity: "${activity.title}" (${activity.type}). Instructions: "${activity.instructions || 'N/A'}".`;
+        if (activity.class?.gradeLevel) gradeLevelForPrompt = activity.class.gradeLevel;
+        if (activity.class?.subject) subjectForPrompt = activity.class.subject;
+        
         if (activity.rubric) {
           try {
             const parsed = JSON.parse(activity.rubric);
             if (parsed.criteria?.length) {
-              rubricContext = 'Use this rubric: ' + parsed.criteria.map(c => `${c.name} (${c.points} pts): ${c.description || ''}`).join('; ') + '.';
+              rubricContext = 'Use this rubric:\n' + parsed.criteria.map(c => {
+                let bandStr = '';
+                if (c.scoringBands) {
+                  bandStr = c.scoringBands.map(b => `${b.range} ${b.label} (${b.description})`).join(', ');
+                }
+                return `- ${c.name} (${c.points} pts): ${c.description || ''}. ${bandStr ? 'Bands: ' + bandStr : ''}`;
+              }).join('\n');
             }
           } catch { }
         }
@@ -547,12 +590,35 @@ app.post('/api/teacher/upload', upload.single('image'), async (req, res) => {
       }
     }
 
-    // 4) Build the prompt — includes no-text detection + pedagogical tutor persona
-    // Get grade level from activity context for age-appropriate feedback
-    let gradeLevelForPrompt = 'Grade 6';
+    // 3.5) Section Context Injection — fetch 2-3 recent graded submissions from same section
+    let sectionContext = '';
     if (activityId && activityId !== 'mock-activity-id') {
-      const actForLevel = await prisma.activity.findUnique({ where: { id: activityId }, include: { class: { select: { gradeLevel: true } } } });
-      if (actForLevel?.class?.gradeLevel) gradeLevelForPrompt = actForLevel.class.gradeLevel;
+      const activity = await prisma.activity.findUnique({
+        where: { id: activityId },
+        include: { class: { include: { section: true } } }
+      });
+      if (activity?.class?.sectionId) {
+        const sectionSubmissions = await prisma.submission.findMany({
+          where: {
+            activityId,
+            status: 'GRADED',
+            student: { sectionId: activity.class.sectionId }
+          },
+          orderBy: { updatedAt: 'desc' },
+          take: 3,
+          include: { student: { select: { name: true } } }
+        });
+        if (sectionSubmissions.length > 0) {
+          sectionContext = '\n\nSECTION PERFORMANCE BASELINE — Here are recent graded papers from this same section and activity:\n' +
+            sectionSubmissions.map((sub, i) => {
+              try {
+                const feedback = JSON.parse(sub.hitlFeedback || sub.aiFeedback || '{}');
+                return `Student ${i+1}: Score ${sub.hitlScore || sub.aiScore}/100 | Strengths: "${feedback.strengths?.slice(0,100) || ''}" | Key Issue: "${feedback.areasForGrowth?.[0]?.explanation?.slice(0,80) || 'N/A'}"`;
+              } catch { return ''; }
+            }).filter(Boolean).join('\n') +
+            '\nUse this context to understand how this section typically performs. Calibrate your grading accordingly.';
+        }
+      }
     }
 
     // Determine language complexity based on grade level
@@ -561,7 +627,21 @@ app.post('/api/teacher/upload', upload.single('image'), async (req, res) => {
       ? 'Use very simple, encouraging language. Short sentences. Think of how a kind Ate/Kuya would talk to a young child.'
       : 'Use clear academic language appropriate for upper elementary students. Be specific but not overwhelming.';
 
-    const prompt = `You are a warm, encouraging Filipino tutor ("Guro") giving constructive feedback to a ${gradeLevelForPrompt} student in a Philippine public school (DepEd K-12 curriculum).
+    const DEPED_GRADE_EXPECTATIONS = {
+      1: { writingLevel: 'Can write simple words and short phrases', grammar: 'Basic capitalization and periods', vocabulary: 'Common everyday words (50-100 word vocabulary)', topics: 'Family, school, self, community helpers' },
+      2: { writingLevel: 'Can write 2-3 complete simple sentences', grammar: 'Periods, question marks, capital letters', vocabulary: 'Descriptive adjectives, action verbs', topics: 'Community, animals, seasons, feelings' },
+      3: { writingLevel: 'Can write a short paragraph (3-5 sentences) with a main idea', grammar: 'Commas in series, correct tense usage', vocabulary: 'Transition words (first, then, finally)', topics: 'Personal narratives, simple reports, letter writing' },
+      4: { writingLevel: 'Can write organized paragraphs with topic sentence and details', grammar: 'Subject-verb agreement, proper nouns, quotation marks', vocabulary: 'Similes, compound words, context clues', topics: 'Expository writing, opinion pieces, book reports' },
+      5: { writingLevel: 'Can write multi-paragraph compositions with introduction and conclusion', grammar: 'Complex sentences, consistent tense, pronoun-antecedent agreement', vocabulary: 'Figurative language, academic vocabulary, prefixes/suffixes', topics: 'Persuasive essays, research summaries, cause-and-effect writing' },
+      6: { writingLevel: 'Can write well-structured essays with clear thesis and supporting evidence', grammar: 'Varied sentence structures, semicolons, transitions between paragraphs', vocabulary: 'Domain-specific terms, connotation/denotation, analogies', topics: 'Argumentative essays, literary analysis, informational reports' },
+      7: { writingLevel: 'Can write analytical essays with multiple body paragraphs and citations', grammar: 'Active vs passive voice, parallel structure, modifiers', vocabulary: 'Academic register, rhetorical devices', topics: 'Literary criticism, research papers with bibliography' },
+      8: { writingLevel: 'Can write persuasive and analytical texts with nuanced arguments', grammar: 'Complex-compound sentences, subjunctive mood', vocabulary: 'Technical terminology, etymological awareness', topics: 'Position papers, feature articles, formal reports' },
+      9: { writingLevel: 'Can write extended compositions with sophisticated argumentation', grammar: 'Advanced punctuation, sentence variety for effect', vocabulary: 'Discipline-specific jargon, rhetorical vocabulary', topics: 'Critical essays, research proposals, reflective analysis' },
+      10: { writingLevel: 'Can write polished academic texts demonstrating critical thinking', grammar: 'Publication-ready mechanics, stylistic choices', vocabulary: 'Scholarly register, nuanced word choice', topics: 'Thesis-driven essays, literature reviews, persuasive speeches' },
+    };
+    const expectations = DEPED_GRADE_EXPECTATIONS[Math.min(10, Math.max(1, gradeNum))] || DEPED_GRADE_EXPECTATIONS[6];
+
+    const prompt = `You are a warm, encouraging Filipino tutor ("Guro") giving constructive feedback to a ${gradeLevelForPrompt} student in a Philippine public school (DepEd K-12 curriculum). Subject: ${subjectForPrompt}.
 
 YOUR TEACHING PHILOSOPHY:
 - Always start with genuine praise — find something the student did well, no matter how small.
@@ -569,8 +649,15 @@ YOUR TEACHING PHILOSOPHY:
 - Give bite-sized, concrete action steps — not vague advice like "improve your grammar."
 - ${languageGuide}
 
+GRADE-LEVEL EXPECTATIONS for ${gradeLevelForPrompt} (DepEd K-12 Curriculum):
+- Writing Level: ${expectations.writingLevel}
+- Expected Grammar: ${expectations.grammar}
+- Expected Vocabulary: ${expectations.vocabulary}
+- Typical Topics: ${expectations.topics}
+CRITICAL: Grade this student ONLY against ${gradeLevelForPrompt} expectations. Do NOT penalize a ${gradeLevelForPrompt} student for lacking skills taught in higher grades.
+
 ${activityContext}
-${rubricContext}${fewShotExamples}
+${rubricContext}${fewShotExamples}${sectionContext}
 
 IMPORTANT RULES:
 - First, check if the image contains readable handwritten or printed text.
@@ -585,6 +672,7 @@ TASK: In ONE step:
 
 You MUST respond with valid JSON matching this exact schema:
 {
+  "studentNameDetected": "<Extracted student name written on the paper, or null if none found>",
   "score": <total 0-100, use 0 if no readable text>,
   "contentScore": <number>, "contentMax": <number>,
   "organizationScore": <number>, "organizationMax": <number>,
