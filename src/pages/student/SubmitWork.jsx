@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowLeft, Camera, UploadCloud, FileText, CheckCircle2, Clock, Loader2, Sparkles, ChevronRight } from 'lucide-react';
+import { ArrowLeft, Camera, UploadCloud, FileText, CheckCircle2, Clock, Loader2, Sparkles, ChevronRight, AlertTriangle } from 'lucide-react';
 import { API_URL } from '../../config';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
@@ -139,6 +139,12 @@ export default function SubmitWork() {
           {/* Step 2: Upload Photo */}
           {selected && (
             <div className="mb-6">
+              <div className="mb-4 p-4 bg-amber-50 border border-amber-200 text-amber-800 rounded-xl flex items-start gap-3 shadow-sm">
+                <AlertTriangle className="w-5 h-5 shrink-0 mt-0.5" />
+                <p className="text-sm font-medium leading-relaxed">
+                  ⚠ Privacy Act Reminder: Please ensure your name is NOT written on the paper to protect your privacy. Ensure the picture is clear and well-lit.
+                </p>
+              </div>
               <h2 className="text-sm font-bold text-slate-400 uppercase tracking-wider mb-3">Step 2 — Upload Your Essay</h2>
               <div
                 onClick={() => fileRef.current?.click()}

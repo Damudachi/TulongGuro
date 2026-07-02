@@ -84,6 +84,7 @@ model Submission {
   rubricData      String?
   skillScores     String?  // JSON: { vocabulary, punctuation, thematicFlow, sentenceStructure }
   covData         String?  // JSON: { originalScore, verifiedScore, conflict }
+  privacyViolation Boolean  @default(false)
   status          String   @default("PENDING")
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt

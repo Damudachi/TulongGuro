@@ -518,18 +518,26 @@ app.post('/api/teacher/upload', upload.single('image'), async (req, res) => {
     // Upload to Supabase Storage in production, local path in dev
     const processedUrl = await uploadToCloud(processedPath, processedFilename);
 
-    // 2) Fetch activity rubric context
-    let rubricContext = 'Use standard DepEd essay rubric: Content & Ideas (40 pts), Organization (30 pts), Language & Grammar (30 pts).';
+    // 2) Fetch activity rubric context (with banded scoring support)
+    let rubricContext = 'Use standard DepEd essay rubric: Content & Ideas (40 pts: 35-40 Outstanding, 25-34 Proficient, 15-24 Developing, 0-14 Beginning), Organization (30 pts: 27-30 Outstanding, 19-26 Proficient, 10-18 Developing, 0-9 Beginning), Language & Grammar (30 pts: 27-30 Outstanding, 19-26 Proficient, 10-18 Developing, 0-9 Beginning).';
     let activityContext = '';
+    let subjectForPrompt = 'English';
     if (activityId && activityId !== 'mock-activity-id') {
-      const activity = await prisma.activity.findUnique({ where: { id: activityId } });
+      const activity = await prisma.activity.findUnique({ where: { id: activityId }, include: { class: { select: { subject: true } } } });
       if (activity) {
         activityContext = `Activity: "${activity.title}" (${activity.type}). Instructions: "${activity.instructions || 'N/A'}".`;
+        if (activity.class?.subject) subjectForPrompt = activity.class.subject;
         if (activity.rubric) {
           try {
             const parsed = JSON.parse(activity.rubric);
             if (parsed.criteria?.length) {
-              rubricContext = 'Use this rubric: ' + parsed.criteria.map(c => `${c.name} (${c.points} pts): ${c.description || ''}`).join('; ') + '.';
+              rubricContext = 'Use this rubric:\n' + parsed.criteria.map(c => {
+                let bandStr = '';
+                if (c.bands?.length) {
+                  bandStr = ' Scoring bands: ' + c.bands.map(b => `${b.range} ${b.label}: ${b.description}`).join('; ');
+                }
+                return `• ${c.name} (${c.points} pts): ${c.description || ''}${bandStr}`;
+              }).join('\n') + '\nGrade each criterion within these bands and justify your score placement.';
             }
           } catch { }
         }
@@ -554,6 +562,39 @@ app.post('/api/teacher/upload', upload.single('image'), async (req, res) => {
       }
     }
 
+    // 3b) Few-Shot Section Memory — fetch recent teacher-approved submissions from the same section
+    let sectionContext = '';
+    if (activityId && activityId !== 'mock-activity-id') {
+      try {
+        const actForSection = await prisma.activity.findUnique({ where: { id: activityId }, include: { class: { select: { sectionId: true } } } });
+        const sectionId = actForSection?.class?.sectionId;
+        if (sectionId) {
+          const recentGraded = await prisma.submission.findMany({
+            where: {
+              status: 'GRADED',
+              activity: { class: { sectionId } }
+            },
+            orderBy: { updatedAt: 'desc' },
+            take: 3,
+            select: {
+              hitlScore: true,
+              hitlFeedback: true,
+              student: { select: { name: true } },
+              activity: { select: { title: true, type: true } }
+            }
+          });
+          if (recentGraded.length > 0) {
+            sectionContext = '\n\nSECTION CONTEXT — Recent teacher-approved work from this section (use as baseline for this section\'s level):\n' +
+              recentGraded.map((s, i) => {
+                let fb = s.hitlFeedback || '';
+                try { const p = JSON.parse(fb); fb = p.strengths || fb; } catch {}
+                return `Student ${i + 1}: Score ${s.hitlScore}/100 for "${s.activity?.title}" — Feedback: "${fb.slice(0, 150)}..."`;
+              }).join('\n');
+          }
+        }
+      } catch { /* section context is optional, don't break grading */ }
+    }
+
     // 4) Build the prompt — includes no-text detection + pedagogical tutor persona
     // Get grade level from activity context for age-appropriate feedback
     let gradeLevelForPrompt = 'Grade 6';
@@ -566,9 +607,30 @@ app.post('/api/teacher/upload', upload.single('image'), async (req, res) => {
     const gradeNum = parseInt(gradeLevelForPrompt.replace(/\D/g, '')) || 6;
     const languageGuide = gradeNum <= 3
       ? 'Use very simple, encouraging language. Short sentences. Think of how a kind Ate/Kuya would talk to a young child.'
-      : 'Use clear academic language appropriate for upper elementary students. Be specific but not overwhelming.';
+      : gradeNum <= 6
+        ? 'Use clear academic language appropriate for upper elementary students. Be specific but not overwhelming.'
+        : gradeNum <= 8
+          ? 'Use academic language appropriate for junior high school. You can introduce more complex terms but always explain them.'
+          : gradeNum <= 10
+            ? 'Use formal academic language. Expect higher-order thinking and cite specific literary/rhetorical concepts when relevant.'
+            : 'Use college-prep academic language. Reference disciplinary literacy standards and analytical frameworks.';
 
-    const prompt = `You are a warm, encouraging Filipino tutor ("Guro") giving constructive feedback to a ${gradeLevelForPrompt} student in a Philippine public school (DepEd K-12 curriculum).
+    // DepEd MATATAG Curriculum Context by Grade Level
+    const curriculumContext = `
+CURRICULUM CONTEXT (DepEd K-12 MATATAG, ${subjectForPrompt}, ${gradeLevelForPrompt}):
+${gradeNum <= 3 ? '- Focus: Simple sentence construction, basic narrative writing, phonics-based spelling, picture-prompted writing.' :
+  gradeNum <= 4 ? '- Focus: Paragraph writing, personal narratives, descriptive writing, basic grammar (subject-verb agreement, tenses).' :
+  gradeNum <= 6 ? '- Focus: Multi-paragraph essays, opinion/persuasive writing, basic research skills, formal letter writing, text-based evidence.' :
+  gradeNum <= 8 ? '- Focus: Formal essay structure (5-paragraph), persuasive/argumentative writing, literary analysis, note-taking, summarizing.' :
+  gradeNum <= 10 ? '- Focus: Advanced argumentative essays, research papers, critical analysis, literary criticism, position papers.' :
+  '- Focus: Academic writing, disciplinary literacy, advanced research papers, position papers, technical writing.'}
+- Evaluate this student's work against the standards expected at ${gradeLevelForPrompt} — not against college-level expectations.
+- A ${gradeLevelForPrompt} student who writes well for their age should score 75-85. Reserve 90+ for truly exceptional work at this level.
+`;
+
+    const prompt = `You are a warm, encouraging Filipino tutor ("Guro") giving constructive feedback to a ${gradeLevelForPrompt} student studying ${subjectForPrompt} in a Philippine public school (DepEd K-12 MATATAG curriculum).
+
+${curriculumContext}
 
 YOUR TEACHING PHILOSOPHY:
 - Always start with genuine praise — find something the student did well, no matter how small.
@@ -577,12 +639,13 @@ YOUR TEACHING PHILOSOPHY:
 - ${languageGuide}
 
 ${activityContext}
-${rubricContext}${fewShotExamples}
+${rubricContext}${fewShotExamples}${sectionContext}
 
 IMPORTANT RULES:
 - First, check if the image contains readable handwritten or printed text.
 - If the image is BLANK, contains only drawings/art with no text, is too blurry to read, or has NO readable written content, you MUST set score to 0, set noTextDetected to true, provide a short explanation in strengths, and leave areasForGrowth and actionableSteps as empty arrays.
 - If you CAN read text, grade it normally against the rubric using the structured feedback format below.
+- DATA PRIVACY RULE: Do NOT mention or include the student's name anywhere in your feedback. If you detect a student's name written on the paper, set "privacyViolationDetected" to true.
 
 TASK: In ONE step:
 1. Read and transcribe the handwritten student essay from the image.
@@ -614,6 +677,7 @@ You MUST respond with valid JSON matching this exact schema:
   },
   "readingStrategy": "<Personalized 2-sentence reading strategy directly connected to the weaknesses above. Or 'N/A' if no text found.>",
   "noTextDetected": <true if image has no readable text, false otherwise>,
+  "privacyViolationDetected": <true if you can clearly read a student's name written anywhere on the paper, false otherwise>,
   "skillScores": {
     "vocabulary": <0-25>,
     "punctuation": <0-25>,
@@ -756,6 +820,7 @@ Respond with JSON ONLY using the same schema as before.`;
         aiScore: aiResult.score,
         hitlScore: aiResult.score,
         aiFeedback: structuredFeedback,
+        privacyViolation: aiResult.privacyViolationDetected || false,
         readingStrategy: aiResult.readingStrategy,
         rubricData: JSON.stringify({
           content: { score: aiResult.contentScore, max: aiResult.contentMax },
@@ -775,7 +840,8 @@ Respond with JSON ONLY using the same schema as before.`;
       covData,
       aiSource,           // 'gemini' | 'gemini-lite' | 'mock'
       aiError,            // null if AI worked, error string if it failed
-      noTextDetected: aiResult.noTextDetected || false
+      noTextDetected: aiResult.noTextDetected || false,
+      privacyViolationDetected: aiResult.privacyViolationDetected || false
     });
   } catch (e) {
     console.log('❌ Upload endpoint error:', e.message);

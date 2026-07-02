@@ -126,7 +126,10 @@ export default function TeacherDashboard() {
   const [form, setForm] = useState({ name: '', gradeLevel: '', subject: '', schoolYear: '2024-2025', sectionId: '' });
   const [filters, setFilters] = useState({ gradeLevel: '', subject: '' });
   const [isLoading, setIsLoading] = useState(true);
-  const [showWalkthrough, setShowWalkthrough] = useState(() => !localStorage.getItem('hasSeenTeacherWalkthrough'));
+  const [showWalkthrough, setShowWalkthrough] = useState(() => {
+    const user = JSON.parse(localStorage.getItem('user') || '{}');
+    return user.id ? !localStorage.getItem(`hasSeenTeacherWalkthrough_${user.id}`) : false;
+  });
   const [walkthroughStep, setWalkthroughStep] = useState(0);
 
   useEffect(() => {
@@ -224,7 +227,11 @@ export default function TeacherDashboard() {
                 <p className="text-sm text-slate-600 leading-relaxed">{walkthroughSteps[walkthroughStep].text}</p>
               </div>
               <button
-                onClick={() => { setShowWalkthrough(false); localStorage.setItem('hasSeenTeacherWalkthrough', 'true'); }}
+                onClick={() => {
+                  const user = JSON.parse(localStorage.getItem('user') || '{}');
+                  setShowWalkthrough(false);
+                  if (user.id) localStorage.setItem(`hasSeenTeacherWalkthrough_${user.id}`, 'true');
+                }}
                 className="text-slate-400 hover:text-slate-600 text-xs font-medium shrink-0"
               >
                 Dismiss
@@ -246,7 +253,11 @@ export default function TeacherDashboard() {
                   </button>
                 ) : (
                   <button
-                    onClick={() => { setShowWalkthrough(false); localStorage.setItem('hasSeenTeacherWalkthrough', 'true'); }}
+                    onClick={() => {
+                      const user = JSON.parse(localStorage.getItem('user') || '{}');
+                      setShowWalkthrough(false);
+                      if (user.id) localStorage.setItem(`hasSeenTeacherWalkthrough_${user.id}`, 'true');
+                    }}
                     className="text-xs font-bold text-white bg-brand-green px-4 py-1.5 rounded-lg hover:bg-emerald-600 transition-colors"
                   >
                     Got it! Let's go 🚀

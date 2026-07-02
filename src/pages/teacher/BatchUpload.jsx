@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
-import { ArrowLeft, Camera, UploadCloud, X, Play, CheckCircle2, Clock, Loader2, User, Wifi, WifiOff, Trash2 } from 'lucide-react';
+import { ArrowLeft, Camera, UploadCloud, X, Play, CheckCircle2, Clock, Loader2, User, Wifi, WifiOff, Trash2, AlertTriangle } from 'lucide-react';
 import { getQueue, buildJob, enqueue, flushQueue } from '../../utils/offlineQueue';
 import { API_URL } from '../../config';
 
@@ -31,8 +31,8 @@ export default function BatchUpload() {
   const [files, setFiles] = useState([]);
   const [students, setStudents] = useState([]);
   const [selectedStudent, setSelectedStudent] = useState('');
-  const [selectValue, setSelectValue] = useState('');
   const [studentSearch, setStudentSearch] = useState('');
+  const [isDropdownOpen, setIsDropdownOpen] = useState(false);
   const [activityMeta, setActivityMeta] = useState(null);
   const [activitySubmissions, setActivitySubmissions] = useState([]);
   const [isLoadingSubmissions, setIsLoadingSubmissions] = useState(false);
@@ -165,10 +165,6 @@ export default function BatchUpload() {
   const selectedStudentLabel = selectedStudent
     ? students.find(s => s.id === selectedStudent)
     : null;
-  const selectedStudentDisplay = selectedStudentLabel
-    ? `${selectedStudentLabel.name} (${selectedStudentLabel.username})`
-    : '';
-  const showSearchResults = normalizedSearch && studentSearch !== selectedStudentDisplay;
   const isStudentSubmitMode = activityMeta?.submissionMode === 'STUDENT_SUBMIT';
   const submissionsByStudentId = activitySubmissions.reduce((map, sub) => {
     map[sub.studentId] = sub;
@@ -227,59 +223,63 @@ export default function BatchUpload() {
         </p>
       </div>
 
+      {/* Privacy Banner */}
+      {!isStudentSubmitMode && (
+        <div className="flex items-start gap-2 p-3 bg-amber-50 border border-amber-200 rounded-xl text-sm text-amber-800">
+          <AlertTriangle className="w-5 h-5 shrink-0" />
+          <span>⚠ Privacy Act Reminder: Please ensure the student's name is NOT included in the picture to protect their privacy. Ensure the picture is clear and well-lit.</span>
+        </div>
+      )}
+
       {/* Student Selector */}
       {!isStudentSubmitMode && students.length > 0 && (
         <div className="bg-white p-4 rounded-xl border border-slate-200">
           <label className="block text-sm font-medium text-slate-700 mb-2 flex items-center gap-2">
             <User className="w-4 h-4" /> Assign to Student
           </label>
-          <input
-            type="text"
-            value={studentSearch || selectedStudentDisplay}
-            onChange={(e) => setStudentSearch(e.target.value)}
-            placeholder="Select a student (search by name or ID)"
-            className="w-full border border-slate-200 p-2 rounded-lg outline-none focus:ring-2 focus:ring-brand-navy text-sm mb-2"
-          />
-          {showSearchResults && (
-            <div className="border border-slate-200 rounded-lg max-h-40 overflow-auto bg-white mb-2">
-              {filteredStudents.length === 0 ? (
-                <p className="text-xs text-amber-600 px-3 py-2">No students match your search.</p>
-              ) : (
-                filteredStudents.slice(0, 8).map((s) => (
-                  <button
-                    key={s.id}
-                    type="button"
-                    onClick={() => {
-                      setSelectedStudent(s.id);
-                      setStudentSearch('');
-                      setSelectValue('');
-                    }}
-                    className="w-full text-left px-3 py-2 text-sm hover:bg-blue-50"
-                  >
-                    <span className="font-medium text-brand-slate">{s.name}</span>
-                    <span className="text-xs text-slate-500"> ({s.username})</span>
-                  </button>
-                ))
-              )}
-            </div>
-          )}
-          {!normalizedSearch && (
-            <select
-              value={selectValue}
+          <div className="relative">
+            <input
+              type="text"
+              value={studentSearch}
               onChange={(e) => {
-                const pickedId = e.target.value;
-                setSelectedStudent(pickedId);
-                setStudentSearch('');
-                setSelectValue('');
+                setStudentSearch(e.target.value);
+                setIsDropdownOpen(true);
+                if (selectedStudent) setSelectedStudent('');
               }}
-              className="w-full border border-slate-200 p-2 rounded-lg outline-none focus:ring-2 focus:ring-brand-navy text-sm">
-              <option value="">-- Select student --</option>
-              {filteredStudents.map(s => <option key={s.id} value={s.id}>{s.name} ({s.username})</option>)}
-            </select>
-          )}
+              onFocus={() => setIsDropdownOpen(true)}
+              onBlur={() => setTimeout(() => setIsDropdownOpen(false), 200)}
+              placeholder={selectedStudentLabel ? `${selectedStudentLabel.name} (${selectedStudentLabel.username})` : "Type to search student name or ID..."}
+              className="w-full border border-slate-200 p-2.5 rounded-lg outline-none focus:ring-2 focus:ring-brand-navy text-sm transition-all"
+            />
+            {isDropdownOpen && (
+              <div className="absolute z-10 w-full mt-1 border border-slate-200 rounded-lg max-h-48 overflow-auto bg-white shadow-lg">
+                {filteredStudents.length === 0 ? (
+                  <p className="text-xs text-amber-600 px-4 py-3">No students match your search.</p>
+                ) : (
+                  filteredStudents.map((s) => (
+                    <button
+                      key={s.id}
+                      type="button"
+                      onMouseDown={(e) => {
+                        e.preventDefault(); // prevent blur
+                        setSelectedStudent(s.id);
+                        setStudentSearch('');
+                        setIsDropdownOpen(false);
+                      }}
+                      className={`w-full text-left px-4 py-2.5 text-sm transition-colors ${selectedStudent === s.id ? 'bg-blue-50' : 'hover:bg-slate-50'}`}
+                    >
+                      <span className="font-medium text-brand-slate">{s.name}</span>
+                      <span className="text-xs text-slate-500 ml-1">({s.username})</span>
+                    </button>
+                  ))
+                )}
+              </div>
+            )}
+          </div>
           {selectedStudentLabel && (
-            <p className="text-xs text-slate-500 mt-2">
-              Selected: <span className="font-semibold text-brand-slate">{selectedStudentLabel.name}</span> ({selectedStudentLabel.username})
+            <p className="text-xs text-slate-500 mt-3 flex items-center gap-1.5 bg-blue-50 text-blue-700 px-3 py-2 rounded-md">
+              <CheckCircle2 className="w-4 h-4 shrink-0" />
+              Selected: <span className="font-semibold">{selectedStudentLabel.name}</span>
             </p>
           )}
         </div>
