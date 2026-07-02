@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
-import { ArrowLeft, Camera, UploadCloud, X, Play, CheckCircle2, Clock, Loader2, User, Wifi, WifiOff, Trash2, AlertTriangle } from 'lucide-react';
+import { ArrowLeft, Camera, UploadCloud, X, Play, CheckCircle2, Clock, Loader2, User, Wifi, WifiOff, Trash2, AlertTriangle, Info } from 'lucide-react';
 import { getQueue, buildJob, enqueue, flushQueue } from '../../utils/offlineQueue';
 import { API_URL } from '../../config';
 
@@ -228,6 +228,18 @@ export default function BatchUpload() {
         <div className="flex items-start gap-2 p-3 bg-amber-50 border border-amber-200 rounded-xl text-sm text-amber-800">
           <AlertTriangle className="w-5 h-5 shrink-0" />
           <span>⚠ Privacy Act Reminder: Please ensure the student's name is NOT included in the picture to protect their privacy. Ensure the picture is clear and well-lit.</span>
+        </div>
+      )}
+
+      {/* Handwriting Legibility Banner */}
+      {!isStudentSubmitMode && (
+        <div className="bg-blue-500/10 border border-blue-500/30 rounded-xl p-4">
+          <div className="flex items-start gap-3">
+            <Info className="w-5 h-5 text-blue-400 shrink-0 mt-0.5" />
+            <p className="text-sm text-blue-300 leading-relaxed">
+              <span className="font-semibold text-blue-400">ℹ️ Note:</span> The AI grading system requires clear, legible handwriting for accurate processing. Submissions with unclear or illegible handwriting may produce inaccurate results and should be prioritized for manual review in the HITL Workspace.
+            </p>
+          </div>
         </div>
       )}
 

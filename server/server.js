@@ -1,3 +1,10 @@
+// ─────────────────────────────────────────
+// PII POLICY: Student names and personally identifiable information
+// must NEVER be sent to external AI APIs (Gemini). Use anonymous
+// identifiers (Student 1, Student 2, or truncated UUIDs) instead.
+// This policy applies to: grading prompts, CoV prompts, chatbot prompts.
+// ─────────────────────────────────────────
+
 const express = require('express');
 const cors = require('cors');
 const multer = require('multer');
@@ -8,6 +15,7 @@ const path = require('path');
 const fs = require('fs');
 const sharp = require('sharp');
 require('dotenv').config();
+const { getAllTopics, getTopicById, getTopicAIGuidance } = require('./depedTopics');
 
 const app = express();
 const prisma = new PrismaClient();
@@ -431,11 +439,12 @@ app.post('/api/teacher/activities', (req, res, next) => {
   }
 }, async (req, res) => {
   try {
-    const { title, type, points, classId, instructions, deadline, submissionMode, rubric } = req.body;
+    const { title, type, points, classId, instructions, deadline, submissionMode, rubric, topic } = req.body;
     const filePaths = (req.files || []).map(f => `/uploads/${f.filename}`);
     const activity = await prisma.activity.create({
       data: {
         title, type,
+        topic: topic || null,
         points: parseInt(points) || 100,
         classId, instructions,
         deadline: deadline || null,
@@ -595,7 +604,16 @@ app.post('/api/teacher/upload', upload.single('image'), async (req, res) => {
       } catch { /* section context is optional, don't break grading */ }
     }
 
-    // 4) Build the prompt — includes no-text detection + pedagogical tutor persona
+    // 4) Get topic-specific AI evaluation guidance
+    let topicGuidance = '';
+    if (activityId && activityId !== 'mock-activity-id') {
+      const actForTopic = await prisma.activity.findUnique({ where: { id: activityId }, select: { topic: true } });
+      if (actForTopic?.topic) {
+        topicGuidance = getTopicAIGuidance(actForTopic.topic);
+      }
+    }
+
+    // 5) Build the prompt — includes no-text detection + pedagogical tutor persona
     // Get grade level from activity context for age-appropriate feedback
     let gradeLevelForPrompt = 'Grade 6';
     if (activityId && activityId !== 'mock-activity-id') {
@@ -639,7 +657,7 @@ YOUR TEACHING PHILOSOPHY:
 - ${languageGuide}
 
 ${activityContext}
-${rubricContext}${fewShotExamples}${sectionContext}
+${rubricContext}${fewShotExamples}${sectionContext}${topicGuidance}
 
 IMPORTANT RULES:
 - First, check if the image contains readable handwritten or printed text.
@@ -812,6 +830,25 @@ Respond with JSON ONLY using the same schema as before.`;
       skillExplanations: aiResult.skillExplanations || {}
     });
 
+    // GRADE RETENTION POLICY: Compute retainUntil (1 year after school year end)
+    let retainUntil = null;
+    if (activityId && activityId !== 'mock-activity-id') {
+      try {
+        const actForRetention = await prisma.activity.findUnique({
+          where: { id: activityId },
+          include: { class: { select: { schoolYear: true } } }
+        });
+        if (actForRetention?.class?.schoolYear) {
+          // Parse school year like "2025-2026" → end year 2026 → retain until June 30, 2027
+          const syMatch = actForRetention.class.schoolYear.match(/(\d{4})\s*-\s*(\d{4})/);
+          if (syMatch) {
+            const endYear = parseInt(syMatch[2]);
+            retainUntil = new Date(endYear + 1, 5, 30); // June 30 of endYear+1
+          }
+        }
+      } catch { /* retention date is optional, don't break submission */ }
+    }
+
     const submission = await prisma.submission.create({
       data: {
         studentId: studentId || 'mock-student-id',
@@ -829,6 +866,7 @@ Respond with JSON ONLY using the same schema as before.`;
         }),
         skillScores: aiResult.skillScores ? JSON.stringify(aiResult.skillScores) : null,
         covData: covData ? JSON.stringify(covData) : null,
+        retainUntil,
         status: 'PENDING'
       }
     });
@@ -1211,7 +1249,8 @@ app.post('/api/student/chat', async (req, res) => {
       });
 
       if (student) {
-        studentContext += `\nSTUDENT PROFILE:\n- Name: ${student.name}\n- Section: ${student.section?.name || 'Unknown'}\n`;
+        // PII POLICY: Do NOT send student name to AI. Use anonymous identifier.
+        studentContext += `\nSTUDENT PROFILE:\n- Student ID: ${studentId.substring(0, 8)}\n- Section: ${student.section?.name || 'Unknown'}\n`;
       }
 
       if (recentSubs.length > 0) {
@@ -1373,6 +1412,349 @@ app.post('/api/dev/seed', async (req, res) => {
     res.json({ success: true, message: 'Seeded! Teacher: maria@school.edu.ph / password | Students: RIZAL-001, RIZAL-002 / password123' });
   } catch (e) {
     res.status(500).json({ error: e.message });
+  }
+});
+
+// ─────────────────────────────────────────
+// DEPED TOPICS ENDPOINT
+// ─────────────────────────────────────────
+app.get('/api/topics', (req, res) => {
+  const topics = getAllTopics();
+  res.json({ success: true, topics });
+});
+
+// ─────────────────────────────────────────
+// STUDENT ANALYTICS (Topic-based performance)
+// ─────────────────────────────────────────
+app.get('/api/student/:studentId/analytics', async (req, res) => {
+  try {
+    const { studentId } = req.params;
+    const submissions = await prisma.submission.findMany({
+      where: { studentId, status: 'GRADED', archivedAt: null },
+      include: {
+        activity: { select: { title: true, type: true, topic: true, points: true, class: { select: { name: true } } } }
+      },
+      orderBy: { createdAt: 'asc' }
+    });
+
+    // Topic mastery: group by activity topic, compute avg percentage
+    const topicMap = {};
+    for (const sub of submissions) {
+      const topic = sub.activity?.topic;
+      if (!topic) continue;
+      if (!topicMap[topic]) topicMap[topic] = { scores: [], points: [] };
+      topicMap[topic].scores.push(sub.hitlScore ?? sub.aiScore ?? 0);
+      topicMap[topic].points.push(sub.activity?.points || 100);
+    }
+
+    const topicMastery = Object.entries(topicMap).map(([topicId, data]) => {
+      const avgScore = data.scores.reduce((a, b) => a + b, 0) / data.scores.length;
+      const avgPoints = data.points.reduce((a, b) => a + b, 0) / data.points.length;
+      const avgPercentage = Math.round((avgScore / avgPoints) * 100);
+      const topicInfo = getTopicById(topicId);
+      return {
+        topicId,
+        topicName: topicInfo?.name || topicId,
+        quarter: topicInfo?.quarter || null,
+        avgScore: Math.round(avgScore),
+        avgPercentage,
+        count: data.scores.length
+      };
+    }).sort((a, b) => (b.avgPercentage - a.avgPercentage));
+
+    // Skill trend: last 10 graded submissions with skillScores
+    const SKILLS = ['vocabulary', 'punctuation', 'thematicFlow', 'sentenceStructure'];
+    const skillTrend = submissions
+      .filter(s => s.skillScores)
+      .slice(-10)
+      .map(s => {
+        try {
+          const skills = JSON.parse(s.skillScores);
+          return {
+            activityTitle: s.activity?.title || '',
+            date: s.createdAt,
+            ...skills
+          };
+        } catch { return null; }
+      }).filter(Boolean);
+
+    // Strongest / weakest topic
+    const strongestTopic = topicMastery.length > 0 ? topicMastery[0].topicName : null;
+    const weakestTopic = topicMastery.length > 0 ? topicMastery[topicMastery.length - 1].topicName : null;
+
+    // Skill averages
+    const avgSkills = {};
+    SKILLS.forEach(skill => {
+      const vals = skillTrend.map(h => h[skill] || 0).filter(v => v > 0);
+      avgSkills[skill] = vals.length ? Math.round(vals.reduce((a, b) => a + b, 0) / vals.length) : 0;
+    });
+
+    res.json({
+      success: true,
+      topicMastery,
+      skillTrend,
+      strongestTopic,
+      weakestTopic,
+      avgSkills,
+      totalGraded: submissions.length
+    });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// ─────────────────────────────────────────
+// GRADE EXPORT (CSV + XLSX)
+// ─────────────────────────────────────────
+app.get('/api/teacher/:teacherId/gradebook/export', async (req, res) => {
+  try {
+    const { classId, sectionId, format = 'csv' } = req.query;
+    const teacherId = req.params.teacherId;
+
+    // Determine which classes to export
+    let classIds = [];
+    if (classId) {
+      classIds = [classId];
+    } else if (sectionId) {
+      const sectionClasses = await prisma.class.findMany({
+        where: { teacherId, sectionId },
+        select: { id: true }
+      });
+      classIds = sectionClasses.map(c => c.id);
+    } else {
+      return res.status(400).json({ success: false, error: 'classId or sectionId required' });
+    }
+
+    // Build grade data for each class
+    const classData = [];
+    for (const cId of classIds) {
+      const cls = await prisma.class.findUnique({
+        where: { id: cId },
+        include: {
+          section: { include: { students: { select: { id: true, name: true, username: true }, orderBy: { name: 'asc' } } } },
+          activities: {
+            include: { submissions: { select: { studentId: true, aiScore: true, hitlScore: true, status: true, archivedAt: true } } },
+            orderBy: { createdAt: 'asc' }
+          }
+        }
+      });
+      if (!cls) continue;
+
+      const students = cls.section?.students || [];
+      const activities = cls.activities || [];
+
+      // Build student rows
+      const rows = students.map(student => {
+        const row = { name: student.name, username: student.username };
+        let totalScore = 0, totalPoints = 0, gradedCount = 0;
+        for (const act of activities) {
+          const sub = act.submissions.find(s => s.studentId === student.id && !s.archivedAt);
+          const score = sub ? (sub.hitlScore ?? sub.aiScore ?? null) : null;
+          row[act.id] = score;
+          if (score !== null) {
+            totalScore += score;
+            totalPoints += act.points || 100;
+            gradedCount++;
+          }
+        }
+        row.average = gradedCount > 0 ? Math.round((totalScore / totalPoints) * 100) : null;
+        return row;
+      });
+
+      classData.push({ cls, activities, students, rows });
+    }
+
+    if (format === 'xlsx') {
+      // Excel export using exceljs
+      let ExcelJS;
+      try {
+        ExcelJS = require('exceljs');
+      } catch {
+        return res.status(500).json({ success: false, error: 'exceljs not installed. Run: npm install exceljs' });
+      }
+
+      const workbook = new ExcelJS.Workbook();
+      workbook.creator = 'TulongGuro';
+      workbook.created = new Date();
+
+      for (const { cls, activities, rows } of classData) {
+        const sheetName = (cls.name || 'Grades').substring(0, 31);
+        const sheet = workbook.addWorksheet(sheetName);
+
+        // Metadata rows
+        sheet.addRow(['Class:', cls.name]);
+        sheet.addRow(['Section:', cls.section?.name || 'N/A']);
+        sheet.addRow(['School Year:', cls.schoolYear]);
+        sheet.addRow(['Exported:', new Date().toLocaleDateString('en-PH', { dateStyle: 'long' })]);
+        sheet.addRow([]);
+
+        // Header row
+        const headers = ['Student Name', ...activities.map(a => a.title), 'Average (%)'];
+        const headerRow = sheet.addRow(headers);
+        headerRow.eachCell(cell => {
+          cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF6B21A8' } };
+          cell.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 11 };
+          cell.alignment = { horizontal: 'center', vertical: 'middle' };
+          cell.border = { bottom: { style: 'thin', color: { argb: 'FF9333EA' } } };
+        });
+
+        // Data rows
+        for (const row of rows) {
+          const dataRow = sheet.addRow([
+            row.name,
+            ...activities.map(a => row[a.id] !== null ? row[a.id] : '—'),
+            row.average !== null ? `${row.average}%` : '—'
+          ]);
+          // Color code scores
+          dataRow.eachCell((cell, colNumber) => {
+            if (colNumber > 1) {
+              const val = typeof cell.value === 'number' ? cell.value : parseInt(String(cell.value));
+              if (!isNaN(val)) {
+                if (val >= 85) cell.font = { color: { argb: 'FF16A34A' }, bold: true };
+                else if (val >= 75) cell.font = { color: { argb: 'FFD97706' } };
+                else cell.font = { color: { argb: 'FFDC2626' } };
+              }
+              cell.alignment = { horizontal: 'center' };
+            }
+          });
+        }
+
+        // Class average row
+        const avgRow = ['CLASS AVERAGE'];
+        for (const act of activities) {
+          const scores = rows.map(r => r[act.id]).filter(s => s !== null);
+          avgRow.push(scores.length > 0 ? Math.round(scores.reduce((a, b) => a + b, 0) / scores.length) : '—');
+        }
+        const allAvgs = rows.map(r => r.average).filter(a => a !== null);
+        avgRow.push(allAvgs.length > 0 ? `${Math.round(allAvgs.reduce((a, b) => a + b, 0) / allAvgs.length)}%` : '—');
+        const footerRow = sheet.addRow(avgRow);
+        footerRow.eachCell(cell => {
+          cell.font = { bold: true, size: 11 };
+          cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF3F4F6' } };
+          cell.alignment = { horizontal: 'center' };
+        });
+
+        // Auto-fit columns
+        sheet.columns.forEach(col => {
+          let maxLen = 10;
+          col.eachCell({ includeEmpty: true }, cell => {
+            const len = cell.value ? String(cell.value).length : 0;
+            if (len > maxLen) maxLen = len;
+          });
+          col.width = Math.min(maxLen + 4, 40);
+        });
+      }
+
+      const fileName = classData.length === 1
+        ? `${classData[0].cls.name.replace(/[^a-zA-Z0-9]/g, '_')}_Grades.xlsx`
+        : `Section_Grades_Export.xlsx`;
+
+      res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+      res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+      await workbook.xlsx.write(res);
+      res.end();
+
+    } else {
+      // CSV export
+      const lines = [];
+      for (const { cls, activities, rows } of classData) {
+        lines.push(`# Class: ${cls.name}`);
+        lines.push(`# Section: ${cls.section?.name || 'N/A'}`);
+        lines.push(`# School Year: ${cls.schoolYear}`);
+        lines.push(`# Exported: ${new Date().toLocaleDateString('en-PH', { dateStyle: 'long' })}`);
+        lines.push('');
+
+        // Header
+        const headers = ['Student Name', ...activities.map(a => `"${a.title.replace(/"/g, '""')}"`), 'Average (%)'];
+        lines.push(headers.join(','));
+
+        // Data rows
+        for (const row of rows) {
+          const vals = [
+            `"${row.name.replace(/"/g, '""')}"`,
+            ...activities.map(a => row[a.id] !== null ? row[a.id] : ''),
+            row.average !== null ? `${row.average}%` : ''
+          ];
+          lines.push(vals.join(','));
+        }
+
+        // Class average
+        const avgVals = ['CLASS AVERAGE'];
+        for (const act of activities) {
+          const scores = rows.map(r => r[act.id]).filter(s => s !== null);
+          avgVals.push(scores.length > 0 ? Math.round(scores.reduce((a, b) => a + b, 0) / scores.length) : '');
+        }
+        const allAvgs = rows.map(r => r.average).filter(a => a !== null);
+        avgVals.push(allAvgs.length > 0 ? `${Math.round(allAvgs.reduce((a, b) => a + b, 0) / allAvgs.length)}%` : '');
+        lines.push(avgVals.join(','));
+        lines.push('');
+      }
+
+      const fileName = classData.length === 1
+        ? `${classData[0].cls.name.replace(/[^a-zA-Z0-9]/g, '_')}_Grades.csv`
+        : `Section_Grades_Export.csv`;
+
+      res.setHeader('Content-Type', 'text/csv');
+      res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+      res.send(lines.join('\n'));
+    }
+  } catch (e) {
+    console.error('Export error:', e);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// ─────────────────────────────────────────
+// GRADE RETENTION — Admin Report
+// Retention policy: grades are retained for at least 1 year after school year end.
+// This endpoint lists submissions grouped by retention status.
+// No auto-deletion — admin reviews and decides.
+// ─────────────────────────────────────────
+app.get('/api/admin/retention-report', async (req, res) => {
+  try {
+    const now = new Date();
+    const submissions = await prisma.submission.findMany({
+      where: { retainUntil: { not: null } },
+      select: {
+        id: true,
+        status: true,
+        retainUntil: true,
+        archivedAt: true,
+        createdAt: true,
+        activity: { select: { title: true, class: { select: { name: true, schoolYear: true } } } },
+        student: { select: { name: true } }
+      },
+      orderBy: { retainUntil: 'asc' }
+    });
+
+    const active = submissions.filter(s => !s.archivedAt && s.retainUntil > now);
+    const pastRetention = submissions.filter(s => !s.archivedAt && s.retainUntil <= now);
+    const archived = submissions.filter(s => s.archivedAt);
+
+    // Group by school year
+    const bySchoolYear = {};
+    for (const sub of submissions) {
+      const sy = sub.activity?.class?.schoolYear || 'Unknown';
+      if (!bySchoolYear[sy]) bySchoolYear[sy] = { total: 0, active: 0, pastRetention: 0, archived: 0 };
+      bySchoolYear[sy].total++;
+      if (sub.archivedAt) bySchoolYear[sy].archived++;
+      else if (sub.retainUntil <= now) bySchoolYear[sy].pastRetention++;
+      else bySchoolYear[sy].active++;
+    }
+
+    res.json({
+      success: true,
+      summary: {
+        totalSubmissions: submissions.length,
+        activeRetention: active.length,
+        pastRetention: pastRetention.length,
+        archived: archived.length
+      },
+      bySchoolYear,
+      pastRetentionSubmissions: pastRetention.slice(0, 50) // Limit response size
+    });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
   }
 });
 

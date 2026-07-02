@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { ArrowLeft, CheckCircle2, Plus, Camera, Users, Upload, FileText, X, Trash2 } from 'lucide-react';
 import { API_URL } from '../../config';
@@ -73,6 +73,7 @@ export default function ActivityBuilder() {
   const rubricFileRef = useRef(null);
 
   const [isSaving, setIsSaving] = useState(false);
+  const [topics, setTopics] = useState([]);
   const [rubricMode, setRubricMode] = useState('template'); // 'template' | 'manual' | 'upload'
   const [savedRubrics, setSavedRubrics] = useState(() => {
     try { return JSON.parse(localStorage.getItem('savedRubrics') || '[]'); }
@@ -89,11 +90,20 @@ export default function ActivityBuilder() {
   const [form, setForm] = useState({
     title: '',
     type: 'Essay',
+    topic: '',
     points: 100,
     deadline: '',
     instructions: '',
     submissionMode: 'TEACHER_UPLOAD',
   });
+
+  // ── Fetch topics on mount ──
+  useEffect(() => {
+    fetch(`${API_URL}/api/topics`)
+      .then(res => res.json())
+      .then(data => { if (data.success) setTopics(data.topics); })
+      .catch(() => {});
+  }, []);
 
   // ── Rubric helpers ──
   const updateCriterion = (idx, field, val) => {
@@ -199,6 +209,22 @@ export default function ActivityBuilder() {
               <input type="number" min={1} value={form.points} onChange={e => setForm({ ...form, points: parseInt(e.target.value) || 100 })}
                 className="w-full px-4 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-brand-navy outline-none" />
             </div>
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-slate-700 mb-1">DepEd Topic (Optional)</label>
+            <select value={form.topic} onChange={e => setForm({ ...form, topic: e.target.value })}
+              className="w-full px-4 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-brand-navy outline-none">
+              <option value="">— Select a topic (optional) —</option>
+              {[1, 2, 3, 4].map(q => {
+                const qTopics = topics.filter(t => t.quarter === q);
+                return qTopics.length > 0 ? (
+                  <optgroup key={q} label={`Quarter ${q}`}>
+                    {qTopics.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+                  </optgroup>
+                ) : null;
+              })}
+            </select>
           </div>
 
           <div>

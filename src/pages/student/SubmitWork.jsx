@@ -145,6 +145,23 @@ export default function SubmitWork() {
                   ⚠ Privacy Act Reminder: Please ensure your name is NOT written on the paper to protect your privacy. Ensure the picture is clear and well-lit.
                 </p>
               </div>
+              <div className="mb-4 bg-amber-500/10 border border-amber-500/30 rounded-xl p-4">
+                <div className="flex items-start gap-3">
+                  <AlertTriangle className="w-5 h-5 text-amber-500 shrink-0 mt-0.5" />
+                  <div>
+                    <p className="text-sm font-semibold text-amber-400 leading-relaxed">
+                      ⚠️ Important: Please ensure your handwritten essay is written clearly and legibly using dark ink on clean paper. Messy or unclear handwriting may result in inaccurate AI grading.
+                    </p>
+                    <p className="text-sm text-amber-400/80 mt-2 font-medium">For best results:</p>
+                    <ul className="text-sm text-amber-400/80 mt-1 space-y-0.5 ml-1">
+                      <li>• Use a ballpoint pen with dark ink</li>
+                      <li>• Write on clean, unlined or lightly-lined paper</li>
+                      <li>• Avoid smudges and crossing out</li>
+                      <li>• Make sure the photo is well-lit and in focus</li>
+                    </ul>
+                  </div>
+                </div>
+              </div>
               <h2 className="text-sm font-bold text-slate-400 uppercase tracking-wider mb-3">Step 2 — Upload Your Essay</h2>
               <div
                 onClick={() => fileRef.current?.click()}

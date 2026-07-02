@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { Users } from 'lucide-react';
+import { Users, Download, ChevronDown } from 'lucide-react';
 import { API_URL } from '../../config';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
@@ -10,6 +10,32 @@ export default function GradebookClass() {
   const navigate = useNavigate();
   const [data, setData] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [showExportMenu, setShowExportMenu] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  const user = JSON.parse(localStorage.getItem('user') || '{}');
+
+  const handleExport = async (format) => {
+    setExporting(true);
+    setShowExportMenu(false);
+    try {
+      const response = await fetch(`${API_URL}/api/teacher/${user.id}/gradebook/export?classId=${classId}&format=${format}`);
+      if (!response.ok) throw new Error('Export failed');
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `grades_${classId}.${format === 'csv' ? 'csv' : 'xlsx'}`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error('Export error:', err);
+      alert('Failed to export grades. Please try again.');
+    } finally {
+      setExporting(false);
+    }
+  };
 
   useEffect(() => {
     const user = JSON.parse(localStorage.getItem('user') || '{}');
@@ -59,7 +85,32 @@ export default function GradebookClass() {
     <div className="p-6 max-w-6xl mx-auto">
       <div className="mb-4 flex items-center justify-between">
         <button onClick={() => navigate(-1)} className="text-sm text-slate-600 hover:underline">← Back to Classes</button>
-        <h2 className="text-lg font-bold">{targetClass.name || 'Class'}</h2>
+        <div className="flex items-center gap-3">
+          <h2 className="text-lg font-bold">{targetClass.name || 'Class'}</h2>
+          <div className="relative">
+            <button
+              onClick={() => setShowExportMenu(!showExportMenu)}
+              disabled={exporting}
+              className="bg-brand-green text-white px-4 py-2 rounded-xl font-medium flex items-center gap-2 disabled:opacity-50"
+            >
+              {exporting ? (
+                <span className="animate-spin w-4 h-4 border-2 border-white border-t-transparent rounded-full" />
+              ) : (
+                <>📥 Export Grades <ChevronDown className="w-4 h-4" /></>
+              )}
+            </button>
+            {showExportMenu && (
+              <div className="absolute right-0 mt-2 bg-gray-800 border border-gray-700 rounded-xl shadow-lg py-2 z-50">
+                <button onClick={() => handleExport('csv')} className="w-full px-4 py-2 hover:bg-gray-700 cursor-pointer flex items-center gap-2 text-sm text-gray-200">
+                  📄 Export as CSV
+                </button>
+                <button onClick={() => handleExport('xlsx')} className="w-full px-4 py-2 hover:bg-gray-700 cursor-pointer flex items-center gap-2 text-sm text-gray-200">
+                  📊 Export as Excel (.xlsx)
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
       </div>
 
       <div className="overflow-x-auto rounded-2xl border border-slate-200 shadow-sm">
