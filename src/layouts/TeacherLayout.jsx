@@ -47,9 +47,9 @@ export default function TeacherLayout() {
   const navItems = [
     { name: 'Dashboard', path: '/teacher/dashboard', icon: Home },
     { name: 'Sections', path: '/teacher/sections', icon: Users },
-    { name: 'Gradebook', path: '/teacher/gradebook', icon: BarChart2, requiresData: true },
-    { name: 'Analytics', path: '/teacher/analytics', icon: TrendingUp, badge: warningCount, requiresData: true },
-    { name: 'Rubrics', path: '/teacher/rubrics', icon: ClipboardList, requiresData: true },
+    { name: 'Gradebook', path: '/teacher/gradebook', icon: BarChart2 },
+    { name: 'Analytics', path: '/teacher/analytics', icon: TrendingUp },
+    { name: 'Rubrics', path: '/teacher/rubrics', icon: ClipboardList },
     { name: 'Settings', path: '/teacher/settings', icon: Settings },
   ];
 

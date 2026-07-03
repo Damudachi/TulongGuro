@@ -478,6 +478,93 @@ app.put('/api/teacher/activities/:activityId', async (req, res) => {
 
 // Rubric generation removed — teachers must create rubrics manually or upload files.
 
+// ─────────────────────────────────────────
+// RUBRIC EXTRACTION (Gemini VLM reads uploaded rubric image/PDF)
+// ─────────────────────────────────────────
+app.post('/api/teacher/rubric/extract', upload.single('rubricFile'), async (req, res) => {
+  try {
+    const file = req.file;
+    if (!file) return res.status(400).json({ success: false, error: 'No rubric file provided' });
+
+    // Read file and convert to base64
+    const fileBuffer = fs.readFileSync(file.path);
+    const base64Data = fileBuffer.toString('base64');
+    const mimeType = file.mimetype || 'image/jpeg';
+
+    const model = genAI.getGenerativeModel({
+      model: 'gemini-2.5-flash',
+      systemInstruction: 'You are an expert at reading and parsing grading rubrics from images and documents. You extract structured rubric criteria with exact point values and descriptions. Output strict JSON only.'
+    });
+
+    const prompt = `Analyze this grading rubric document/image and extract ALL criteria.
+
+Return a JSON object with this exact structure:
+{
+  "criteria": [
+    {
+      "name": "Criterion name",
+      "description": "What this criterion evaluates",
+      "points": 30,
+      "bands": [
+        { "range": "27-30", "score": 30, "label": "Excellent", "description": "Description of excellent performance" },
+        { "range": "19-26", "score": 25, "label": "Very Good", "description": "Description of very good performance" },
+        { "range": "10-18", "score": 15, "label": "Good", "description": "Description of good performance" },
+        { "range": "0-9", "score": 5, "label": "Needs Improvement", "description": "Description of poor performance" }
+      ]
+    }
+  ],
+  "totalPoints": 100,
+  "rubricType": "standard" or "range"
+}
+
+Rules:
+- Extract EVERY criterion visible in the rubric
+- If the rubric uses descriptive levels (Excellent, Very Good, Good, Fair, etc.) set rubricType to "range"
+- If the rubric uses simple point allocations, set rubricType to "standard"
+- If bands/levels are visible, include them in the bands array. Extract both the 'range' (string) and 'score' (number) for the band if present. If only a single number is given for a band, use it for the 'score'.
+- If no bands are visible, leave bands as an empty array
+- Ensure points add up correctly
+- Return ONLY valid JSON, no markdown`;
+
+    const result = await model.generateContent([
+      prompt,
+      { inlineData: { data: base64Data, mimeType } }
+    ]);
+    const response = await result.response;
+    let text = response.text();
+    // Clean markdown code blocks if present
+    text = text.replace(/```json\n?|\n?```/gi, '').trim();
+
+    const parsed = JSON.parse(text);
+    if (!parsed.criteria || !Array.isArray(parsed.criteria)) {
+      return res.status(422).json({ success: false, error: 'Could not extract rubric criteria from the uploaded file.' });
+    }
+
+    // Clean up the response
+    const criteria = parsed.criteria.map(c => ({
+      name: c.name || 'Unnamed Criterion',
+      description: c.description || '',
+      points: parseInt(c.points) || 0,
+      bands: Array.isArray(c.bands) ? c.bands.map(b => ({
+        range: b.range || '',
+        score: parseInt(b.score) || 0,
+        label: b.label || '',
+        description: b.description || ''
+      })) : []
+    }));
+
+    res.json({
+      success: true,
+      criteria,
+      totalPoints: parsed.totalPoints || criteria.reduce((s, c) => s + c.points, 0),
+      rubricType: parsed.rubricType || 'standard'
+    });
+  } catch (e) {
+    console.error('Rubric extraction error:', e);
+    res.status(500).json({ success: false, error: 'Failed to extract rubric: ' + e.message });
+  }
+});
+
 app.get('/api/activities/:activityId/submissions', async (req, res) => {
   const submissions = await prisma.submission.findMany({
     where: { activityId: req.params.activityId },
@@ -518,6 +605,10 @@ app.post('/api/teacher/upload', upload.single('image'), async (req, res) => {
     const { studentId, activityId } = req.body;
     const imageFile = req.file;
     if (!imageFile) return res.status(400).json({ error: 'No image provided' });
+    // Require a real student to be assigned before AI grading
+    if (!studentId || studentId === 'mock-student-id') {
+      return res.status(400).json({ success: false, error: 'Please assign a student before grading. A student must be selected.' });
+    }
 
     const imageUrl = `/uploads/${imageFile.filename}`;
 
@@ -540,13 +631,28 @@ app.post('/api/teacher/upload', upload.single('image'), async (req, res) => {
           try {
             const parsed = JSON.parse(activity.rubric);
             if (parsed.criteria?.length) {
-              rubricContext = 'Use this rubric:\n' + parsed.criteria.map(c => {
-                let bandStr = '';
-                if (c.bands?.length) {
-                  bandStr = ' Scoring bands: ' + c.bands.map(b => `${b.range} ${b.label}: ${b.description}`).join('; ');
-                }
-                return `• ${c.name} (${c.points} pts): ${c.description || ''}${bandStr}`;
-              }).join('\n') + '\nGrade each criterion within these bands and justify your score placement.';
+              const isRangeType = parsed.type === 'range';
+              if (isRangeType) {
+                // Range-type rubric: use descriptive band levels
+                rubricContext = 'RUBRIC TYPE: Range/Levels-based grading.\nUse this rubric:\n' + parsed.criteria.map(c => {
+                  let bandStr = '';
+                  if (c.bands?.length) {
+                    bandStr = '\n  Scoring levels:\n' + c.bands.map(b =>
+                      `    - ${b.label} (${b.score || b.range}): ${b.description}`
+                    ).join('\n');
+                  }
+                  return `• ${c.name}: ${c.description || ''}${bandStr}`;
+                }).join('\n') + '\nFor each criterion, assign the appropriate level/band label and provide justification. The final score should be computed from the band scores.';
+              } else {
+                // Standard point-based rubric
+                rubricContext = 'Use this rubric:\n' + parsed.criteria.map(c => {
+                  let bandStr = '';
+                  if (c.bands?.length) {
+                    bandStr = ' Scoring bands: ' + c.bands.map(b => `${b.range} ${b.label}: ${b.description}`).join('; ');
+                  }
+                  return `• ${c.name} (${c.points} pts): ${c.description || ''}${bandStr}`;
+                }).join('\n') + '\nGrade each criterion within these bands and justify your score placement.';
+              }
             }
           } catch { }
         }

@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
-import { Users } from 'lucide-react';
+import { Users, Download } from 'lucide-react';
 import { API_URL } from '../../config';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
@@ -10,6 +10,7 @@ export default function GradebookSection() {
   const navigate = useNavigate();
   const [teacherClasses, setTeacherClasses] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [exportingClassId, setExportingClassId] = useState(null);
 
   useEffect(() => {
     const user = JSON.parse(localStorage.getItem('user') || '{}');
@@ -18,6 +19,31 @@ export default function GradebookSection() {
   }, [sectionId]);
 
   const classes = (teacherClasses || []).filter(c => c.sectionId === sectionId);
+
+  const handleExport = async (classId, e) => {
+    e.stopPropagation();
+    const user = JSON.parse(localStorage.getItem('user') || '{}');
+    if (!user.id) return;
+    setExportingClassId(classId);
+    try {
+      const response = await fetch(`${API_URL}/api/teacher/${user.id}/gradebook/export?classId=${classId}&format=xlsx`);
+      if (!response.ok) throw new Error('Export failed');
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `grades_${classId}.xlsx`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error('Export error:', err);
+      alert('Failed to export grades. Please try again.');
+    } finally {
+      setExportingClassId(null);
+    }
+  };
 
   return (
     <div className="p-6 max-w-6xl mx-auto">
@@ -43,7 +69,19 @@ export default function GradebookSection() {
                 </span>
                 Students
               </div>
-              <div>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={(e) => handleExport(cls.id, e)}
+                  disabled={exportingClassId === cls.id}
+                  className="text-xs bg-brand-green hover:bg-emerald-600 text-white px-3 py-2 rounded-lg flex items-center gap-1 disabled:opacity-50 font-medium transition-colors"
+                >
+                  {exportingClassId === cls.id ? (
+                    <span className="animate-spin w-3 h-3 border-2 border-white border-t-transparent rounded-full" />
+                  ) : (
+                    <Download className="w-3.5 h-3.5" />
+                  )}
+                  Excel
+                </button>
                 <button onClick={() => navigate(`/teacher/gradebook/class/${cls.id}`)} className="text-sm bg-brand-navy text-white px-3 py-2 rounded-lg">View Grades</button>
               </div>
             </div>
