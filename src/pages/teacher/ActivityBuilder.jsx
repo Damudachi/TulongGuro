@@ -1,9 +1,17 @@
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { ArrowLeft, CheckCircle2, Plus, Camera, Users, Upload, FileText, X, Trash2 } from 'lucide-react';
+import { ArrowLeft, CheckCircle2, Plus, Camera, Users, Upload, FileText, X, Trash2, Loader2, Save } from 'lucide-react';
 import { API_URL } from '../../config';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
+
+const DEFAULT_RANGE_BANDS = [
+  { label: 'Excellent', score: 5, description: 'Exceeds expectations in all aspects.' },
+  { label: 'Very Good', score: 4, description: 'Meets expectations with notable quality.' },
+  { label: 'Good', score: 3, description: 'Meets most expectations adequately.' },
+  { label: 'Satisfactory', score: 2, description: 'Partially meets expectations.' },
+  { label: 'Needs Improvement', score: 1, description: 'Does not meet expectations.' },
+];
 
 const RUBRIC_TEMPLATES = [
   {
@@ -73,7 +81,9 @@ export default function ActivityBuilder() {
   const rubricFileRef = useRef(null);
 
   const [isSaving, setIsSaving] = useState(false);
+  const [topics, setTopics] = useState([]);
   const [rubricMode, setRubricMode] = useState('template'); // 'template' | 'manual' | 'upload'
+  const [rubricType, setRubricType] = useState('standard'); // 'standard' | 'range'
   const [savedRubrics, setSavedRubrics] = useState(() => {
     try { return JSON.parse(localStorage.getItem('savedRubrics') || '[]'); }
     catch { return []; }
@@ -86,24 +96,123 @@ export default function ActivityBuilder() {
   const [additionalFiles, setAdditionalFiles] = useState([]); // { file, name }[]
   const [rubricFile, setRubricFile] = useState(null);
 
+  // Upload rubric extraction state
+  const [extractedCriteria, setExtractedCriteria] = useState(null); // null = not extracted yet
+  const [isExtracting, setIsExtracting] = useState(false);
+  const [extractionError, setExtractionError] = useState(null);
+
+  // Save-as-template modal state
+  const [showSaveTemplateModal, setShowSaveTemplateModal] = useState(false);
+  const [templateTitle, setTemplateTitle] = useState('');
+
   const [form, setForm] = useState({
     title: '',
     type: 'Essay',
+    topic: '',
     points: 100,
     deadline: '',
     instructions: '',
     submissionMode: 'TEACHER_UPLOAD',
   });
 
+  // ── Fetch topics on mount ──
+  useEffect(() => {
+    fetch(`${API_URL}/api/topics`)
+      .then(res => res.json())
+      .then(data => { if (data.success) setTopics(data.topics); })
+      .catch(() => {});
+  }, []);
+
   // ── Rubric helpers ──
   const updateCriterion = (idx, field, val) => {
-    setRubricCriteria(prev => prev.map((c, i) => i === idx ? { ...c, [field]: field === 'points' ? parseInt(val) || 0 : val } : c));
+    const setter = rubricMode === 'upload' && extractedCriteria ? setExtractedCriteria : setRubricCriteria;
+    setter(prev => prev.map((c, i) => i === idx ? { ...c, [field]: field === 'points' ? parseInt(val) || 0 : val } : c));
   };
-  const addCriterion = () => setRubricCriteria(prev => [...prev, { name: '', description: '', points: 0 }]);
-  const removeCriterion = (idx) => setRubricCriteria(prev => prev.filter((_, i) => i !== idx));
-  const totalPoints = rubricCriteria.reduce((s, c) => s + (c.points || 0), 0);
+  const addCriterion = () => {
+    const newCriterion = rubricType === 'range'
+      ? { name: '', description: '', points: 0, bands: DEFAULT_RANGE_BANDS.map(b => ({ ...b })) }
+      : { name: '', description: '', points: 0 };
+    const setter = rubricMode === 'upload' && extractedCriteria ? setExtractedCriteria : setRubricCriteria;
+    setter(prev => [...prev, newCriterion]);
+  };
+  const removeCriterion = (idx) => {
+    const setter = rubricMode === 'upload' && extractedCriteria ? setExtractedCriteria : setRubricCriteria;
+    setter(prev => prev.filter((_, i) => i !== idx));
+  };
+  const updateBand = (criterionIdx, bandIdx, field, val) => {
+    const setter = rubricMode === 'upload' && extractedCriteria ? setExtractedCriteria : setRubricCriteria;
+    setter(prev => prev.map((c, ci) => {
+      if (ci !== criterionIdx) return c;
+      const bands = [...(c.bands || [])];
+      bands[bandIdx] = { ...bands[bandIdx], [field]: field === 'score' ? parseInt(val) || 0 : val };
+      return { ...c, bands };
+    }));
+  };
 
-  
+  const activeCriteria = (rubricMode === 'upload' && extractedCriteria) ? extractedCriteria : rubricCriteria;
+  const totalPoints = activeCriteria.reduce((s, c) => s + (c.points || 0), 0);
+
+  // ── Upload rubric extraction ──
+  const handleRubricUpload = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setRubricFile(file);
+    setExtractionError(null);
+    setIsExtracting(true);
+    setExtractedCriteria(null);
+
+    try {
+      const fd = new FormData();
+      fd.append('rubricFile', file);
+      const res = await fetch(`${API_URL}/api/teacher/rubric/extract`, { method: 'POST', body: fd });
+      const data = await res.json();
+      if (data.success && data.criteria) {
+        setExtractedCriteria(data.criteria);
+        if (data.rubricType) setRubricType(data.rubricType);
+        if (data.totalPoints) setForm(prev => ({ ...prev, points: data.totalPoints }));
+      } else {
+        setExtractionError(data.error || 'Could not extract rubric criteria.');
+      }
+    } catch (err) {
+      setExtractionError('Network error while extracting rubric. Please try again.');
+    } finally {
+      setIsExtracting(false);
+    }
+  };
+
+  const removeRubricFile = () => {
+    setRubricFile(null);
+    setExtractedCriteria(null);
+    setExtractionError(null);
+    if (rubricFileRef.current) rubricFileRef.current.value = '';
+  };
+
+  // ── Save as template ──
+  const handleSaveAsTemplate = () => {
+    const criteriaToSave = (rubricMode === 'upload' && extractedCriteria) ? extractedCriteria : rubricCriteria;
+    if (!criteriaToSave.length) return;
+    setTemplateTitle(form.title ? `${form.title} Rubric` : 'My Custom Rubric');
+    setShowSaveTemplateModal(true);
+  };
+
+  const confirmSaveTemplate = () => {
+    const criteriaToSave = (rubricMode === 'upload' && extractedCriteria) ? extractedCriteria : rubricCriteria;
+    const newTemplate = {
+      id: `custom-${Date.now()}`,
+      name: templateTitle || 'My Custom Rubric',
+      description: 'Custom rubric saved by teacher.',
+      gradeRange: 'Custom',
+      criteria: criteriaToSave,
+      type: rubricType,
+      savedAt: new Date().toISOString(),
+    };
+    const updated = [...savedRubrics, newTemplate];
+    setSavedRubrics(updated);
+    localStorage.setItem('savedRubrics', JSON.stringify(updated));
+    setShowSaveTemplateModal(false);
+    setTemplateTitle('');
+    alert(`✓ "${newTemplate.name}" has been saved to your rubrics.`);
+  };
 
   // ── Additional files ──
   const handleAdditionalFiles = (e) => {
@@ -114,7 +223,7 @@ export default function ActivityBuilder() {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (totalPoints !== form.points && rubricMode !== 'upload') {
+    if (rubricMode !== 'upload' && totalPoints !== form.points) {
       if (!window.confirm(`Rubric total (${totalPoints} pts) doesn't match activity points (${form.points} pts). Continue?`)) return;
     }
     setIsSaving(true);
@@ -122,7 +231,11 @@ export default function ActivityBuilder() {
       const fd = new FormData();
       Object.entries(form).forEach(([k, v]) => fd.append(k, v));
       fd.append('classId', classId || 'mock-class-id');
-      fd.append('rubric', JSON.stringify({ source: rubricMode, criteria: rubricCriteria }));
+
+      // Build rubric JSON — include extracted criteria for upload mode
+      const criteriaForSubmit = (rubricMode === 'upload' && extractedCriteria) ? extractedCriteria : rubricCriteria;
+      fd.append('rubric', JSON.stringify({ source: rubricMode, type: rubricType, criteria: criteriaForSubmit }));
+
       additionalFiles.forEach(f => fd.append('additionalFiles', f.file));
       if (rubricFile && rubricMode === 'upload') fd.append('additionalFiles', rubricFile);
 
@@ -133,6 +246,53 @@ export default function ActivityBuilder() {
     } catch { alert('Network error'); }
     finally { setIsSaving(false); }
   };
+
+  // ── Criterion Editor (shared by Manual + Upload extracted) ──
+  const renderCriterionEditor = (criteria, isUploadExtracted = false) => (
+    <div className="space-y-3">
+      {criteria.map((c, i) => (
+        <div key={i} className="p-3 bg-slate-50 rounded-lg border border-slate-200 space-y-2">
+          <div className="flex gap-2 items-start">
+            <input type="text" value={c.name} onChange={e => updateCriterion(i, 'name', e.target.value)}
+              className="flex-1 px-3 py-1.5 border border-slate-200 rounded text-sm font-medium focus:outline-none focus:ring-1 focus:ring-brand-navy" placeholder="Criterion name" />
+            {rubricType === 'standard' && (
+              <input type="number" value={c.points} onChange={e => updateCriterion(i, 'points', e.target.value)}
+                className="w-20 px-3 py-1.5 border border-slate-200 rounded text-sm text-center focus:outline-none focus:ring-1 focus:ring-brand-navy" placeholder="pts" />
+            )}
+            <button type="button" onClick={() => removeCriterion(i)} className="text-slate-400 hover:text-red-500 mt-1"><Trash2 className="w-4 h-4" /></button>
+          </div>
+          <input type="text" value={c.description} onChange={e => updateCriterion(i, 'description', e.target.value)}
+            className="w-full px-3 py-1.5 border border-slate-200 rounded text-xs text-slate-600 focus:outline-none focus:ring-1 focus:ring-brand-navy" placeholder="Description (optional)" />
+
+          {/* Range bands editor */}
+          {rubricType === 'range' && (
+            <div className="mt-2 space-y-1.5 pl-2 border-l-2 border-slate-200">
+              <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Scoring Levels</p>
+              {(c.bands || DEFAULT_RANGE_BANDS).map((band, bi) => (
+                <div key={bi} className="flex gap-2 items-center">
+                  <input type="text" value={band.label} onChange={e => updateBand(i, bi, 'label', e.target.value)}
+                    className="w-28 px-2 py-1 border border-slate-200 rounded text-xs font-semibold focus:outline-none focus:ring-1 focus:ring-brand-navy" placeholder="Label" />
+                  <input type="number" value={band.score} onChange={e => updateBand(i, bi, 'score', e.target.value)}
+                    className="w-14 px-2 py-1 border border-slate-200 rounded text-xs text-center focus:outline-none focus:ring-1 focus:ring-brand-navy" placeholder="Score" />
+                  <input type="text" value={band.description} onChange={e => updateBand(i, bi, 'description', e.target.value)}
+                    className="flex-1 px-2 py-1 border border-slate-200 rounded text-xs text-slate-500 focus:outline-none focus:ring-1 focus:ring-brand-navy" placeholder="Description" />
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      ))}
+      <button type="button" onClick={addCriterion}
+        className="text-sm text-brand-navy font-medium flex items-center hover:underline">
+        <Plus className="w-4 h-4 mr-1" /> Add Criterion
+      </button>
+      {rubricType === 'standard' && (
+        <div className={cn('text-sm font-bold mt-2 px-3 py-2 rounded-lg', totalPoints === form.points ? 'text-green-600 bg-green-50' : 'text-amber-600 bg-amber-50')}>
+          Total: {totalPoints}/{form.points} pts {totalPoints !== form.points && `(${form.points - totalPoints > 0 ? '+' : ''}${form.points - totalPoints} remaining)`}
+        </div>
+      )}
+    </div>
+  );
 
   return (
     <div className="p-4 md:p-8 max-w-3xl mx-auto pb-24">
@@ -202,6 +362,22 @@ export default function ActivityBuilder() {
           </div>
 
           <div>
+            <label className="block text-sm font-medium text-slate-700 mb-1">DepEd Topic (Optional)</label>
+            <select value={form.topic} onChange={e => setForm({ ...form, topic: e.target.value })}
+              className="w-full px-4 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-brand-navy outline-none">
+              <option value="">— Select a topic (optional) —</option>
+              {[1, 2, 3, 4].map(q => {
+                const qTopics = topics.filter(t => t.quarter === q);
+                return qTopics.length > 0 ? (
+                  <optgroup key={q} label={`Quarter ${q}`}>
+                    {qTopics.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+                  </optgroup>
+                ) : null;
+              })}
+            </select>
+          </div>
+
+          <div>
             <label className="block text-sm font-medium text-slate-700 mb-1">
               Deadline {form.submissionMode === 'STUDENT_SUBMIT' && <span className="text-red-500">*</span>}
             </label>
@@ -253,7 +429,7 @@ export default function ActivityBuilder() {
           <h2 className="text-base font-bold text-brand-slate mb-4">Grading Rubric</h2>
 
           {/* Mode tabs */}
-          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 mb-6">
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 mb-4">
             {[['template', '📋 Template'], ['manual', '✏️ Create'], ['upload', '📁 Upload']].map(([val, label]) => (
               <button key={val} type="button" onClick={() => {
                 setRubricMode(val);
@@ -261,6 +437,26 @@ export default function ActivityBuilder() {
                   const defaultCriteria = savedRubrics && savedRubrics.length ? savedRubrics[0].criteria : RUBRIC_TEMPLATES[0].criteria;
                   setRubricCriteria(defaultCriteria);
                   setSelectedOption(savedRubrics && savedRubrics.length ? `saved:${savedRubrics[0].id}` : 'builtin:0');
+                  
+                  // Infer type if missing (for older saves)
+                  let loadedType = 'standard';
+                  if (savedRubrics && savedRubrics.length) {
+                    if (savedRubrics[0].type) loadedType = savedRubrics[0].type;
+                    else if (savedRubrics[0].criteria?.[0]?.bands?.length > 0) loadedType = 'range';
+                  }
+                  setRubricType(loadedType);
+                } else if (val === 'manual' && rubricMode !== 'manual') {
+                  // Start blank in Create mode
+                  setRubricCriteria([
+                    rubricType === 'range'
+                      ? { name: '', description: '', points: 0, bands: DEFAULT_RANGE_BANDS.map(b => ({ ...b })) }
+                      : { name: '', description: '', points: 0 }
+                  ]);
+                }
+                if (val !== 'upload') {
+                  setRubricFile(null);
+                  setExtractedCriteria(null);
+                  setExtractionError(null);
                 }
               }}
                 className={cn('py-2 px-3 text-xs font-bold rounded-lg border-2 transition-all',
@@ -269,6 +465,27 @@ export default function ActivityBuilder() {
               </button>
             ))}
           </div>
+
+          {/* Rubric Type Toggle (for manual and upload modes) */}
+          {(rubricMode === 'manual' || (rubricMode === 'upload' && extractedCriteria)) && (
+            <div className="flex gap-2 mb-4">
+              <button type="button" onClick={() => setRubricType('standard')}
+                className={cn('flex-1 py-2 px-3 text-xs font-bold rounded-lg border-2 transition-all',
+                  rubricType === 'standard' ? 'border-brand-green bg-green-50 text-green-700' : 'border-slate-200 text-slate-500 hover:border-green-300')}>
+                📊 Standard (Points)
+              </button>
+              <button type="button" onClick={() => {
+                setRubricType('range');
+                // Ensure existing criteria get default bands if they don't have any
+                const setter = rubricMode === 'upload' && extractedCriteria ? setExtractedCriteria : setRubricCriteria;
+                setter(prev => prev.map(c => c.bands && c.bands.length ? c : { ...c, bands: DEFAULT_RANGE_BANDS.map(b => ({ ...b })) }));
+              }}
+                className={cn('flex-1 py-2 px-3 text-xs font-bold rounded-lg border-2 transition-all',
+                  rubricType === 'range' ? 'border-purple-400 bg-purple-50 text-purple-700' : 'border-slate-200 text-slate-500 hover:border-purple-300')}>
+                📋 Range (Levels)
+              </button>
+            </div>
+          )}
 
           {/* Template */}
           {rubricMode === 'template' && (
@@ -281,6 +498,12 @@ export default function ActivityBuilder() {
                     if (found) {
                       setRubricCriteria(found.criteria);
                       setSelectedOption(val);
+                      // Infer type if missing
+                      let loadedType = found.type;
+                      if (!loadedType) {
+                        loadedType = found.criteria?.[0]?.bands?.length > 0 ? 'range' : 'standard';
+                      }
+                      setRubricType(loadedType);
                     }
                   } else if (val.startsWith('builtin:')) {
                     const idx = parseInt(val.split(':')[1] || '0', 10);
@@ -293,6 +516,7 @@ export default function ActivityBuilder() {
                       // apply other built-in rubrics immediately
                       setRubricCriteria(RUBRIC_TEMPLATES[idx].criteria);
                       setSelectedOption(val);
+                      setRubricType(RUBRIC_TEMPLATES[idx].type || 'standard');
                     }
                   }
                 }}
@@ -301,61 +525,106 @@ export default function ActivityBuilder() {
                 {savedRubrics.length > 0 && <optgroup label="Your Saved Rubrics">{savedRubrics.map(r => <option key={r.id} value={`saved:${r.id}`}>{r.name}</option>)}</optgroup>}
               </select>
               {rubricCriteria.map((c, i) => (
-                <div key={i} className="flex items-center gap-3 p-3 bg-slate-50 rounded-lg border border-slate-100">
-                  <CheckCircle2 className="w-5 h-5 text-brand-green shrink-0" />
-                  <div className="flex-1">
-                    <p className="text-sm font-bold text-brand-slate">{c.name}</p>
-                    <p className="text-xs text-slate-500">{c.description}</p>
+                <div key={i} className="p-3 bg-slate-50 rounded-lg border border-slate-100 space-y-2">
+                  <div className="flex items-start gap-3">
+                    <CheckCircle2 className="w-5 h-5 text-brand-green shrink-0 mt-0.5" />
+                    <div className="flex-1">
+                      <p className="text-sm font-bold text-brand-slate">{c.name}</p>
+                      <p className="text-xs text-slate-500">{c.description}</p>
+                    </div>
+                    {rubricType === 'standard' && (
+                      <span className="text-sm font-bold text-brand-navy shrink-0">{c.points} pts</span>
+                    )}
                   </div>
-                  <span className="text-sm font-bold text-brand-navy shrink-0">{c.points} pts</span>
+                  {rubricType === 'range' && c.bands && c.bands.length > 0 && (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mt-2 ml-8">
+                      {c.bands.map((band, bi) => (
+                        <div key={bi} className="rounded-lg border border-slate-200 bg-white p-2">
+                          <div className="flex items-center gap-2 mb-1">
+                            <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-100 text-slate-700">{band.label}</span>
+                            <span className="text-xs font-bold text-brand-slate">{band.score} pts</span>
+                          </div>
+                          <p className="text-[11px] text-slate-500 leading-relaxed">{band.description}</p>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
               ))}
             </div>
           )}
 
           {/* Manual */}
-          {rubricMode === 'manual' && (
-            <div className="space-y-3">
-              {rubricCriteria.map((c, i) => (
-                <div key={i} className="p-3 bg-slate-50 rounded-lg border border-slate-200 space-y-2">
-                  <div className="flex gap-2 items-start">
-                    <input type="text" value={c.name} onChange={e => updateCriterion(i, 'name', e.target.value)}
-                      className="flex-1 px-3 py-1.5 border border-slate-200 rounded text-sm font-medium focus:outline-none focus:ring-1 focus:ring-brand-navy" placeholder="Criterion name" />
-                    <input type="number" value={c.points} onChange={e => updateCriterion(i, 'points', e.target.value)}
-                      className="w-20 px-3 py-1.5 border border-slate-200 rounded text-sm text-center focus:outline-none focus:ring-1 focus:ring-brand-navy" placeholder="pts" />
-                    <button type="button" onClick={() => removeCriterion(i)} className="text-slate-400 hover:text-red-500 mt-1"><Trash2 className="w-4 h-4" /></button>
-                  </div>
-                  <input type="text" value={c.description} onChange={e => updateCriterion(i, 'description', e.target.value)}
-                    className="w-full px-3 py-1.5 border border-slate-200 rounded text-xs text-slate-600 focus:outline-none focus:ring-1 focus:ring-brand-navy" placeholder="Description (optional)" />
-                </div>
-              ))}
-              <button type="button" onClick={addCriterion}
-                className="text-sm text-brand-navy font-medium flex items-center hover:underline">
-                <Plus className="w-4 h-4 mr-1" /> Add Criterion
-              </button>
-              <div className={cn('text-sm font-bold mt-2 px-3 py-2 rounded-lg', totalPoints === form.points ? 'text-green-600 bg-green-50' : 'text-amber-600 bg-amber-50')}>
-                Total: {totalPoints}/{form.points} pts {totalPoints !== form.points && `(${form.points - totalPoints > 0 ? '+' : ''}${form.points - totalPoints} remaining)`}
-              </div>
-            </div>
-          )}
+          {rubricMode === 'manual' && renderCriterionEditor(rubricCriteria)}
 
           {/* Upload */}
           {rubricMode === 'upload' && (
-            <div>
-              <div onClick={() => rubricFileRef.current?.click()}
-                className="border-2 border-dashed border-slate-300 rounded-xl p-8 flex flex-col items-center cursor-pointer hover:border-brand-navy hover:bg-blue-50/30 transition-all">
-                <Upload className="w-8 h-8 text-slate-400 mb-2" />
-                <p className="font-medium text-slate-600 text-sm">Upload Rubric File</p>
-                <p className="text-xs text-slate-400">PDF, image, or Word document</p>
-              </div>
-              <input ref={rubricFileRef} type="file" accept="image/*,.pdf,.doc,.docx" className="hidden"
-                onChange={e => setRubricFile(e.target.files?.[0] || null)} />
-              {rubricFile && (
-                <div className="mt-3 flex items-center gap-2 p-2 bg-green-50 border border-green-200 rounded-lg">
-                  <CheckCircle2 className="w-4 h-4 text-brand-green" />
-                  <span className="text-sm font-medium text-green-700">{rubricFile.name}</span>
+            <div className="space-y-4">
+              {/* Upload area / file display */}
+              {!rubricFile ? (
+                <div onClick={() => rubricFileRef.current?.click()}
+                  className="border-2 border-dashed border-slate-300 rounded-xl p-8 flex flex-col items-center cursor-pointer hover:border-brand-navy hover:bg-blue-50/30 transition-all">
+                  <Upload className="w-8 h-8 text-slate-400 mb-2" />
+                  <p className="font-medium text-slate-600 text-sm">Upload Rubric File</p>
+                  <p className="text-xs text-slate-400">PDF, image, or Word document</p>
+                </div>
+              ) : (
+                <div className="flex items-center justify-between p-3 bg-green-50 border border-green-200 rounded-xl">
+                  <div className="flex items-center gap-2">
+                    <CheckCircle2 className="w-5 h-5 text-brand-green" />
+                    <span className="text-sm font-medium text-green-700 truncate max-w-[250px]">{rubricFile.name}</span>
+                  </div>
+                  <button type="button" onClick={removeRubricFile} className="text-slate-400 hover:text-red-500 transition-colors p-1 rounded-full hover:bg-red-50">
+                    <X className="w-4 h-4" />
+                  </button>
                 </div>
               )}
+              <input ref={rubricFileRef} type="file" accept="image/*,.pdf,.doc,.docx" className="hidden"
+                onChange={handleRubricUpload} />
+
+              {/* Extraction loading */}
+              {isExtracting && (
+                <div className="flex items-center gap-3 p-4 bg-blue-50 border border-blue-200 rounded-xl">
+                  <Loader2 className="w-5 h-5 text-blue-600 animate-spin" />
+                  <div>
+                    <p className="text-sm font-semibold text-blue-700">Extracting rubric criteria...</p>
+                    <p className="text-xs text-blue-500">Gemini is reading your rubric document. This may take a few seconds.</p>
+                  </div>
+                </div>
+              )}
+
+              {/* Extraction error */}
+              {extractionError && (
+                <div className="p-3 bg-red-50 border border-red-200 rounded-xl text-sm text-red-700">
+                  ⚠ {extractionError}
+                </div>
+              )}
+
+              {/* Extracted criteria — editable */}
+              {extractedCriteria && extractedCriteria.length > 0 && (
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between">
+                    <h3 className="text-sm font-bold text-brand-slate flex items-center gap-2">
+                      <CheckCircle2 className="w-4 h-4 text-brand-green" /> Extracted Rubric (Editable)
+                    </h3>
+                    <button type="button" onClick={handleSaveAsTemplate}
+                      className="text-xs font-bold text-purple-700 bg-purple-50 border border-purple-200 px-3 py-1.5 rounded-lg hover:bg-purple-100 transition-colors flex items-center gap-1">
+                      <Save className="w-3.5 h-3.5" /> Save as Template
+                    </button>
+                  </div>
+                  {renderCriterionEditor(extractedCriteria, true)}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Save as template button for manual mode */}
+          {rubricMode === 'manual' && rubricCriteria.length > 0 && (
+            <div className="mt-4 pt-3 border-t border-slate-100">
+              <button type="button" onClick={handleSaveAsTemplate}
+                className="text-xs font-bold text-purple-700 bg-purple-50 border border-purple-200 px-3 py-1.5 rounded-lg hover:bg-purple-100 transition-colors flex items-center gap-1">
+                <Save className="w-3.5 h-3.5" /> Save as Template
+              </button>
             </div>
           )}
 
@@ -389,6 +658,30 @@ export default function ActivityBuilder() {
                     setPendingBuiltinIdx(null);
                   }}
                   className="flex-1 py-2.5 bg-brand-navy text-white rounded-lg font-medium hover:bg-blue-900">I Agree & Use</button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Save as Template Modal */}
+        {showSaveTemplateModal && (
+          <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+            <div className="bg-white rounded-2xl p-6 max-w-sm w-full shadow-xl">
+              <div className="flex items-center gap-3 mb-4">
+                <div className="w-10 h-10 rounded-full bg-purple-100 flex items-center justify-center">
+                  <Save className="w-5 h-5 text-purple-600" />
+                </div>
+                <h3 className="font-bold text-brand-slate text-lg">Save as Template</h3>
+              </div>
+              <p className="text-sm text-slate-500 mb-3">Enter a name for your rubric template. You can reuse it when creating future activities.</p>
+              <input type="text" value={templateTitle} onChange={e => setTemplateTitle(e.target.value)}
+                placeholder="e.g. My Essay Rubric"
+                className="w-full px-4 py-2.5 border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-purple-400 outline-none mb-4" autoFocus />
+              <div className="flex gap-3">
+                <button type="button" onClick={() => { setShowSaveTemplateModal(false); setTemplateTitle(''); }}
+                  className="flex-1 py-2.5 border border-slate-200 text-slate-600 rounded-lg font-medium hover:bg-slate-50">Cancel</button>
+                <button type="button" onClick={confirmSaveTemplate} disabled={!templateTitle.trim()}
+                  className="flex-1 py-2.5 bg-purple-600 text-white rounded-lg font-medium hover:bg-purple-700 disabled:opacity-50">Save</button>
               </div>
             </div>
           </div>

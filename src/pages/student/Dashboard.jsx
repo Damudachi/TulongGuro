@@ -23,6 +23,7 @@ function SkillBar({ label, value, max = 25 }) {
 
 export default function StudentDashboard() {
   const [data, setData] = useState(null);
+  const [analytics, setAnalytics] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
   const [showWelcome, setShowWelcome] = useState(false);
   const [welcomeStep, setWelcomeStep] = useState(0);
@@ -37,6 +38,11 @@ export default function StudentDashboard() {
       .then(r => r.json())
       .then(d => { if (d.success) setData(d); })
       .finally(() => setIsLoading(false));
+
+    fetch(`${API_URL}/api/student/${user.id}/analytics`)
+      .then(r => r.json())
+      .then(d => { if (d.success) setAnalytics(d); })
+      .catch(() => {});
   }, []);
 
   if (isLoading) return <div className="flex items-center justify-center h-64 text-slate-400"><Loader2 className="w-6 h-6 animate-spin mr-2" />Loading...</div>;
@@ -158,6 +164,132 @@ export default function StudentDashboard() {
             {Object.entries(SKILL_LABELS).map(([key, label]) => (
               <SkillBar key={key} label={label} value={avgSkills[key] || 0} max={25} />
             ))}
+          </div>
+        </div>
+      )}
+
+      {/* My Performance Analytics */}
+      {analytics && (
+        <div className="mb-6 space-y-6 animate-fade-in">
+          <h2 className="text-lg font-bold text-brand-slate flex items-center gap-2">
+            <Sparkles className="w-5 h-5 text-brand-amber" /> My Performance
+          </h2>
+
+          {/* A. Topic Mastery Chart */}
+          <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm">
+            <h3 className="text-sm font-bold text-brand-slate mb-4">Topic Mastery</h3>
+            {(!analytics.topicMastery || analytics.topicMastery.length === 0) ? (
+              <p className="text-sm text-slate-400 text-center py-6">
+                No topic data yet — your mastery will appear as you complete more activities.
+              </p>
+            ) : (
+              <div className="space-y-3">
+                {analytics.topicMastery.map((topic, idx) => {
+                  const pct = Math.round(topic.percentage ?? 0);
+                  const colorClass = pct >= 85 ? 'bg-emerald-400' : pct >= 70 ? 'bg-amber-400' : 'bg-red-400';
+                  return (
+                    <div key={idx} className="flex items-center gap-3">
+                      <span className="text-xs font-medium text-slate-600 w-28 shrink-0 truncate" title={topic.name}>{topic.name}</span>
+                      <div className="bg-gray-700 rounded-full h-3 flex-1">
+                        <div className={`h-3 rounded-full transition-all duration-700 ${colorClass}`} style={{ width: `${pct}%` }} />
+                      </div>
+                      <span className="text-xs font-bold text-slate-700 w-10 text-right">{pct}%</span>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          {/* B. Skill Trend Chart */}
+          <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm">
+            <h3 className="text-sm font-bold text-brand-slate mb-4">Skill Trends</h3>
+            {(!analytics.skillTrends || analytics.skillTrends.length === 0) ? (
+              <p className="text-sm text-slate-400 text-center py-6">
+                Submit more activities to see your skill trends.
+              </p>
+            ) : (() => {
+              const TREND_SKILLS = [
+                { key: 'vocabulary', label: 'Vocabulary', color: '#8b5cf6' },
+                { key: 'punctuation', label: 'Punctuation', color: '#06b6d4' },
+                { key: 'thematicFlow', label: 'Thematic Flow', color: '#f59e0b' },
+                { key: 'sentenceStructure', label: 'Sentence Structure', color: '#10b981' },
+              ];
+              const trends = analytics.skillTrends;
+              const toPoints = (key) =>
+                trends.map((d, i) => {
+                  const x = trends.length === 1 ? 215 : 50 + (i * (330 / (trends.length - 1)));
+                  const y = 180 - ((d[key] || 0) / 25) * 170;
+                  return `${x},${y}`;
+                }).join(' ');
+              return (
+                <>
+                  <svg viewBox="0 0 400 200" className="w-full h-48">
+                    {/* Grid lines */}
+                    <line x1="40" y1="10" x2="40" y2="180" stroke="#374151" strokeWidth="1" />
+                    <line x1="40" y1="180" x2="390" y2="180" stroke="#374151" strokeWidth="1" />
+                    {/* Horizontal guide lines */}
+                    <line x1="40" y1="95" x2="390" y2="95" stroke="#374151" strokeWidth="0.5" strokeDasharray="4" />
+                    <line x1="40" y1="10" x2="390" y2="10" stroke="#374151" strokeWidth="0.5" strokeDasharray="4" />
+                    {/* Y-axis labels */}
+                    <text x="35" y="15" fill="#9ca3af" fontSize="10" textAnchor="end">25</text>
+                    <text x="35" y="98" fill="#9ca3af" fontSize="10" textAnchor="end">12</text>
+                    <text x="35" y="183" fill="#9ca3af" fontSize="10" textAnchor="end">0</text>
+                    {/* X-axis labels */}
+                    {trends.map((_, i) => {
+                      const x = trends.length === 1 ? 215 : 50 + (i * (330 / (trends.length - 1)));
+                      return <text key={i} x={x} y="195" fill="#9ca3af" fontSize="9" textAnchor="middle">{i + 1}</text>;
+                    })}
+                    {/* Polylines for each skill */}
+                    {TREND_SKILLS.map(skill => (
+                      <polyline key={skill.key} points={toPoints(skill.key)} fill="none" stroke={skill.color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                    ))}
+                    {/* Data dots */}
+                    {TREND_SKILLS.map(skill =>
+                      trends.map((d, i) => {
+                        const x = trends.length === 1 ? 215 : 50 + (i * (330 / (trends.length - 1)));
+                        const y = 180 - ((d[skill.key] || 0) / 25) * 170;
+                        return <circle key={`${skill.key}-${i}`} cx={x} cy={y} r="3" fill={skill.color} />;
+                      })
+                    )}
+                  </svg>
+                  {/* Legend */}
+                  <div className="flex flex-wrap gap-x-4 gap-y-1 mt-3 justify-center">
+                    {TREND_SKILLS.map(skill => (
+                      <div key={skill.key} className="flex items-center gap-1.5">
+                        <span className="w-3 h-3 rounded-full inline-block" style={{ backgroundColor: skill.color }} />
+                        <span className="text-xs text-slate-500">{skill.label}</span>
+                      </div>
+                    ))}
+                  </div>
+                </>
+              );
+            })()}
+          </div>
+
+          {/* C. Performance Summary Card */}
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div className="bg-white border border-slate-200 rounded-2xl p-4 text-center shadow-sm">
+              <span className="text-2xl">🏆</span>
+              <p className="text-[10px] uppercase tracking-wider font-bold text-slate-400 mt-1">Strongest Topic</p>
+              <p className="text-sm font-bold text-brand-slate mt-1 truncate" title={analytics.strongestTopic || '—'}>
+                {analytics.strongestTopic || '—'}
+              </p>
+            </div>
+            <div className="bg-white border border-slate-200 rounded-2xl p-4 text-center shadow-sm">
+              <span className="text-2xl">📈</span>
+              <p className="text-[10px] uppercase tracking-wider font-bold text-slate-400 mt-1">Area to Improve</p>
+              <p className="text-sm font-bold text-brand-slate mt-1 truncate" title={analytics.weakestTopic || '—'}>
+                {analytics.weakestTopic || '—'}
+              </p>
+            </div>
+            <div className="bg-white border border-slate-200 rounded-2xl p-4 text-center shadow-sm">
+              <span className="text-2xl">🔥</span>
+              <p className="text-[10px] uppercase tracking-wider font-bold text-slate-400 mt-1">Submissions</p>
+              <p className="text-sm font-bold text-brand-slate mt-1">
+                {analytics.totalGraded ?? submissions.length}
+              </p>
+            </div>
           </div>
         </div>
       )}

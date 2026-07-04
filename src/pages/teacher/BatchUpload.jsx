@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
-import { ArrowLeft, Camera, UploadCloud, X, Play, CheckCircle2, Clock, Loader2, User, Wifi, WifiOff, Trash2, AlertTriangle } from 'lucide-react';
+import { ArrowLeft, Camera, UploadCloud, X, Play, CheckCircle2, Clock, Loader2, User, Wifi, WifiOff, Trash2, AlertTriangle, Info } from 'lucide-react';
 import { getQueue, buildJob, enqueue, flushQueue } from '../../utils/offlineQueue';
 import { API_URL } from '../../config';
 
@@ -84,6 +84,11 @@ export default function BatchUpload() {
 
   const handleGrade = async () => {
     if (!files.length) return;
+    // REQUIRE student selection before grading
+    if (!selectedStudent) {
+      alert('⚠️ Please select a student before starting AI grading. Each submission must be assigned to a student.');
+      return;
+    }
     setIsRunning(true);
     const newResults = [];
 
@@ -198,13 +203,24 @@ export default function BatchUpload() {
         <button onClick={() => navigate(-1)} className="flex items-center text-sm text-slate-500 hover:text-brand-slate">
           <ArrowLeft className="w-4 h-4 mr-1" /> Back
         </button>
-        {!isStudentSubmitMode && hasWaiting && !isRunning && (
-          <button onClick={handleGrade}
-            className="bg-brand-navy text-white px-4 py-2 rounded-lg text-sm font-bold flex items-center hover:bg-blue-900 shadow-md">
-            <Play className="w-4 h-4 mr-2" />
-            {isOnline ? `Start AI Grading (${files.filter(f => f.status === 'waiting').length})` : `Queue for Upload (${files.filter(f => f.status === 'waiting').length})`}
-          </button>
-        )}
+        {!isStudentSubmitMode && hasWaiting && !isRunning && !selectedStudent && (
+        <div className="flex items-center gap-2 px-3 py-2 bg-amber-50 border border-amber-200 rounded-lg text-xs text-amber-700 font-medium">
+          <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+          Please select a student below before grading.
+        </div>
+      )}
+      {!isStudentSubmitMode && hasWaiting && !isRunning && (
+        <button onClick={handleGrade}
+          disabled={!selectedStudent}
+          className={cn('px-4 py-2 rounded-lg text-sm font-bold flex items-center shadow-md',
+            selectedStudent
+              ? 'bg-brand-navy text-white hover:bg-blue-900'
+              : 'bg-slate-300 text-slate-500 cursor-not-allowed')}
+        >
+          <Play className="w-4 h-4 mr-2" />
+          {isOnline ? `Start AI Grading (${files.filter(f => f.status === 'waiting').length})` : `Queue for Upload (${files.filter(f => f.status === 'waiting').length})`}
+        </button>
+      )}
         {!isStudentSubmitMode && isRunning && (
           <span className="flex items-center text-brand-navy text-sm font-semibold">
             <Loader2 className="w-4 h-4 mr-2 animate-spin" /> {isOnline ? 'Analyzing with Gemini...' : 'Saving to queue...'}
@@ -231,11 +247,23 @@ export default function BatchUpload() {
         </div>
       )}
 
+      {/* Handwriting Legibility Banner */}
+      {!isStudentSubmitMode && (
+        <div className="bg-blue-500/10 border border-blue-500/30 rounded-xl p-4">
+          <div className="flex items-start gap-3">
+            <Info className="w-5 h-5 text-blue-400 shrink-0 mt-0.5" />
+            <p className="text-sm text-blue-300 leading-relaxed">
+              <span className="font-semibold text-blue-400">ℹ️ Note:</span> The AI grading system requires clear, legible handwriting for accurate processing. Submissions with unclear or illegible handwriting may produce inaccurate results and should be prioritized for manual review in the HITL Workspace.
+            </p>
+          </div>
+        </div>
+      )}
+
       {/* Student Selector */}
       {!isStudentSubmitMode && students.length > 0 && (
         <div className="bg-white p-4 rounded-xl border border-slate-200">
           <label className="block text-sm font-medium text-slate-700 mb-2 flex items-center gap-2">
-            <User className="w-4 h-4" /> Assign to Student
+            <User className="w-4 h-4" /> Assign to Student <span className="text-red-500">*</span>
           </label>
           <div className="relative">
             <input

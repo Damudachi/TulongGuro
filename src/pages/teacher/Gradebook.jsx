@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Link, useSearchParams, useNavigate } from 'react-router-dom';
-import { Users, BarChart2, Plus, Search } from 'lucide-react';
+import { Users, BarChart2, Plus, Search, Download } from 'lucide-react';
 import { API_URL } from '../../config';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
@@ -16,7 +16,33 @@ export default function Gradebook() {
   const [teacherClasses, setTeacherClasses] = useState([]); // classes list for section/class picker
   const [selectedSectionId, setSelectedSectionId] = useState('');
   const [search, setSearch] = useState('');
+  const [exportingSectionId, setExportingSectionId] = useState(null);
   const navigate = useNavigate();
+
+  const handleSectionExport = async (sectionId, e) => {
+    e.stopPropagation();
+    const user = JSON.parse(localStorage.getItem('user') || '{}');
+    if (!user.id) return;
+    setExportingSectionId(sectionId);
+    try {
+      const response = await fetch(`${API_URL}/api/teacher/${user.id}/gradebook/export?sectionId=${sectionId}&format=xlsx`);
+      if (!response.ok) throw new Error('Export failed');
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `grades_section_${sectionId}.xlsx`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error('Export error:', err);
+      alert('Failed to export grades. Please try again.');
+    } finally {
+      setExportingSectionId(null);
+    }
+  };
 
   useEffect(() => {
     if (classIdParam) setSelectedClassId(classIdParam);
@@ -141,7 +167,21 @@ export default function Gradebook() {
                         <h3 className="font-bold text-lg text-brand-slate">{s.name}</h3>
                         <span className="text-xs text-slate-500">{s._count?.students || (s.students || []).length} students</span>
                       </div>
-                      <div className="text-sm text-slate-400">Section</div>
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={(e) => handleSectionExport(s.id, e)}
+                          disabled={exportingSectionId === s.id}
+                          className="text-xs bg-gray-700 hover:bg-gray-600 text-gray-300 px-3 py-1.5 rounded-lg flex items-center gap-1 disabled:opacity-50"
+                        >
+                          {exportingSectionId === s.id ? (
+                            <span className="animate-spin w-3 h-3 border-2 border-gray-300 border-t-transparent rounded-full" />
+                          ) : (
+                            <Download className="w-3 h-3" />
+                          )}
+                          Export All
+                        </button>
+                        <div className="text-sm text-slate-400">Section</div>
+                      </div>
                     </div>
                   </button>
 
