@@ -191,7 +191,7 @@ export default function ClassHub() {
             </div>
             <Link to={`/teacher/activity/new?classId=${classId}`}
               className="flex items-center bg-brand-navy text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-900 transition-colors">
-              <Plus className="w-4 h-4 mr-2" /> Full Builder
+              <Plus className="w-4 h-4 mr-2" /> Create Activity
             </Link>
           </div>
 
