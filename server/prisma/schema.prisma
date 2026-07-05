@@ -26,6 +26,7 @@ model User {
   section         Section?  @relation("StudentSection", fields: [sectionId], references: [id])
   submissions     Submission[]
   gradingExamples GradingExample[]
+  rubricTemplates RubricTemplate[] @relation("TeacherRubricTemplates")
 }
 
 model Section {
@@ -109,4 +110,13 @@ model GradingExample {
   createdAt       DateTime @default(now())
 
   teacher User @relation(fields: [teacherId], references: [id])
+}
+
+model RubricTemplate {
+  id        String   @id @default(uuid())
+  name      String
+  criteria  String   // JSON: Structured rubric configuration
+  teacherId String
+  teacher   User     @relation("TeacherRubricTemplates", fields: [teacherId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
 }

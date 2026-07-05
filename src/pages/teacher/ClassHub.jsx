@@ -22,7 +22,10 @@ export default function ClassHub() {
   const [newActivity, setNewActivity] = useState({ title: '', type: 'Essay', points: 100, instructions: '', deadline: '', submissionMode: 'TEACHER_UPLOAD' });
   const [isEditOpen, setIsEditOpen] = useState(false);
   const [editActivity, setEditActivity] = useState(null);
-  const [editForm, setEditForm] = useState({ deadline: '', instructions: '' });
+  const [editForm, setEditForm] = useState({ title: '', type: 'Essay', points: 100, topic: '', deadline: '', instructions: '' });
+  const [deleteConfirmText, setDeleteConfirmText] = useState('');
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [isSavingEdit, setIsSavingEdit] = useState(false);
   const [showPreview, setShowPreview] = useState(false);
 
@@ -51,9 +54,15 @@ export default function ClassHub() {
   const openEditModal = (activity) => {
     setEditActivity(activity);
     setEditForm({
+      title: activity.title || '',
+      type: activity.type || 'Essay',
+      points: activity.points || 100,
+      topic: activity.topic || '',
       deadline: activity.deadline ? String(activity.deadline).split('T')[0] : '',
       instructions: activity.instructions || ''
     });
+    setDeleteConfirmText('');
+    setShowDeleteConfirm(false);
     setIsEditOpen(true);
   };
 
@@ -71,19 +80,14 @@ export default function ClassHub() {
         {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            deadline: editForm.deadline,
-            instructions: editForm.instructions
-          })
+          body: JSON.stringify(editForm)
         }
       );
       const data = await res.json();
       if (data.success) {
         setClassData(prev => ({
           ...prev,
-          activities: prev.activities.map(a => a.id === editActivity.id
-            ? { ...a, deadline: data.activity.deadline, instructions: data.activity.instructions }
-            : a)
+          activities: prev.activities.map(a => a.id === editActivity.id ? data.activity : a)
         }));
         closeEditModal();
       } else {
@@ -93,6 +97,25 @@ export default function ClassHub() {
       alert('Network error');
     } finally {
       setIsSavingEdit(false);
+    }
+  };
+
+  const handleDeleteActivity = async () => {
+    if (deleteConfirmText !== 'DELETE') return;
+    setIsDeleting(true);
+    try {
+      const res = await fetch(`${API_URL}/api/teacher/activities/${editActivity.id}`, { method: 'DELETE' });
+      const data = await res.json();
+      if (data.success) {
+        setClassData(prev => ({ ...prev, activities: prev.activities.filter(a => a.id !== editActivity.id) }));
+        closeEditModal();
+      } else {
+        alert('Failed: ' + data.error);
+      }
+    } catch (e) {
+      alert('Network error');
+    } finally {
+      setIsDeleting(false);
     }
   };
 
@@ -335,27 +358,97 @@ export default function ClassHub() {
       {isEditOpen && editActivity && (
         <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl p-6 w-full max-w-lg shadow-xl">
-            <div className="mb-4">
-              <h2 className="text-xl font-bold text-brand-slate">Assignment Details</h2>
-              <p className="text-xs text-slate-500">Update the deadline and instructions for this activity.</p>
-            </div>
-
-            <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 mb-4">
-              <p className="font-bold text-brand-slate">{editActivity.title}</p>
-              <p className="text-xs text-slate-500">
-                {editActivity.type} • {editActivity.points} pts • {editActivity.submissionMode === 'STUDENT_SUBMIT' ? 'Student Submits' : 'Teacher Uploads'}
-              </p>
-            </div>
-
-            <form onSubmit={handleSaveEdit} className="space-y-4">
+            <div className="mb-4 flex justify-between items-start">
               <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1">Deadline</label>
+                <h2 className="text-xl font-bold text-brand-slate">Assignment Details</h2>
+                <p className="text-xs text-slate-500">Update the details for this activity.</p>
+              </div>
+              <button onClick={() => setShowDeleteConfirm(!showDeleteConfirm)} className="text-red-500 text-sm font-semibold hover:text-red-700">
+                Delete Activity
+              </button>
+            </div>
+
+            {showDeleteConfirm && (
+              <div className="bg-red-50 border border-red-200 rounded-xl p-4 mb-4">
+                <p className="text-sm text-red-800 font-bold mb-2">Are you sure? This will delete all student submissions and AI feedback.</p>
+                <label className="block text-xs font-medium text-red-700 mb-1">Type "DELETE" to confirm</label>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={deleteConfirmText}
+                    onChange={(e) => setDeleteConfirmText(e.target.value)}
+                    className="flex-1 border border-red-200 p-2 rounded-lg outline-none focus:ring-2 focus:ring-red-500"
+                    placeholder="DELETE"
+                  />
+                  <button
+                    type="button"
+                    onClick={handleDeleteActivity}
+                    disabled={deleteConfirmText !== 'DELETE' || isDeleting}
+                    className="bg-red-600 text-white font-bold px-4 rounded-lg hover:bg-red-700 disabled:opacity-50"
+                  >
+                    {isDeleting ? 'Deleting...' : 'Confirm'}
+                  </button>
+                </div>
+              </div>
+            )}
+
+            <form onSubmit={handleSaveEdit} className="space-y-4 max-h-[60vh] overflow-y-auto px-1">
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">Title</label>
                 <input
-                  type="date"
-                  value={editForm.deadline}
-                  onChange={(e) => setEditForm((prev) => ({ ...prev, deadline: e.target.value }))}
+                  type="text"
+                  required
+                  value={editForm.title}
+                  onChange={(e) => setEditForm((prev) => ({ ...prev, title: e.target.value }))}
                   className="w-full border border-slate-200 p-2 rounded-lg outline-none focus:ring-2 focus:ring-brand-navy"
                 />
+              </div>
+              <div className="flex gap-4">
+                <div className="flex-1">
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Type</label>
+                  <select
+                    value={editForm.type}
+                    onChange={(e) => setEditForm((prev) => ({ ...prev, type: e.target.value }))}
+                    className="w-full border border-slate-200 p-2 rounded-lg outline-none focus:ring-2 focus:ring-brand-navy"
+                  >
+                    <option value="Essay">Essay</option>
+                    <option value="Journal">Journal</option>
+                    <option value="Reflection">Reflection</option>
+                    <option value="Short Story">Short Story</option>
+                  </select>
+                </div>
+                <div className="flex-1">
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Points</label>
+                  <input
+                    type="number"
+                    required
+                    min="1"
+                    value={editForm.points}
+                    onChange={(e) => setEditForm((prev) => ({ ...prev, points: parseInt(e.target.value) || 0 }))}
+                    className="w-full border border-slate-200 p-2 rounded-lg outline-none focus:ring-2 focus:ring-brand-navy"
+                  />
+                </div>
+              </div>
+              <div className="flex gap-4">
+                <div className="flex-1">
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Topic (Optional)</label>
+                  <input
+                    type="text"
+                    value={editForm.topic}
+                    onChange={(e) => setEditForm((prev) => ({ ...prev, topic: e.target.value }))}
+                    className="w-full border border-slate-200 p-2 rounded-lg outline-none focus:ring-2 focus:ring-brand-navy"
+                    placeholder="e.g. Noli Me Tangere"
+                  />
+                </div>
+                <div className="flex-1">
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Deadline</label>
+                  <input
+                    type="date"
+                    value={editForm.deadline}
+                    onChange={(e) => setEditForm((prev) => ({ ...prev, deadline: e.target.value }))}
+                    className="w-full border border-slate-200 p-2 rounded-lg outline-none focus:ring-2 focus:ring-brand-navy"
+                  />
+                </div>
               </div>
               <div>
                 <label className="block text-sm font-medium text-slate-700 mb-1">Details</label>
@@ -367,7 +460,7 @@ export default function ClassHub() {
                   placeholder="Add or update assignment details for students..."
                 />
               </div>
-              <div className="flex gap-2 pt-2">
+              <div className="flex gap-2 pt-2 pb-2">
                 <button
                   type="button"
                   onClick={closeEditModal}

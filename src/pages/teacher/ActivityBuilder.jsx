@@ -84,10 +84,28 @@ export default function ActivityBuilder() {
   const [topics, setTopics] = useState([]);
   const [rubricMode, setRubricMode] = useState('template'); // 'template' | 'manual' | 'upload'
   const [rubricType, setRubricType] = useState('standard'); // 'standard' | 'range'
-  const [savedRubrics, setSavedRubrics] = useState(() => {
-    try { return JSON.parse(localStorage.getItem('savedRubrics') || '[]'); }
-    catch { return []; }
-  });
+  const [savedRubrics, setSavedRubrics] = useState([]);
+  
+  useEffect(() => {
+    const fetchTemplates = async () => {
+      try {
+        const user = JSON.parse(localStorage.getItem('user') || '{}');
+        if (!user.id) return;
+        const res = await fetch(`${API_URL}/api/teacher/rubric-templates/${user.id}`);
+        const data = await res.json();
+        if (data.success && data.templates) {
+          const parsedTemplates = data.templates.map(t => ({
+            ...t,
+            criteria: typeof t.criteria === 'string' ? JSON.parse(t.criteria) : t.criteria
+          }));
+          setSavedRubrics(parsedTemplates);
+        }
+      } catch (err) {
+        console.error('Failed to load cloud templates:', err);
+      }
+    };
+    fetchTemplates();
+  }, []);
   const initialCriteria = (savedRubrics && savedRubrics.length) ? savedRubrics[0].criteria : RUBRIC_TEMPLATES[0].criteria;
   const [rubricCriteria, setRubricCriteria] = useState(initialCriteria);
   const [selectedOption, setSelectedOption] = useState(() => (savedRubrics && savedRubrics.length) ? `saved:${savedRubrics[0].id}` : 'builtin:0');
@@ -195,23 +213,38 @@ export default function ActivityBuilder() {
     setShowSaveTemplateModal(true);
   };
 
-  const confirmSaveTemplate = () => {
+  const confirmSaveTemplate = async () => {
     const criteriaToSave = (rubricMode === 'upload' && extractedCriteria) ? extractedCriteria : rubricCriteria;
-    const newTemplate = {
-      id: `custom-${Date.now()}`,
-      name: templateTitle || 'My Custom Rubric',
-      description: 'Custom rubric saved by teacher.',
-      gradeRange: 'Custom',
-      criteria: criteriaToSave,
-      type: rubricType,
-      savedAt: new Date().toISOString(),
-    };
-    const updated = [...savedRubrics, newTemplate];
-    setSavedRubrics(updated);
-    localStorage.setItem('savedRubrics', JSON.stringify(updated));
-    setShowSaveTemplateModal(false);
-    setTemplateTitle('');
-    alert(`✓ "${newTemplate.name}" has been saved to your rubrics.`);
+    if (!criteriaToSave.length) return;
+    const user = JSON.parse(localStorage.getItem('user') || '{}');
+    if (!user.id) return alert('User not found. Please log in again.');
+
+    try {
+      const res = await fetch(`${API_URL}/api/teacher/rubric-templates`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: templateTitle || 'My Custom Rubric',
+          criteria: criteriaToSave,
+          teacherId: user.id
+        })
+      });
+      const data = await res.json();
+      if (data.success) {
+        const savedTemplate = {
+          ...data.template,
+          criteria: typeof data.template.criteria === 'string' ? JSON.parse(data.template.criteria) : data.template.criteria
+        };
+        setSavedRubrics(prev => [savedTemplate, ...prev]);
+        setShowSaveTemplateModal(false);
+        setTemplateTitle('');
+        alert(`✓ "${savedTemplate.name}" has been saved to cloud templates.`);
+      } else {
+        alert('Failed to save template: ' + data.error);
+      }
+    } catch (err) {
+      alert('Network error while saving template.');
+    }
   };
 
   // ── Additional files ──

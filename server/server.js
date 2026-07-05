@@ -462,15 +462,69 @@ app.post('/api/teacher/activities', (req, res, next) => {
 // Update activity details (deadline, instructions)
 app.put('/api/teacher/activities/:activityId', async (req, res) => {
   try {
-    const { deadline, instructions } = req.body;
+    const { title, type, points, topic, deadline, instructions } = req.body;
+    const updateData = {};
+    if (title !== undefined) updateData.title = String(title);
+    if (type !== undefined) updateData.type = String(type);
+    if (points !== undefined) updateData.points = parseInt(points);
+    if (topic !== undefined) updateData.topic = topic ? String(topic) : null;
+    if (deadline !== undefined) updateData.deadline = deadline ? String(deadline) : null;
+    if (instructions !== undefined) updateData.instructions = instructions ? String(instructions) : null;
+
     const updated = await prisma.activity.update({
       where: { id: req.params.activityId },
-      data: {
-        deadline: deadline ? String(deadline) : null,
-        instructions: instructions ? String(instructions) : null
-      }
+      data: updateData
     });
     res.json({ success: true, activity: updated });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// Delete activity (Thesis-safe: delete child submissions first)
+app.delete('/api/teacher/activities/:activityId', async (req, res) => {
+  try {
+    const { activityId } = req.params;
+    await prisma.$transaction(async (tx) => {
+      // Delete submissions linked to activity to prevent FK constraint failure
+      await tx.submission.deleteMany({ where: { activityId } });
+      // Delete the activity itself
+      await tx.activity.delete({ where: { id: activityId } });
+    });
+    res.json({ success: true, message: 'Activity deleted safely' });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// ─────────────────────────────────────────
+// RUBRIC TEMPLATES
+// ─────────────────────────────────────────
+app.get('/api/teacher/rubric-templates/:teacherId', async (req, res) => {
+  try {
+    const templates = await prisma.rubricTemplate.findMany({
+      where: { teacherId: req.params.teacherId },
+      orderBy: { createdAt: 'desc' }
+    });
+    res.json({ success: true, templates });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+app.post('/api/teacher/rubric-templates', async (req, res) => {
+  try {
+    const { name, criteria, teacherId } = req.body;
+    if (!name || !criteria || !teacherId) return res.status(400).json({ success: false, error: 'Missing fields' });
+    
+    const template = await prisma.rubricTemplate.create({
+      data: {
+        name: String(name),
+        criteria: typeof criteria === 'string' ? criteria : JSON.stringify(criteria),
+        teacherId: String(teacherId)
+      }
+    });
+    res.json({ success: true, template });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
   }
@@ -769,7 +823,7 @@ IMPORTANT RULES:
 - First, check if the image contains readable handwritten or printed text.
 - If the image is BLANK, contains only drawings/art with no text, is too blurry to read, or has NO readable written content, you MUST set score to 0, set noTextDetected to true, provide a short explanation in strengths, and leave areasForGrowth and actionableSteps as empty arrays.
 - If you CAN read text, grade it normally against the rubric using the structured feedback format below.
-- DATA PRIVACY RULE: Do NOT mention or include the student's name anywhere in your feedback. If you detect a student's name written on the paper, set "privacyViolationDetected" to true.
+- DATA PRIVACY RULE: Do NOT mention or include the student's name anywhere in your feedback. If you detect a student's name written on the paper, set "privacyViolationDetected" to true.${subjectForPrompt.toLowerCase().includes('filipino') ? '\n- LANGUAGE RULE: You MUST write the strengths, areasForGrowth, actionableSteps, skillExplanations, and readingStrategy entirely in Tagalog/Filipino.' : subjectForPrompt.toLowerCase().includes('english') ? '\n- LANGUAGE RULE: You MUST write the strengths, areasForGrowth, actionableSteps, skillExplanations, and readingStrategy entirely in English.' : ''}
 
 TASK: In ONE step:
 1. Read and transcribe the handwritten student essay from the image.
@@ -1216,7 +1270,7 @@ app.get('/api/student/:studentId/dashboard', async (req, res) => {
   try {
     const student = await prisma.user.findUnique({
       where: { id: req.params.studentId },
-      include: { section: true }
+      include: { section: { include: { classes: true } } }
     });
     const submissions = await prisma.submission.findMany({
       where: { studentId: req.params.studentId, status: 'GRADED' },
@@ -1228,7 +1282,44 @@ app.get('/api/student/:studentId/dashboard', async (req, res) => {
       : 0;
     const stars = submissions.filter(s => (s.hitlScore || s.aiScore || 0) >= 90).length * 3
       + submissions.filter(s => { const sc = s.hitlScore || s.aiScore || 0; return sc >= 75 && sc < 90; }).length;
-    res.json({ success: true, student, submissions, avgGrade, stars });
+
+    // Dynamically calculate avgSkills from recent submissions
+    const SKILLS = ['vocabulary', 'punctuation', 'thematicFlow', 'sentenceStructure'];
+    const avgSkills = {};
+    const skillTrend = submissions.filter(s => s.skillScores).map(s => {
+      try { return JSON.parse(s.skillScores); } catch { return null; }
+    }).filter(Boolean);
+    SKILLS.forEach(skill => {
+      const vals = skillTrend.map(h => h[skill] || 0).filter(v => v > 0);
+      avgSkills[skill] = vals.length ? Math.round(vals.reduce((a, b) => a + b, 0) / vals.length) : 0;
+    });
+
+    // Extract latestStrategy from the most recent graded submission
+    const latestStrategy = submissions[0]?.readingStrategy || null;
+
+    // Fetch upcoming deadlines (all deadlines that are not in the past)
+    const classIds = student?.section?.classes?.map(c => c.id) || [];
+    const upcomingActivities = await prisma.activity.findMany({
+      where: {
+        classId: { in: classIds },
+        deadline: { not: null }
+      }
+    });
+    const now = new Date();
+    // Exclude activities the student has already submitted
+    const submittedActivityIds = submissions.map(s => s.activityId);
+    
+    const upcomingDeadlines = upcomingActivities.filter(a => {
+      if (submittedActivityIds.includes(a.id)) return false;
+      const deadlineDate = new Date(a.deadline);
+      return deadlineDate >= now || isNaN(deadlineDate); // Include if valid future date or format that doesn't parse to past
+    }).map(a => ({
+      id: a.id,
+      title: a.title,
+      deadline: a.deadline
+    })).sort((a, b) => new Date(a.deadline) - new Date(b.deadline));
+
+    res.json({ success: true, student, submissions, avgGrade, stars, avgSkills, latestStrategy, upcomingDeadlines });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
   }
@@ -1546,7 +1637,7 @@ app.get('/api/student/:studentId/analytics', async (req, res) => {
     // Topic mastery: group by activity topic, compute avg percentage
     const topicMap = {};
     for (const sub of submissions) {
-      const topic = sub.activity?.topic;
+      const topic = sub.activity?.topic || sub.activity?.title;
       if (!topic) continue;
       if (!topicMap[topic]) topicMap[topic] = { scores: [], points: [] };
       topicMap[topic].scores.push(sub.hitlScore ?? sub.aiScore ?? 0);
@@ -1598,7 +1689,7 @@ app.get('/api/student/:studentId/analytics', async (req, res) => {
     res.json({
       success: true,
       topicMastery,
-      skillTrend,
+      skillTrends: skillTrend,
       strongestTopic,
       weakestTopic,
       avgSkills,
