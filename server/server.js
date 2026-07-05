@@ -685,28 +685,22 @@ app.post('/api/teacher/upload', upload.single('image'), async (req, res) => {
           try {
             const parsed = JSON.parse(activity.rubric);
             if (parsed.criteria?.length) {
-              const isRangeType = parsed.type === 'range';
-              if (isRangeType) {
-                // Range-type rubric: use descriptive band levels
-                rubricContext = 'RUBRIC TYPE: Range/Levels-based grading.\nUse this rubric:\n' + parsed.criteria.map(c => {
-                  let bandStr = '';
+              rubricContext = `MANDATORY RUBRIC — You MUST use this rubric for scoring. Do NOT use any default rubric.\n\n` +
+                parsed.criteria.map((c, i) => {
+                  let entry = `CRITERION ${i+1}: ${c.name} (${c.points || 0} points maximum)\n`;
+                  entry += `  Description: ${c.description || 'N/A'}\n`;
                   if (c.bands?.length) {
-                    bandStr = '\n  Scoring levels:\n' + c.bands.map(b =>
-                      `    - ${b.label} (${b.score || b.range}): ${b.description}`
+                    entry += `  Scoring Bands:\n` + c.bands.map(b =>
+                      `    • ${b.label} (${b.range || b.score} pts): ${b.description}`
                     ).join('\n');
                   }
-                  return `• ${c.name}: ${c.description || ''}${bandStr}`;
-                }).join('\n') + '\nFor each criterion, assign the appropriate level/band label and provide justification. The final score should be computed from the band scores.';
-              } else {
-                // Standard point-based rubric
-                rubricContext = 'Use this rubric:\n' + parsed.criteria.map(c => {
-                  let bandStr = '';
-                  if (c.bands?.length) {
-                    bandStr = ' Scoring bands: ' + c.bands.map(b => `${b.range} ${b.label}: ${b.description}`).join('; ');
-                  }
-                  return `• ${c.name} (${c.points} pts): ${c.description || ''}${bandStr}`;
-                }).join('\n') + '\nGrade each criterion within these bands and justify your score placement.';
-              }
+                  return entry;
+                }).join('\n\n') +
+                `\n\nSCORING INSTRUCTIONS:\n` +
+                `- Grade each criterion independently within its point range.\n` +
+                `- The total score = sum of all criterion scores, scaled to 0-100.\n` +
+                `- In your rubricScores array, list each criterion with its name, score, maxPoints, and bandDescription.\n` +
+                `- Your "score" field must equal the sum, scaled to percentage.`;
             }
           } catch { }
         }
@@ -806,7 +800,7 @@ ${gradeNum <= 3 ? '- Focus: Simple sentence construction, basic narrative writin
 - A ${gradeLevelForPrompt} student who writes well for their age should score 75-85. Reserve 90+ for truly exceptional work at this level.
 `;
 
-    const prompt = `You are a warm, encouraging Filipino tutor ("Guro") giving constructive feedback to a ${gradeLevelForPrompt} student studying ${subjectForPrompt} in a Philippine public school (DepEd K-12 MATATAG curriculum).
+    const prompt = `You are a warm, encouraging Filipino tutor ("Guro") giving constructive feedback to a ${gradeLevelForPrompt} student studying ${subjectForPrompt} in a Philippine public school (DepEd MATATAG curriculum).
 
 ${curriculumContext}
 
@@ -817,13 +811,15 @@ YOUR TEACHING PHILOSOPHY:
 - ${languageGuide}
 
 ${activityContext}
-${rubricContext}${fewShotExamples}${sectionContext}${topicGuidance}
+${topicGuidance ? `\nDEPED COMPETENCY ALIGNMENT:\nThis activity is mapped to DepEd competency. ${topicGuidance}\nYou MUST evaluate this work primarily against this competency. Your feedback should reference how well the student demonstrates mastery of this specific skill.\n` : ''}
+${rubricContext}${fewShotExamples}${sectionContext}
 
 IMPORTANT RULES:
+- STEP 1: Scan the essay image for handwritten or typed student names. If a name is detected, immediately short-circuit. Stop evaluation and return exactly {"privacyViolationDetected": true}. Do not execute rubric parsing or feedback generation if Step 1 triggers.
 - First, check if the image contains readable handwritten or printed text.
 - If the image is BLANK, contains only drawings/art with no text, is too blurry to read, or has NO readable written content, you MUST set score to 0, set noTextDetected to true, provide a short explanation in strengths, and leave areasForGrowth and actionableSteps as empty arrays.
 - If you CAN read text, grade it normally against the rubric using the structured feedback format below.
-- DATA PRIVACY RULE: Do NOT mention or include the student's name anywhere in your feedback. If you detect a student's name written on the paper, set "privacyViolationDetected" to true.${subjectForPrompt.toLowerCase().includes('filipino') ? '\n- LANGUAGE RULE: You MUST write the strengths, areasForGrowth, actionableSteps, skillExplanations, and readingStrategy entirely in Tagalog/Filipino.' : subjectForPrompt.toLowerCase().includes('english') ? '\n- LANGUAGE RULE: You MUST write the strengths, areasForGrowth, actionableSteps, skillExplanations, and readingStrategy entirely in English.' : ''}
+- DATA PRIVACY RULE: Do NOT mention or include the student's name anywhere in your feedback.${subjectForPrompt.toLowerCase().includes('filipino') ? '\n- LANGUAGE RULE: You MUST write the strengths, areasForGrowth, actionableSteps, skillExplanations, and readingStrategy entirely in Tagalog/Filipino.' : subjectForPrompt.toLowerCase().includes('english') ? '\n- LANGUAGE RULE: You MUST write the strengths, areasForGrowth, actionableSteps, skillExplanations, and readingStrategy entirely in English.' : ''}
 
 TASK: In ONE step:
 1. Read and transcribe the handwritten student essay from the image.
@@ -834,6 +830,9 @@ TASK: In ONE step:
 You MUST respond with valid JSON matching this exact schema:
 {
   "score": <total 0-100, use 0 if no readable text>,
+  "rubricScores": [
+    { "criterionName": "<string>", "score": <number>, "maxPoints": <number>, "bandDescription": "<string matching the rubric band>" }
+  ],
   "contentScore": <number>, "contentMax": <number>,
   "organizationScore": <number>, "organizationMax": <number>,
   "grammarScore": <number>, "grammarMax": <number>,
@@ -945,6 +944,18 @@ RULES FOR skillExplanations:
         };
       }
     }
+    
+    // PRIVACY HARD-BLOCK: If AI detected a student's name, reject the submission
+    if (aiResult.privacyViolationDetected && aiSource !== 'mock') {
+      // Clean up uploaded files
+      try { fs.unlinkSync(processedPath); } catch {}
+      try { if (imageFile.path !== processedPath) fs.unlinkSync(imageFile.path); } catch {}
+      return res.status(400).json({
+        success: false,
+        privacyViolation: true,
+        error: 'A student\'s name was detected in the image. Please retake the photo without the student\'s name visible to comply with the Data Privacy Act.'
+      });
+    }
 
     // Chain-of-Verification — SKIPPED by default during upload for speed
     // Teacher can trigger verification from the HITL review page via /api/teacher/submissions/:id/verify
@@ -1019,7 +1030,7 @@ Respond with JSON ONLY using the same schema as before.`;
         aiFeedback: structuredFeedback,
         privacyViolation: aiResult.privacyViolationDetected || false,
         readingStrategy: aiResult.readingStrategy,
-        rubricData: JSON.stringify({
+        rubricData: aiResult.rubricScores ? JSON.stringify(aiResult.rubricScores) : JSON.stringify({
           content: { score: aiResult.contentScore, max: aiResult.contentMax },
           organization: { score: aiResult.organizationScore, max: aiResult.organizationMax },
           grammar: { score: aiResult.grammarScore, max: aiResult.grammarMax }
@@ -1950,6 +1961,38 @@ app.get('/api/admin/retention-report', async (req, res) => {
       bySchoolYear,
       pastRetentionSubmissions: pastRetention.slice(0, 50) // Limit response size
     });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+app.post('/api/admin/archive-grades', async (req, res) => {
+  try {
+    const now = new Date();
+    const result = await prisma.submission.updateMany({
+      where: {
+        retainUntil: { lte: now },
+        archivedAt: null
+      },
+      data: { archivedAt: now }
+    });
+    res.json({ success: true, archivedCount: result.count });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+app.delete('/api/admin/purge-grades', async (req, res) => {
+  try {
+    const now = new Date();
+    const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+    const result = await prisma.submission.deleteMany({
+      where: {
+        archivedAt: { not: null },
+        retainUntil: { lte: thirtyDaysAgo }
+      }
+    });
+    res.json({ success: true, purgedCount: result.count });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
   }

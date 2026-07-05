@@ -14,6 +14,7 @@ const STATUS = {
   notext:     { label: 'No Text',    color: 'bg-amber-100 text-amber-700',   icon: Clock },
   queued:     { label: 'Queued',     color: 'bg-amber-100 text-amber-700',   icon: Clock },
   error:      { label: 'Error',      color: 'bg-red-100 text-red-600',       icon: X },
+  privacy:    { label: 'Name Detected', color: 'bg-red-100 text-red-600',    icon: AlertTriangle },
 };
 
 const SUBMISSION_STATUS = {
@@ -82,6 +83,14 @@ export default function BatchUpload() {
 
   const removeFile = (id) => setFiles(prev => prev.filter(f => f.id !== id));
 
+  const handleRetakeFile = (id, e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setFiles(prev => prev.map(f => f.id === id ? {
+      ...f, file, status: 'waiting', preview: URL.createObjectURL(file), statusDetail: undefined, aiSource: undefined, aiScore: undefined, submissionId: undefined
+    } : f));
+  };
+
   const handleGrade = async () => {
     if (!files.length) return;
     // REQUIRE student selection before grading
@@ -116,7 +125,13 @@ export default function BatchUpload() {
       try {
         const res = await fetch(`${API_URL}/api/teacher/upload`, { method: 'POST', body: formData });
         const data = await res.json();
-        if (data.success) {
+        if (!res.ok && data.privacyViolation) {
+          setFiles(prev => prev.map(f => f.id === fileItem.id ? {
+            ...f, status: 'privacy',
+            statusDetail: '🔒 ' + (data.error || 'Student name detected. Please retake the photo.')
+          } : f));
+          continue;
+        } else if (data.success) {
           // Determine actual status from AI response
           let fileStatus = 'ready';
           let statusDetail = `✅ AI Score: ${data.aiResult?.score}/100`;
@@ -418,7 +433,7 @@ export default function BatchUpload() {
                       {cfg.label}
                       {item.aiScore !== undefined && item.status === 'ready' && <span className="ml-auto">{item.aiScore}/100</span>}
                     </div>
-                    {item.statusDetail && (item.status === 'mock' || item.status === 'notext' || item.status === 'error') && (
+                    {item.statusDetail && (item.status === 'mock' || item.status === 'notext' || item.status === 'error' || item.status === 'privacy') && (
                       <div className="text-[9px] bg-black/70 text-white px-2 py-0.5 rounded-full truncate">{item.statusDetail}</div>
                     )}
                   </div>
@@ -427,6 +442,14 @@ export default function BatchUpload() {
                       className="absolute top-2 right-2 bg-red-500 text-white p-1 rounded-full opacity-0 group-hover:opacity-100 transition-opacity">
                       <X className="w-3 h-3" />
                     </button>
+                  )}
+                  {item.status === 'privacy' && (
+                    <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity bg-black/50">
+                      <input type="file" id={`retake-${item.id}`} className="hidden" accept="image/*" onChange={(e) => handleRetakeFile(item.id, e)} />
+                      <button onClick={() => document.getElementById(`retake-${item.id}`).click()} className="bg-white text-red-600 text-xs font-bold px-3 py-1.5 rounded-full shadow flex items-center gap-1">
+                        <Camera className="w-3 h-3" /> Retake Image
+                      </button>
+                    </div>
                   )}
                   {item.status === 'ready' && item.submissionId && (
                     <button onClick={() => navigate(`/teacher/review/${item.submissionId}`)}

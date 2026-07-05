@@ -62,6 +62,7 @@ export default function HITLWorkspace() {
 
   const [readingStrategy, setReadingStrategy] = useState('');
   const [scores, setScores] = useState({ content: 35, organization: 25, grammar: 25 });
+  const [dynamicRubric, setDynamicRubric] = useState(null);
   const [isEditingAssessment, setIsEditingAssessment] = useState(false);
   const [isChatOpen, setIsChatOpen] = useState(false);
   const [chatHistory, setChatHistory] = useState([
@@ -115,7 +116,14 @@ export default function HITLWorkspace() {
           if (sub.rubricData) {
             try {
               const rd = JSON.parse(sub.rubricData);
-              setScores({ content: rd.content?.score ?? 35, organization: rd.organization?.score ?? 25, grammar: rd.grammar?.score ?? 25 });
+              if (Array.isArray(rd)) {
+                const initialScores = {};
+                rd.forEach(r => initialScores[r.criterionName] = r.score);
+                setScores(initialScores);
+                setDynamicRubric(rd);
+              } else {
+                setScores({ content: rd.content?.score ?? 35, organization: rd.organization?.score ?? 25, grammar: rd.grammar?.score ?? 25 });
+              }
             } catch { }
           }
           if (sub.covData) {
@@ -129,7 +137,9 @@ export default function HITLWorkspace() {
 
   useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [chatHistory]);
 
-  const totalScore = scores.content + scores.organization + scores.grammar;
+  const totalScore = dynamicRubric
+    ? dynamicRubric.reduce((sum, item) => sum + (scores[item.criterionName] || 0), 0)
+    : ((scores.content || 0) + (scores.organization || 0) + (scores.grammar || 0));
 
   // ── Structured feedback helpers ──
   const updateStrengths = (val) => setStructuredFeedback(prev => ({ ...prev, strengths: val }));
@@ -227,7 +237,7 @@ export default function HITLWorkspace() {
             hitlFeedback,
             readingStrategy,
             teacherId: user.id,
-            rubricData: { content: { score: scores.content, max: 40 }, organization: { score: scores.organization, max: 30 }, grammar: { score: scores.grammar, max: 30 } }
+            rubricData: dynamicRubric ? dynamicRubric.map(r => ({ ...r, score: scores[r.criterionName] })) : { content: { score: scores.content, max: 40 }, organization: { score: scores.organization, max: 30 }, grammar: { score: scores.grammar, max: 30 } }
           })
         });
       }
@@ -249,7 +259,13 @@ export default function HITLWorkspace() {
 
   if (isLoading) return <div className="flex items-center justify-center h-64 text-slate-400"><Loader2 className="w-6 h-6 animate-spin mr-2" />Loading submission...</div>;
 
-  const rubricItems = [
+  const rubricItems = dynamicRubric ? dynamicRubric.map((r, i) => ({
+    key: r.criterionName,
+    name: r.criterionName,
+    max: r.maxPoints,
+    color: ['bg-brand-green', 'bg-amber-400', 'bg-blue-400', 'bg-purple-400', 'bg-pink-400'][i % 5],
+    desc: r.bandDescription
+  })) : [
     { key: 'content', name: 'Content & Ideas', max: 40, color: 'bg-brand-green' },
     { key: 'organization', name: 'Organization', max: 30, color: 'bg-amber-400' },
     { key: 'grammar', name: 'Grammar', max: 30, color: 'bg-blue-400' },
@@ -381,12 +397,17 @@ export default function HITLWorkspace() {
             <h3 className="text-sm font-bold text-slate-400 uppercase tracking-wider mb-4">Rubric Breakdown <span className="text-slate-300 font-normal normal-case">{isEditingAssessment ? '(drag to adjust)' : '(read-only)'}</span></h3>
             <div className="space-y-4">
               {rubricItems.map(item => (
-                <div key={item.key}>
+                <div key={item.key} className="relative group">
                   <div className="flex justify-between text-sm mb-1">
                     <span className="font-medium text-slate-700">{item.name}</span>
-                    <span className="font-bold text-slate-900">{scores[item.key]}/{item.max}</span>
+                    <span className="font-bold text-slate-900">{scores[item.key] || 0}/{item.max}</span>
                   </div>
-                  <input type="range" min={0} max={item.max} value={scores[item.key]}
+                  {item.desc && (
+                    <div className="hidden group-hover:block absolute bottom-full mb-2 left-0 right-0 bg-slate-800 text-white text-[10px] p-2 rounded z-10 pointer-events-none">
+                      {item.desc}
+                    </div>
+                  )}
+                  <input type="range" min={0} max={item.max} value={scores[item.key] || 0}
                     disabled={!isEditingAssessment}
                     onChange={e => setScores(prev => ({ ...prev, [item.key]: parseInt(e.target.value) }))}
                     className={`w-full accent-brand-navy ${!isEditingAssessment ? 'opacity-50 cursor-not-allowed' : ''}`} />

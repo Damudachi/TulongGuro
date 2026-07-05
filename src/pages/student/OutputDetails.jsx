@@ -69,14 +69,30 @@ export default function OutputDetails() {
 
   const score = sub.hitlScore ?? sub.aiScore ?? 0;
   const feedback = parseFeedback(sub.hitlFeedback || sub.aiFeedback);
-  const rubric = sub.rubricData ? JSON.parse(sub.rubricData) : {
-    content: { score: 35, max: 40 }, organization: { score: 25, max: 30 }, grammar: { score: 28, max: 30 }
-  };
-  const rubricItems = [
-    { name: 'Content & Ideas', ...rubric.content, color: 'bg-brand-green' },
-    { name: 'Organization', ...rubric.organization, color: 'bg-amber-400' },
-    { name: 'Grammar', ...rubric.grammar, color: 'bg-blue-400' },
-  ];
+  let rubricItems = [];
+  try {
+    const rawRubric = sub.rubricData ? JSON.parse(sub.rubricData) : {
+      content: { score: 35, max: 40 }, organization: { score: 25, max: 30 }, grammar: { score: 28, max: 30 }
+    };
+    if (Array.isArray(rawRubric)) {
+      rubricItems = rawRubric.map((r, i) => ({
+        name: r.criterionName, score: r.score, max: r.maxPoints, desc: r.bandDescription,
+        color: ['bg-brand-green', 'bg-amber-400', 'bg-blue-400', 'bg-purple-400', 'bg-pink-400'][i % 5]
+      }));
+    } else {
+      rubricItems = [
+        { name: 'Content & Ideas', ...rawRubric.content, color: 'bg-brand-green' },
+        { name: 'Organization', ...rawRubric.organization, color: 'bg-amber-400' },
+        { name: 'Grammar', ...rawRubric.grammar, color: 'bg-blue-400' },
+      ];
+    }
+  } catch (e) {
+    rubricItems = [
+      { name: 'Content & Ideas', score: 35, max: 40, color: 'bg-brand-green' },
+      { name: 'Organization', score: 25, max: 30, color: 'bg-amber-400' },
+      { name: 'Grammar', score: 28, max: 30, color: 'bg-blue-400' },
+    ];
+  }
 
   const hasStructuredFeedback = feedback && (feedback.areasForGrowth?.length > 0 || feedback.actionableSteps?.length > 0);
 
@@ -111,11 +127,16 @@ export default function OutputDetails() {
           <h3 className="text-sm font-bold text-slate-400 uppercase tracking-wider mb-4">Rubric Breakdown</h3>
           <div className="space-y-5">
             {rubricItems.map((item, i) => (
-              <div key={i}>
+              <div key={i} className="relative group">
                 <div className="flex justify-between text-sm mb-1.5">
                   <span className="font-medium text-slate-700">{item.name}</span>
                   <span className="font-bold text-slate-900">{item.score}/{item.max}</span>
                 </div>
+                {item.desc && (
+                  <div className="hidden group-hover:block absolute bottom-full mb-2 left-0 right-0 bg-slate-800 text-white text-[10px] p-2 rounded z-10 pointer-events-none">
+                    {item.desc}
+                  </div>
+                )}
                 <div className="w-full bg-slate-100 rounded-full h-3">
                   <div className={cn('h-3 rounded-full transition-all duration-700', item.color)}
                     style={{ width: `${(item.score / item.max) * 100}%` }} />
