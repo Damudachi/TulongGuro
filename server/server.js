@@ -14,12 +14,16 @@ const { createClient } = require('@supabase/supabase-js');
 const path = require('path');
 const fs = require('fs');
 const sharp = require('sharp');
-require('dotenv').config();
 const { getAllTopics, getTopicById, getTopicAIGuidance } = require('./depedTopics');
 
 const app = express();
 const prisma = new PrismaClient();
 const port = process.env.PORT || 3000;
+
+require('dotenv').config({ path: path.join(__dirname, '.env') });
+
+const aiApiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || '';
+const aiConfigured = Boolean(aiApiKey && aiApiKey !== 'mock' && aiApiKey !== 'YOUR_API_KEY');
 
 app.use(cors());
 app.use(express.json());
@@ -65,16 +69,22 @@ async function uploadToCloud(localPath, filename) {
   return urlData.publicUrl;
 }
 
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || 'mock');
-const model = genAI.getGenerativeModel({
+const genAI = aiConfigured ? new GoogleGenerativeAI(aiApiKey) : null;
+const model = genAI ? genAI.getGenerativeModel({
   model: 'gemini-2.5-flash',
   generationConfig: { responseMimeType: 'application/json' }
-});
-const modelLite = genAI.getGenerativeModel({
+}) : null;
+const modelLite = genAI ? genAI.getGenerativeModel({
   model: 'gemini-2.5-flash',
   generationConfig: { responseMimeType: 'application/json' }
-});
-const chatModel = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
+}) : null;
+const chatModel = genAI ? genAI.getGenerativeModel({ model: 'gemini-2.0-flash' }) : null;
+
+if (aiConfigured) {
+  console.log('🤖 Gemini AI enabled');
+} else {
+  console.log('⚠ Gemini AI disabled: set GEMINI_API_KEY or GOOGLE_API_KEY in server/.env to enable AI features');
+}
 
 // ─────────────────────────────────────────
 // AUTH
@@ -1083,11 +1093,15 @@ Current Feedback:
 Teacher's instruction: ${teacherPrompt}`;
 
     let refinedFeedback = `Here is an improved version: ${currentFeedback} This student shows great potential!`;
-    try {
-      const result = await chatModel.generateContent(sys);
-      refinedFeedback = result.response.text().trim();
-    } catch (e) {
-      console.log('⚠ AI refine failed:', e.message?.slice(0, 80));
+    if (!chatModel) {
+      refinedFeedback = currentFeedback;
+    } else {
+      try {
+        const result = await chatModel.generateContent(sys);
+        refinedFeedback = result.response.text().trim();
+      } catch (e) {
+        console.log('⚠ AI refine failed:', e.message?.slice(0, 80));
+      }
     }
     res.json({ success: true, refinedFeedback });
   } catch (e) {
@@ -1527,18 +1541,22 @@ Remember: You are a tutor, not a homework machine. Guide, don't give answers.`;
     contents.push({ role: 'user', parts: [{ text: message }] });
 
     let reply = "I'm having a little trouble right now. Can you try asking again? 😊";
-    try {
-      const result = await chatModel.generateContent({ contents });
-      reply = result.response.text().trim();
-    } catch (e) {
-      console.log('⚠ Student chat AI error:', e.message?.slice(0, 100));
-      // Try with a simpler single-turn call
+    if (!chatModel) {
+      reply = "AI tutoring is currently unavailable. Please try again shortly.";
+    } else {
       try {
-        const fallbackPrompt = `${systemPrompt}\n\nStudent says: "${message}"\n\nRespond as Study Buddy (2-4 sentences, encouraging, Socratic):`;
-        const result = await chatModel.generateContent(fallbackPrompt);
+        const result = await chatModel.generateContent({ contents });
         reply = result.response.text().trim();
-      } catch (e2) {
-        console.log('⚠ Student chat fallback also failed:', e2.message?.slice(0, 80));
+      } catch (e) {
+        console.log('⚠ Student chat AI error:', e.message?.slice(0, 100));
+        // Try with a simpler single-turn call
+        try {
+          const fallbackPrompt = `${systemPrompt}\n\nStudent says: "${message}"\n\nRespond as Study Buddy (2-4 sentences, encouraging, Socratic):`;
+          const result = await chatModel.generateContent(fallbackPrompt);
+          reply = result.response.text().trim();
+        } catch (e2) {
+          console.log('⚠ Student chat fallback also failed:', e2.message?.slice(0, 80));
+        }
       }
     }
 
