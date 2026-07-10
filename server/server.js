@@ -495,12 +495,13 @@ app.put('/api/teacher/activities/:activityId', async (req, res) => {
 app.delete('/api/teacher/activities/:activityId', async (req, res) => {
   try {
     const { activityId } = req.params;
-    await prisma.$transaction(async (tx) => {
-      // Delete submissions linked to activity to prevent FK constraint failure
-      await tx.submission.deleteMany({ where: { activityId } });
-      // Delete the activity itself
-      await tx.activity.delete({ where: { id: activityId } });
-    });
+    
+    const subCount = await prisma.submission.count({ where: { activityId } });
+    if (subCount > 0) {
+      return res.status(400).json({ success: false, error: 'Cannot delete activity. Students have already uploaded submissions.' });
+    }
+
+    await prisma.activity.delete({ where: { id: activityId } });
     res.json({ success: true, message: 'Activity deleted safely' });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
@@ -664,25 +665,9 @@ async function preprocessImage(inputPath) {
 // ─────────────────────────────────────────
 // VLM UPLOAD (Gemini Vision)
 // ─────────────────────────────────────────
-app.post('/api/teacher/upload', upload.single('image'), async (req, res) => {
-  try {
-    const { studentId, activityId } = req.body;
-    const imageFile = req.file;
-    if (!imageFile) return res.status(400).json({ error: 'No image provided' });
-    // Require a real student to be assigned before AI grading
-    if (!studentId || studentId === 'mock-student-id') {
-      return res.status(400).json({ success: false, error: 'Please assign a student before grading. A student must be selected.' });
-    }
 
-    const imageUrl = `/uploads/${imageFile.filename}`;
-
-    // 1) Preprocess the image
-    const processedPath = await preprocessImage(imageFile.path);
-    const processedFilename = path.basename(processedPath);
-    // Upload to Supabase Storage in production, local path in dev
-    const processedUrl = await uploadToCloud(processedPath, processedFilename);
-
-    // 2) Fetch activity rubric context (with banded scoring support)
+async function generateSubmissionFeedback(imagePath, activityId, studentId) {
+// 2) Fetch activity rubric context (with banded scoring support)
     let rubricContext = 'Use standard DepEd essay rubric: Content & Ideas (40 pts: 35-40 Outstanding, 25-34 Proficient, 15-24 Developing, 0-14 Beginning), Organization (30 pts: 27-30 Outstanding, 19-26 Proficient, 10-18 Developing, 0-9 Beginning), Language & Grammar (30 pts: 27-30 Outstanding, 19-26 Proficient, 10-18 Developing, 0-9 Beginning).';
     let activityContext = '';
     let subjectForPrompt = 'English';
@@ -810,18 +795,20 @@ ${gradeNum <= 3 ? '- Focus: Simple sentence construction, basic narrative writin
 - A ${gradeLevelForPrompt} student who writes well for their age should score 75-85. Reserve 90+ for truly exceptional work at this level.
 `;
 
-    const prompt = `You are a warm, encouraging Filipino tutor ("Guro") giving constructive feedback to a ${gradeLevelForPrompt} student studying ${subjectForPrompt} in a Philippine public school (DepEd MATATAG curriculum).
+    const prompt = `You are an objective and professional academic evaluator assessing a ${gradeLevelForPrompt} student's work in ${subjectForPrompt} under the Philippine DepEd MATATAG curriculum.
 
 ${curriculumContext}
 
-YOUR TEACHING PHILOSOPHY:
-- Always start with genuine praise — find something the student did well, no matter how small.
+YOUR EVALUATION APPROACH:
+- Be direct, clear, and objective. Avoid unnecessary sugarcoating or excessive praise.
+- State what the student did well factually, then move to areas for improvement.
 - When pointing out mistakes, SHOW the student their exact words so they can see the error themselves.
-- Give bite-sized, concrete action steps — not vague advice like "improve your grammar."
+- Give specific, concrete action steps — not vague advice like "improve your grammar."
 - ${languageGuide}
+- LANGUAGE RULE: You MUST write ALL feedback (strengths, areasForGrowth, actionableSteps, skillExplanations, and readingStrategy) entirely in English.
 
 ${activityContext}
-${topicGuidance ? `\nDEPED COMPETENCY ALIGNMENT:\nThis activity is mapped to DepEd competency. ${topicGuidance}\nYou MUST evaluate this work primarily against this competency. Your feedback should reference how well the student demonstrates mastery of this specific skill.\n` : ''}
+${topicGuidance ? `\nTOPIC FOCUS RULE:\nThis activity is mapped to the topic/lesson: ${topicGuidance}\nYou MUST focus your feedback STRICTLY on this topic. Do NOT introduce or critique concepts outside of this topic. Evaluate only how well the student demonstrates mastery of this specific skill or lesson.\n` : ''}
 ${rubricContext}${fewShotExamples}${sectionContext}
 
 IMPORTANT RULES:
@@ -829,7 +816,7 @@ IMPORTANT RULES:
 - First, check if the image contains readable handwritten or printed text.
 - If the image is BLANK, contains only drawings/art with no text, is too blurry to read, or has NO readable written content, you MUST set score to 0, set noTextDetected to true, provide a short explanation in strengths, and leave areasForGrowth and actionableSteps as empty arrays.
 - If you CAN read text, grade it normally against the rubric using the structured feedback format below.
-- DATA PRIVACY RULE: Do NOT mention or include the student's name anywhere in your feedback.${subjectForPrompt.toLowerCase().includes('filipino') ? '\n- LANGUAGE RULE: You MUST write the strengths, areasForGrowth, actionableSteps, skillExplanations, and readingStrategy entirely in Tagalog/Filipino.' : subjectForPrompt.toLowerCase().includes('english') ? '\n- LANGUAGE RULE: You MUST write the strengths, areasForGrowth, actionableSteps, skillExplanations, and readingStrategy entirely in English.' : ''}
+- DATA PRIVACY RULE: Do NOT mention or include the student's name anywhere in your feedback.
 
 TASK: In ONE step:
 1. Read and transcribe the handwritten student essay from the image.
@@ -841,7 +828,7 @@ You MUST respond with valid JSON matching this exact schema:
 {
   "score": <total 0-100, use 0 if no readable text>,
   "rubricScores": [
-    { "criterionName": "<string>", "score": <number>, "maxPoints": <number>, "bandDescription": "<string matching the rubric band>" }
+    { "criterionName": "<string>", "score": <number>, "maxPoints": <number>, "bandDescription": "<the FULL descriptive text of the scoring band the student achieved>" }
   ],
   "contentScore": <number>, "contentMax": <number>,
   "organizationScore": <number>, "organizationMax": <number>,
@@ -919,7 +906,7 @@ RULES FOR skillExplanations:
       }
     }
 
-    const imgBuffer = fs.readFileSync(processedPath);
+    const imgBuffer = fs.readFileSync(imagePath);
     const imageParts = [{ inlineData: { data: imgBuffer.toString('base64'), mimeType: 'image/jpeg' } }];
 
     // Primary grading call
@@ -957,20 +944,13 @@ RULES FOR skillExplanations:
     
     // PRIVACY HARD-BLOCK: If AI detected a student's name, reject the submission
     if (aiResult.privacyViolationDetected && aiSource !== 'mock') {
-      // Clean up uploaded files
-      try { fs.unlinkSync(processedPath); } catch {}
-      try { if (imageFile.path !== processedPath) fs.unlinkSync(imageFile.path); } catch {}
-      return res.status(400).json({
-        success: false,
-        privacyViolation: true,
-        error: 'A student\'s name was detected in the image. Please retake the photo without the student\'s name visible to comply with the Data Privacy Act.'
-      });
+      return { privacyViolationDetected: true };
     }
 
     // Chain-of-Verification — SKIPPED by default during upload for speed
     // Teacher can trigger verification from the HITL review page via /api/teacher/submissions/:id/verify
     let covData = null;
-    const runCoV = req.query.verify === 'true' || req.body.verify === true;
+    const runCoV = false;
     if (runCoV && aiSource !== 'mock' && !aiResult.noTextDetected) {
       const originalScore = aiResult.score;
       try {
@@ -1003,70 +983,8 @@ Respond with JSON ONLY using the same schema as before.`;
       }
     }
 
-    // Serialize the structured feedback as JSON string for storage
-    const structuredFeedback = JSON.stringify({
-      strengths: aiResult.strengths || '',
-      areasForGrowth: aiResult.areasForGrowth || [],
-      actionableSteps: aiResult.actionableSteps || [],
-      skillExplanations: aiResult.skillExplanations || {}
-    });
-
-    // GRADE RETENTION POLICY: Compute retainUntil (1 year after school year end)
-    let retainUntil = null;
-    if (activityId && activityId !== 'mock-activity-id') {
-      try {
-        const actForRetention = await prisma.activity.findUnique({
-          where: { id: activityId },
-          include: { class: { select: { schoolYear: true } } }
-        });
-        if (actForRetention?.class?.schoolYear) {
-          // Parse school year like "2025-2026" → end year 2026 → retain until June 30, 2027
-          const syMatch = actForRetention.class.schoolYear.match(/(\d{4})\s*-\s*(\d{4})/);
-          if (syMatch) {
-            const endYear = parseInt(syMatch[2]);
-            retainUntil = new Date(endYear + 1, 5, 30); // June 30 of endYear+1
-          }
-        }
-      } catch { /* retention date is optional, don't break submission */ }
-    }
-
-    const submission = await prisma.submission.create({
-      data: {
-        studentId: studentId || 'mock-student-id',
-        activityId: activityId || 'mock-activity-id',
-        imageUrl: processedUrl,
-        aiScore: aiResult.score,
-        hitlScore: aiResult.score,
-        aiFeedback: structuredFeedback,
-        privacyViolation: aiResult.privacyViolationDetected || false,
-        readingStrategy: aiResult.readingStrategy,
-        rubricData: aiResult.rubricScores ? JSON.stringify(aiResult.rubricScores) : JSON.stringify({
-          content: { score: aiResult.contentScore, max: aiResult.contentMax },
-          organization: { score: aiResult.organizationScore, max: aiResult.organizationMax },
-          grammar: { score: aiResult.grammarScore, max: aiResult.grammarMax }
-        }),
-        skillScores: aiResult.skillScores ? JSON.stringify(aiResult.skillScores) : null,
-        covData: covData ? JSON.stringify(covData) : null,
-        retainUntil,
-        status: 'PENDING'
-      }
-    });
-
-    res.json({
-      success: true,
-      submission,
-      aiResult,
-      covData,
-      aiSource,           // 'gemini' | 'gemini-lite' | 'mock'
-      aiError,            // null if AI worked, error string if it failed
-      noTextDetected: aiResult.noTextDetected || false,
-      privacyViolationDetected: aiResult.privacyViolationDetected || false
-    });
-  } catch (e) {
-    console.log('❌ Upload endpoint error:', e.message);
-    res.status(500).json({ success: false, error: e.message });
-  }
-});
+    return aiResult;
+}
 
 // ─────────────────────────────────────────
 // HITL WORKSPACE
@@ -1079,10 +997,80 @@ app.get('/api/submissions/:id', async (req, res) => {
   res.json({ success: true, submission: sub });
 });
 
+
+// Trigger AI grading on an existing PENDING submission
+app.post('/api/teacher/submissions/:id/analyze', async (req, res) => {
+  try {
+    const sub = await prisma.submission.findUnique({ where: { id: req.params.id } });
+    if (!sub) return res.status(404).json({ error: 'Submission not found' });
+    if (sub.aiScore !== null) return res.status(400).json({ error: 'Already analyzed by AI' });
+
+    // The imageUrl might be /uploads/something.jpg
+    const imagePath = path.join(__dirname, sub.imageUrl);
+    if (!fs.existsSync(imagePath)) return res.status(404).json({ error: 'Image file not found on server' });
+
+    const aiData = await generateSubmissionFeedback(imagePath, sub.activityId, sub.studentId);
+
+    if (aiData.privacyViolationDetected) {
+      await prisma.submission.update({ where: { id: sub.id }, data: { privacyViolation: true, status: 'ERROR', aiFeedback: '? Privacy Violation: Student name detected on paper. AI grading aborted.' } });
+      return res.status(400).json({ success: false, error: 'Privacy Violation Detected.' });
+    }
+
+    const aiFeedbackStr = JSON.stringify({
+      strengths: aiData.strengths,
+      areasForGrowth: aiData.areasForGrowth,
+      actionableSteps: aiData.actionableSteps
+    });
+
+    const updated = await prisma.submission.update({
+      where: { id: sub.id },
+      data: {
+        aiScore: aiData.score,
+        aiFeedback: aiFeedbackStr,
+        readingStrategy: aiData.readingStrategy,
+        rubricData: JSON.stringify(aiData.rubricScores || []),
+        skillScores: JSON.stringify(aiData.skillScores),
+        status: 'PENDING'
+      }
+    });
+
+    res.json({ success: true, submission: updated });
+  } catch (e) {
+    console.error('Analyze error:', e);
+    await prisma.submission.update({ where: { id: req.params.id }, data: { status: 'ERROR', aiFeedback: '? AI Error: ' + e.message } });
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
 app.post('/api/teacher/refine', async (req, res) => {
   try {
-    const { currentFeedback, prompt: teacherPrompt } = req.body;
-    const sys = `You are a helpful teaching assistant for Philippine public school teachers.
+    const { currentFeedback, prompt: teacherPrompt, isStructured } = req.body;
+    
+    // Build prompt based on whether the feedback is structured
+    let sys;
+    if (isStructured) {
+      sys = `You are a helpful teaching assistant for Philippine public school teachers.
+Your job is to rewrite student feedback based on the teacher's instruction.
+Keep the tone warm, encouraging, and developmentally appropriate for K-12 students.
+
+The current feedback is in structured format:
+${currentFeedback}
+
+Teacher's instruction: ${teacherPrompt}
+
+You MUST return a valid JSON object with this exact structure:
+{
+  "strengths": "<rewritten strengths text>",
+  "areasForGrowth": [
+    { "studentQuote": "<exact quote>", "explanation": "<rewritten explanation>" }
+  ],
+  "actionableSteps": ["<rewritten step 1>", "<rewritten step 2>"]
+}
+
+Only modify the parts the teacher asked about. Keep other parts intact.
+Return ONLY the JSON — no markdown, no code blocks, no extra text.`;
+    } else {
+      sys = `You are a helpful teaching assistant for Philippine public school teachers.
 Your job is to rewrite student feedback based on the teacher's instruction.
 Keep the tone warm, encouraging, and developmentally appropriate for K-12 students.
 Return ONLY the rewritten feedback text — no markdown, no quotes, no labels.
@@ -1091,19 +1079,22 @@ Current Feedback:
 "${currentFeedback}"
 
 Teacher's instruction: ${teacherPrompt}`;
+    }
 
-    let refinedFeedback = `Here is an improved version: ${currentFeedback} This student shows great potential!`;
-    if (!chatModel) {
-      refinedFeedback = currentFeedback;
-    } else {
+    let refinedFeedback = currentFeedback; // fallback: return unchanged
+    if (chatModel) {
       try {
         const result = await chatModel.generateContent(sys);
-        refinedFeedback = result.response.text().trim();
+        let text = result.response.text().trim();
+        // Clean markdown code blocks if AI wraps in ```json
+        text = text.replace(/```json\n?|\n?```/gi, '').trim();
+        refinedFeedback = text;
       } catch (e) {
         console.log('⚠ AI refine failed:', e.message?.slice(0, 80));
+        // refinedFeedback stays as the original currentFeedback
       }
     }
-    res.json({ success: true, refinedFeedback });
+    res.json({ success: true, refinedFeedback, isStructured: !!isStructured });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
   }
@@ -1328,7 +1319,8 @@ app.get('/api/student/:studentId/dashboard', async (req, res) => {
       where: {
         classId: { in: classIds },
         deadline: { not: null }
-      }
+      },
+      include: { class: { select: { id: true, name: true } } }
     });
     const now = new Date();
     // Exclude activities the student has already submitted
@@ -1341,7 +1333,12 @@ app.get('/api/student/:studentId/dashboard', async (req, res) => {
     }).map(a => ({
       id: a.id,
       title: a.title,
-      deadline: a.deadline
+      deadline: a.deadline,
+      points: a.points || 100,
+      type: a.type || 'Essay',
+      className: a.class?.name || '',
+      classId: a.class?.id || '',
+      submissionMode: a.submissionMode || 'TEACHER_UPLOAD'
     })).sort((a, b) => new Date(a.deadline) - new Date(b.deadline));
 
     res.json({ success: true, student, submissions, avgGrade, stars, avgSkills, latestStrategy, upcomingDeadlines });
@@ -1421,12 +1418,52 @@ app.get('/api/student/:studentId/activities', async (req, res) => {
 });
 
 // Student self-submission — stores image only, NO AI grading (teacher triggers AI via HITL)
-app.post('/api/student/submit', upload.single('image'), async (req, res) => {
+app.post('/api/student/submit', upload.array('images', 20), async (req, res) => {
   try {
     const { studentId, activityId } = req.body;
-    const imageFile = req.file;
-    if (!imageFile) return res.status(400).json({ error: 'No image provided' });
-    const imageUrl = `/uploads/${imageFile.filename}`;
+    const imageFiles = req.files;
+    if (!imageFiles || imageFiles.length === 0) return res.status(400).json({ error: 'No image provided' });
+    
+    let finalImageUrl = '';
+
+    if (imageFiles.length === 1) {
+      // Single file - just use it directly
+      finalImageUrl = `/uploads/${imageFiles[0].filename}`;
+    } else {
+      // Multiple files - stitch them vertically using sharp
+      const metadataList = await Promise.all(imageFiles.map(f => sharp(f.path).metadata()));
+      const totalHeight = metadataList.reduce((sum, m) => sum + (m.height || 0), 0);
+      const maxWidth = Math.max(...metadataList.map(m => m.width || 0));
+
+      let currentTop = 0;
+      const compositeOps = imageFiles.map((f, i) => {
+        const op = { input: f.path, top: currentTop, left: 0 };
+        currentTop += metadataList[i].height || 0;
+        return op;
+      });
+
+      const outFilename = `stitched-${Date.now()}-${Math.floor(Math.random()*1000)}.jpg`;
+      const outPath = path.join(__dirname, 'uploads', outFilename);
+
+      await sharp({
+        create: {
+          width: maxWidth,
+          height: totalHeight,
+          channels: 3,
+          background: { r: 255, g: 255, b: 255 }
+        }
+      })
+      .composite(compositeOps)
+      .jpeg({ quality: 85 })
+      .toFile(outPath);
+
+      finalImageUrl = `/uploads/${outFilename}`;
+      
+      // Cleanup the individual uploaded parts
+      imageFiles.forEach(f => {
+        try { fs.unlinkSync(f.path); } catch {}
+      });
+    }
 
     // Check for existing submission and update, or create new
     const existing = await prisma.submission.findFirst({ where: { studentId, activityId } });
@@ -1434,15 +1471,99 @@ app.post('/api/student/submit', upload.single('image'), async (req, res) => {
     if (existing) {
       submission = await prisma.submission.update({
         where: { id: existing.id },
-        data: { imageUrl, status: 'PENDING', aiScore: null, hitlScore: null, aiFeedback: null }
+        data: { imageUrl: finalImageUrl, status: 'PENDING', aiScore: null, hitlScore: null, aiFeedback: null }
       });
     } else {
       submission = await prisma.submission.create({
-        data: { studentId, activityId, imageUrl, status: 'PENDING' }
+        data: { studentId, activityId, imageUrl: finalImageUrl, status: 'PENDING' }
       });
     }
+    
     res.json({ success: true, submission });
   } catch (e) {
+    if (req.files) req.files.forEach(f => { try { fs.unlinkSync(f.path) } catch {} });
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+app.post('/api/teacher/upload', upload.single('image'), async (req, res) => {
+  try {
+    const { studentId, activityId } = req.body;
+    const imageFile = req.file;
+    if (!imageFile) return res.status(400).json({ error: 'No image provided' });
+    // Require a real student to be assigned before AI grading
+    if (!studentId || studentId === 'mock-student-id') {
+      return res.status(400).json({ success: false, error: 'Please assign a student before grading. A student must be selected.' });
+    }
+
+    const imageUrl = `/uploads/${imageFile.filename}`;
+
+    // 1) Preprocess the image
+    const processedPath = await preprocessImage(imageFile.path);
+    const processedFilename = path.basename(processedPath);
+    // Upload to Supabase Storage in production, local path in dev
+    const processedUrl = await uploadToCloud(processedPath, processedFilename);
+
+    
+    // 2) Call the new shared AI grading function
+    const aiData = await generateSubmissionFeedback(processedPath, activityId, studentId);
+    
+    // Check for privacy violation
+    if (aiData.privacyViolationDetected) {
+      return res.status(400).json({ success: false, error: 'Privacy Violation Detected: A student name was found written on the paper. For data privacy, please crop out or redact the name before uploading.' });
+    }
+
+    // 6) Save to DB
+    const aiFeedbackStr = JSON.stringify({
+      strengths: aiData.strengths,
+      areasForGrowth: aiData.areasForGrowth,
+      actionableSteps: aiData.actionableSteps
+    });
+
+    // Check for existing submission
+    const existing = await prisma.submission.findFirst({ where: { studentId, activityId } });
+    let submission;
+    if (existing) {
+      submission = await prisma.submission.update({
+        where: { id: existing.id },
+        data: {
+          imageUrl: processedUrl,
+          aiScore: aiData.score,
+          aiFeedback: aiFeedbackStr,
+          readingStrategy: aiData.readingStrategy,
+          rubricData: JSON.stringify(aiData.rubricScores || []),
+          skillScores: JSON.stringify(aiData.skillScores),
+          privacyViolation: aiData.privacyViolationDetected,
+          status: 'PENDING'
+        }
+      });
+    } else {
+      submission = await prisma.submission.create({
+        data: {
+          studentId,
+          activityId,
+          imageUrl: processedUrl,
+          aiScore: aiData.score,
+          aiFeedback: aiFeedbackStr,
+          readingStrategy: aiData.readingStrategy,
+          rubricData: JSON.stringify(aiData.rubricScores || []),
+          skillScores: JSON.stringify(aiData.skillScores),
+          privacyViolation: aiData.privacyViolationDetected,
+          status: 'PENDING'
+        }
+      });
+    }
+    
+res.json({ success: true, submission });
+  } catch (e) {
+    // Auto-delete uploaded files on failure
+    try {
+      if (req.files) {
+        req.files.forEach(f => {
+          try { fs.unlinkSync(f.path); } catch {}
+        });
+      }
+    } catch {}
     res.status(500).json({ success: false, error: e.message });
   }
 });

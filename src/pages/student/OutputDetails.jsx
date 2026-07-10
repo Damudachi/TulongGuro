@@ -6,16 +6,47 @@ import { API_URL } from '../../config';
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
 
 // Parse feedback: handles both new structured JSON and legacy plain strings
-function parseFeedback(raw) {
-  if (!raw) return null;
-  try {
-    const parsed = JSON.parse(raw);
-    if (parsed && typeof parsed === 'object' && (parsed.strengths || parsed.areasForGrowth)) {
-      return parsed;
+function parseFeedback(hitl, ai) {
+  let finalStructured = { strengths: '', areasForGrowth: [], actionableSteps: [], skillExplanations: {} };
+
+  // Parse AI first
+  if (ai) {
+    try {
+      let cleanRaw = ai.trim();
+      if (cleanRaw.startsWith('```')) {
+        const lines = cleanRaw.split('\n');
+        if (lines.length > 2) cleanRaw = lines.slice(1, -1).join('\n').trim();
+      }
+      const parsed = JSON.parse(cleanRaw);
+      if (parsed && typeof parsed === 'object') {
+        finalStructured = { ...finalStructured, ...parsed };
+      }
+    } catch {
+      finalStructured.strengths = ai;
     }
-  } catch { /* not JSON — legacy format */ }
-  // Legacy: treat as plain string
-  return { strengths: raw, areasForGrowth: [], actionableSteps: [], skillExplanations: {} };
+  }
+
+  // Parse HITL override
+  if (hitl) {
+    try {
+      let cleanRaw = hitl.trim();
+      if (cleanRaw.startsWith('```')) {
+        const lines = cleanRaw.split('\n');
+        if (lines.length > 2) cleanRaw = lines.slice(1, -1).join('\n').trim();
+      }
+      const parsed = JSON.parse(cleanRaw);
+      if (parsed && typeof parsed === 'object' && Object.keys(parsed).length > 0) {
+        finalStructured = { ...finalStructured, ...parsed };
+      } else {
+        finalStructured.strengths = hitl; // fallback if empty json?
+      }
+    } catch {
+      // Plain text teacher override
+      finalStructured.strengths = hitl;
+    }
+  }
+
+  return finalStructured;
 }
 
 export default function OutputDetails() {
@@ -46,13 +77,13 @@ export default function OutputDetails() {
           skillExplanations: {
             vocabulary: "You used good words like 'reform' and 'educated,' but some sentences relied on basic words like 'good' and 'bad.' Try using more descriptive alternatives.",
             punctuation: "Most sentences had correct periods and commas. Watch out for missing commas after transition words.",
-            thematicFlow: "Your ideas were connected but the essay jumped between topics in the second paragraph. Each paragraph should focus on one main idea.",
+            thematicFlow: "Your ideas were connected but the essay jumped between topics in the second paragraph. Each paragraph focus on one main idea.",
             sentenceStructure: "Good variety of sentence lengths! A few run-on sentences could be split for clarity."
           }
         }),
         aiFeedback: "Good effort on the topic.",
-        readingStrategy: "Focus on identifying 'Signpost Words' (however, therefore, consequently) when reading the next chapter. This will help you use them in your own writing.",
-        rubricData: JSON.stringify({ content: { score: 35, max: 40 }, organization: { score: 25, max: 30 }, grammar: { score: 28, max: 30 } }),
+        readingStrategy: "When you read a new text, ask yourself 'Why did the character do that?' after every major action.",
+        rubricData: JSON.stringify({ content: { score: 38, max: 40 }, organization: { score: 25, max: 30 }, grammar: { score: 25, max: 30 } }),
         student: { name: 'Juan Dela Cruz' }, updatedAt: new Date().toISOString()
       });
       setIsLoading(false);
@@ -68,17 +99,32 @@ export default function OutputDetails() {
   if (!sub) return <div className="p-8 text-center text-slate-500">Submission not found.</div>;
 
   const score = sub.hitlScore ?? sub.aiScore ?? 0;
-  const feedback = parseFeedback(sub.hitlFeedback || sub.aiFeedback);
+  const feedback = parseFeedback(sub.hitlFeedback, sub.aiFeedback);
   let rubricItems = [];
   try {
     const rawRubric = sub.rubricData ? JSON.parse(sub.rubricData) : {
       content: { score: 35, max: 40 }, organization: { score: 25, max: 30 }, grammar: { score: 28, max: 30 }
     };
     if (Array.isArray(rawRubric)) {
-      rubricItems = rawRubric.map((r, i) => ({
-        name: r.criterionName, score: r.score, max: r.maxPoints, desc: r.bandDescription,
-        color: ['bg-brand-green', 'bg-amber-400', 'bg-blue-400', 'bg-purple-400', 'bg-pink-400'][i % 5]
-      }));
+      rubricItems = rawRubric.map((r, i) => {
+        let fullDesc = r.bandDescription;
+        if (sub?.activity?.rubric) {
+          try {
+            const activityRubric = JSON.parse(sub.activity.rubric);
+            const criteria = activityRubric.criteria?.find(c => c.name === r.criterionName);
+            if (criteria && criteria.bands) {
+              const band = criteria.bands.find(b => b.label.toLowerCase() === r.bandDescription?.toLowerCase());
+              if (band && band.description) {
+                fullDesc = `${band.label} — ${band.description}`;
+              }
+            }
+          } catch (e) { /* ignore */ }
+        }
+        return {
+          name: r.criterionName, score: r.score, max: r.maxPoints, desc: fullDesc,
+          color: ['bg-brand-green', 'bg-amber-400', 'bg-blue-400', 'bg-purple-400', 'bg-pink-400'][i % 5]
+        };
+      });
     } else {
       rubricItems = [
         { name: 'Content & Ideas', ...rawRubric.content, color: 'bg-brand-green' },

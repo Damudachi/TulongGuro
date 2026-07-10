@@ -14,11 +14,12 @@ export default function SubmitWork() {
   const navigate = useNavigate();
   const [activities, setActivities] = useState([]);
   const [selected, setSelected] = useState(null);
-  const [file, setFile] = useState(null);
-  const [preview, setPreview] = useState(null);
+  const [files, setFiles] = useState([]);
+  const [previews, setPreviews] = useState([]);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [result, setResult] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [piiConfirmed, setPiiConfirmed] = useState(false);
   const fileRef = useRef(null);
 
   useEffect(() => {
@@ -31,20 +32,41 @@ export default function SubmitWork() {
   }, []);
 
   const handleFile = (e) => {
-    const f = e.target.files?.[0] || e.dataTransfer?.files?.[0];
-    if (!f) return;
-    setFile(f);
-    setPreview(URL.createObjectURL(f));
+    const selectedFiles = Array.from(e.target.files || e.dataTransfer?.files || []);
+    if (selectedFiles.length === 0) return;
+    
+    // Allow up to 20 files
+    const newFiles = [...files, ...selectedFiles].slice(0, 20);
+    setFiles(newFiles);
+    
+    // Create preview URLs
+    const newPreviews = newFiles.map(f => URL.createObjectURL(f));
+    setPreviews(newPreviews);
     setResult(null);
   };
 
+  const removeFile = (index) => {
+    const newFiles = [...files];
+    newFiles.splice(index, 1);
+    setFiles(newFiles);
+    
+    const newPreviews = [...previews];
+    URL.revokeObjectURL(newPreviews[index]); // Free memory
+    newPreviews.splice(index, 1);
+    setPreviews(newPreviews);
+  };
+
   const handleSubmit = async () => {
-    if (!file || !selected) return;
+    if (!piiConfirmed) {
+      alert('⚠️ Please confirm that your name is not visible in the photo before submitting.');
+      return;
+    }
+    if (files.length === 0 || !selected) return;
     setIsSubmitting(true);
     try {
       const user = JSON.parse(localStorage.getItem('user') || '{}');
       const formData = new FormData();
-      formData.append('image', file);
+      files.forEach(f => formData.append('images', f));
       formData.append('studentId', user.id);
       formData.append('activityId', selected.id);
 
@@ -139,11 +161,23 @@ export default function SubmitWork() {
           {/* Step 2: Upload Photo */}
           {selected && (
             <div className="mb-6">
-              <div className="mb-4 p-4 bg-amber-50 border border-amber-200 text-amber-800 rounded-xl flex items-start gap-3 shadow-sm">
-                <AlertTriangle className="w-5 h-5 shrink-0 mt-0.5" />
-                <p className="text-sm font-medium leading-relaxed">
-                  ⚠ Privacy Act Reminder: Please ensure your name is NOT written on the paper to protect your privacy. Ensure the picture is clear and well-lit.
-                </p>
+              <div className={`mb-4 p-4 rounded-xl border ${piiConfirmed ? 'bg-green-50 border-green-200' : 'bg-amber-50 border-amber-200'}`}>
+                <label className="flex items-start gap-3 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={piiConfirmed}
+                    onChange={(e) => setPiiConfirmed(e.target.checked)}
+                    className="mt-0.5 w-5 h-5 accent-green-600 shrink-0"
+                  />
+                  <div>
+                    <p className={`font-bold text-sm ${piiConfirmed ? 'text-green-800' : 'text-amber-800'}`}>
+                      {piiConfirmed ? '✅ Privacy Confirmed' : '⚠ Privacy Act Confirmation Required'}
+                    </p>
+                    <p className={`text-xs mt-0.5 ${piiConfirmed ? 'text-green-600' : 'text-amber-600'}`}>
+                      I confirm that my name is NOT written on the paper. No personally identifiable information is visible in the photo.
+                    </p>
+                  </div>
+                </label>
               </div>
               <div className="mb-4 bg-amber-500/10 border border-amber-500/30 rounded-xl p-4">
                 <div className="flex items-start gap-3">
@@ -164,16 +198,37 @@ export default function SubmitWork() {
               </div>
               <h2 className="text-sm font-bold text-slate-400 uppercase tracking-wider mb-3">Step 2 — Upload Your Essay</h2>
               <div
-                onClick={() => fileRef.current?.click()}
+                onClick={() => files.length === 0 && fileRef.current?.click()}
                 onDrop={(e) => { e.preventDefault(); handleFile(e); }}
                 onDragOver={e => e.preventDefault()}
-                className={cn('border-2 border-dashed rounded-2xl transition-all cursor-pointer',
-                  preview ? 'border-brand-green' : 'border-slate-300 hover:border-brand-green/60 hover:bg-green-50/30')}>
-                {preview ? (
-                  <div className="relative">
-                    <img src={preview} alt="preview" className="w-full max-h-80 object-contain rounded-2xl p-2" />
-                    <div className="absolute bottom-4 right-4 bg-brand-green text-white text-xs font-bold px-3 py-1.5 rounded-full flex items-center gap-1">
-                      <CheckCircle2 className="w-3.5 h-3.5" /> Photo selected
+                className={cn('border-2 border-dashed rounded-2xl transition-all',
+                  previews.length > 0 ? 'border-slate-200 p-4' : 'border-slate-300 hover:border-brand-green/60 hover:bg-green-50/30 cursor-pointer')}
+              >
+                {previews.length > 0 ? (
+                  <div className="space-y-4">
+                    <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+                      {previews.map((prev, idx) => (
+                        <div key={idx} className="relative group rounded-xl overflow-hidden border border-slate-200 aspect-[3/4]">
+                          <img src={prev} alt={`page ${idx+1}`} className="w-full h-full object-cover" />
+                          <div className="absolute top-2 left-2 bg-black/60 text-white text-[10px] px-2 py-1 rounded-md font-bold">
+                            Page {idx + 1}
+                          </div>
+                          <button onClick={(e) => { e.stopPropagation(); removeFile(idx); }}
+                            className="absolute top-2 right-2 bg-red-500 text-white w-6 h-6 flex items-center justify-center rounded-full opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-600 shadow-md">
+                            <span className="text-xs font-bold font-sans">✕</span>
+                            <span className="sr-only">Remove</span>
+                          </button>
+                        </div>
+                      ))}
+                      {files.length < 20 && (
+                        <div onClick={() => fileRef.current?.click()} className="rounded-xl border-2 border-dashed border-slate-300 flex flex-col items-center justify-center text-slate-400 hover:border-brand-green/60 hover:bg-green-50/30 cursor-pointer aspect-[3/4] transition-all">
+                          <Camera className="w-6 h-6 mb-2 text-slate-300" />
+                          <span className="text-xs font-bold text-slate-400">Add Page</span>
+                        </div>
+                      )}
+                    </div>
+                    <div className="flex items-center justify-between bg-green-50 px-4 py-3 rounded-xl border border-green-200">
+                      <span className="text-sm font-bold text-green-800">{files.length} page(s) attached</span>
                     </div>
                   </div>
                 ) : (
@@ -186,28 +241,24 @@ export default function SubmitWork() {
                     </div>
                   </div>
                 )}
+                <input ref={fileRef} type="file" accept="image/*" multiple capture="environment" className="hidden" onChange={handleFile} />
               </div>
-              <input ref={fileRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={handleFile} />
-
-              {preview && (
-                <button onClick={() => { setFile(null); setPreview(null); }}
-                  className="mt-2 text-xs text-slate-500 hover:text-red-500 transition-colors">
-                  ✕ Remove and choose another
-                </button>
-              )}
             </div>
           )}
 
           {/* Submit Button */}
-          {selected && file && (
-            <button onClick={handleSubmit} disabled={isSubmitting}
-              className="w-full py-4 bg-brand-green text-white rounded-2xl font-bold text-lg hover:bg-emerald-600 transition-all shadow-lg shadow-emerald-500/20 disabled:opacity-60 flex items-center justify-center gap-3">
-              {isSubmitting ? (
-                <><Loader2 className="w-5 h-5 animate-spin" /> Submitting...</>
-              ) : (
-                <><UploadCloud className="w-5 h-5" /> Submit Work</>
-              )}
-            </button>
+          {selected && files.length > 0 && (
+            <>
+              <button onClick={handleSubmit} disabled={isSubmitting || !piiConfirmed}
+                className="w-full py-4 bg-brand-green text-white rounded-2xl font-bold text-lg hover:bg-emerald-600 transition-all shadow-lg shadow-emerald-500/20 disabled:opacity-60 flex items-center justify-center gap-3">
+                {isSubmitting ? (
+                  <><Loader2 className="w-5 h-5 animate-spin" /> Submitting...</>
+                ) : (
+                  <><UploadCloud className="w-5 h-5" /> Submit Work</>
+                )}
+              </button>
+              <p className="text-[11px] text-slate-400 text-center mt-2">⚠️ AI feedback uses daily processing tokens. Submitting many outputs in a day may result in delayed feedback.</p>
+            </>
           )}
         </>
       ) : (

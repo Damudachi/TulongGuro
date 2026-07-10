@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
-import { Plus, Users, FileText, BookOpen, Filter, ChevronRight, Loader2 } from 'lucide-react';
+import { Plus, Users, FileText, BookOpen, Filter, ChevronRight, Loader2, UploadCloud } from 'lucide-react';
 import { API_URL } from '../../config';
 
 function WizardEmptyState({ onComplete }) {
@@ -131,6 +131,17 @@ export default function TeacherDashboard() {
     return user.id ? !localStorage.getItem(`hasSeenTeacherWalkthrough_${user.id}`) : false;
   });
   const [walkthroughStep, setWalkthroughStep] = useState(0);
+
+  const [showWelcomeModal, setShowWelcomeModal] = useState(() => {
+    const user = JSON.parse(localStorage.getItem('user') || '{}');
+    return user.id ? !localStorage.getItem(`hasSeenTeacherWelcome_${user.id}`) : false;
+  });
+
+  const dismissWelcome = () => {
+    const user = JSON.parse(localStorage.getItem('user') || '{}');
+    if (user.id) localStorage.setItem(`hasSeenTeacherWelcome_${user.id}`, 'true');
+    setShowWelcomeModal(false);
+  };
 
   useEffect(() => {
     const user = JSON.parse(localStorage.getItem('user') || '{}');
@@ -418,6 +429,50 @@ export default function TeacherDashboard() {
                   className="flex-1 py-2 rounded-lg bg-brand-navy text-white font-medium hover:bg-blue-900">Create Class</button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Teacher Onboarding Modal */}
+      {showWelcomeModal && (
+        <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl w-full max-w-lg shadow-2xl p-6 text-center">
+            <div className="w-16 h-16 bg-blue-100 rounded-full flex items-center justify-center mx-auto mb-4">
+              <span className="text-3xl">👋</span>
+            </div>
+            <h2 className="text-2xl font-bold text-brand-slate mb-2">Welcome to TulongGuro!</h2>
+            <p className="text-slate-600 mb-6">
+              Your AI-powered teaching assistant is ready. Here's what you can do:
+            </p>
+            <div className="space-y-4 text-left mb-8">
+              <div className="flex items-start gap-3">
+                <div className="p-2 bg-blue-50 rounded-lg"><BookOpen className="w-5 h-5 text-brand-navy" /></div>
+                <div>
+                  <h3 className="font-bold text-brand-slate">Create Activities</h3>
+                  <p className="text-xs text-slate-500">Design assignments with rubrics in the Activity Builder.</p>
+                </div>
+              </div>
+              <div className="flex items-start gap-3">
+                <div className="p-2 bg-green-50 rounded-lg"><UploadCloud className="w-5 h-5 text-brand-green" /></div>
+                <div>
+                  <h3 className="font-bold text-brand-slate">Batch Upload & AI Grade</h3>
+                  <p className="text-xs text-slate-500">Upload photos of handwritten essays for instant analysis.</p>
+                </div>
+              </div>
+              <div className="flex items-start gap-3">
+                <div className="p-2 bg-purple-50 rounded-lg"><Users className="w-5 h-5 text-purple-600" /></div>
+                <div>
+                  <h3 className="font-bold text-brand-slate">Human-in-the-Loop AI</h3>
+                  <p className="text-xs text-slate-500">Review AI feedback and use the Co-Pilot to refine it before sending to students.</p>
+                </div>
+              </div>
+            </div>
+            <button
+              onClick={dismissWelcome}
+              className="w-full py-3 bg-brand-navy text-white font-bold rounded-xl hover:bg-blue-900 transition-colors"
+            >
+              Get Started
+            </button>
           </div>
         </div>
       )}

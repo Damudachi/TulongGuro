@@ -42,6 +42,7 @@ function App() {
           <Route path="dashboard" element={<TeacherDashboard />} />
           <Route path="class/:classId" element={<ClassHub />} />
           <Route path="activity/new" element={<ActivityBuilder />} />
+          <Route path="activity/edit/:activityId" element={<ActivityBuilder />} />
           <Route path="batch-upload" element={<BatchUpload />} />
           <Route path="review/:submissionId" element={<HITLWorkspace />} />
           <Route path="sections" element={<ManageSections />} />

@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { useNavigate, useSearchParams, useParams } from 'react-router-dom';
 import { ArrowLeft, CheckCircle2, Plus, Camera, Users, Upload, FileText, X, Trash2, Loader2, Save } from 'lucide-react';
 import { API_URL } from '../../config';
 
@@ -76,9 +76,12 @@ const RUBRIC_TEMPLATES = [
 export default function ActivityBuilder() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
+  const { activityId: editActivityId } = useParams();
+  const isEditMode = !!editActivityId;
   const classId = searchParams.get('classId');
   const fileInputRef = useRef(null);
   const rubricFileRef = useRef(null);
+  const [isLoadingEdit, setIsLoadingEdit] = useState(false);
 
   const [isSaving, setIsSaving] = useState(false);
   const [topics, setTopics] = useState([]);
@@ -140,6 +143,55 @@ export default function ActivityBuilder() {
       .then(data => { if (data.success) setTopics(data.topics); })
       .catch(() => {});
   }, []);
+
+  // ── Edit Mode: Fetch existing activity and pre-fill form ──
+  useEffect(() => {
+    if (!isEditMode || !editActivityId) return;
+    setIsLoadingEdit(true);
+    fetch(`${API_URL}/api/activities/${editActivityId}/submissions`)
+      .then(r => r.json())
+      .catch(() => null);
+    // Fetch the activity from the class activities list
+    // We need a direct activity fetch. Let's use the submissions endpoint parent activity.
+    // Actually, there's no direct activity fetch, so we'll use the class endpoint.
+    // For now, we'll fetch from a search across teacher classes.
+    const user = JSON.parse(localStorage.getItem('user') || '{}');
+    if (!user.id) { setIsLoadingEdit(false); return; }
+    fetch(`${API_URL}/api/teacher/${user.id}/classes`)
+      .then(r => r.json())
+      .then(data => {
+        if (!data.success) return;
+        for (const cls of data.classes) {
+          const activity = cls.activities?.find(a => a.id === editActivityId);
+          if (activity) {
+            setForm({
+              title: activity.title || '',
+              type: activity.type || 'Essay',
+              topic: activity.topic || '',
+              points: activity.points || 100,
+              deadline: activity.deadline ? String(activity.deadline).split('T')[0] : '',
+              instructions: activity.instructions || '',
+              submissionMode: activity.submissionMode || 'TEACHER_UPLOAD',
+            });
+            // Pre-fill rubric if it exists
+            if (activity.rubric) {
+              try {
+                const parsed = JSON.parse(activity.rubric);
+                if (parsed.criteria?.length) {
+                  setRubricCriteria(parsed.criteria);
+                  if (parsed.type) setRubricType(parsed.type);
+                  if (parsed.source) setRubricMode(parsed.source);
+                  setSelectedOption('builtin:0');
+                }
+              } catch {}
+            }
+            break;
+          }
+        }
+      })
+      .catch(() => {})
+      .finally(() => setIsLoadingEdit(false));
+  }, [isEditMode, editActivityId]);
 
   // ── Rubric helpers ──
   const updateCriterion = (idx, field, val) => {
@@ -261,21 +313,38 @@ export default function ActivityBuilder() {
     }
     setIsSaving(true);
     try {
-      const fd = new FormData();
-      Object.entries(form).forEach(([k, v]) => fd.append(k, v));
-      fd.append('classId', classId || 'mock-class-id');
+      if (isEditMode) {
+        // UPDATE existing activity via JSON
+        const criteriaForSubmit = (rubricMode === 'upload' && extractedCriteria) ? extractedCriteria : rubricCriteria;
+        const res = await fetch(`${API_URL}/api/teacher/activities/${editActivityId}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            ...form,
+            rubric: JSON.stringify({ source: rubricMode, type: rubricType, criteria: criteriaForSubmit })
+          })
+        });
+        const data = await res.json();
+        if (data.success) navigate(-1);
+        else alert('Error: ' + data.error);
+      } else {
+        // CREATE new activity via FormData
+        const fd = new FormData();
+        Object.entries(form).forEach(([k, v]) => fd.append(k, v));
+        fd.append('classId', classId || 'mock-class-id');
 
-      // Build rubric JSON — include extracted criteria for upload mode
-      const criteriaForSubmit = (rubricMode === 'upload' && extractedCriteria) ? extractedCriteria : rubricCriteria;
-      fd.append('rubric', JSON.stringify({ source: rubricMode, type: rubricType, criteria: criteriaForSubmit }));
+        // Build rubric JSON — include extracted criteria for upload mode
+        const criteriaForSubmit = (rubricMode === 'upload' && extractedCriteria) ? extractedCriteria : rubricCriteria;
+        fd.append('rubric', JSON.stringify({ source: rubricMode, type: rubricType, criteria: criteriaForSubmit }));
 
-      additionalFiles.forEach(f => fd.append('additionalFiles', f.file));
-      if (rubricFile && rubricMode === 'upload') fd.append('additionalFiles', rubricFile);
+        additionalFiles.forEach(f => fd.append('additionalFiles', f.file));
+        if (rubricFile && rubricMode === 'upload') fd.append('additionalFiles', rubricFile);
 
-      const res = await fetch(`${API_URL}/api/teacher/activities`, { method: 'POST', body: fd });
-      const data = await res.json();
-      if (data.success) navigate(-1);
-      else alert('Error: ' + data.error);
+        const res = await fetch(`${API_URL}/api/teacher/activities`, { method: 'POST', body: fd });
+        const data = await res.json();
+        if (data.success) navigate(-1);
+        else alert('Error: ' + data.error);
+      }
     } catch { alert('Network error'); }
     finally { setIsSaving(false); }
   };
@@ -332,7 +401,7 @@ export default function ActivityBuilder() {
       <button onClick={() => navigate(-1)} className="flex items-center text-sm text-slate-500 hover:text-brand-slate mb-6">
         <ArrowLeft className="w-4 h-4 mr-1" /> Back to Class
       </button>
-      <h1 className="text-2xl font-bold text-brand-slate mb-6">Create New Activity</h1>
+      <h1 className="text-2xl font-bold text-brand-slate mb-6">{isEditMode ? 'Edit Activity' : 'Create New Activity'}</h1>
 
       <form className="space-y-6" onSubmit={handleSubmit}>
 
@@ -725,7 +794,7 @@ export default function ActivityBuilder() {
             className="px-6 py-2 rounded-lg text-slate-600 font-medium hover:bg-slate-100 mr-4 transition-colors">Cancel</button>
           <button type="submit" disabled={isSaving}
             className="px-6 py-2 rounded-lg bg-brand-navy text-white font-medium hover:bg-blue-900 transition-colors shadow-lg shadow-blue-900/20 disabled:opacity-60">
-            {isSaving ? 'Publishing...' : 'Publish Activity'}
+            {isSaving ? (isEditMode ? 'Updating...' : 'Publishing...') : (isEditMode ? 'Update Activity' : 'Publish Activity')}
           </button>
         </div>
       </form>

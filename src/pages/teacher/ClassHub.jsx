@@ -363,14 +363,20 @@ export default function ClassHub() {
                 <h2 className="text-xl font-bold text-brand-slate">Assignment Details</h2>
                 <p className="text-xs text-slate-500">Update the details for this activity.</p>
               </div>
-              <button onClick={() => setShowDeleteConfirm(!showDeleteConfirm)} className="text-red-500 text-sm font-semibold hover:text-red-700">
-                Delete Activity
-              </button>
+              {editActivity?._count?.submissions > 0 ? (
+                <div className="text-xs text-slate-400 font-medium px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-lg cursor-not-allowed" title="Cannot delete because students have already uploaded submissions.">
+                  Cannot Delete (Has Submissions)
+                </div>
+              ) : (
+                <button onClick={() => setShowDeleteConfirm(!showDeleteConfirm)} className="text-red-500 text-sm font-semibold hover:text-red-700">
+                  Delete Activity
+                </button>
+              )}
             </div>
 
-            {showDeleteConfirm && (
+            {showDeleteConfirm && !editActivity?._count?.submissions && (
               <div className="bg-red-50 border border-red-200 rounded-xl p-4 mb-4">
-                <p className="text-sm text-red-800 font-bold mb-2">Are you sure? This will delete all student submissions and AI feedback.</p>
+                <p className="text-sm text-red-800 font-bold mb-2">Are you sure? This action cannot be undone.</p>
                 <label className="block text-xs font-medium text-red-700 mb-1">Type "DELETE" to confirm</label>
                 <div className="flex gap-2">
                   <input
@@ -460,21 +466,29 @@ export default function ClassHub() {
                   placeholder="Add or update assignment details for students..."
                 />
               </div>
-              <div className="flex gap-2 pt-2 pb-2">
-                <button
-                  type="button"
-                  onClick={closeEditModal}
-                  className="flex-1 py-2 rounded-lg border border-slate-200 text-slate-600 font-medium hover:bg-slate-50"
+              <div className="flex flex-col gap-2 pt-2 pb-2">
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={closeEditModal}
+                    className="flex-1 py-2 rounded-lg border border-slate-200 text-slate-600 font-medium hover:bg-slate-50"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={isSavingEdit}
+                    className="flex-1 py-2 rounded-lg bg-brand-navy text-white font-medium hover:bg-blue-900 disabled:opacity-70"
+                  >
+                    {isSavingEdit ? 'Saving...' : 'Quick Save'}
+                  </button>
+                </div>
+                <Link
+                  to={`/teacher/activity/edit/${editActivity.id}?classId=${classId}`}
+                  className="w-full text-center py-2 rounded-lg border border-brand-navy text-brand-navy font-medium hover:bg-blue-50 mt-2"
                 >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  disabled={isSavingEdit}
-                  className="flex-1 py-2 rounded-lg bg-brand-navy text-white font-medium hover:bg-blue-900 disabled:opacity-70"
-                >
-                  {isSavingEdit ? 'Saving...' : 'Save Changes'}
-                </button>
+                  Advanced Edit (Edit Rubric)
+                </Link>
               </div>
             </form>
           </div>

@@ -313,14 +313,15 @@ export default function StudentDashboard() {
               const urgency = daysLeft <= 1 ? 'border-red-300 bg-red-50' : daysLeft <= 3 ? 'border-amber-200 bg-amber-50' : 'border-slate-200 bg-white';
               const urgencyText = daysLeft <= 1 ? 'text-red-600' : daysLeft <= 3 ? 'text-amber-600' : 'text-slate-500';
               return (
-                <div key={item.id} className={`p-4 rounded-xl border ${urgency} flex items-center justify-between`}>
+                <Link key={item.id} to={`/student/submit?activityId=${item.id}`}
+                  className={`block p-4 rounded-xl border ${urgency} flex items-center justify-between hover:shadow-md hover:border-brand-navy transition-all cursor-pointer group`}>
                   <div className="flex items-start gap-3">
                     <div className="bg-blue-50 p-2 rounded-lg text-brand-navy mt-0.5 shrink-0">
                       <BookOpen className="w-4 h-4" />
                     </div>
                     <div>
-                      <p className="font-bold text-brand-slate text-sm">{item.title}</p>
-                      <p className="text-xs text-slate-500">{item.className} • {item.type} • {item.points} pts</p>
+                      <p className="font-bold text-brand-slate text-sm group-hover:text-brand-navy transition-colors">{item.title}</p>
+                      <p className="text-xs text-slate-500">{item.className} • {item.type} • <span className="font-bold text-brand-navy">{item.points} pts</span></p>
                     </div>
                   </div>
                   <div className="text-right shrink-0">
@@ -328,8 +329,9 @@ export default function StudentDashboard() {
                       {daysLeft <= 0 ? 'Due today!' : daysLeft === 1 ? 'Due tomorrow' : `${daysLeft} days left`}
                     </p>
                     <p className="text-[10px] text-slate-400">{dueDate.toLocaleDateString('en-PH', { month: 'short', day: 'numeric' })}</p>
+                    <p className="text-[10px] font-bold text-brand-green mt-1 opacity-0 group-hover:opacity-100 transition-opacity">Submit Now →</p>
                   </div>
-                </div>
+                </Link>
               );
             })}
           </div>

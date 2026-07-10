@@ -42,6 +42,7 @@ export default function BatchUpload() {
   const [isOnline, setIsOnline] = useState(navigator.onLine);
   const [queuedCount, setQueuedCount] = useState(getQueue().length);
   const [isFlushing, setIsFlushing] = useState(false);
+  const [piiConfirmed, setPiiConfirmed] = useState(false);
   const fileInputRef = useRef(null);
 
   useEffect(() => {
@@ -93,9 +94,13 @@ export default function BatchUpload() {
 
   const handleGrade = async () => {
     if (!files.length) return;
-    // REQUIRE student selection before grading
+    // REQUIRE student selection AND PII confirmation before grading
     if (!selectedStudent) {
       alert('⚠️ Please select a student before starting AI grading. Each submission must be assigned to a student.');
+      return;
+    }
+    if (!piiConfirmed) {
+      alert('⚠️ Please confirm that the student\'s name is not visible in the image before grading.');
       return;
     }
     setIsRunning(true);
@@ -148,7 +153,8 @@ export default function BatchUpload() {
           } : f));
           newResults.push(data.submission);
         } else {
-          setFiles(prev => prev.map(f => f.id === fileItem.id ? { ...f, status: 'error', statusDetail: data.error || 'Upload failed' } : f));
+          // Auto-delete files that fail AI processing or are rejected
+          setFiles(prev => prev.filter(f => f.id !== fileItem.id));
         }
       } catch {
         // Network error — queue it
@@ -226,15 +232,18 @@ export default function BatchUpload() {
       )}
       {!isStudentSubmitMode && hasWaiting && !isRunning && (
         <button onClick={handleGrade}
-          disabled={!selectedStudent}
+          disabled={!selectedStudent || !piiConfirmed}
           className={cn('px-4 py-2 rounded-lg text-sm font-bold flex items-center shadow-md',
-            selectedStudent
+            selectedStudent && piiConfirmed
               ? 'bg-brand-navy text-white hover:bg-blue-900'
               : 'bg-slate-300 text-slate-500 cursor-not-allowed')}
         >
           <Play className="w-4 h-4 mr-2" />
           {isOnline ? `Start AI Grading (${files.filter(f => f.status === 'waiting').length})` : `Queue for Upload (${files.filter(f => f.status === 'waiting').length})`}
         </button>
+      )}
+      {!isStudentSubmitMode && hasWaiting && !isRunning && (
+        <p className="text-[11px] text-slate-400 mt-1.5">⚠️ AI feedback uses daily processing tokens. Grading many papers may exhaust your daily limit.</p>
       )}
         {!isStudentSubmitMode && isRunning && (
           <span className="flex items-center text-brand-navy text-sm font-semibold">
@@ -254,11 +263,25 @@ export default function BatchUpload() {
         </p>
       </div>
 
-      {/* Privacy Banner */}
+      {/* PII Guard — Mandatory Privacy Confirmation */}
       {!isStudentSubmitMode && (
-        <div className="flex items-start gap-2 p-3 bg-amber-50 border border-amber-200 rounded-xl text-sm text-amber-800">
-          <AlertTriangle className="w-5 h-5 shrink-0" />
-          <span>⚠ Privacy Act Reminder: Please ensure the student's name is NOT included in the picture to protect their privacy. Ensure the picture is clear and well-lit.</span>
+        <div className={cn('p-4 rounded-xl border text-sm', piiConfirmed ? 'bg-green-50 border-green-200' : 'bg-amber-50 border-amber-200')}>
+          <label className="flex items-start gap-3 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={piiConfirmed}
+              onChange={(e) => setPiiConfirmed(e.target.checked)}
+              className="mt-0.5 w-5 h-5 accent-brand-green shrink-0"
+            />
+            <div>
+              <p className={cn('font-bold', piiConfirmed ? 'text-green-800' : 'text-amber-800')}>
+                {piiConfirmed ? '✅ Privacy Confirmed' : '⚠ Privacy Act Confirmation Required'}
+              </p>
+              <p className={cn('text-xs mt-0.5', piiConfirmed ? 'text-green-600' : 'text-amber-600')}>
+                I confirm that the student's name is covered, folded, or not visible in the uploaded image(s). No personally identifiable information (PII) is included.
+              </p>
+            </div>
+          </label>
         </div>
       )}
 
