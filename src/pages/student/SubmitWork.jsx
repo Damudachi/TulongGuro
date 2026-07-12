@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { ArrowLeft, Camera, UploadCloud, FileText, CheckCircle2, Clock, Loader2, Sparkles, ChevronRight, AlertTriangle, ShieldCheck, X, BookOpen, Calendar, Award, RefreshCw, Eye } from 'lucide-react';
 import { API_URL } from '../../config';
+import ImageRedactor from '../../components/ImageRedactor';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
 
@@ -23,6 +24,8 @@ export default function SubmitWork() {
   const [privacyConfirmed, setPrivacyConfirmed] = useState(false);
   const [showPrivacyModal, setShowPrivacyModal] = useState(false);
   const [resubmitMode, setResubmitMode] = useState(false);
+  const [redactingFile, setRedactingFile] = useState(null);  // { objectUrl, originalFile, index }
+  const [pendingFiles, setPendingFiles] = useState([]);       // files queued for redaction
   const fileRef = useRef(null);
 
   // Track whether we arrived via a direct link (so "Back" goes to dashboard)
@@ -94,11 +97,34 @@ export default function SubmitWork() {
   const handleFile = (e) => {
     const selectedFiles = Array.from(e.target.files || e.dataTransfer?.files || []);
     if (selectedFiles.length === 0) return;
-    const newFiles = [...files, ...selectedFiles].slice(0, 20);
-    setFiles(newFiles);
-    const newPreviews = newFiles.map(f => URL.createObjectURL(f));
-    setPreviews(newPreviews);
+    // Queue files for PII redaction one at a time
+    setPendingFiles(selectedFiles);
+    const first = selectedFiles[0];
+    setRedactingFile({ objectUrl: URL.createObjectURL(first), originalFile: first, index: 0 });
     setResult(null);
+  };
+
+  const handleRedactConfirm = (redactedBlob) => {
+    // Convert blob to File and add to files list
+    const redactedFile = new File([redactedBlob], redactingFile.originalFile.name, { type: 'image/jpeg' });
+    const newFiles = [...files, redactedFile].slice(0, 20);
+    setFiles(newFiles);
+    setPreviews(prev => [...prev, URL.createObjectURL(redactedBlob)]);
+    // Process next pending file
+    const nextIdx = redactingFile.index + 1;
+    if (nextIdx < pendingFiles.length) {
+      const next = pendingFiles[nextIdx];
+      setRedactingFile({ objectUrl: URL.createObjectURL(next), originalFile: next, index: nextIdx });
+    } else {
+      setRedactingFile(null);
+      setPendingFiles([]);
+    }
+  };
+
+  const handleRedactCancel = () => {
+    // Cancel redaction — discard all pending files
+    setRedactingFile(null);
+    setPendingFiles([]);
   };
 
   const removeFile = (index) => {
@@ -140,6 +166,24 @@ export default function SubmitWork() {
   };
 
   if (isLoading) return <div className="flex items-center justify-center h-64"><Loader2 className="w-6 h-6 animate-spin text-brand-green" /></div>;
+
+  // PII Redaction overlay — appears when files are queued for redaction
+  if (redactingFile) {
+    return (
+      <>
+        <ImageRedactor
+          imageSrc={redactingFile.objectUrl}
+          onConfirm={handleRedactConfirm}
+          onCancel={handleRedactCancel}
+        />
+        {pendingFiles.length > 1 && (
+          <div className="fixed top-14 left-1/2 -translate-x-1/2 z-[120] bg-black/80 text-white text-xs font-bold px-4 py-2 rounded-full">
+            Image {redactingFile.index + 1} of {pendingFiles.length}
+          </div>
+        )}
+      </>
+    );
+  }
 
   const pending = activities.filter(a => !a.mySubmission || a.mySubmission.status === 'PENDING');
 
@@ -273,6 +317,14 @@ export default function SubmitWork() {
                   </span>
                 </div>
               )}
+              {selected.maxAttempts > 1 && (
+                <div className="bg-white/15 px-4 py-2.5 rounded-xl backdrop-blur-sm">
+                  <span className="block text-[10px] uppercase tracking-wider font-bold mb-1 text-blue-200">Attempts</span>
+                  <span className="text-lg font-bold flex items-center">
+                    <RefreshCw className="w-4 h-4 mr-1.5" /> {sub ? sub.attemptCount || 1 : 0}/{selected.maxAttempts}
+                  </span>
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -318,15 +370,23 @@ export default function SubmitWork() {
               )}
             </div>
 
-            <button
-              onClick={() => setResubmitMode(true)}
-              className="w-full py-4 bg-amber-500 text-white rounded-2xl font-bold text-lg hover:bg-amber-600 transition-all shadow-lg shadow-amber-500/20 flex items-center justify-center gap-3"
-            >
-              <RefreshCw className="w-5 h-5" /> Re-submit Work
-            </button>
-            <p className="text-[11px] text-slate-400 text-center">
-              Re-submitting will replace your current submission. Your teacher has not graded it yet.
-            </p>
+            {(sub.attemptCount || 1) < (selected.maxAttempts || 1) ? (
+              <>
+                <button
+                  onClick={() => setResubmitMode(true)}
+                  className="w-full py-4 bg-amber-500 text-white rounded-2xl font-bold text-lg hover:bg-amber-600 transition-all shadow-lg shadow-amber-500/20 flex items-center justify-center gap-3"
+                >
+                  <RefreshCw className="w-5 h-5" /> Re-submit Work
+                </button>
+                <p className="text-[11px] text-slate-400 text-center">
+                  Attempt {sub.attemptCount || 1} of {selected.maxAttempts || 1}. Re-submitting will replace your current submission.
+                </p>
+              </>
+            ) : (
+              <div className="w-full py-4 bg-slate-100 text-slate-400 rounded-2xl font-bold text-lg text-center">
+                All {selected.maxAttempts || 1} attempt(s) used
+              </div>
+            )}
           </div>
         ) : (
           /* ── UPLOAD FORM ── */
@@ -471,6 +531,11 @@ export default function SubmitWork() {
                       {activity.deadline && (
                         <p className={cn("text-xs mt-0.5", isPastDeadline ? "text-red-500 font-semibold" : "text-slate-400")}>
                           {isPastDeadline ? '⏰ Deadline passed' : `Due: ${new Date(activity.deadline).toLocaleDateString('en-PH', { month: 'short', day: 'numeric' })}`}
+                        </p>
+                      )}
+                      {activity.maxAttempts > 1 && (
+                        <p className="text-xs text-slate-400 mt-0.5">
+                          {sub ? `Attempt ${sub.attemptCount || 1}/${activity.maxAttempts}` : `${activity.maxAttempts} attempts allowed`}
                         </p>
                       )}
                     </div>

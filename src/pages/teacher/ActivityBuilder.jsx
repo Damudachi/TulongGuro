@@ -134,6 +134,7 @@ export default function ActivityBuilder() {
     deadline: '',
     instructions: '',
     submissionMode: 'TEACHER_UPLOAD',
+    maxAttempts: 1,
   });
 
   // ── Fetch topics on mount ──
@@ -172,6 +173,7 @@ export default function ActivityBuilder() {
               deadline: activity.deadline ? String(activity.deadline).split('T')[0] : '',
               instructions: activity.instructions || '',
               submissionMode: activity.submissionMode || 'TEACHER_UPLOAD',
+              maxAttempts: activity.maxAttempts || 1,
             });
             // Pre-fill rubric if it exists
             if (activity.rubric) {
@@ -487,6 +489,17 @@ export default function ActivityBuilder() {
               required={form.submissionMode === 'STUDENT_SUBMIT'}
               className="w-full px-4 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-brand-navy outline-none" />
           </div>
+
+          {form.submissionMode === 'STUDENT_SUBMIT' && (
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-1">
+                Max Submission Attempts
+              </label>
+              <input type="number" min={1} max={10} value={form.maxAttempts} onChange={e => setForm({ ...form, maxAttempts: parseInt(e.target.value) || 1 })}
+                className="w-full px-4 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-brand-navy outline-none" />
+              <p className="text-xs text-slate-400 mt-1">How many times a student can re-submit before the deadline (default: 1).</p>
+            </div>
+          )}
 
           <div>
             <label className="block text-sm font-medium text-slate-700 mb-1">Instructions for Students</label>

@@ -360,7 +360,9 @@ export default function StudentDashboard() {
                     <div className="bg-amber-50 p-2 rounded-lg text-amber-500"><BookOpen className="w-5 h-5" /></div>
                     <div>
                       <h3 className="font-bold text-brand-slate text-sm group-hover:text-amber-600 transition-colors">{sub.activity?.title}</h3>
-                      <p className="text-xs text-slate-500">{sub.activity?.class?.name} • {new Date(sub.updatedAt).toLocaleDateString('en-PH', { month: 'short', day: 'numeric' })}</p>
+                      <p className="text-xs text-slate-500">{sub.activity?.class?.name} • {new Date(sub.updatedAt).toLocaleDateString('en-PH', { month: 'short', day: 'numeric' })}
+                        {(sub.activity?.maxAttempts || 1) > 1 && <span className="ml-1 font-bold text-blue-500">• Attempt {sub.attemptCount || 1}/{sub.activity?.maxAttempts}</span>}
+                      </p>
                     </div>
                   </div>
                   <div className="flex items-center gap-2">

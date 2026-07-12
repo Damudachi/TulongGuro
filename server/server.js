@@ -449,7 +449,7 @@ app.post('/api/teacher/activities', (req, res, next) => {
   }
 }, async (req, res) => {
   try {
-    const { title, type, points, classId, instructions, deadline, submissionMode, rubric, topic } = req.body;
+    const { title, type, points, classId, instructions, deadline, submissionMode, rubric, topic, maxAttempts } = req.body;
     const filePaths = (req.files || []).map(f => `/uploads/${f.filename}`);
     const activity = await prisma.activity.create({
       data: {
@@ -459,6 +459,7 @@ app.post('/api/teacher/activities', (req, res, next) => {
         classId, instructions,
         deadline: deadline || null,
         submissionMode: submissionMode || 'TEACHER_UPLOAD',
+        maxAttempts: parseInt(maxAttempts) || 1,
         additionalFiles: filePaths.length ? JSON.stringify(filePaths) : null,
         rubric: rubric || null
       }
@@ -472,7 +473,7 @@ app.post('/api/teacher/activities', (req, res, next) => {
 // Update activity details (deadline, instructions)
 app.put('/api/teacher/activities/:activityId', async (req, res) => {
   try {
-    const { title, type, points, topic, deadline, instructions } = req.body;
+    const { title, type, points, topic, deadline, instructions, submissionMode, maxAttempts, rubric } = req.body;
     const updateData = {};
     if (title !== undefined) updateData.title = String(title);
     if (type !== undefined) updateData.type = String(type);
@@ -480,6 +481,9 @@ app.put('/api/teacher/activities/:activityId', async (req, res) => {
     if (topic !== undefined) updateData.topic = topic ? String(topic) : null;
     if (deadline !== undefined) updateData.deadline = deadline ? String(deadline) : null;
     if (instructions !== undefined) updateData.instructions = instructions ? String(instructions) : null;
+    if (submissionMode !== undefined) updateData.submissionMode = String(submissionMode);
+    if (maxAttempts !== undefined) updateData.maxAttempts = parseInt(maxAttempts) || 1;
+    if (rubric !== undefined) updateData.rubric = rubric || null;
 
     const updated = await prisma.activity.update({
       where: { id: req.params.activityId },
@@ -490,6 +494,7 @@ app.put('/api/teacher/activities/:activityId', async (req, res) => {
     res.status(500).json({ success: false, error: e.message });
   }
 });
+
 
 // Delete activity (Thesis-safe: delete child submissions first)
 app.delete('/api/teacher/activities/:activityId', async (req, res) => {
@@ -812,7 +817,6 @@ ${topicGuidance ? `\nTOPIC FOCUS RULE:\nThis activity is mapped to the topic/les
 ${rubricContext}${fewShotExamples}${sectionContext}
 
 IMPORTANT RULES:
-- STEP 1: Scan the essay image for handwritten or typed student names. If a name is detected, immediately short-circuit. Stop evaluation and return exactly {"privacyViolationDetected": true}. Do not execute rubric parsing or feedback generation if Step 1 triggers.
 - First, check if the image contains readable handwritten or printed text.
 - If the image is BLANK, contains only drawings/art with no text, is too blurry to read, or has NO readable written content, you MUST set score to 0, set noTextDetected to true, provide a short explanation in strengths, and leave areasForGrowth and actionableSteps as empty arrays.
 - If you CAN read text, grade it normally against the rubric using the structured feedback format below.
@@ -851,7 +855,6 @@ You MUST respond with valid JSON matching this exact schema:
   },
   "readingStrategy": "<Personalized 2-sentence reading strategy directly connected to the weaknesses above. Or 'N/A' if no text found.>",
   "noTextDetected": <true if image has no readable text, false otherwise>,
-  "privacyViolationDetected": <true if you can clearly read a student's name written anywhere on the paper, false otherwise>,
   "skillScores": {
     "vocabulary": <0-25>,
     "punctuation": <0-25>,
@@ -942,11 +945,6 @@ RULES FOR skillExplanations:
       }
     }
     
-    // PRIVACY HARD-BLOCK: If AI detected a student's name, reject the submission
-    if (aiResult.privacyViolationDetected && aiSource !== 'mock') {
-      return { privacyViolationDetected: true };
-    }
-
     // Chain-of-Verification — SKIPPED by default during upload for speed
     // Teacher can trigger verification from the HITL review page via /api/teacher/submissions/:id/verify
     let covData = null;
@@ -1011,11 +1009,6 @@ app.post('/api/teacher/submissions/:id/analyze', async (req, res) => {
 
     const aiData = await generateSubmissionFeedback(imagePath, sub.activityId, sub.studentId);
 
-    if (aiData.privacyViolationDetected) {
-      await prisma.submission.update({ where: { id: sub.id }, data: { privacyViolation: true, status: 'ERROR', aiFeedback: '? Privacy Violation: Student name detected on paper. AI grading aborted.' } });
-      return res.status(400).json({ success: false, error: 'Privacy Violation Detected.' });
-    }
-
     const aiFeedbackStr = JSON.stringify({
       strengths: aiData.strengths,
       areasForGrowth: aiData.areasForGrowth,
@@ -1049,45 +1042,41 @@ app.post('/api/teacher/refine', async (req, res) => {
     // Build prompt based on whether the feedback is structured
     let sys;
     if (isStructured) {
-      sys = `You are a helpful teaching assistant for Philippine public school teachers.
-Your job is to rewrite student feedback based on the teacher's instruction.
-Keep the tone warm, encouraging, and developmentally appropriate for K-12 students.
+      sys = `You are an expert teaching assistant. Rewrite the following student feedback based on the teacher's instruction. Keep the tone warm and encouraging.
 
-The current feedback is in structured format:
+Original Feedback:
 ${currentFeedback}
 
-Teacher's instruction: ${teacherPrompt}
+Teacher's Instruction: ${teacherPrompt}
 
-You MUST return a valid JSON object with this exact structure:
+Return ONLY a valid JSON object matching this schema exactly:
 {
   "strengths": "<rewritten strengths text>",
   "areasForGrowth": [
     { "studentQuote": "<exact quote>", "explanation": "<rewritten explanation>" }
   ],
   "actionableSteps": ["<rewritten step 1>", "<rewritten step 2>"]
-}
-
-Only modify the parts the teacher asked about. Keep other parts intact.
-Return ONLY the JSON — no markdown, no code blocks, no extra text.`;
+}`;
     } else {
-      sys = `You are a helpful teaching assistant for Philippine public school teachers.
-Your job is to rewrite student feedback based on the teacher's instruction.
-Keep the tone warm, encouraging, and developmentally appropriate for K-12 students.
-Return ONLY the rewritten feedback text — no markdown, no quotes, no labels.
+      sys = `You are an expert teaching assistant. Rewrite the following student feedback based on the teacher's instruction. Keep the tone warm and encouraging.
+Return ONLY the rewritten feedback text — no markdown, no quotes, no conversational filler.
 
-Current Feedback:
+Original Feedback:
 "${currentFeedback}"
 
-Teacher's instruction: ${teacherPrompt}`;
+Teacher's Instruction: ${teacherPrompt}`;
     }
 
     let refinedFeedback = currentFeedback; // fallback: return unchanged
     if (chatModel) {
       try {
-        const result = await chatModel.generateContent(sys);
+        const result = await chatModel.generateContent({
+          contents: [{ role: 'user', parts: [{ text: sys }] }],
+          generationConfig: isStructured ? { responseMimeType: "application/json" } : undefined
+        });
         let text = result.response.text().trim();
-        // Clean markdown code blocks if AI wraps in ```json
-        text = text.replace(/```json\n?|\n?```/gi, '').trim();
+        // Clean markdown code blocks just in case
+        text = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
         refinedFeedback = text;
       } catch (e) {
         console.log('⚠ AI refine failed:', e.message?.slice(0, 80));
@@ -1347,7 +1336,8 @@ app.get('/api/student/:studentId/dashboard', async (req, res) => {
       type: a.type || 'Essay',
       className: a.class?.name || '',
       classId: a.class?.id || '',
-      submissionMode: a.submissionMode || 'TEACHER_UPLOAD'
+      submissionMode: a.submissionMode || 'TEACHER_UPLOAD',
+      maxAttempts: a.maxAttempts || 1
     })).sort((a, b) => new Date(a.deadline) - new Date(b.deadline));
 
     res.json({ success: true, student, submissions, pendingSubmissions, avgGrade, stars, avgSkills, latestStrategy, upcomingDeadlines });
@@ -1412,7 +1402,7 @@ app.get('/api/student/:studentId/activities', async (req, res) => {
     // Check which ones student already submitted
     const mySubmissions = await prisma.submission.findMany({
       where: { studentId: req.params.studentId },
-      select: { activityId: true, status: true, id: true, imageUrl: true }
+      select: { activityId: true, status: true, id: true, imageUrl: true, attemptCount: true, updatedAt: true, hitlScore: true }
     });
     const submissionMap = {};
     mySubmissions.forEach(s => { submissionMap[s.activityId] = s; });
@@ -1476,15 +1466,29 @@ app.post('/api/student/submit', upload.array('images', 20), async (req, res) => 
 
     // Check for existing submission and update, or create new
     const existing = await prisma.submission.findFirst({ where: { studentId, activityId } });
+    const activity = await prisma.activity.findUnique({ where: { id: activityId }, select: { maxAttempts: true, deadline: true } });
+    const maxAttempts = activity?.maxAttempts || 1;
     let submission;
     if (existing) {
+      // Block resubmission if already graded by teacher
+      if (existing.hitlScore !== null || existing.status === 'GRADED') {
+        return res.status(400).json({ success: false, error: 'This submission has already been graded by your teacher. Resubmission is no longer allowed.' });
+      }
+      // Block if deadline has passed
+      if (activity?.deadline && new Date(activity.deadline) < new Date()) {
+        return res.status(400).json({ success: false, error: 'The deadline for this activity has passed. Resubmission is no longer allowed.' });
+      }
+      // Block if max attempts reached
+      if (existing.attemptCount >= maxAttempts) {
+        return res.status(400).json({ success: false, error: `You have used all ${maxAttempts} attempt(s) for this activity.` });
+      }
       submission = await prisma.submission.update({
         where: { id: existing.id },
-        data: { imageUrl: finalImageUrl, status: 'PENDING', aiScore: null, hitlScore: null, aiFeedback: null }
+        data: { imageUrl: finalImageUrl, status: 'PENDING', aiScore: null, hitlScore: null, aiFeedback: null, hitlFeedback: null, attemptCount: existing.attemptCount + 1 }
       });
     } else {
       submission = await prisma.submission.create({
-        data: { studentId, activityId, imageUrl: finalImageUrl, status: 'PENDING' }
+        data: { studentId, activityId, imageUrl: finalImageUrl, status: 'PENDING', attemptCount: 1 }
       });
     }
     
@@ -1516,11 +1520,6 @@ app.post('/api/teacher/upload', upload.single('image'), async (req, res) => {
     
     // 2) Call the new shared AI grading function
     const aiData = await generateSubmissionFeedback(processedPath, activityId, studentId);
-    
-    // Check for privacy violation
-    if (aiData.privacyViolationDetected) {
-      return res.status(400).json({ success: false, error: 'Privacy Violation Detected: A student name was found written on the paper. For data privacy, please crop out or redact the name before uploading.' });
-    }
 
     // 6) Save to DB
     const aiFeedbackStr = JSON.stringify({
@@ -1542,7 +1541,6 @@ app.post('/api/teacher/upload', upload.single('image'), async (req, res) => {
           readingStrategy: aiData.readingStrategy,
           rubricData: JSON.stringify(aiData.rubricScores || []),
           skillScores: JSON.stringify(aiData.skillScores),
-          privacyViolation: aiData.privacyViolationDetected,
           status: 'PENDING'
         }
       });
@@ -1557,7 +1555,6 @@ app.post('/api/teacher/upload', upload.single('image'), async (req, res) => {
           readingStrategy: aiData.readingStrategy,
           rubricData: JSON.stringify(aiData.rubricScores || []),
           skillScores: JSON.stringify(aiData.skillScores),
-          privacyViolation: aiData.privacyViolationDetected,
           status: 'PENDING'
         }
       });

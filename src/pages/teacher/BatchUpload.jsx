@@ -1,8 +1,9 @@
 import { useState, useEffect, useRef } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
-import { ArrowLeft, Camera, UploadCloud, X, Play, CheckCircle2, Clock, Loader2, User, Wifi, WifiOff, Trash2, AlertTriangle, Info } from 'lucide-react';
+import { ArrowLeft, Camera, UploadCloud, X, Play, CheckCircle2, Clock, Loader2, User, Wifi, WifiOff, Trash2, AlertTriangle, Info, ShieldCheck } from 'lucide-react';
 import { getQueue, buildJob, enqueue, flushQueue } from '../../utils/offlineQueue';
 import { API_URL } from '../../config';
+import ImageRedactor from '../../components/ImageRedactor';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
 
@@ -43,6 +44,7 @@ export default function BatchUpload() {
   const [queuedCount, setQueuedCount] = useState(getQueue().length);
   const [isFlushing, setIsFlushing] = useState(false);
   const [piiConfirmed, setPiiConfirmed] = useState(false);
+  const [redactingFileId, setRedactingFileId] = useState(null);  // id of file being redacted
   const fileInputRef = useRef(null);
 
   useEffect(() => {
@@ -91,6 +93,16 @@ export default function BatchUpload() {
       ...f, file, status: 'waiting', preview: URL.createObjectURL(file), statusDetail: undefined, aiSource: undefined, aiScore: undefined, submissionId: undefined
     } : f));
   };
+
+  const handleRedactFile = (fileId) => setRedactingFileId(fileId);
+  const handleRedactConfirm = (redactedBlob) => {
+    const redactedFile = new File([redactedBlob], 'redacted.jpg', { type: 'image/jpeg' });
+    setFiles(prev => prev.map(f => f.id === redactingFileId ? {
+      ...f, file: redactedFile, preview: URL.createObjectURL(redactedBlob)
+    } : f));
+    setRedactingFileId(null);
+  };
+  const handleRedactCancel = () => setRedactingFileId(null);
 
   const handleGrade = async () => {
     if (!files.length) return;
@@ -198,7 +210,15 @@ export default function BatchUpload() {
   }, {});
 
   return (
-    <div className="p-4 md:p-8 max-w-4xl mx-auto flex flex-col gap-6">
+    <div className="p-4 md:p-8 max-w-5xl mx-auto flex flex-col gap-6 pb-24">
+      {/* PII Redactor Overlay */}
+      {redactingFileId && (
+        <ImageRedactor
+          imageSrc={files.find(f => f.id === redactingFileId)?.preview}
+          onConfirm={handleRedactConfirm}
+          onCancel={handleRedactCancel}
+        />
+      )}
 
       {/* Offline Banner */}
       {!isStudentSubmitMode && !isOnline && (
@@ -461,10 +481,16 @@ export default function BatchUpload() {
                     )}
                   </div>
                   {item.status === 'waiting' && (
-                    <button onClick={() => removeFile(item.id)}
-                      className="absolute top-2 right-2 bg-red-500 text-white p-1 rounded-full opacity-0 group-hover:opacity-100 transition-opacity">
-                      <X className="w-3 h-3" />
-                    </button>
+                    <>
+                      <button onClick={() => handleRedactFile(item.id)}
+                        className="absolute top-2 left-2 bg-slate-900/70 text-white text-[10px] font-bold px-2 py-1 rounded-md opacity-0 group-hover:opacity-100 transition-opacity hover:bg-slate-900 flex items-center gap-1">
+                        <ShieldCheck className="w-3 h-3 text-red-400" /> Redact Name
+                      </button>
+                      <button onClick={() => removeFile(item.id)}
+                        className="absolute top-2 right-2 bg-red-500 text-white p-1 rounded-full opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-600">
+                        <X className="w-3 h-3" />
+                      </button>
+                    </>
                   )}
                   {item.status === 'privacy' && (
                     <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity bg-black/50">
