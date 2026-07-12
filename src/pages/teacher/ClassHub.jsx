@@ -209,10 +209,6 @@ export default function ClassHub() {
             // Show proper status: check if submissions exist and their status
             const pendingCount = activity.submissions?.filter(s => s.status === 'PENDING').length || 0;
             const gradedCount = activity.submissions?.filter(s => s.status === 'GRADED').length || 0;
-            const cfg = subCount === 0 ? STATUS_CONFIG.NONE
-              : pendingCount > 0 ? STATUS_CONFIG.PENDING
-                : STATUS_CONFIG.GRADED;
-            const StatusIcon = cfg.icon;
             const isPastDeadline = activity.deadline && new Date(activity.deadline) < new Date();
             return (
               <div
@@ -239,9 +235,26 @@ export default function ClassHub() {
                       {activity.deadline ? ` • Due ${new Date(activity.deadline).toLocaleDateString('en-PH', { month: 'short', day: 'numeric' })}` : ''}
                       {isPastDeadline && activity.deadline ? <span className="text-red-500 font-semibold"> (Closed)</span> : ''}
                     </p>
-                    <span className={`text-xs font-semibold px-2 py-0.5 rounded-full flex items-center w-fit gap-1 ${cfg.color}`}>
-                      <StatusIcon className="w-3 h-3" />{cfg.label} {subCount > 0 && `(${subCount})`}
-                    </span>
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      {subCount === 0 ? (
+                        <span className={`text-xs font-semibold px-2 py-0.5 rounded-full flex items-center w-fit gap-1 ${STATUS_CONFIG.NONE.color}`}>
+                          <AlertCircle className="w-3 h-3" />{STATUS_CONFIG.NONE.label}
+                        </span>
+                      ) : (
+                        <>
+                          {pendingCount > 0 && (
+                            <span className={`text-xs font-semibold px-2 py-0.5 rounded-full flex items-center w-fit gap-1 ${STATUS_CONFIG.PENDING.color}`}>
+                              <Clock className="w-3 h-3" />Needs Grading ({pendingCount})
+                            </span>
+                          )}
+                          {gradedCount > 0 && (
+                            <span className={`text-xs font-semibold px-2 py-0.5 rounded-full flex items-center w-fit gap-1 ${STATUS_CONFIG.GRADED.color}`}>
+                              <CheckCircle2 className="w-3 h-3" />Graded ({gradedCount})
+                            </span>
+                          )}
+                        </>
+                      )}
+                    </div>
                   </div>
                 </div>
                 {isStudentSubmit ? (

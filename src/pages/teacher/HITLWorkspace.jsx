@@ -146,7 +146,20 @@ export default function HITLWorkspace() {
               }
             } catch { }
           } else if (sub.aiScore === null && sub.status === 'PENDING') {
-            setScores({ content: 0, organization: 0, grammar: 0 });
+            if (sub.activity?.rubric) {
+              try {
+                const parsedRubric = JSON.parse(sub.activity.rubric);
+                if (parsedRubric.criteria?.length) {
+                  const initialScores = {};
+                  parsedRubric.criteria.forEach(c => initialScores[c.name] = 0);
+                  setScores(initialScores);
+                } else {
+                  setScores({ content: 0, organization: 0, grammar: 0 });
+                }
+              } catch { setScores({ content: 0, organization: 0, grammar: 0 }); }
+            } else {
+              setScores({ content: 0, organization: 0, grammar: 0 });
+            }
           }
           if (sub.covData) {
             try { setCovData(JSON.parse(sub.covData)); } catch { }
@@ -291,6 +304,7 @@ export default function HITLWorkspace() {
       alert('Save failed. Please try again.');
     } finally {
       setIsSaving(false);
+      setIsEditingAssessment(false);
     }
   };
 
@@ -358,33 +372,53 @@ export default function HITLWorkspace() {
 
   if (isLoading) return <div className="flex items-center justify-center h-64 text-slate-400"><Loader2 className="w-6 h-6 animate-spin mr-2" />Loading submission...</div>;
 
-  const rubricItems = dynamicRubric ? dynamicRubric.map((r, i) => {
-    let fullDesc = r.bandDescription;
-    if (submission?.activity?.rubric) {
-      try {
-        const activityRubric = JSON.parse(submission.activity.rubric);
-        const criteria = activityRubric.criteria?.find(c => c.name === r.criterionName);
-        if (criteria && criteria.bands) {
-          const band = criteria.bands.find(b => b.label.toLowerCase() === r.bandDescription?.toLowerCase());
-          if (band && band.description) {
-            fullDesc = `${band.label} — ${band.description}`;
+  let rubricItems;
+  if (dynamicRubric) {
+    rubricItems = dynamicRubric.map((r, i) => {
+      let fullDesc = r.bandDescription;
+      if (submission?.activity?.rubric) {
+        try {
+          const activityRubric = JSON.parse(submission.activity.rubric);
+          const criteria = activityRubric.criteria?.find(c => c.name === r.criterionName);
+          if (criteria && criteria.bands) {
+            const band = criteria.bands.find(b => b.label.toLowerCase() === r.bandDescription?.toLowerCase());
+            if (band && band.description) {
+              fullDesc = `${band.label} — ${band.description}`;
+            }
           }
-        }
-      } catch (e) { /* ignore */ }
-    }
-
-    return {
-      key: r.criterionName,
-      name: r.criterionName,
-      max: r.maxPoints,
-      color: ['bg-brand-green', 'bg-amber-400', 'bg-blue-400', 'bg-purple-400', 'bg-pink-400'][i % 5],
-      desc: fullDesc
-    };
-  }) : [
-    { key: 'content', name: 'Content & Ideas', max: 40, color: 'bg-brand-green' },
-    { key: 'organization', name: 'Organization', max: 30, color: 'bg-amber-400' },
-    { key: 'grammar', name: 'Grammar', max: 30, color: 'bg-blue-400' },
-  ];
+        } catch (e) { /* ignore */ }
+      }
+      return {
+        key: r.criterionName,
+        name: r.criterionName,
+        max: r.maxPoints,
+        color: ['bg-brand-green', 'bg-amber-400', 'bg-blue-400', 'bg-purple-400', 'bg-pink-400'][i % 5],
+        desc: fullDesc
+      };
+    });
+  } else if (submission?.activity?.rubric) {
+    // Fallback: parse the activity's rubric definition so the UI shows the correct criteria
+    // even before AI grading has run (e.g. Student Submit flow)
+    try {
+      const parsedActivityRubric = JSON.parse(submission.activity.rubric);
+      if (parsedActivityRubric.criteria?.length) {
+        rubricItems = parsedActivityRubric.criteria.map((c, i) => ({
+          key: c.name,
+          name: c.name,
+          max: c.points || 0,
+          color: ['bg-brand-green', 'bg-amber-400', 'bg-blue-400', 'bg-purple-400', 'bg-pink-400'][i % 5],
+          desc: c.description || ''
+        }));
+      }
+    } catch { /* ignore */ }
+  }
+  if (!rubricItems || rubricItems.length === 0) {
+    rubricItems = [
+      { key: 'content', name: 'Content & Ideas', max: 40, color: 'bg-brand-green' },
+      { key: 'organization', name: 'Organization', max: 30, color: 'bg-amber-400' },
+      { key: 'grammar', name: 'Grammar', max: 30, color: 'bg-blue-400' },
+    ];
+  }
 
   const skillLabels = {
     vocabulary: 'Vocabulary',
@@ -506,7 +540,7 @@ export default function HITLWorkspace() {
               )}
             </div>
             <div className="flex items-center gap-4">
-              {!isEditingAssessment && !isApproved && (
+              {!isEditingAssessment && (
                 <button
                   onClick={() => setIsEditingAssessment(true)}
                   className="text-xs font-bold text-brand-navy border-2 border-brand-navy/20 bg-blue-50 px-3 py-1.5 rounded-lg hover:bg-blue-100 transition-colors"
@@ -806,7 +840,7 @@ export default function HITLWorkspace() {
           <button onClick={() => navigate(-1)} className="flex-1 py-3 px-4 rounded-xl border-2 border-slate-200 text-slate-700 font-bold hover:bg-slate-50 transition-colors">
             Back
           </button>
-          {isApproved ? (
+          {isApproved && !isEditingAssessment ? (
             <button onClick={() => navigate('/teacher/dashboard')} className="flex-1 py-3 px-4 rounded-xl bg-brand-green text-white font-bold hover:bg-emerald-600 transition-colors flex items-center justify-center gap-2">
               <CheckCircle2 className="w-5 h-5" /> Done — Back to Dashboard
             </button>
@@ -814,7 +848,7 @@ export default function HITLWorkspace() {
             <button onClick={handleValidate} disabled={isSaving}
               className="flex-1 py-3 px-4 rounded-xl bg-brand-green text-white font-bold hover:bg-emerald-600 transition-colors shadow-lg shadow-emerald-500/20 flex items-center justify-center gap-2 disabled:opacity-60">
               {isSaving ? <Loader2 className="w-5 h-5 animate-spin" /> : <Check className="w-5 h-5" />}
-              {isSaving ? 'Saving...' : 'Validate & Release'}
+              {isSaving ? 'Saving...' : (isApproved ? 'Save Changes' : 'Validate & Release')}
             </button>
           )}
         </div>

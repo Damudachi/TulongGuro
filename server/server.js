@@ -1322,9 +1322,18 @@ app.get('/api/student/:studentId/dashboard', async (req, res) => {
       },
       include: { class: { select: { id: true, name: true } } }
     });
+    const pendingSubmissions = await prisma.submission.findMany({
+      where: { studentId: req.params.studentId, status: 'PENDING' },
+      include: { activity: { include: { class: true } } },
+      orderBy: { updatedAt: 'desc' }
+    });
+
     const now = new Date();
-    // Exclude activities the student has already submitted
-    const submittedActivityIds = submissions.map(s => s.activityId);
+    // Exclude activities the student has already submitted (both GRADED and PENDING)
+    const submittedActivityIds = [
+      ...submissions.map(s => s.activityId),
+      ...pendingSubmissions.map(s => s.activityId)
+    ];
     
     const upcomingDeadlines = upcomingActivities.filter(a => {
       if (submittedActivityIds.includes(a.id)) return false;
@@ -1341,7 +1350,7 @@ app.get('/api/student/:studentId/dashboard', async (req, res) => {
       submissionMode: a.submissionMode || 'TEACHER_UPLOAD'
     })).sort((a, b) => new Date(a.deadline) - new Date(b.deadline));
 
-    res.json({ success: true, student, submissions, avgGrade, stars, avgSkills, latestStrategy, upcomingDeadlines });
+    res.json({ success: true, student, submissions, pendingSubmissions, avgGrade, stars, avgSkills, latestStrategy, upcomingDeadlines });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
   }
@@ -1403,7 +1412,7 @@ app.get('/api/student/:studentId/activities', async (req, res) => {
     // Check which ones student already submitted
     const mySubmissions = await prisma.submission.findMany({
       where: { studentId: req.params.studentId },
-      select: { activityId: true, status: true, id: true }
+      select: { activityId: true, status: true, id: true, imageUrl: true }
     });
     const submissionMap = {};
     mySubmissions.forEach(s => { submissionMap[s.activityId] = s; });

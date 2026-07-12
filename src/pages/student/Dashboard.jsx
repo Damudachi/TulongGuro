@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
-import { Award, CheckCircle2, Star, Loader2, Lightbulb, ChevronRight, Clock, BookOpen, TrendingUp, Bot, Sparkles } from 'lucide-react';
+import { Award, CheckCircle2, Star, Loader2, Lightbulb, ChevronRight, Clock, BookOpen, TrendingUp, Bot, Sparkles, Send } from 'lucide-react';
 import { API_URL } from '../../config';
 
 const SKILL_LABELS = { vocabulary: 'Vocabulary', punctuation: 'Punctuation', thematicFlow: 'Thematic Flow', sentenceStructure: 'Sentence Structure' };
@@ -54,6 +54,7 @@ export default function StudentDashboard() {
   const avgGrade = data?.avgGrade || 0;
   const avgSkills = data?.avgSkills || {};
   const upcomingDeadlines = data?.upcomingDeadlines || [];
+  const pendingSubmissions = data?.pendingSubmissions || [];
   const latestStrategy = data?.latestStrategy || null;
   const hasSkills = Object.values(avgSkills).some(v => v > 0);
 
@@ -334,6 +335,43 @@ export default function StudentDashboard() {
                 </Link>
               );
             })}
+          </div>
+        )}
+      </div>
+
+      {/* Submitted — Awaiting Grading */}
+      <div className="mb-6">
+        <h2 className="text-lg font-bold text-brand-slate mb-4 flex items-center gap-2">
+          <Send className="w-5 h-5 text-amber-500" /> Submitted
+        </h2>
+        {pendingSubmissions.length === 0 ? (
+          <div className="text-center py-10 border-2 border-dashed border-slate-200 rounded-2xl text-slate-400">
+            <Send className="w-10 h-10 mx-auto mb-2 opacity-30" />
+            <p className="text-sm font-medium">No pending submissions</p>
+            <p className="text-xs mt-1">Submissions awaiting grading will appear here.</p>
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {pendingSubmissions.map(sub => (
+              <Link key={sub.id} to={`/student/submit?activityId=${sub.activityId}`}
+                className="block bg-white p-4 rounded-xl border border-slate-200 hover:border-amber-300 hover:shadow-md transition-all group cursor-pointer">
+                <div className="flex justify-between items-center">
+                  <div className="flex items-center gap-3">
+                    <div className="bg-amber-50 p-2 rounded-lg text-amber-500"><BookOpen className="w-5 h-5" /></div>
+                    <div>
+                      <h3 className="font-bold text-brand-slate text-sm group-hover:text-amber-600 transition-colors">{sub.activity?.title}</h3>
+                      <p className="text-xs text-slate-500">{sub.activity?.class?.name} • {new Date(sub.updatedAt).toLocaleDateString('en-PH', { month: 'short', day: 'numeric' })}</p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-bold px-3 py-1.5 rounded-full text-amber-600 bg-amber-50 flex items-center gap-1">
+                      <Clock className="w-3 h-3" /> Awaiting Grading
+                    </span>
+                    <ChevronRight className="w-4 h-4 text-slate-300 group-hover:text-amber-500 transition-colors" />
+                  </div>
+                </div>
+              </Link>
+            ))}
           </div>
         )}
       </div>
