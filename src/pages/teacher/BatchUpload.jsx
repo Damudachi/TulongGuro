@@ -204,7 +204,7 @@ export default function BatchUpload() {
       {!isStudentSubmitMode && !isOnline && (
         <div className="flex items-center gap-2 p-3 bg-amber-50 border border-amber-300 rounded-xl text-sm text-amber-800">
           <WifiOff className="w-4 h-4 shrink-0" />
-          <span><strong>You're offline.</strong> Essays will be queued locally and uploaded automatically when you're back online.</span>
+          <span><strong>You're offline.</strong> Your essays will be saved and uploaded automatically once you're connected again. </span>
         </div>
       )}
       {!isStudentSubmitMode && isOnline && queuedCount > 0 && (
@@ -243,7 +243,7 @@ export default function BatchUpload() {
         </button>
       )}
       {!isStudentSubmitMode && hasWaiting && !isRunning && (
-        <p className="text-[11px] text-slate-400 mt-1.5">⚠️ AI feedback uses daily processing tokens. Grading many papers may exhaust your daily limit.</p>
+        <p className="text-[11px] text-slate-400 mt-1.5">⚠️ AI feedback has a daily usage limit. Grading many papers may use up your limit for today.</p>
       )}
         {!isStudentSubmitMode && isRunning && (
           <span className="flex items-center text-brand-navy text-sm font-semibold">
@@ -291,7 +291,7 @@ export default function BatchUpload() {
           <div className="flex items-start gap-3">
             <Info className="w-5 h-5 text-blue-400 shrink-0 mt-0.5" />
             <p className="text-sm text-blue-300 leading-relaxed">
-              <span className="font-semibold text-blue-400">ℹ️ Note:</span> The AI grading system requires clear, legible handwriting for accurate processing. Submissions with unclear or illegible handwriting may produce inaccurate results and should be prioritized for manual review in the HITL Workspace.
+              <span className="font-semibold text-blue-400">ℹ️ Note:</span> The AI works best with clear, readable handwriting. If a submission is difficult to read, the results may be inaccurate and should be reviewed manually.
             </p>
           </div>
         </div>
