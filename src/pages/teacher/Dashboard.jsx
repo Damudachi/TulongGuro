@@ -126,22 +126,7 @@ export default function TeacherDashboard() {
   const [form, setForm] = useState({ name: '', gradeLevel: 'Grade 6', subject: 'English', schoolYear: '2024-2025', sectionId: '' });
   const [filters, setFilters] = useState({ gradeLevel: '', subject: '' });
   const [isLoading, setIsLoading] = useState(true);
-  const [showWalkthrough, setShowWalkthrough] = useState(() => {
-    const user = JSON.parse(localStorage.getItem('user') || '{}');
-    return user.id ? !localStorage.getItem(`hasSeenTeacherWalkthrough_${user.id}`) : false;
-  });
-  const [walkthroughStep, setWalkthroughStep] = useState(0);
 
-  const [showWelcomeModal, setShowWelcomeModal] = useState(() => {
-    const user = JSON.parse(localStorage.getItem('user') || '{}');
-    return user.id ? !localStorage.getItem(`hasSeenTeacherWelcome_${user.id}`) : false;
-  });
-
-  const dismissWelcome = () => {
-    const user = JSON.parse(localStorage.getItem('user') || '{}');
-    if (user.id) localStorage.setItem(`hasSeenTeacherWelcome_${user.id}`, 'true');
-    setShowWelcomeModal(false);
-  };
 
   useEffect(() => {
     const user = JSON.parse(localStorage.getItem('user') || '{}');
@@ -190,29 +175,6 @@ export default function TeacherDashboard() {
     return true;
   });
 
-  const walkthroughSteps = [
-    {
-      emoji: '👋',
-      title: 'Welcome, Teacher!',
-      text: 'We\'ve set up a Demo Class for you so you can experience TulongGuro\'s AI grading right away — no setup needed.',
-    },
-    {
-      emoji: '📝',
-      title: 'Step 1: Open the Demo Class',
-      text: 'Click on the "[DEMO] Sandbox Demo Class" card below. Inside, you\'ll find a pre-loaded essay from a "Demo Student" waiting for your review.',
-    },
-    {
-      emoji: '🤖',
-      title: 'Step 2: Try the HITL Workspace',
-      text: 'Click on the pending submission to open the grading workspace. You\'ll see the AI\'s suggested score, feedback, and a scanned essay. Adjust anything you want — the AI is your co-pilot, not the final judge.',
-    },
-    {
-      emoji: '✅',
-      title: 'Step 3: You\'re Ready!',
-      text: 'Once you\'re comfortable, delete the Demo Class and create your own using the quick setup wizard. Add your real students and start grading!',
-    },
-  ];
-
   return (
     <div className="p-4 md:p-8 max-w-6xl mx-auto">
       <div className="flex flex-col md:flex-row md:items-center justify-between mb-8 gap-4">
@@ -225,60 +187,6 @@ export default function TeacherDashboard() {
         </Link>
       </div>
 
-      {/* Interactive Walkthrough Banner */}
-      {hasDemo && showWalkthrough && (
-        <div className="mb-6 bg-gradient-to-r from-blue-50 to-indigo-50 border-2 border-blue-200 rounded-2xl overflow-hidden shadow-sm">
-          <div className="p-5">
-            <div className="flex items-start gap-4">
-              <div className="w-12 h-12 bg-brand-navy/10 rounded-xl flex items-center justify-center text-2xl shrink-0">
-                {walkthroughSteps[walkthroughStep].emoji}
-              </div>
-              <div className="flex-1 min-w-0">
-                <h3 className="font-bold text-brand-slate text-base mb-1">{walkthroughSteps[walkthroughStep].title}</h3>
-                <p className="text-sm text-slate-600 leading-relaxed">{walkthroughSteps[walkthroughStep].text}</p>
-              </div>
-              <button
-                onClick={() => {
-                  const user = JSON.parse(localStorage.getItem('user') || '{}');
-                  setShowWalkthrough(false);
-                  if (user.id) localStorage.setItem(`hasSeenTeacherWalkthrough_${user.id}`, 'true');
-                }}
-                className="text-slate-400 hover:text-slate-600 text-xs font-medium shrink-0"
-              >
-                Dismiss
-              </button>
-            </div>
-            <div className="flex items-center justify-between mt-4 pt-3 border-t border-blue-200/50">
-              <div className="flex gap-1.5">
-                {walkthroughSteps.map((_, i) => (
-                  <div key={i} className={`h-1.5 rounded-full transition-all ${walkthroughStep === i ? 'w-6 bg-brand-navy' : 'w-1.5 bg-slate-300'}`} />
-                ))}
-              </div>
-              <div className="flex gap-2">
-                {walkthroughStep > 0 && (
-                  <button onClick={() => setWalkthroughStep(s => s - 1)} className="text-xs font-medium text-slate-500 hover:text-slate-700 px-3 py-1.5 rounded-lg hover:bg-white transition-colors">Back</button>
-                )}
-                {walkthroughStep < walkthroughSteps.length - 1 ? (
-                  <button onClick={() => setWalkthroughStep(s => s + 1)} className="text-xs font-bold text-white bg-brand-navy px-4 py-1.5 rounded-lg hover:bg-blue-900 transition-colors flex items-center gap-1">
-                    Next <ChevronRight className="w-3 h-3" />
-                  </button>
-                ) : (
-                  <button
-                    onClick={() => {
-                      const user = JSON.parse(localStorage.getItem('user') || '{}');
-                      setShowWalkthrough(false);
-                      if (user.id) localStorage.setItem(`hasSeenTeacherWalkthrough_${user.id}`, 'true');
-                    }}
-                    className="text-xs font-bold text-white bg-brand-green px-4 py-1.5 rounded-lg hover:bg-emerald-600 transition-colors"
-                  >
-                    Got it! Let's go 🚀
-                  </button>
-                )}
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
 
       {classes.length > 4 && (
         <div className="bg-white border border-slate-200 rounded-xl p-4 mb-6">
@@ -429,49 +337,6 @@ export default function TeacherDashboard() {
         </div>
       )}
 
-      {/* Teacher Onboarding Modal */}
-      {showWelcomeModal && (
-        <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl w-full max-w-lg shadow-2xl p-6 text-center">
-            <div className="w-16 h-16 bg-blue-100 rounded-full flex items-center justify-center mx-auto mb-4">
-              <span className="text-3xl">👋</span>
-            </div>
-            <h2 className="text-2xl font-bold text-brand-slate mb-2">Welcome to TulongGuro!</h2>
-            <p className="text-slate-600 mb-6">
-              Your AI-powered teaching assistant is ready. Here's what you can do:
-            </p>
-            <div className="space-y-4 text-left mb-8">
-              <div className="flex items-start gap-3">
-                <div className="p-2 bg-blue-50 rounded-lg"><BookOpen className="w-5 h-5 text-brand-navy" /></div>
-                <div>
-                  <h3 className="font-bold text-brand-slate">Create Activities</h3>
-                  <p className="text-xs text-slate-500">Design assignments with rubrics in the Activity Builder.</p>
-                </div>
-              </div>
-              <div className="flex items-start gap-3">
-                <div className="p-2 bg-green-50 rounded-lg"><UploadCloud className="w-5 h-5 text-brand-green" /></div>
-                <div>
-                  <h3 className="font-bold text-brand-slate">Batch Upload & AI Grade</h3>
-                  <p className="text-xs text-slate-500">Upload photos of handwritten essays for instant analysis.</p>
-                </div>
-              </div>
-              <div className="flex items-start gap-3">
-                <div className="p-2 bg-purple-50 rounded-lg"><Users className="w-5 h-5 text-purple-600" /></div>
-                <div>
-                  <h3 className="font-bold text-brand-slate">Human-in-the-Loop AI</h3>
-                  <p className="text-xs text-slate-500">Review AI feedback and use the Co-Pilot to refine it before sending to students.</p>
-                </div>
-              </div>
-            </div>
-            <button
-              onClick={dismissWelcome}
-              className="w-full py-3 bg-brand-navy text-white font-bold rounded-xl hover:bg-blue-900 transition-colors"
-            >
-              Get Started
-            </button>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

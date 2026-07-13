@@ -411,14 +411,20 @@ export default function HITLWorkspace() {
     // even before AI grading has run (e.g. Student Submit flow)
     try {
       const parsedActivityRubric = JSON.parse(submission.activity.rubric);
+      const actTotalPoints = submission.activity?.points || 100;
       if (parsedActivityRubric.criteria?.length) {
-        rubricItems = parsedActivityRubric.criteria.map((c, i) => ({
-          key: c.name,
-          name: c.name,
-          max: c.points || 0,
-          color: ['bg-brand-green', 'bg-amber-400', 'bg-blue-400', 'bg-purple-400', 'bg-pink-400'][i % 5],
-          desc: c.description || ''
-        }));
+        rubricItems = parsedActivityRubric.criteria.map((c, i) => {
+          // criteria.points is now a percentage — compute actual max from activity total points
+          const pctValue = c.points || 0;
+          const computedMax = Math.round((pctValue / 100) * actTotalPoints);
+          return {
+            key: c.name,
+            name: c.name,
+            max: computedMax || 0,
+            color: ['bg-brand-green', 'bg-amber-400', 'bg-blue-400', 'bg-purple-400', 'bg-pink-400'][i % 5],
+            desc: c.description || ''
+          };
+        });
       }
     } catch { /* ignore */ }
   }
@@ -581,15 +587,36 @@ export default function HITLWorkspace() {
             </div>
           </div>
 
-          {/* Rubric Breakdown — editable sliders */}
+          {/* Rubric Breakdown — editable sliders + manual input */}
           <div>
-            <h3 className="text-sm font-bold text-slate-400 uppercase tracking-wider mb-4">Rubric Breakdown <span className="text-slate-300 font-normal normal-case">{isEditingAssessment ? '(drag to adjust)' : '(read-only)'}</span></h3>
+            <h3 className="text-sm font-bold text-slate-400 uppercase tracking-wider mb-4">Rubric Breakdown <span className="text-slate-300 font-normal normal-case">{isEditingAssessment ? '(drag or type to adjust)' : '(read-only)'}</span></h3>
             <div className="space-y-4">
               {rubricItems.map(item => (
                 <div key={item.key} className="relative group">
                   <div className="flex justify-between text-sm mb-1">
                     <span className="font-medium text-slate-700">{item.name}</span>
-                    <span className="font-bold text-slate-900">{scores[item.key] || 0}/{item.max}</span>
+                    {isEditingAssessment ? (
+                      <div className="flex items-center gap-1">
+                        <input
+                          type="number"
+                          min={0}
+                          max={item.max}
+                          value={scores[item.key] || 0}
+                          onChange={e => {
+                            const val = parseInt(e.target.value);
+                            if (!isNaN(val) && val >= 0 && val <= item.max) {
+                              setScores(prev => ({ ...prev, [item.key]: val }));
+                            } else if (e.target.value === '') {
+                              setScores(prev => ({ ...prev, [item.key]: 0 }));
+                            }
+                          }}
+                          className="w-14 px-1 py-0.5 border border-slate-300 rounded text-sm text-center font-bold focus:outline-none focus:ring-1 focus:ring-brand-navy"
+                        />
+                        <span className="text-slate-400 font-bold">/{item.max}</span>
+                      </div>
+                    ) : (
+                      <span className="font-bold text-slate-900">{scores[item.key] || 0}/{item.max}</span>
+                    )}
                   </div>
                   {item.desc && (
                     <div className="hidden group-hover:block absolute bottom-full mb-2 left-0 right-0 bg-slate-800 text-white text-[10px] p-2 rounded z-10 pointer-events-none">

@@ -333,6 +333,7 @@ export default function ClassHub() {
               <div>
                 <label className="block text-sm font-medium mb-1">Deadline</label>
                 <input type="date" value={newActivity.deadline} onChange={e => setNewActivity({ ...newActivity, deadline: e.target.value })}
+                  min={newActivity.submissionMode === 'STUDENT_SUBMIT' ? new Date().toISOString().split('T')[0] : undefined}
                   className="w-full border p-2 rounded-lg outline-none focus:ring-2 focus:ring-brand-navy" />
               </div>
               <div>
@@ -465,6 +466,7 @@ export default function ClassHub() {
                     type="date"
                     value={editForm.deadline}
                     onChange={(e) => setEditForm((prev) => ({ ...prev, deadline: e.target.value }))}
+                    min={new Date().toISOString().split('T')[0]}
                     className="w-full border border-slate-200 p-2 rounded-lg outline-none focus:ring-2 focus:ring-brand-navy"
                   />
                 </div>
