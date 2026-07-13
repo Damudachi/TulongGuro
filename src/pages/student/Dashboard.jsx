@@ -78,17 +78,6 @@ export default function StudentDashboard() {
               )}
               {welcomeStep === 1 && (
                 <div className="animate-fade-in">
-                  <div className="w-20 h-20 bg-blue-100 text-blue-600 rounded-full flex items-center justify-center mx-auto mb-6">
-                    <Bot className="w-10 h-10" />
-                  </div>
-                  <h2 className="text-2xl font-bold text-brand-slate mb-3">Meet your Study Buddy 🤖</h2>
-                  <p className="text-slate-600 leading-relaxed">
-                    It won't do your homework, but it <span className="font-bold text-brand-slate">will help you understand your mistakes.</span> Just tap the floating chat icon!
-                  </p>
-                </div>
-              )}
-              {welcomeStep === 2 && (
-                <div className="animate-fade-in">
                   <div className="w-20 h-20 bg-amber-100 text-amber-500 rounded-full flex items-center justify-center mx-auto mb-6">
                     <Lightbulb className="w-10 h-10" />
                   </div>
@@ -101,13 +90,13 @@ export default function StudentDashboard() {
 
               <div className="mt-10 flex flex-col gap-4">
                 <div className="flex justify-center gap-2 mb-2">
-                  {[0, 1, 2].map(step => (
+                  {[0, 1].map(step => (
                     <div key={step} className={`h-2 rounded-full transition-all ${welcomeStep === step ? 'w-8 bg-brand-green' : 'w-2 bg-slate-200'}`} />
                   ))}
                 </div>
                 <button
                   onClick={() => {
-                    if (welcomeStep < 2) setWelcomeStep(prev => prev + 1);
+                    if (welcomeStep < 1) setWelcomeStep(prev => prev + 1);
                     else {
                       setShowWelcome(false);
                       localStorage.setItem('hasSeenStudentWelcome', 'true');
@@ -115,7 +104,7 @@ export default function StudentDashboard() {
                   }}
                   className="w-full bg-brand-green text-white font-bold py-3.5 rounded-xl hover:bg-emerald-600 transition-colors shadow-lg shadow-brand-green/20"
                 >
-                  {welcomeStep < 2 ? 'Next' : "Let's Go!"}
+                  {welcomeStep < 1 ? 'Next' : "Let's Go!"}
                 </button>
               </div>
             </div>

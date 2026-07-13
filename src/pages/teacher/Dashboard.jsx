@@ -123,7 +123,7 @@ export default function TeacherDashboard() {
   const [classes, setClasses] = useState([]);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [sections, setSections] = useState([]);
-  const [form, setForm] = useState({ name: '', gradeLevel: '', subject: '', schoolYear: '2024-2025', sectionId: '' });
+  const [form, setForm] = useState({ name: '', gradeLevel: 'Grade 6', subject: 'English', schoolYear: '2024-2025', sectionId: '' });
   const [filters, setFilters] = useState({ gradeLevel: '', subject: '' });
   const [isLoading, setIsLoading] = useState(true);
   const [showWalkthrough, setShowWalkthrough] = useState(() => {
@@ -170,7 +170,7 @@ export default function TeacherDashboard() {
       const data = await res.json();
       if (data.success) {
         setIsModalOpen(false);
-        setForm({ name: '', gradeLevel: '', subject: '', schoolYear: '2024-2025', sectionId: '' });
+        setForm({ name: '', gradeLevel: 'Grade 6', subject: 'English', schoolYear: '2024-2025', sectionId: '' });
         window.location.reload();
       } else {
         alert('Failed: ' + data.error);
@@ -370,23 +370,19 @@ export default function TeacherDashboard() {
             <p className="text-slate-500 text-sm mb-5">Set up a new subject for a block section.</p>
             <form onSubmit={handleAddClass} className="space-y-4">
 
-              {/* Grade Level + Subject side by side */}
+              {/* Grade Level + Subject side by side (Fixed) */}
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-1">Grade Level *</label>
-                  <select required value={form.gradeLevel} onChange={e => setForm({ ...form, gradeLevel: e.target.value })}
-                    className="w-full border border-slate-200 p-2 rounded-lg outline-none focus:ring-2 focus:ring-brand-navy text-sm">
-                    <option value="">-- Grade --</option>
-                    {GRADE_LEVELS.map(g => <option key={g}>{g}</option>)}
-                  </select>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Grade Level</label>
+                  <div className="w-full border border-slate-200 p-2 rounded-lg bg-slate-50 text-slate-600 text-sm font-medium cursor-not-allowed">
+                    Grade 6
+                  </div>
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-1">Subject *</label>
-                  <select required value={form.subject} onChange={e => setForm({ ...form, subject: e.target.value })}
-                    className="w-full border border-slate-200 p-2 rounded-lg outline-none focus:ring-2 focus:ring-brand-navy text-sm">
-                    <option value="">-- Subject --</option>
-                    {SUBJECTS.map(s => <option key={s}>{s}</option>)}
-                  </select>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Subject</label>
+                  <div className="w-full border border-slate-200 p-2 rounded-lg bg-slate-50 text-slate-600 text-sm font-medium cursor-not-allowed">
+                    English
+                  </div>
                 </div>
               </div>
 

@@ -147,12 +147,7 @@ export default function OutputDetails() {
 
   const hasStructuredFeedback = feedback && (feedback.areasForGrowth?.length > 0 || feedback.actionableSteps?.length > 0);
 
-  // Handle deep-link to chatbot — dispatch a custom event
-  const askStudyBuddy = (question, contextData = null) => {
-    window.dispatchEvent(new CustomEvent('open-study-buddy', { 
-      detail: { message: question, context: contextData } 
-    }));
-  };
+
 
   return (
     <div className="p-4 md:p-8 max-w-3xl mx-auto pb-24">
@@ -241,21 +236,7 @@ export default function OutputDetails() {
                   </div>
                   {/* Explanation */}
                   <p className="text-sm text-slate-700 leading-relaxed pl-4">{item.explanation}</p>
-                  
-                  {/* Contextual Ask Study Buddy button */}
-                  <div className="pl-4">
-                    <button
-                      onClick={() => askStudyBuddy(`Can you help me understand this mistake: "${item.studentQuote}"?`, {
-                        assignmentTitle: sub.activity?.title,
-                        mistakeQuote: item.studentQuote,
-                        teacherExplanation: item.explanation
-                      })}
-                      className="inline-flex items-center justify-center gap-2 py-2 px-3 bg-gradient-to-r from-emerald-50 to-green-50 border border-green-200 rounded-lg text-xs font-bold text-green-700 hover:border-green-300 hover:shadow-sm transition-all"
-                    >
-                      <MessageCircle className="w-3.5 h-3.5" />
-                      Ask Study Buddy about this
-                    </button>
-                  </div>
+
                 </div>
               ))}
             </div>
