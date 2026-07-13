@@ -46,6 +46,11 @@ function parseFeedback(hitl, ai) {
     }
   }
 
+  // Prevent AI error strings from polluting the UI
+  if (finalStructured.strengths?.includes('⚠ AI grading is currently unavailable')) {
+    finalStructured.strengths = '';
+  }
+
   return finalStructured;
 }
 

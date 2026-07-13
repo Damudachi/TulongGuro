@@ -71,14 +71,14 @@ async function uploadToCloud(localPath, filename) {
 
 const genAI = aiConfigured ? new GoogleGenerativeAI(aiApiKey) : null;
 const model = genAI ? genAI.getGenerativeModel({
-  model: 'gemini-2.5-flash',
+  model: 'gemini-3.5-flash',
   generationConfig: { responseMimeType: 'application/json' }
 }) : null;
 const modelLite = genAI ? genAI.getGenerativeModel({
-  model: 'gemini-2.5-flash',
+  model: 'gemini-3.5-flash',
   generationConfig: { responseMimeType: 'application/json' }
 }) : null;
-const chatModel = genAI ? genAI.getGenerativeModel({ model: 'gemini-2.0-flash' }) : null;
+const chatModel = genAI ? genAI.getGenerativeModel({ model: 'gemini-3.5-flash' }) : null;
 
 if (aiConfigured) {
   console.log('🤖 Gemini AI enabled');
@@ -562,7 +562,7 @@ app.post('/api/teacher/rubric/extract', upload.single('rubricFile'), async (req,
     const mimeType = file.mimetype || 'image/jpeg';
 
     const model = genAI.getGenerativeModel({
-      model: 'gemini-2.5-flash',
+      model: 'gemini-3.5-flash',
       systemInstruction: 'You are an expert at reading and parsing grading rubrics from images and documents. You extract structured rubric criteria with exact point values and descriptions. Output strict JSON only.'
     });
 

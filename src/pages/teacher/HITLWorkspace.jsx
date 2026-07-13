@@ -5,9 +5,11 @@ import { API_URL } from '../../config';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
 
-/** Try to parse structured AI feedback JSON. Returns null if plain string. */
+/** Try to parse structured AI feedback JSON. Returns null if plain string or if it contains an AI error. */
 function parseStructuredFeedback(raw) {
   if (!raw || typeof raw !== 'string') return null;
+  if (raw.includes('⚠ AI grading is currently unavailable')) return null;
+
   try {
     let cleanRaw = raw.trim();
     if (cleanRaw.startsWith('```')) {
@@ -127,6 +129,10 @@ export default function HITLWorkspace() {
               // Teacher saved plain text override; put it in strengths, keep AI's arrays if they exist
               finalStructured.strengths = sub.hitlFeedback;
             }
+          }
+          
+          if (finalStructured.strengths?.includes('⚠ AI grading is currently unavailable')) {
+            finalStructured.strengths = '';
           }
           
           setStructuredFeedback(finalStructured);
@@ -339,6 +345,10 @@ export default function HITLWorkspace() {
           }
         }
         
+        if (finalStructured.strengths?.includes('⚠ AI grading is currently unavailable')) {
+          finalStructured.strengths = '';
+        }
+        
         setStructuredFeedback(finalStructured);
         setIsStructured(true);
 
@@ -463,19 +473,28 @@ export default function HITLWorkspace() {
         <div className="p-6 md:p-8 flex-1 space-y-6">
 
           {/* AI Failure Banner — shows when AI grading failed (score 0 + error feedback) */}
-          {submission?.aiFeedback?.startsWith('⚠') && (
+          {submission?.aiFeedback?.includes('⚠ AI grading is currently unavailable') && (
             <div className="flex items-start gap-3 p-4 bg-red-50 border-2 border-red-300 rounded-xl text-sm">
               <span className="text-xl shrink-0">🚫</span>
               <div>
                 <p className="font-bold text-red-800">AI Grading Unavailable</p>
-                <p className="text-red-700 text-xs mt-0.5">{submission.aiFeedback}</p>
+                <p className="text-red-700 text-xs mt-0.5">
+                  {(() => {
+                    try {
+                      const obj = JSON.parse(submission.aiFeedback);
+                      return obj.strengths || submission.aiFeedback;
+                    } catch {
+                      return submission.aiFeedback;
+                    }
+                  })()}
+                </p>
                 <p className="text-red-600 text-xs mt-1 font-medium">Please grade this submission manually using the rubric sliders below.</p>
               </div>
             </div>
           )}
 
           {/* AI Ready Banner — shows when student submitted but AI hasn't graded yet */}
-          {submission?.aiScore === null && submission?.status === 'PENDING' && !submission?.aiFeedback?.startsWith('⚠') && (
+          {submission?.aiScore === null && submission?.status === 'PENDING' && !submission?.aiFeedback?.includes('⚠') && (
             <div className="flex flex-col items-center justify-center p-8 bg-blue-50 border-2 border-blue-200 rounded-2xl text-center space-y-4">
               <Sparkles className="w-12 h-12 text-blue-400" />
               <div>
@@ -502,13 +521,13 @@ export default function HITLWorkspace() {
           )}
 
           {/* No Text Detected Banner */}
-          {submission?.aiScore === 0 && !submission?.aiFeedback?.startsWith('⚠') && (
+          {submission?.aiScore === 0 && !submission?.aiFeedback?.includes('⚠') && !submission?.privacyViolation && (
             <div className="flex items-start gap-3 p-4 bg-amber-50 border-2 border-amber-300 rounded-xl text-sm">
               <span className="text-xl shrink-0">📄</span>
               <div>
                 <p className="font-bold text-amber-800">No Readable Text Detected</p>
                 <p className="text-amber-700 text-xs mt-0.5">
-                  {submission.aiFeedback || 'The AI could not find readable handwritten or printed text in this image. The image may be blank, contain only drawings, or be too blurry.'}
+                  {structuredFeedback?.strengths || submission?.aiFeedback || 'The AI could not find readable handwritten or printed text in this image. The image may be blank, contain only drawings, or be too blurry.'}
                 </p>
                 <p className="text-amber-600 text-xs mt-1 font-medium">You can re-upload a clearer photo or grade manually.</p>
               </div>
