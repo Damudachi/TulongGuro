@@ -559,12 +559,19 @@ export default function HITLWorkspace() {
               )}
             </div>
             <div className="flex items-center gap-4">
-              {!isEditingAssessment && (
+              {!isEditingAssessment ? (
                 <button
                   onClick={() => setIsEditingAssessment(true)}
                   className="text-xs font-bold text-brand-navy border-2 border-brand-navy/20 bg-blue-50 px-3 py-1.5 rounded-lg hover:bg-blue-100 transition-colors"
                 >
                   Edit Assessment
+                </button>
+              ) : (
+                <button
+                  onClick={() => setIsEditingAssessment(false)}
+                  className="text-xs font-bold text-slate-500 border-2 border-slate-200 bg-white px-3 py-1.5 rounded-lg hover:bg-slate-50 transition-colors"
+                >
+                  Cancel Edit
                 </button>
               )}
               <div className="text-center bg-blue-50 px-4 py-2 rounded-xl border border-blue-100">
