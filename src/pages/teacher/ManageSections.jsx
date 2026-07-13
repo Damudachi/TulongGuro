@@ -1,5 +1,5 @@
-import { useState, useEffect } from 'react';
-import { Users, Plus, ChevronDown, X } from 'lucide-react';
+import { useState, useEffect, useRef } from 'react';
+import { Users, Plus, ChevronDown, X, Upload } from 'lucide-react';
 import { API_URL } from '../../config';
 
 export default function ManageSections() {
@@ -9,6 +9,8 @@ export default function ManageSections() {
   const [isLoading, setIsLoading] = useState(false);
   const [expandedId, setExpandedId] = useState(null);
   const [showForm, setShowForm] = useState(false);
+  const [isExtracting, setIsExtracting] = useState(false);
+  const fileInputRef = useRef(null);
 
   useEffect(() => { fetchSections(); }, []);
 
@@ -46,6 +48,34 @@ export default function ManageSections() {
     finally { setIsLoading(false); }
   };
 
+  const handleFileUpload = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    
+    setIsExtracting(true);
+    const formData = new FormData();
+    formData.append('file', file);
+    
+    try {
+      const res = await fetch(`${API_URL}/api/teacher/extract-students`, {
+        method: 'POST',
+        body: formData
+      });
+      const data = await res.json();
+      if (data.success && data.names) {
+        const newNames = data.names.join('\n');
+        setStudentsText(prev => prev ? prev + '\n' + newNames : newNames);
+      } else {
+        alert("Extraction failed: " + data.error);
+      }
+    } catch (error) {
+      alert("Network error during extraction.");
+    } finally {
+      setIsExtracting(false);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+  };
+
   const toggleSection = (id) => setExpandedId(prev => prev === id ? null : id);
 
   return (
@@ -76,7 +106,14 @@ export default function ManageSections() {
               <p className="text-xs text-slate-400 mt-1">If this section already exists, students will be added to it.</p>
             </div>
             <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">Student Names (One per line)</label>
+              <div className="flex justify-between items-center mb-1">
+                <label className="block text-sm font-medium text-slate-700">Student Names (One per line)</label>
+                <button type="button" onClick={() => fileInputRef.current?.click()} disabled={isExtracting}
+                  className="text-xs font-bold text-brand-navy bg-blue-50 hover:bg-blue-100 px-3 py-1.5 rounded-lg flex items-center gap-1 transition-colors disabled:opacity-50">
+                  {isExtracting ? 'Extracting...' : <><Upload className="w-3.5 h-3.5" /> Auto-fill from Excel/Image</>}
+                </button>
+                <input type="file" accept=".xlsx,.xls,image/*" className="hidden" ref={fileInputRef} onChange={handleFileUpload} />
+              </div>
               <textarea required value={studentsText} onChange={(e) => setStudentsText(e.target.value)}
                 rows={6} className="w-full px-4 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-brand-navy outline-none"
                 placeholder={"Juan Dela Cruz\nMaria Clara\nJose Rizal"} />

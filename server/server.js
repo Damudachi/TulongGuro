@@ -306,6 +306,79 @@ app.get('/api/teacher/:teacherId/sections', async (req, res) => {
   res.json({ success: true, sections });
 });
 
+app.post('/api/teacher/extract-students', upload.single('file'), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ success: false, error: 'No file uploaded.' });
+
+    const mime = req.file.mimetype;
+    let names = [];
+    const fs = require('fs');
+
+    // Excel processing
+    if (mime.includes('spreadsheetml.sheet') || mime.includes('ms-excel') || mime.includes('excel')) {
+      const ExcelJS = require('exceljs');
+      const workbook = new ExcelJS.Workbook();
+      await workbook.xlsx.readFile(req.file.path);
+      const sheet = workbook.worksheets[0];
+      let rawText = '';
+      if (sheet) {
+        sheet.eachRow((row) => {
+          row.eachCell((cell) => {
+            if (cell.value && typeof cell.value === 'string') {
+              rawText += cell.value.trim() + ' | ';
+            }
+          });
+          rawText += '\n';
+        });
+      }
+      
+      if (!model) return res.status(500).json({ success: false, error: 'Gemini AI is not configured.' });
+      const prompt = "Extract ONLY the full names of the students from the following raw spreadsheet text. DO NOT include any headers, IDs, grades, dates, titles (like 'List of Students' or 'Section A'), or other extraneous text. Return a pure JSON array of strings containing only the names, like [\"Juan Dela Cruz\", \"Maria Clara\"]. Do not add any markdown formatting or conversational text.\n\nText data:\n" + rawText;
+      const result = await model.generateContent(prompt);
+      let text = result.response.text().trim();
+      if (text.startsWith('```json')) text = text.replace(/^```json/, '').replace(/```$/, '').trim();
+      if (text.startsWith('```')) text = text.replace(/^```/, '').replace(/```$/, '').trim();
+      
+      let parsedNames = [];
+      try { parsedNames = JSON.parse(text); } catch (e) { parsedNames = text.split('\n'); }
+      names = parsedNames.map(n => typeof n === 'string' ? n.trim().replace(/^[-*.\d\s]+/, '') : '').filter(n => n.length > 3);
+    } 
+    // Image processing with Gemini
+    else if (mime.startsWith('image/')) {
+      if (!model) return res.status(500).json({ success: false, error: 'Gemini AI is not configured.' });
+      const fileData = fs.readFileSync(req.file.path);
+      
+      const prompt = "Extract ONLY the full names of the students from this image. DO NOT include any headers, IDs, grades, dates, titles, or other extraneous text. Return a pure JSON array of strings containing only the names, like [\"Juan Dela Cruz\", \"Maria Clara\"]. Do not add any markdown formatting or conversational text.";
+      const imagePart = {
+        inlineData: {
+          data: fileData.toString('base64'),
+          mimeType: mime
+        }
+      };
+      
+      const result = await model.generateContent([prompt, imagePart]);
+      let text = result.response.text().trim();
+      if (text.startsWith('```json')) text = text.replace(/^```json/, '').replace(/```$/, '').trim();
+      if (text.startsWith('```')) text = text.replace(/^```/, '').replace(/```$/, '').trim();
+      
+      let parsedNames = [];
+      try { parsedNames = JSON.parse(text); } catch (e) { parsedNames = text.split('\n'); }
+      names = parsedNames.map(n => typeof n === 'string' ? n.trim().replace(/^[-*.\d\s]+/, '') : '').filter(n => n.length > 3);
+    } else {
+      return res.status(400).json({ success: false, error: 'Unsupported file type. Please upload Excel or Image files.' });
+    }
+
+    // Clean up uploaded file
+    try { fs.unlinkSync(req.file.path); } catch (err) {}
+
+    res.json({ success: true, names });
+  } catch (error) {
+    console.error('Extract Students Error:', error);
+    try { if (req.file && req.file.path) require('fs').unlinkSync(req.file.path); } catch (e) {}
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 app.post('/api/teacher/sections', async (req, res) => {
   try {
     const { name, teacherId, studentsList } = req.body;
