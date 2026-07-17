@@ -619,6 +619,35 @@ app.post('/api/teacher/rubric-templates', async (req, res) => {
   }
 });
 
+app.put('/api/teacher/rubric-templates/:id', async (req, res) => {
+  try {
+    const { name, criteria } = req.body;
+    if (!name || !criteria) return res.status(400).json({ success: false, error: 'Missing fields' });
+    
+    const template = await prisma.rubricTemplate.update({
+      where: { id: req.params.id },
+      data: {
+        name: String(name),
+        criteria: typeof criteria === 'string' ? criteria : JSON.stringify(criteria)
+      }
+    });
+    res.json({ success: true, template });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+app.delete('/api/teacher/rubric-templates/:id', async (req, res) => {
+  try {
+    await prisma.rubricTemplate.delete({
+      where: { id: req.params.id }
+    });
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
 // Rubric generation removed — teachers must create rubrics manually or upload files.
 
 // ─────────────────────────────────────────

@@ -381,8 +381,10 @@ export default function StudentDashboard() {
         ) : (
           <div className="space-y-3">
             {submissions.slice(0, 5).map(sub => {
-              const score = sub.hitlScore ?? sub.aiScore ?? 0;
-              const color = score >= 90 ? 'text-green-600 bg-green-50' : score >= 75 ? 'text-amber-600 bg-amber-50' : 'text-red-600 bg-red-50';
+              const percentageScore = sub.hitlScore ?? sub.aiScore ?? 0;
+              const maxPoints = sub.activity?.points || 100;
+              const score = ((percentageScore / 100) * maxPoints).toFixed(1).replace(/\.0$/, '');
+              const color = percentageScore >= 90 ? 'text-green-600 bg-green-50' : percentageScore >= 75 ? 'text-amber-600 bg-amber-50' : 'text-red-600 bg-red-50';
               return (
                 <Link to={`/student/output/${sub.id}`} key={sub.id}
                   className="block bg-white p-4 rounded-xl border border-slate-200 hover:border-brand-green hover:shadow-md transition-all group">
@@ -395,7 +397,7 @@ export default function StudentDashboard() {
                       </div>
                     </div>
                     <div className="flex items-center gap-2">
-                      <span className={`font-bold px-3 py-1 rounded-full text-sm ${color}`}>{score}/100</span>
+                      <span className={`font-bold px-3 py-1 rounded-full text-sm ${color}`}>{score}/{maxPoints}</span>
                       <ChevronRight className="w-4 h-4 text-slate-300 group-hover:text-brand-green" />
                     </div>
                   </div>

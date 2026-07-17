@@ -222,7 +222,7 @@ export default function ActivityBuilder() {
   };
 
   const activeCriteria = (rubricMode === 'upload' && extractedCriteria) ? extractedCriteria : rubricCriteria;
-  const totalPoints = activeCriteria.reduce((s, c) => s + (c.points || 0), 0);
+  const totalPercentage = activeCriteria.reduce((s, c) => s + (c.points || 0), 0);
 
   // ── Upload rubric extraction ──
   const handleRubricUpload = async (e) => {
@@ -310,8 +310,13 @@ export default function ActivityBuilder() {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (rubricMode !== 'upload' && totalPoints !== form.points) {
-      if (!window.confirm(`Rubric total (${totalPoints} pts) doesn't match activity points (${form.points} pts). Continue?`)) return;
+    if (rubricMode !== 'upload' && totalPercentage !== 100) {
+      alert(`Rubric weight must total 100%. Currently it is ${totalPercentage}%.`);
+      return;
+    }
+    if (!form.points || form.points < 1) {
+      alert("Total Points must be greater than 0.");
+      return;
     }
     setIsSaving(true);
     try {
@@ -360,8 +365,17 @@ export default function ActivityBuilder() {
             <input type="text" value={c.name} onChange={e => updateCriterion(i, 'name', e.target.value)}
               className="flex-1 px-3 py-1.5 border border-slate-200 rounded text-sm font-medium focus:outline-none focus:ring-1 focus:ring-brand-navy" placeholder="Criterion name" />
             {rubricType === 'standard' && (
-              <input type="number" value={c.points} onChange={e => updateCriterion(i, 'points', e.target.value)}
-                className="w-20 px-3 py-1.5 border border-slate-200 rounded text-sm text-center focus:outline-none focus:ring-1 focus:ring-brand-navy" placeholder="pts" />
+              <div className="flex items-center gap-2">
+                <input type="number" value={c.points === 0 ? '' : c.points} onChange={e => {
+                  const val = e.target.value;
+                  updateCriterion(i, 'points', val === '' ? 0 : parseInt(val) || 0);
+                }}
+                  className="w-20 px-3 py-1.5 border border-slate-200 rounded-lg text-sm" />
+                <span className="text-slate-500 font-medium">%</span>
+                <span className="text-brand-navy font-bold text-sm ml-2">
+                  = {((c.points / 100) * (form.points || 0)).toFixed(1).replace(/\.0$/, '')} pts
+                </span>
+              </div>
             )}
             <button type="button" onClick={() => removeCriterion(i)} className="text-slate-400 hover:text-red-500 mt-1"><Trash2 className="w-4 h-4" /></button>
           </div>
@@ -391,8 +405,8 @@ export default function ActivityBuilder() {
         <Plus className="w-4 h-4 mr-1" /> Add Criterion
       </button>
       {rubricType === 'standard' && (
-        <div className={cn('text-sm font-bold mt-2 px-3 py-2 rounded-lg', totalPoints === form.points ? 'text-green-600 bg-green-50' : 'text-amber-600 bg-amber-50')}>
-          Total: {totalPoints}/{form.points} pts {totalPoints !== form.points && `(${form.points - totalPoints > 0 ? '+' : ''}${form.points - totalPoints} remaining)`}
+        <div className={cn('text-sm font-bold mt-2 px-3 py-2 rounded-lg', totalPercentage === 100 ? 'text-green-600 bg-green-50' : 'text-amber-600 bg-amber-50')}>
+          Total Weight: {totalPercentage}% {totalPercentage !== 100 && `(${100 - totalPercentage > 0 ? '+' : ''}${100 - totalPercentage}% remaining)`}
         </div>
       )}
     </div>
@@ -460,8 +474,15 @@ export default function ActivityBuilder() {
             </div>
             <div>
               <label className="block text-sm font-medium text-slate-700 mb-1">Total Points</label>
-              <input type="number" min={1} value={form.points} onChange={e => setForm({ ...form, points: parseInt(e.target.value) || 100 })}
-                className="w-full px-4 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-brand-navy outline-none" />
+              <div className="flex items-center border border-slate-200 rounded-lg overflow-hidden focus-within:ring-2 focus-within:ring-brand-navy focus-within:border-brand-navy bg-white">
+                <button type="button" onClick={() => setForm(f => ({ ...f, points: Math.max(1, (f.points || 0) - 5) }))} className="px-3 py-2 bg-slate-50 text-slate-600 hover:bg-slate-200 font-bold border-r border-slate-200 transition-colors">-</button>
+                <input type="number" min={1} value={form.points === 0 ? '' : form.points} onChange={e => {
+                    const val = e.target.value;
+                    setForm({ ...form, points: val === '' ? 0 : parseInt(val) || 0 });
+                  }}
+                  className="w-full px-4 py-2 text-center outline-none" />
+                <button type="button" onClick={() => setForm(f => ({ ...f, points: (f.points || 0) + 5 }))} className="px-3 py-2 bg-slate-50 text-slate-600 hover:bg-slate-200 font-bold border-l border-slate-200 transition-colors">+</button>
+              </div>
             </div>
           </div>
 
@@ -486,6 +507,7 @@ export default function ActivityBuilder() {
               Deadline {form.submissionMode === 'STUDENT_SUBMIT' && <span className="text-red-500">*</span>}
             </label>
             <input type="date" value={form.deadline} onChange={e => setForm({ ...form, deadline: e.target.value })}
+              min={form.submissionMode === 'STUDENT_SUBMIT' ? new Date().toISOString().split('T')[0] : undefined}
               required={form.submissionMode === 'STUDENT_SUBMIT'}
               className="w-full px-4 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-brand-navy outline-none" />
           </div>
@@ -587,7 +609,7 @@ export default function ActivityBuilder() {
               <button type="button" onClick={() => setRubricType('standard')}
                 className={cn('flex-1 py-2 px-3 text-xs font-bold rounded-lg border-2 transition-all',
                   rubricType === 'standard' ? 'border-brand-green bg-green-50 text-green-700' : 'border-slate-200 text-slate-500 hover:border-green-300')}>
-                📊 Standard (Points)
+                📊 Standard (Percentage)
               </button>
               <button type="button" onClick={() => {
                 setRubricType('range');
@@ -648,7 +670,10 @@ export default function ActivityBuilder() {
                       <p className="text-xs text-slate-500">{c.description}</p>
                     </div>
                     {rubricType === 'standard' && (
-                      <span className="text-sm font-bold text-brand-navy shrink-0">{c.points} pts</span>
+                      <div className="flex flex-col items-center justify-center shrink-0 min-w-[60px]">
+                        <span className="text-sm font-bold text-brand-navy">{c.points}%</span>
+                        <span className="text-[11px] font-semibold text-slate-400">({((c.points / 100) * (form.points || 0)).toFixed(1).replace(/\.0$/, '')} pts)</span>
+                      </div>
                     )}
                   </div>
                   {rubricType === 'range' && c.bands && c.bands.length > 0 && (

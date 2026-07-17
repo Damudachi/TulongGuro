@@ -576,7 +576,7 @@ export default function HITLWorkspace() {
               )}
               <div className="text-center bg-blue-50 px-4 py-2 rounded-xl border border-blue-100">
                 <span className="block text-xs font-bold text-brand-navy uppercase tracking-wider mb-1">Total Score</span>
-                <span className="text-3xl font-bold text-brand-navy">{submission?.aiScore === null && submission?.status === 'PENDING' ? '--' : totalScore}<span className="text-xl text-blue-300">/100</span></span>
+                <span className="text-3xl font-bold text-brand-navy">{submission?.aiScore === null && submission?.status === 'PENDING' ? '--' : ((totalScore / 100) * (activity?.points || 100)).toFixed(1).replace(/\.0$/, '')}<span className="text-xl text-blue-300">/{activity?.points || 100}</span></span>
               </div>
             </div>
           </div>
@@ -589,7 +589,10 @@ export default function HITLWorkspace() {
                 <div key={item.key} className="relative group">
                   <div className="flex justify-between text-sm mb-1">
                     <span className="font-medium text-slate-700">{item.name}</span>
-                    <span className="font-bold text-slate-900">{scores[item.key] || 0}/{item.max}</span>
+                    <div className="flex items-center gap-2">
+                      <span className="font-bold text-slate-900">{scores[item.key] || 0}% / {item.max}%</span>
+                      <span className="text-xs text-brand-navy font-bold">({(((scores[item.key] || 0) / 100) * (activity?.points || 100)).toFixed(1).replace(/\.0$/, '')} pts)</span>
+                    </div>
                   </div>
                   {item.desc && (
                     <div className="hidden group-hover:block absolute bottom-full mb-2 left-0 right-0 bg-slate-800 text-white text-[10px] p-2 rounded z-10 pointer-events-none">

@@ -103,7 +103,9 @@ export default function OutputDetails() {
   if (isLoading) return <div className="flex items-center justify-center h-64"><Loader2 className="w-6 h-6 animate-spin text-brand-green" /></div>;
   if (!sub) return <div className="p-8 text-center text-slate-500">Submission not found.</div>;
 
-  const score = sub.hitlScore ?? sub.aiScore ?? 0;
+  const percentageScore = sub?.hitlScore ?? sub?.aiScore ?? 0;
+  const maxPoints = sub?.activity?.points || 100;
+  const score = ((percentageScore / 100) * maxPoints).toFixed(1).replace(/\.0$/, '');
   const feedback = parseFeedback(sub.hitlFeedback, sub.aiFeedback);
   let rubricItems = [];
   try {
@@ -165,7 +167,7 @@ export default function OutputDetails() {
           </p>
           <div className="mt-6 relative z-10">
             <span className="text-6xl font-extrabold tracking-tight">{score}</span>
-            <span className="text-2xl text-green-200">/100</span>
+            <span className="text-2xl text-green-200">/{maxPoints}</span>
           </div>
         </div>
 
@@ -176,7 +178,10 @@ export default function OutputDetails() {
               <div key={i} className="relative group">
                 <div className="flex justify-between text-sm mb-1.5">
                   <span className="font-medium text-slate-700">{item.name}</span>
-                  <span className="font-bold text-slate-900">{item.score}/{item.max}</span>
+                  <div className="flex items-center gap-2">
+                    <span className="font-bold text-slate-900">{item.score}% / {item.max}%</span>
+                    <span className="text-xs text-brand-navy font-bold">({((item.score / 100) * maxPoints).toFixed(1).replace(/\.0$/, '')} pts)</span>
+                  </div>
                 </div>
                 {item.desc && (
                   <div className="hidden group-hover:block absolute bottom-full mb-2 left-0 right-0 bg-slate-800 text-white text-[10px] p-2 rounded z-10 pointer-events-none">
