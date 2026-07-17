@@ -150,7 +150,16 @@ export default function TeacherDashboard() {
       fetch(`${API_URL}/api/teacher/${user.id}/classes`).then(r => r.json()),
       fetch(`${API_URL}/api/teacher/${user.id}/sections`).then(r => r.json())
     ]).then(([clsData, secData]) => {
-      if (clsData.success) setClasses(clsData.classes);
+      if (clsData.success) {
+        setClasses(clsData.classes);
+        // Remove onboarding for existing accounts
+        if (clsData.classes.length > 0) {
+          setShowWelcomeModal(false);
+          setShowWalkthrough(false);
+          localStorage.setItem(`hasSeenTeacherWelcome_${user.id}`, 'true');
+          localStorage.setItem(`hasSeenTeacherWalkthrough_${user.id}`, 'true');
+        }
+      }
       if (secData.success) setSections(secData.sections);
     }).finally(() => setIsLoading(false));
   }, []);
@@ -203,8 +212,8 @@ export default function TeacherDashboard() {
     },
     {
       emoji: '🤖',
-      title: 'Step 2: Try the HITL Workspace',
-      text: 'Click on the pending submission to open the grading workspace. You\'ll see the AI\'s suggested score, feedback, and a scanned essay. Adjust anything you want — the AI is your co-pilot, not the final judge.',
+      title: 'Step 2: Try the Teacher Review Workspace',
+      text: 'Click "Review" on any graded essay to see the AI feedback and edit it before the student sees it. You\'ll see the AI\'s suggested score, feedback, and a scanned essay. Adjust anything you want — the AI is your co-pilot, not the final judge.',
     },
     {
       emoji: '✅',
@@ -438,28 +447,28 @@ export default function TeacherDashboard() {
             </div>
             <h2 className="text-2xl font-bold text-brand-slate mb-2">Welcome to TulongGuro!</h2>
             <p className="text-slate-600 mb-6">
-              Your AI-powered teaching assistant is ready. Here's what you can do:
+              Your AI teaching assistant is ready! Here is what you can do:
             </p>
             <div className="space-y-4 text-left mb-8">
               <div className="flex items-start gap-3">
                 <div className="p-2 bg-blue-50 rounded-lg"><BookOpen className="w-5 h-5 text-brand-navy" /></div>
                 <div>
                   <h3 className="font-bold text-brand-slate">Create Activities</h3>
-                  <p className="text-xs text-slate-500">Design assignments with rubrics in the Activity Builder.</p>
+                  <p className="text-xs text-slate-500">Make assignments and rubrics for your classes.</p>
                 </div>
               </div>
               <div className="flex items-start gap-3">
                 <div className="p-2 bg-green-50 rounded-lg"><UploadCloud className="w-5 h-5 text-brand-green" /></div>
                 <div>
-                  <h3 className="font-bold text-brand-slate">Batch Upload & AI Grade</h3>
-                  <p className="text-xs text-slate-500">Upload photos of handwritten essays for instant analysis.</p>
+                  <h3 className="font-bold text-brand-slate">Scan & Grade Papers</h3>
+                  <p className="text-xs text-slate-500">Upload photos of student essays for instant grading.</p>
                 </div>
               </div>
               <div className="flex items-start gap-3">
                 <div className="p-2 bg-purple-50 rounded-lg"><Users className="w-5 h-5 text-purple-600" /></div>
                 <div>
-                  <h3 className="font-bold text-brand-slate">Human-in-the-Loop AI</h3>
-                  <p className="text-xs text-slate-500">Review AI feedback and use the Co-Pilot to refine it before sending to students.</p>
+                  <h3 className="font-bold text-brand-slate">Teacher Review</h3>
+                  <p className="text-xs text-slate-500">Check the AI's feedback and refine it before sending it to students.</p>
                 </div>
               </div>
             </div>

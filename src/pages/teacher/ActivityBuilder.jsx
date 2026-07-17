@@ -434,7 +434,7 @@ export default function ActivityBuilder() {
               </div>
               <div>
                 <p className="font-bold text-brand-slate text-sm">📷 Teacher Uploads</p>
-                <p className="text-xs text-slate-500 mt-0.5">Teacher scans student papers via Batch Upload and triggers AI grading.</p>
+                <p className="text-xs text-slate-500 mt-0.5">Teacher scans student papers via Scan & Grade Papers and triggers AI grading.</p>
               </div>
               {form.submissionMode === 'TEACHER_UPLOAD' && <span className="text-xs font-bold text-brand-navy flex items-center gap-1"><CheckCircle2 className="w-3.5 h-3.5" /> Selected</span>}
             </button>
