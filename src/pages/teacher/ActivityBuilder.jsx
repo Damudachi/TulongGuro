@@ -5,6 +5,24 @@ import { API_URL } from '../../config';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
 
+const getBandColor = (label, index, totalBands) => {
+  if (!label) return { bg: 'bg-slate-100', text: 'text-slate-700', border: 'border-slate-200' };
+  const n = label.toLowerCase();
+  if (n.includes('outstanding') || n.includes('excellent')) return { bg: 'bg-green-100', text: 'text-green-700', border: 'border-green-200' };
+  if (n.includes('proficient') || n.includes('very good')) return { bg: 'bg-emerald-100', text: 'text-emerald-700', border: 'border-emerald-200' };
+  if (n.includes('satisfactory')) return { bg: 'bg-amber-100', text: 'text-amber-700', border: 'border-amber-200' };
+  if (n.includes('good') || n.includes('developing')) return { bg: 'bg-blue-100', text: 'text-blue-700', border: 'border-blue-200' };
+  if (n.includes('beginning') || n.includes('needs improvement') || n.includes('poor')) return { bg: 'bg-red-100', text: 'text-red-700', border: 'border-red-200' };
+  if (totalBands > 1) {
+    const ratio = index / (totalBands - 1);
+    if (ratio <= 0.25) return { bg: 'bg-green-100', text: 'text-green-700', border: 'border-green-200' };
+    if (ratio <= 0.5) return { bg: 'bg-blue-100', text: 'text-blue-700', border: 'border-blue-200' };
+    if (ratio <= 0.75) return { bg: 'bg-amber-100', text: 'text-amber-700', border: 'border-amber-200' };
+    return { bg: 'bg-red-100', text: 'text-red-700', border: 'border-red-200' };
+  }
+  return { bg: 'bg-slate-100', text: 'text-slate-700', border: 'border-slate-200' };
+};
+
 const DEFAULT_RANGE_BANDS = [
   { label: 'Excellent', score: 5, description: 'Exceeds expectations in all aspects.' },
   { label: 'Very Good', score: 4, description: 'Meets expectations with notable quality.' },
@@ -678,15 +696,18 @@ export default function ActivityBuilder() {
                   </div>
                   {rubricType === 'range' && c.bands && c.bands.length > 0 && (
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mt-2 ml-8">
-                      {c.bands.map((band, bi) => (
-                        <div key={bi} className="rounded-lg border border-slate-200 bg-white p-2">
-                          <div className="flex items-center gap-2 mb-1">
-                            <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-100 text-slate-700">{band.label}</span>
-                            <span className="text-xs font-bold text-brand-slate">{band.score} pts</span>
+                      {c.bands.map((band, bi) => {
+                        const color = getBandColor(band.label, bi, c.bands.length);
+                        return (
+                          <div key={bi} className={`rounded-lg border ${color.border} bg-white p-2`}>
+                            <div className="flex items-center gap-2 mb-1">
+                              <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${color.bg} ${color.text}`}>{band.label}</span>
+                              <span className="text-xs font-bold text-brand-slate">{band.score} pts</span>
+                            </div>
+                            <p className="text-[11px] text-slate-500 leading-relaxed">{band.description}</p>
                           </div>
-                          <p className="text-[11px] text-slate-500 leading-relaxed">{band.description}</p>
-                        </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   )}
                 </div>

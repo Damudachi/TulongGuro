@@ -6,8 +6,6 @@ import { API_URL } from '../../config';
 function WizardEmptyState({ onComplete }) {
   const [step, setStep] = useState(1);
   const [sectionName, setSectionName] = useState('');
-  const [subject, setSubject] = useState('');
-  const [gradeLevel, setGradeLevel] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState('');
 
@@ -19,7 +17,7 @@ function WizardEmptyState({ onComplete }) {
       const res = await fetch(`${API_URL}/api/teacher/quick-setup`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ teacherId: user.id, sectionName, subject, gradeLevel, schoolYear: '2024-2025' })
+        body: JSON.stringify({ teacherId: user.id, sectionName, subject: 'English', gradeLevel: 'Grade 6', schoolYear: '2024-2025' })
       });
       const data = await res.json();
       if (data.success) {
@@ -71,30 +69,20 @@ function WizardEmptyState({ onComplete }) {
 
         {step === 2 && (
           <div className="animate-fade-in">
-            <label className="block text-sm font-bold text-brand-slate mb-1">Step 2: Choose your Subject & Grade</label>
-            <p className="text-xs text-slate-500 mb-3">For section "{sectionName}"</p>
-            <div className="grid grid-cols-2 gap-3 mb-4">
-              <div>
-                <label className="block text-xs font-semibold text-slate-500 mb-1">Grade Level</label>
-                <select
-                  value={gradeLevel}
-                  onChange={e => setGradeLevel(e.target.value)}
-                  className="w-full border-2 border-slate-200 p-3 rounded-xl text-sm focus:border-brand-navy outline-none"
-                >
-                  <option value="">-- Grade --</option>
-                  {['Grade 1','Grade 2','Grade 3','Grade 4','Grade 5','Grade 6','Grade 7','Grade 8','Grade 9','Grade 10'].map(g => <option key={g} value={g}>{g}</option>)}
-                </select>
+            <label className="block text-sm font-bold text-brand-slate mb-1">Step 2: Confirm & Create</label>
+            <p className="text-xs text-slate-500 mb-4">Your class will be created with these settings:</p>
+            <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 mb-4 space-y-2">
+              <div className="flex justify-between items-center">
+                <span className="text-xs font-medium text-slate-500">Block Section</span>
+                <span className="text-sm font-bold text-brand-slate">{sectionName}</span>
               </div>
-              <div>
-                <label className="block text-xs font-semibold text-slate-500 mb-1">Subject</label>
-                <select
-                  value={subject}
-                  onChange={e => setSubject(e.target.value)}
-                  className="w-full border-2 border-slate-200 p-3 rounded-xl text-sm focus:border-brand-navy outline-none"
-                >
-                  <option value="">-- Subject --</option>
-                  {['Filipino','English','Mathematics','Science','Araling Panlipunan','MAPEH','TLE','ESP'].map(s => <option key={s} value={s}>{s}</option>)}
-                </select>
+              <div className="flex justify-between items-center">
+                <span className="text-xs font-medium text-slate-500">Grade Level</span>
+                <span className="text-sm font-bold text-brand-slate">Grade 6</span>
+              </div>
+              <div className="flex justify-between items-center">
+                <span className="text-xs font-medium text-slate-500">Subject</span>
+                <span className="text-sm font-bold text-brand-slate">English</span>
               </div>
             </div>
             {error && <p className="text-xs text-red-500 mb-3">{error}</p>}
@@ -102,7 +90,7 @@ function WizardEmptyState({ onComplete }) {
               <button onClick={() => setStep(1)} className="flex-1 py-3 rounded-xl border-2 border-slate-200 text-slate-600 font-medium hover:bg-slate-50 transition-colors">Back</button>
               <button
                 onClick={handleCreate}
-                disabled={!subject || !gradeLevel || isSubmitting}
+                disabled={isSubmitting}
                 className="flex-1 bg-brand-navy text-white py-3 rounded-xl font-bold hover:bg-blue-900 disabled:opacity-40 disabled:cursor-not-allowed transition-all flex items-center justify-center gap-2"
               >
                 {isSubmitting ? <><Loader2 className="w-4 h-4 animate-spin" /> Creating...</> : <><Plus className="w-4 h-4" /> Create My First Class</>}
