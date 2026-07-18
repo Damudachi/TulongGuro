@@ -3,9 +3,12 @@ import { Link } from 'react-router-dom';
 import { Plus, Users, FileText, BookOpen, Filter, ChevronRight, Loader2, UploadCloud } from 'lucide-react';
 import { API_URL } from '../../config';
 
-function WizardEmptyState({ onComplete }) {
+function WizardEmptyState({ onComplete, sections = [] }) {
   const [step, setStep] = useState(1);
+  const [className, setClassName] = useState('');
   const [sectionName, setSectionName] = useState('');
+  const [sectionId, setSectionId] = useState('');
+  const [isCreatingNew, setIsCreatingNew] = useState(sections.length === 0);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState('');
 
@@ -14,16 +17,41 @@ function WizardEmptyState({ onComplete }) {
     setIsSubmitting(true);
     try {
       const user = JSON.parse(localStorage.getItem('user') || '{}');
-      const res = await fetch(`${API_URL}/api/teacher/quick-setup`, {
+      let finalSectionId = sectionId;
+
+      if (isCreatingNew) {
+        const secRes = await fetch(`${API_URL}/api/teacher/sections`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ teacherId: user.id, name: sectionName })
+        });
+        const secData = await secRes.json();
+        if (!secData.success) {
+          setError(secData.error || 'Failed to create section.');
+          setIsSubmitting(false);
+          return;
+        }
+        finalSectionId = secData.section?.id || secData.id;
+      }
+
+      const clsRes = await fetch(`${API_URL}/api/teacher/classes`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ teacherId: user.id, sectionName, subject: 'English', gradeLevel: 'Grade 6', schoolYear: '2024-2025' })
+        body: JSON.stringify({ 
+          name: className || 'English — Grade 6',
+          teacherId: user.id, 
+          sectionId: finalSectionId,
+          subject: 'English', 
+          gradeLevel: 'Grade 6', 
+          schoolYear: '2024-2025' 
+        })
       });
-      const data = await res.json();
-      if (data.success) {
+      const clsData = await clsRes.json();
+      
+      if (clsData.success) {
         onComplete();
       } else {
-        setError(data.error || 'Something went wrong.');
+        setError(clsData.error || 'Something went wrong.');
       }
     } catch {
       setError('Network error. Please try again.');
@@ -37,29 +65,30 @@ function WizardEmptyState({ onComplete }) {
       {/* Progress Header */}
       <div className="bg-gradient-to-r from-brand-navy to-blue-700 p-6 text-white">
         <h2 className="text-xl font-bold mb-1">Welcome to TulongGuro! 👋</h2>
-        <p className="text-blue-200 text-sm">Let's set up your first class in 2 quick steps.</p>
+        <p className="text-blue-200 text-sm">Let's set up your first class in 3 quick steps.</p>
         <div className="flex gap-2 mt-4">
           <div className={`h-1.5 rounded-full flex-1 transition-all ${step >= 1 ? 'bg-white' : 'bg-white/30'}`} />
           <div className={`h-1.5 rounded-full flex-1 transition-all ${step >= 2 ? 'bg-white' : 'bg-white/30'}`} />
+          <div className={`h-1.5 rounded-full flex-1 transition-all ${step >= 3 ? 'bg-white' : 'bg-white/30'}`} />
         </div>
       </div>
 
       <div className="p-6">
         {step === 1 && (
           <div className="animate-fade-in">
-            <label className="block text-sm font-bold text-brand-slate mb-1">Step 1: Name your Block Section</label>
-            <p className="text-xs text-slate-500 mb-3">This is your homeroom group, e.g. "Grade 6 — Sampaguita"</p>
+            <label className="block text-sm font-bold text-brand-slate mb-1">Step 1: Name your Class</label>
+            <p className="text-xs text-slate-500 mb-3">Give your class a clear name, e.g. "English Grade 6"</p>
             <input
               type="text"
-              value={sectionName}
-              onChange={e => setSectionName(e.target.value)}
-              placeholder="e.g. Grade 6 — Sampaguita"
+              value={className}
+              onChange={e => setClassName(e.target.value)}
+              placeholder="e.g. English Grade 6"
               className="w-full border-2 border-slate-200 p-3 rounded-xl text-sm focus:border-brand-navy focus:ring-2 focus:ring-brand-navy/10 outline-none transition-all"
               autoFocus
             />
             <button
-              onClick={() => { if (sectionName.trim()) setStep(2); }}
-              disabled={!sectionName.trim()}
+              onClick={() => { if (className.trim()) setStep(2); }}
+              disabled={!className.trim()}
               className="mt-4 w-full bg-brand-navy text-white py-3 rounded-xl font-bold hover:bg-blue-900 disabled:opacity-40 disabled:cursor-not-allowed transition-all flex items-center justify-center gap-2"
             >
               Next <ChevronRight className="w-4 h-4" />
@@ -69,25 +98,91 @@ function WizardEmptyState({ onComplete }) {
 
         {step === 2 && (
           <div className="animate-fade-in">
-            <label className="block text-sm font-bold text-brand-slate mb-1">Step 2: Confirm & Create</label>
+            <label className="block text-sm font-bold text-brand-slate mb-1">Step 2: Choose or Name your Block Section</label>
+            <p className="text-xs text-slate-500 mb-3">This is your homeroom group, e.g. "Grade 6 — Sampaguita"</p>
+            
+            {sections.length > 0 ? (
+              <div className="space-y-3">
+                <select
+                  value={isCreatingNew ? 'new' : sectionId}
+                  onChange={e => {
+                    if (e.target.value === 'new') {
+                      setIsCreatingNew(true);
+                      setSectionId('');
+                    } else {
+                      setIsCreatingNew(false);
+                      setSectionId(e.target.value);
+                      const selectedSec = sections.find(s => s.id === e.target.value);
+                      if (selectedSec) setSectionName(selectedSec.name);
+                    }
+                  }}
+                  className="w-full border-2 border-slate-200 p-3 rounded-xl text-sm focus:border-brand-navy outline-none"
+                >
+                  <option value="" disabled>-- Select existing section --</option>
+                  {sections.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                  <option value="new">+ Create New Section</option>
+                </select>
+
+                {isCreatingNew && (
+                  <input
+                    type="text"
+                    value={sectionName}
+                    onChange={e => setSectionName(e.target.value)}
+                    placeholder="e.g. Grade 6 — Sampaguita"
+                    className="w-full border-2 border-slate-200 p-3 rounded-xl text-sm focus:border-brand-navy focus:ring-2 focus:ring-brand-navy/10 outline-none transition-all animate-fade-in"
+                    autoFocus
+                  />
+                )}
+              </div>
+            ) : (
+              <input
+                type="text"
+                value={sectionName}
+                onChange={e => setSectionName(e.target.value)}
+                placeholder="e.g. Grade 6 — Sampaguita"
+                className="w-full border-2 border-slate-200 p-3 rounded-xl text-sm focus:border-brand-navy focus:ring-2 focus:ring-brand-navy/10 outline-none transition-all"
+                autoFocus
+              />
+            )}
+
+            <div className="flex gap-2 mt-4">
+              <button onClick={() => setStep(1)} className="flex-1 py-3 rounded-xl border-2 border-slate-200 text-slate-600 font-medium hover:bg-slate-50 transition-colors">Back</button>
+              <button
+                onClick={() => {
+                  if ((isCreatingNew && sectionName.trim()) || (!isCreatingNew && sectionId)) {
+                    setStep(3);
+                  }
+                }}
+                disabled={(isCreatingNew && !sectionName.trim()) || (!isCreatingNew && !sectionId)}
+                className="flex-1 bg-brand-navy text-white py-3 rounded-xl font-bold hover:bg-blue-900 disabled:opacity-40 disabled:cursor-not-allowed transition-all flex items-center justify-center gap-2"
+              >
+                Next <ChevronRight className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
+        )}
+
+        {step === 3 && (
+          <div className="animate-fade-in">
+            <label className="block text-sm font-bold text-brand-slate mb-1">Step 3: Confirm & Create</label>
             <p className="text-xs text-slate-500 mb-4">Your class will be created with these settings:</p>
             <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 mb-4 space-y-2">
+              <div className="flex justify-between items-center">
+                <span className="text-xs font-medium text-slate-500">Class Name</span>
+                <span className="text-sm font-bold text-brand-slate">{className}</span>
+              </div>
               <div className="flex justify-between items-center">
                 <span className="text-xs font-medium text-slate-500">Block Section</span>
                 <span className="text-sm font-bold text-brand-slate">{sectionName}</span>
               </div>
               <div className="flex justify-between items-center">
-                <span className="text-xs font-medium text-slate-500">Grade Level</span>
-                <span className="text-sm font-bold text-brand-slate">Grade 6</span>
-              </div>
-              <div className="flex justify-between items-center">
                 <span className="text-xs font-medium text-slate-500">Subject</span>
-                <span className="text-sm font-bold text-brand-slate">English</span>
+                <span className="text-sm font-bold text-brand-slate">English (Grade 6)</span>
               </div>
             </div>
             {error && <p className="text-xs text-red-500 mb-3">{error}</p>}
             <div className="flex gap-2">
-              <button onClick={() => setStep(1)} className="flex-1 py-3 rounded-xl border-2 border-slate-200 text-slate-600 font-medium hover:bg-slate-50 transition-colors">Back</button>
+              <button onClick={() => setStep(2)} className="flex-1 py-3 rounded-xl border-2 border-slate-200 text-slate-600 font-medium hover:bg-slate-50 transition-colors">Back</button>
               <button
                 onClick={handleCreate}
                 disabled={isSubmitting}
@@ -310,7 +405,7 @@ export default function TeacherDashboard() {
       )}
 
       {classes.length === 0 && !isLoading ? (
-        <WizardEmptyState onComplete={() => window.location.reload()} />
+        <WizardEmptyState onComplete={() => window.location.reload()} sections={sections} />
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
           {filteredClasses.map((cls) => {
