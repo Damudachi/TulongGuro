@@ -1,9 +1,10 @@
 import { useState, useEffect, useRef } from 'react';
-import { Users, Plus, ChevronDown, X, Upload, Pencil, UserPlus, Loader2 } from 'lucide-react';
+import { Users, Plus, ChevronDown, X, Upload, Pencil, UserPlus, Loader2, Search } from 'lucide-react';
 import { API_URL } from '../../config';
 
 export default function ManageSections() {
   const [sections, setSections] = useState([]);
+  const [searchQuery, setSearchQuery] = useState('');
   const [name, setName] = useState('');
   const [studentsText, setStudentsText] = useState('');
   const [isLoading, setIsLoading] = useState(false);
@@ -141,6 +142,17 @@ export default function ManageSections() {
         </button>
       </div>
 
+      <div className="mb-6 relative">
+        <Search className="w-5 h-5 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+        <input 
+          type="text" 
+          value={searchQuery}
+          onChange={(e) => setSearchQuery(e.target.value)}
+          placeholder="Search sections by name..." 
+          className="w-full pl-10 pr-4 py-2.5 bg-white border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-brand-navy outline-none shadow-sm"
+        />
+      </div>
+
       {/* Collapsible Create Form */}
       {showForm && (
         <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm mb-8 animate-in slide-in-from-top">
@@ -183,14 +195,29 @@ export default function ManageSections() {
 
       {/* Sections List */}
       <div className="space-y-3">
-        {sections.length === 0 ? (
-          <div className="text-center p-12 border-2 border-dashed border-slate-200 rounded-2xl text-slate-500">
-            <Users className="w-10 h-10 mx-auto mb-3 text-slate-300" />
-            <p className="font-medium">No sections yet</p>
-            <p className="text-sm mt-1">Click "Create Section" above to get started.</p>
-          </div>
-        ) : (
-          sections.map(section => {
+        {(() => {
+          const filteredSections = sections.filter(s => s.name.toLowerCase().includes(searchQuery.toLowerCase()));
+          
+          if (sections.length === 0) {
+            return (
+              <div className="text-center p-12 border-2 border-dashed border-slate-200 rounded-2xl text-slate-500">
+                <Users className="w-10 h-10 mx-auto mb-3 text-slate-300" />
+                <p className="font-medium">No sections yet</p>
+                <p className="text-sm mt-1">Click "Create Section" above to get started.</p>
+              </div>
+            );
+          }
+
+          if (filteredSections.length === 0) {
+            return (
+              <div className="text-center p-12 border border-slate-200 bg-white rounded-2xl text-slate-500">
+                <Search className="w-10 h-10 mx-auto mb-3 text-slate-300" />
+                <p className="font-medium">No sections found matching "{searchQuery}"</p>
+              </div>
+            );
+          }
+
+          return filteredSections.map(section => {
             const isOpen = expandedId === section.id;
             const studentCount = section._count?.students || section.students?.length || 0;
             return (
@@ -272,8 +299,8 @@ export default function ManageSections() {
                 )}
               </div>
             );
-          })
-        )}
+          });
+        })()}
       </div>
     </div>
   );
