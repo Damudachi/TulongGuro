@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
-import { Plus, Users, FileText, BookOpen, Filter, ChevronRight, Loader2, UploadCloud } from 'lucide-react';
+import { Plus, Users, FileText, BookOpen, Filter, ChevronRight, Loader2, UploadCloud, X } from 'lucide-react';
 import { API_URL } from '../../config';
 
 function WizardEmptyState({ onComplete, sections = [] }) {
@@ -10,6 +10,9 @@ function WizardEmptyState({ onComplete, sections = [] }) {
   const [sectionId, setSectionId] = useState('');
   const [isCreatingNew, setIsCreatingNew] = useState(sections.length === 0);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [curriculumFile, setCurriculumFile] = useState(null);
+  const [isParsing, setIsParsing] = useState(false);
+  const [parseStatus, setParseStatus] = useState('');
   const [error, setError] = useState('');
 
   const handleCreate = async () => {
@@ -34,21 +37,44 @@ function WizardEmptyState({ onComplete, sections = [] }) {
         finalSectionId = secData.section?.id || secData.id;
       }
 
+      // Use FormData to support curriculum file upload
+      const fd = new FormData();
+      fd.append('name', className || 'English — Grade 6');
+      fd.append('teacherId', user.id);
+      fd.append('sectionId', finalSectionId);
+      fd.append('subject', 'English');
+      fd.append('gradeLevel', 'Grade 6');
+      fd.append('schoolYear', '2024-2025');
+      if (curriculumFile) fd.append('curriculumFile', curriculumFile);
+
       const clsRes = await fetch(`${API_URL}/api/teacher/classes`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          name: className || 'English — Grade 6',
-          teacherId: user.id, 
-          sectionId: finalSectionId,
-          subject: 'English', 
-          gradeLevel: 'Grade 6', 
-          schoolYear: '2024-2025' 
-        })
+        body: fd
       });
       const clsData = await clsRes.json();
       
       if (clsData.success) {
+        // If curriculum file was uploaded, trigger parsing
+        if (curriculumFile && clsData.class?.id) {
+          setIsParsing(true);
+          setParseStatus('Scanning curriculum & generating rubrics...');
+          try {
+            const parseRes = await fetch(`${API_URL}/api/teacher/classes/${clsData.class.id}/parse-curriculum`, {
+              method: 'POST'
+            });
+            const parseData = await parseRes.json();
+            if (parseData.success) {
+              setParseStatus(`Done! Extracted ${parseData.lessons?.length || 0} lessons.`);
+            } else {
+              setParseStatus('Could not parse curriculum. You can add lessons manually.');
+            }
+          } catch {
+            setParseStatus('Parsing failed. You can add lessons manually.');
+          }
+          // Brief delay to show status
+          await new Promise(r => setTimeout(r, 1500));
+          setIsParsing(false);
+        }
         onComplete();
       } else {
         setError(clsData.error || 'Something went wrong.');
@@ -65,11 +91,12 @@ function WizardEmptyState({ onComplete, sections = [] }) {
       {/* Progress Header */}
       <div className="bg-gradient-to-r from-brand-navy to-blue-700 p-6 text-white">
         <h2 className="text-xl font-bold mb-1">Welcome to TulongGuro! 👋</h2>
-        <p className="text-blue-200 text-sm">Let's set up your first class in 3 quick steps.</p>
+        <p className="text-blue-200 text-sm">Let's set up your first class in 4 quick steps.</p>
         <div className="flex gap-2 mt-4">
           <div className={`h-1.5 rounded-full flex-1 transition-all ${step >= 1 ? 'bg-white' : 'bg-white/30'}`} />
           <div className={`h-1.5 rounded-full flex-1 transition-all ${step >= 2 ? 'bg-white' : 'bg-white/30'}`} />
           <div className={`h-1.5 rounded-full flex-1 transition-all ${step >= 3 ? 'bg-white' : 'bg-white/30'}`} />
+          <div className={`h-1.5 rounded-full flex-1 transition-all ${step >= 4 ? 'bg-white' : 'bg-white/30'}`} />
         </div>
       </div>
 
@@ -164,7 +191,46 @@ function WizardEmptyState({ onComplete, sections = [] }) {
 
         {step === 3 && (
           <div className="animate-fade-in">
-            <label className="block text-sm font-bold text-brand-slate mb-1">Step 3: Confirm & Create</label>
+            <label className="block text-sm font-bold text-brand-slate mb-1">Step 3: Upload Curriculum / Lesson Plan</label>
+            <p className="text-xs text-slate-500 mb-3">Upload your curriculum guide or lesson plan (PDF or DOCX). The AI will extract lessons and generate rubrics.</p>
+            
+            {!curriculumFile ? (
+              <label className="block border-2 border-dashed border-slate-300 rounded-xl p-8 text-center cursor-pointer hover:border-brand-navy hover:bg-blue-50 transition-colors">
+                <UploadCloud className="w-10 h-10 mx-auto mb-2 text-slate-400" />
+                <p className="text-sm font-medium text-slate-600">Click to upload PDF or DOCX</p>
+                <p className="text-xs text-slate-400 mt-1">Max 20MB</p>
+                <input type="file" accept=".pdf,.docx" className="hidden" onChange={e => {
+                  if (e.target.files?.[0]) setCurriculumFile(e.target.files[0]);
+                }} />
+              </label>
+            ) : (
+              <div className="flex items-center gap-3 p-3 bg-green-50 border border-green-200 rounded-xl">
+                <FileText className="w-5 h-5 text-green-600 shrink-0" />
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-medium text-green-800 truncate">{curriculumFile.name}</p>
+                  <p className="text-xs text-green-600">{(curriculumFile.size / 1024 / 1024).toFixed(2)} MB</p>
+                </div>
+                <button type="button" onClick={() => setCurriculumFile(null)} className="text-red-400 hover:text-red-600">
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            )}
+            
+            <div className="flex gap-2 mt-4">
+              <button onClick={() => setStep(2)} className="flex-1 py-3 rounded-xl border-2 border-slate-200 text-slate-600 font-medium hover:bg-slate-50 transition-colors">Back</button>
+              <button
+                onClick={() => setStep(4)}
+                className="flex-1 bg-brand-navy text-white py-3 rounded-xl font-bold hover:bg-blue-900 transition-all flex items-center justify-center gap-2"
+              >
+                {curriculumFile ? 'Next' : 'Skip for Now'} <ChevronRight className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
+        )}
+
+        {step === 4 && (
+          <div className="animate-fade-in">
+            <label className="block text-sm font-bold text-brand-slate mb-1">Step 4: Confirm & Create</label>
             <p className="text-xs text-slate-500 mb-4">Your class will be created with these settings:</p>
             <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 mb-4 space-y-2">
               <div className="flex justify-between items-center">
@@ -179,16 +245,26 @@ function WizardEmptyState({ onComplete, sections = [] }) {
                 <span className="text-xs font-medium text-slate-500">Subject</span>
                 <span className="text-sm font-bold text-brand-slate">English (Grade 6)</span>
               </div>
+              {curriculumFile && (
+                <div className="flex justify-between items-center">
+                  <span className="text-xs font-medium text-slate-500">Curriculum File</span>
+                  <span className="text-sm font-bold text-brand-slate truncate max-w-[200px]">{curriculumFile.name}</span>
+                </div>
+              )}
             </div>
             {error && <p className="text-xs text-red-500 mb-3">{error}</p>}
             <div className="flex gap-2">
-              <button onClick={() => setStep(2)} className="flex-1 py-3 rounded-xl border-2 border-slate-200 text-slate-600 font-medium hover:bg-slate-50 transition-colors">Back</button>
+              <button onClick={() => setStep(3)} className="flex-1 py-3 rounded-xl border-2 border-slate-200 text-slate-600 font-medium hover:bg-slate-50 transition-colors">Back</button>
               <button
                 onClick={handleCreate}
-                disabled={isSubmitting}
+                disabled={isSubmitting || isParsing}
                 className="flex-1 bg-brand-navy text-white py-3 rounded-xl font-bold hover:bg-blue-900 disabled:opacity-40 disabled:cursor-not-allowed transition-all flex items-center justify-center gap-2"
               >
-                {isSubmitting ? <><Loader2 className="w-4 h-4 animate-spin" /> Creating...</> : <><Plus className="w-4 h-4" /> Create My First Class</>}
+                {isSubmitting || isParsing ? (
+                  <><Loader2 className="w-4 h-4 animate-spin" /> {isParsing ? parseStatus : 'Creating...'}</>
+                ) : (
+                  <><Plus className="w-4 h-4" /> Create My First Class</>
+                )}
               </button>
             </div>
           </div>
@@ -207,6 +283,9 @@ export default function TeacherDashboard() {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [sections, setSections] = useState([]);
   const [form, setForm] = useState({ name: '', gradeLevel: 'Grade 6', subject: 'English', schoolYear: '2024-2025', sectionId: '' });
+  const [modalCurriculumFile, setModalCurriculumFile] = useState(null);
+  const [modalIsParsing, setModalIsParsing] = useState(false);
+  const [modalParseStatus, setModalParseStatus] = useState('');
   const [filters, setFilters] = useState({ gradeLevel: '', subject: '' });
   const [isLoading, setIsLoading] = useState(true);
   const [showWalkthrough, setShowWalkthrough] = useState(() => {
@@ -252,17 +331,41 @@ export default function TeacherDashboard() {
     if (!form.sectionId) return alert('Please select a block section.');
     try {
       const user = JSON.parse(localStorage.getItem('user') || '{}');
-      // Auto-generate class name if not manually set
       const name = form.name || `${form.subject} ${form.gradeLevel}`.trim();
+      
+      const fd = new FormData();
+      fd.append('name', name);
+      fd.append('gradeLevel', form.gradeLevel);
+      fd.append('subject', form.subject);
+      fd.append('schoolYear', form.schoolYear);
+      fd.append('teacherId', user.id);
+      fd.append('sectionId', form.sectionId);
+      if (modalCurriculumFile) fd.append('curriculumFile', modalCurriculumFile);
+
       const res = await fetch(`${API_URL}/api/teacher/classes`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, gradeLevel: form.gradeLevel, subject: form.subject, schoolYear: form.schoolYear, teacherId: user.id, sectionId: form.sectionId })
+        body: fd
       });
       const data = await res.json();
       if (data.success) {
+        if (modalCurriculumFile && data.class?.id) {
+          setModalIsParsing(true);
+          setModalParseStatus('Scanning curriculum & generating rubrics...');
+          try {
+            const parseRes = await fetch(`${API_URL}/api/teacher/classes/${data.class.id}/parse-curriculum`, {
+              method: 'POST'
+            });
+            const parseData = await parseRes.json();
+            if (parseData.success) {
+              setModalParseStatus(`Done! Extracted ${parseData.lessons?.length || 0} lessons.`);
+            }
+          } catch {}
+          await new Promise(r => setTimeout(r, 1500));
+          setModalIsParsing(false);
+        }
         setIsModalOpen(false);
         setForm({ name: '', gradeLevel: 'Grade 6', subject: 'English', schoolYear: '2024-2025', sectionId: '' });
+        setModalCurriculumFile(null);
         window.location.reload();
       } else {
         alert('Failed: ' + data.error);
@@ -507,6 +610,33 @@ export default function TeacherDashboard() {
                 </select>
                 {sections.length === 0 && (
                   <p className="text-xs text-amber-600 mt-1">⚠ No sections yet. <Link to="/teacher/sections" className="underline">Create a Block Section first.</Link></p>
+                )}
+              </div>
+
+              {/* Curriculum File Upload */}
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">Curriculum / Lesson Plan (Optional)</label>
+                {!modalCurriculumFile ? (
+                  <label className="block border-2 border-dashed border-slate-200 rounded-lg p-4 text-center cursor-pointer hover:border-brand-navy hover:bg-blue-50 transition-colors">
+                    <UploadCloud className="w-6 h-6 mx-auto mb-1 text-slate-400" />
+                    <p className="text-xs text-slate-500">Upload PDF or DOCX</p>
+                    <input type="file" accept=".pdf,.docx" className="hidden" onChange={e => {
+                      if (e.target.files?.[0]) setModalCurriculumFile(e.target.files[0]);
+                    }} />
+                  </label>
+                ) : (
+                  <div className="flex items-center gap-2 p-2 bg-green-50 border border-green-200 rounded-lg">
+                    <FileText className="w-4 h-4 text-green-600 shrink-0" />
+                    <span className="text-xs font-medium text-green-800 truncate flex-1">{modalCurriculumFile.name}</span>
+                    <button type="button" onClick={() => setModalCurriculumFile(null)} className="text-red-400 hover:text-red-600">
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                )}
+                {modalIsParsing && (
+                  <div className="flex items-center gap-2 mt-2 text-xs text-blue-600">
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" /> {modalParseStatus}
+                  </div>
                 )}
               </div>
 

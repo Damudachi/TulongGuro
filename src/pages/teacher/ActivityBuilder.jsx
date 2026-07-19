@@ -103,6 +103,8 @@ export default function ActivityBuilder() {
 
   const [isSaving, setIsSaving] = useState(false);
   const [topics, setTopics] = useState([]);
+  const [classLessons, setClassLessons] = useState([]);
+  const [selectedLessonId, setSelectedLessonId] = useState('');
   const [rubricMode, setRubricMode] = useState('template'); // 'template' | 'manual' | 'upload'
   const [rubricType, setRubricType] = useState('standard'); // 'standard' | 'range'
   const [savedRubrics, setSavedRubrics] = useState([]);
@@ -162,6 +164,15 @@ export default function ActivityBuilder() {
       .then(data => { if (data.success) setTopics(data.topics); })
       .catch(() => {});
   }, []);
+
+  // Fetch class lessons from parsed curriculum
+  useEffect(() => {
+    if (!classId) return;
+    fetch(`${API_URL}/api/teacher/classes/${classId}/lessons`)
+      .then(res => res.json())
+      .then(data => { if (data.success) setClassLessons(data.lessons || []); })
+      .catch(() => {});
+  }, [classId]);
 
   // ── Edit Mode: Fetch existing activity and pre-fill form ──
   useEffect(() => {
@@ -346,6 +357,7 @@ export default function ActivityBuilder() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             ...form,
+            classLessonId: selectedLessonId || null,
             rubric: JSON.stringify({ source: rubricMode, type: rubricType, criteria: criteriaForSubmit })
           })
         });
@@ -357,6 +369,7 @@ export default function ActivityBuilder() {
         const fd = new FormData();
         Object.entries(form).forEach(([k, v]) => fd.append(k, v));
         fd.append('classId', classId || 'mock-class-id');
+        if (selectedLessonId) fd.append('classLessonId', selectedLessonId);
 
         // Build rubric JSON — include extracted criteria for upload mode
         const criteriaForSubmit = (rubricMode === 'upload' && extractedCriteria) ? extractedCriteria : rubricCriteria;
@@ -503,6 +516,42 @@ export default function ActivityBuilder() {
               </div>
             </div>
           </div>
+
+          {classLessons.length > 0 && (
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-1">Curriculum Lesson / Topic</label>
+              <select value={selectedLessonId} onChange={e => {
+                const lessonId = e.target.value;
+                setSelectedLessonId(lessonId);
+                if (lessonId) {
+                  const lesson = classLessons.find(l => l.id === lessonId);
+                  if (lesson?.outputType) {
+                    setForm(prev => ({ ...prev, type: lesson.outputType }));
+                  }
+                  // Auto-apply default rubric if lesson has one
+                  if (lesson?.defaultRubric) {
+                    try {
+                      const parsed = typeof lesson.defaultRubric === 'string' ? JSON.parse(lesson.defaultRubric) : lesson.defaultRubric;
+                      if (parsed.criteria?.length) {
+                        setRubricCriteria(parsed.criteria);
+                        setRubricMode('template');
+                        setSelectedOption('lesson-rubric');
+                      }
+                    } catch {}
+                  }
+                }
+              }}
+                className="w-full px-4 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-brand-navy outline-none">
+                <option value="">— Select a lesson from curriculum —</option>
+                {classLessons.map(l => (
+                  <option key={l.id} value={l.id}>
+                    {l.weekNumber ? `Week ${l.weekNumber}: ` : ''}{l.title} ({l.outputType})
+                  </option>
+                ))}
+              </select>
+              <p className="text-xs text-slate-400 mt-1">Selecting a lesson auto-applies its output type and default rubric.</p>
+            </div>
+          )}
 
           <div>
             <label className="block text-sm font-medium text-slate-700 mb-1">DepEd Topic (Optional)</label>

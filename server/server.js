@@ -485,11 +485,152 @@ app.get('/api/teacher/:teacherId/classes', async (req, res) => {
   res.json({ success: true, classes });
 });
 
-app.post('/api/teacher/classes', async (req, res) => {
+// Class creation: accepts BOTH multipart/form-data (with curriculum file) and JSON
+app.post('/api/teacher/classes', (req, res, next) => {
+  const ct = req.headers['content-type'] || '';
+  if (ct.includes('multipart/form-data')) {
+    upload.single('curriculumFile')(req, res, next);
+  } else {
+    next();
+  }
+}, async (req, res) => {
   try {
     const { name, gradeLevel, subject, schoolYear, teacherId, sectionId } = req.body;
-    const newClass = await prisma.class.create({ data: { name, gradeLevel, subject, schoolYear, teacherId, sectionId } });
+    const curriculumFile = req.file ? `/uploads/${req.file.filename}` : null;
+    const newClass = await prisma.class.create({
+      data: { name, gradeLevel, subject, schoolYear, teacherId, sectionId, curriculumFile }
+    });
     res.json({ success: true, class: newClass });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// Parse uploaded curriculum file and generate ClassLesson records with default rubrics
+app.post('/api/teacher/classes/:id/parse-curriculum', async (req, res) => {
+  try {
+    const classRecord = await prisma.class.findUnique({
+      where: { id: req.params.id },
+      select: { id: true, curriculumFile: true, subject: true, gradeLevel: true }
+    });
+    if (!classRecord) return res.status(404).json({ success: false, error: 'Class not found' });
+    if (!classRecord.curriculumFile) return res.status(400).json({ success: false, error: 'No curriculum file uploaded for this class' });
+
+    if (!aiConfigured || !model) {
+      return res.status(503).json({ success: false, error: 'AI is not configured. Cannot parse curriculum.' });
+    }
+
+    const filePath = path.join(__dirname, classRecord.curriculumFile);
+    if (!fs.existsSync(filePath)) return res.status(404).json({ success: false, error: 'Curriculum file not found on disk' });
+
+    const fileBuffer = fs.readFileSync(filePath);
+    const ext = path.extname(filePath).toLowerCase();
+    let mimeType = 'application/pdf';
+    if (ext === '.docx') mimeType = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+    else if (ext === '.doc') mimeType = 'application/msword';
+
+    const subject = classRecord.subject || 'English';
+    const gradeLevel = classRecord.gradeLevel || 'Grade 6';
+
+    const parsePrompt = `You are an expert curriculum analyst for the Philippine DepEd K-12 MATATAG system.
+
+Analyze this uploaded curriculum/lesson plan document for ${subject} at ${gradeLevel} level.
+
+Extract ALL individual lessons, topics, or weekly units from the document. For each lesson, generate a default grading rubric appropriate for the lesson's expected output type.
+
+You MUST respond with valid JSON matching this exact schema:
+{
+  "lessons": [
+    {
+      "title": "<Lesson/topic/week title, e.g. 'Week 1: Elements of a Short Story'>",
+      "description": "<Brief 1-2 sentence description of what the lesson covers>",
+      "weekNumber": <integer week number if identifiable, or null>,
+      "outputType": "<One of: Essay, Short Answer, Journal, Reflection, Creative Writing, Research Paper, Outline, Report, Letter, Poem, Speech, Summary>",
+      "defaultRubric": {
+        "criteria": [
+          {
+            "name": "<Criterion name, e.g. Content & Ideas>",
+            "points": <percentage weight, all criteria must sum to 100>,
+            "description": "<What this criterion evaluates>",
+            "bands": [
+              { "label": "Outstanding", "score": "<point range e.g. 36-40>", "description": "<description>" },
+              { "label": "Proficient", "score": "<point range>", "description": "<description>" },
+              { "label": "Developing", "score": "<point range>", "description": "<description>" },
+              { "label": "Beginning", "score": "<point range>", "description": "<description>" }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}
+
+RULES:
+- Extract EVERY lesson/topic/week you can find in the document.
+- Each rubric's criteria point percentages MUST sum to exactly 100.
+- The outputType should reflect the most likely student output for that lesson.
+- Keep rubric criteria practical and aligned with DepEd standards.
+- Generate 3-4 criteria per rubric, each with 4 scoring bands.
+- If the document structure is unclear, organize by logical topic groupings.`;
+
+    const fileParts = [{
+      inlineData: {
+        data: fileBuffer.toString('base64'),
+        mimeType
+      }
+    }];
+
+    const result = await model.generateContent([parsePrompt, ...fileParts]);
+    const text = result.response.text();
+    let cleaned = text
+      .replace(/```json\s*/gi, '')
+      .replace(/```\s*/g, '')
+      .replace(/^[^{]*/, '')
+      .replace(/[^}]*$/, '')
+      .trim();
+
+    const parsed = JSON.parse(cleaned);
+    const lessons = parsed.lessons || [];
+
+    if (lessons.length === 0) {
+      return res.json({ success: true, lessons: [], message: 'No lessons found in the document.' });
+    }
+
+    // Delete any existing lessons for this class (re-parse)
+    await prisma.classLesson.deleteMany({ where: { classId: classRecord.id } });
+
+    // Create ClassLesson records
+    const createdLessons = [];
+    for (const lesson of lessons) {
+      const created = await prisma.classLesson.create({
+        data: {
+          classId: classRecord.id,
+          title: lesson.title || 'Untitled Lesson',
+          description: lesson.description || null,
+          weekNumber: lesson.weekNumber || null,
+          outputType: lesson.outputType || 'Essay',
+          defaultRubric: lesson.defaultRubric ? JSON.stringify(lesson.defaultRubric) : null
+        }
+      });
+      createdLessons.push(created);
+    }
+
+    console.log(`📚 Parsed ${createdLessons.length} lessons from curriculum for class ${classRecord.id}`);
+    res.json({ success: true, lessons: createdLessons });
+  } catch (e) {
+    console.error('Curriculum parse error:', e);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// Get lessons for a class
+app.get('/api/teacher/classes/:id/lessons', async (req, res) => {
+  try {
+    const lessons = await prisma.classLesson.findMany({
+      where: { classId: req.params.id },
+      orderBy: [{ weekNumber: 'asc' }, { createdAt: 'asc' }]
+    });
+    res.json({ success: true, lessons });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
   }
@@ -522,7 +663,7 @@ app.post('/api/teacher/activities', (req, res, next) => {
   }
 }, async (req, res) => {
   try {
-    const { title, type, points, classId, instructions, deadline, submissionMode, rubric, topic, maxAttempts } = req.body;
+    const { title, type, points, classId, instructions, deadline, submissionMode, rubric, topic, maxAttempts, classLessonId } = req.body;
     const filePaths = (req.files || []).map(f => `/uploads/${f.filename}`);
     const activity = await prisma.activity.create({
       data: {
@@ -534,7 +675,8 @@ app.post('/api/teacher/activities', (req, res, next) => {
         submissionMode: submissionMode || 'TEACHER_UPLOAD',
         maxAttempts: parseInt(maxAttempts) || 1,
         additionalFiles: filePaths.length ? JSON.stringify(filePaths) : null,
-        rubric: rubric || null
+        rubric: rubric || null,
+        classLessonId: classLessonId || null
       }
     });
     res.json({ success: true, activity });
@@ -557,6 +699,7 @@ app.put('/api/teacher/activities/:activityId', async (req, res) => {
     if (submissionMode !== undefined) updateData.submissionMode = String(submissionMode);
     if (maxAttempts !== undefined) updateData.maxAttempts = parseInt(maxAttempts) || 1;
     if (rubric !== undefined) updateData.rubric = rubric || null;
+    if (req.body.classLessonId !== undefined) updateData.classLessonId = req.body.classLessonId || null;
 
     const updated = await prisma.activity.update({
       where: { id: req.params.activityId },
@@ -809,6 +952,49 @@ async function generateSubmissionFeedback(imagePath, activityId, studentId) {
       }
     }
 
+    // Fetch ClassLesson data if activity is linked to one
+    let classLessonContext = '';
+    let classLessonRubric = null;
+    if (activityId && activityId !== 'mock-activity-id') {
+      const actForLesson = await prisma.activity.findUnique({
+        where: { id: activityId },
+        select: { classLessonId: true, classLesson: { select: { title: true, description: true, outputType: true, defaultRubric: true } } }
+      });
+      if (actForLesson?.classLesson) {
+        const cl = actForLesson.classLesson;
+        classLessonContext = `\nCURRICULUM LESSON CONTEXT:\nThis activity is mapped to the lesson: "${cl.title}"\nLesson Description: ${cl.description || 'N/A'}\nExpected Output Type: ${cl.outputType}\nYou MUST evaluate this submission specifically against the learning objectives of this lesson.\n`;
+        if (cl.defaultRubric && !activity?.rubric) {
+          // Use the lesson's default rubric if the activity doesn't have its own
+          try {
+            classLessonRubric = JSON.parse(cl.defaultRubric);
+          } catch {}
+        }
+      }
+    }
+
+    // If no explicit rubric on the activity, use the ClassLesson's default rubric
+    if (classLessonRubric && rubricContext.startsWith('Use standard DepEd')) {
+      const parsed = classLessonRubric;
+      if (parsed.criteria?.length) {
+        rubricContext = `MANDATORY RUBRIC (from curriculum lesson plan) — You MUST use this rubric for scoring. Do NOT use any default rubric.\n\n` +
+          parsed.criteria.map((c, i) => {
+            let entry = `CRITERION ${i+1}: ${c.name} (${c.points || 0} points maximum)\n`;
+            entry += `  Description: ${c.description || 'N/A'}\n`;
+            if (c.bands?.length) {
+              entry += `  Scoring Bands:\n` + c.bands.map(b =>
+                `    • ${b.label} (${b.range || b.score} pts): ${b.description}`
+              ).join('\n');
+            }
+            return entry;
+          }).join('\n\n') +
+          `\n\nSCORING INSTRUCTIONS:\n` +
+          `- Grade each criterion independently within its point range.\n` +
+          `- The total score = sum of all criterion scores, scaled to 0-100.\n` +
+          `- In your rubricScores array, list each criterion with its name, score, maxPoints, and bandDescription.\n` +
+          `- Your "score" field must equal the sum, scaled to percentage.`;
+      }
+    }
+
     // 3) Mini-RAG — fetch teacher's past grading examples
     let fewShotExamples = '';
     if (activityId && activityId !== 'mock-activity-id') {
@@ -902,17 +1088,25 @@ ${gradeNum <= 3 ? '- Focus: Simple sentence construction, basic narrative writin
 - A ${gradeLevelForPrompt} student who writes well for their age should score 75-85. Reserve 90+ for truly exceptional work at this level.
 `;
 
-    const prompt = `You are an objective and professional academic evaluator assessing a ${gradeLevelForPrompt} student's work in ${subjectForPrompt} under the Philippine DepEd MATATAG curriculum.
+    // Determine language for feedback based on subject
+    const feedbackLanguage = subjectForPrompt.toLowerCase().includes('filipino') ? 'Filipino' : 'English';
+    const languageDirective = feedbackLanguage === 'Filipino'
+      ? 'LANGUAGE RULE: You MUST write ALL feedback (strengths, areasForGrowth, actionableSteps, skillExplanations, and readingStrategy) entirely in Filipino. Maintain a strict, clinical, objective tone even in Filipino.'
+      : 'LANGUAGE RULE: You MUST write ALL feedback (strengths, areasForGrowth, actionableSteps, skillExplanations, and readingStrategy) entirely in English.';
+
+    const prompt = `You are an objective, strict academic evaluator. You do NOT sugarcoat. You do NOT use overly enthusiastic praise (e.g., 'Great job!', 'Awesome!', 'Well done!'). You focus purely on clinical, constructive criticism based directly on the rubric criteria. You assess a ${gradeLevelForPrompt} student's work in ${subjectForPrompt} under the Philippine DepEd MATATAG curriculum.
 
 ${curriculumContext}
+${classLessonContext}
 
 YOUR EVALUATION APPROACH:
-- Be direct, clear, and objective. Avoid unnecessary sugarcoating or excessive praise.
-- State what the student did well factually, then move to areas for improvement.
+- Be direct, clinical, and objective. State facts about the student's performance without emotional language.
+- Do NOT begin feedback with praise. Start with a neutral factual assessment of what the student produced.
+- When noting strengths, state them clinically: "The student demonstrates X" not "Great use of X!"
 - When pointing out mistakes, SHOW the student their exact words so they can see the error themselves.
 - Give specific, concrete action steps — not vague advice like "improve your grammar."
 - ${languageGuide}
-- LANGUAGE RULE: You MUST write ALL feedback (strengths, areasForGrowth, actionableSteps, skillExplanations, and readingStrategy) entirely in English.
+- ${languageDirective}
 
 ${activityContext}
 ${topicGuidance ? `\nTOPIC FOCUS RULE:\nThis activity is mapped to the topic/lesson: ${topicGuidance}\nYou MUST focus your feedback STRICTLY on this topic. Do NOT introduce or critique concepts outside of this topic. Evaluate only how well the student demonstrates mastery of this specific skill or lesson.\n` : ''}
@@ -923,11 +1117,12 @@ IMPORTANT RULES:
 - If the image is BLANK, contains only drawings/art with no text, is too blurry to read, or has NO readable written content, you MUST set score to 0, set noTextDetected to true, provide a short explanation in strengths, and leave areasForGrowth and actionableSteps as empty arrays.
 - If you CAN read text, grade it normally against the rubric using the structured feedback format below.
 - DATA PRIVACY RULE: Do NOT mention or include the student's name anywhere in your feedback.
+- TONE RULE: Do NOT use exclamation marks in praise. Do NOT use words like "excellent", "amazing", "wonderful", "fantastic", "brilliant" unless quoting the rubric band label. Be factual and measured.
 
 TASK: In ONE step:
 1. Read and transcribe the handwritten student essay from the image.
 2. Grade it against the rubric.
-3. Provide structured, evidence-based tutoring feedback.
+3. Provide structured, evidence-based clinical feedback.
 4. Generate a personalized reading intervention strategy connected to the weaknesses found.
 
 You MUST respond with valid JSON matching this exact schema:
@@ -939,15 +1134,15 @@ You MUST respond with valid JSON matching this exact schema:
   "contentScore": <number>, "contentMax": <number>,
   "organizationScore": <number>, "organizationMax": <number>,
   "grammarScore": <number>, "grammarMax": <number>,
-  "strengths": "<1-3 sentences about what the student did well. Be specific — reference their actual ideas or phrases.>",
+  "strengths": "<1-3 sentences describing what the student did adequately or well. Be factual and measured — no exclamation marks, no enthusiastic language. Reference their actual ideas or phrases.>",
   "areasForGrowth": [
     {
       "studentQuote": "<Copy the EXACT sentence or phrase from the student's essay that contains the error. Must be a real quote from their writing.>",
-      "explanation": "<In simple terms, explain what's wrong and how to fix it. Be kind.>"
+      "explanation": "<In clear terms, explain what is wrong and how to fix it. Be direct, not harsh.>"
     }
   ],
   "actionableSteps": [
-    "<A concrete, bite-sized task the student can do to improve. e.g., 'Try rewriting your second sentence using the word Because to connect your ideas.'>"
+    "<A concrete, bite-sized task the student can do to improve. e.g., 'Rewrite your second sentence using a transition word such as However or Furthermore to connect your ideas.'>" 
   ],
   "skillExplanations": {
     "vocabulary": "<1 sentence explaining why you gave this vocabulary score>",

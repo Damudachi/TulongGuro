@@ -28,6 +28,8 @@ export default function ClassHub() {
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [isSavingEdit, setIsSavingEdit] = useState(false);
   const [showPreview, setShowPreview] = useState(false);
+  const [classLessons, setClassLessons] = useState([]);
+  const [selectedLessonId, setSelectedLessonId] = useState('');
 
   useEffect(() => {
     fetch(`${API_URL}/api/classes/${classId}`)
@@ -36,18 +38,27 @@ export default function ClassHub() {
       .finally(() => setIsLoading(false));
   }, [classId]);
 
+  useEffect(() => {
+    if (!classId) return;
+    fetch(`${API_URL}/api/teacher/classes/${classId}/lessons`)
+      .then(r => r.json())
+      .then(d => { if (d.success) setClassLessons(d.lessons || []); })
+      .catch(() => {});
+  }, [classId]);
+
   const handleCreateActivity = async (e) => {
     e.preventDefault();
     const res = await fetch(`${API_URL}/api/teacher/activities`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...newActivity, classId })
+      body: JSON.stringify({ ...newActivity, classId, classLessonId: selectedLessonId || null })
     });
     const data = await res.json();
     if (data.success) {
       setClassData(prev => ({ ...prev, activities: [data.activity, ...prev.activities] }));
       setShowActivityForm(false);
       setNewActivity({ title: '', type: 'Essay', points: 100, instructions: '', deadline: '', submissionMode: 'TEACHER_UPLOAD' });
+      setSelectedLessonId('');
     }
   };
 
@@ -316,6 +327,26 @@ export default function ClassHub() {
                 <input required value={newActivity.title} onChange={e => setNewActivity({ ...newActivity, title: e.target.value })}
                   className="w-full border p-2 rounded-lg outline-none focus:ring-2 focus:ring-brand-navy" placeholder="e.g. Noli Me Tangere Reflection" />
               </div>
+              {classLessons.length > 0 && (
+                <div>
+                  <label className="block text-sm font-medium mb-1">Curriculum Lesson</label>
+                  <select value={selectedLessonId} onChange={e => {
+                    setSelectedLessonId(e.target.value);
+                    if (e.target.value) {
+                      const lesson = classLessons.find(l => l.id === e.target.value);
+                      if (lesson?.outputType) setNewActivity(prev => ({ ...prev, type: lesson.outputType }));
+                    }
+                  }}
+                    className="w-full border p-2 rounded-lg outline-none focus:ring-2 focus:ring-brand-navy text-sm">
+                    <option value="">— Select a lesson (optional) —</option>
+                    {classLessons.map(l => (
+                      <option key={l.id} value={l.id}>
+                        {l.weekNumber ? `Week ${l.weekNumber}: ` : ''}{l.title} ({l.outputType})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="block text-sm font-medium mb-1">Type</label>
