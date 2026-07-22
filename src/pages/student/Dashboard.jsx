@@ -243,10 +243,10 @@ export default function StudentDashboard() {
         )}
       </div>
 
-      {/* Recent Grades */}
+      {/* Graded Submission */}
       <div>
         <h2 className="text-lg font-bold text-brand-slate mb-4 flex items-center gap-2">
-          <CheckCircle2 className="w-5 h-5 text-brand-green" /> Recent Grades
+          <CheckCircle2 className="w-5 h-5 text-brand-green" /> Graded Submission
         </h2>
         {submissions.length === 0 ? (
           <div className="text-center py-10 border-2 border-dashed border-slate-200 rounded-2xl text-slate-400">
