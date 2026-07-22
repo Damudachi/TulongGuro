@@ -1,25 +1,8 @@
 import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
-import { Award, CheckCircle2, Star, Loader2, Lightbulb, ChevronRight, Clock, BookOpen, TrendingUp, Bot, Sparkles, Send } from 'lucide-react';
+import { Award, CheckCircle2, Star, Loader2, Lightbulb, ChevronRight, Clock, BookOpen, Bot, Sparkles, Send } from 'lucide-react';
 import { API_URL } from '../../config';
-
-const SKILL_LABELS = { vocabulary: 'Vocabulary', punctuation: 'Punctuation', thematicFlow: 'Thematic Flow', sentenceStructure: 'Sentence Structure' };
-
-function SkillBar({ label, value, max = 25 }) {
-  const pct = Math.min(100, (value / max) * 100);
-  const color = pct >= 70 ? 'bg-emerald-400' : pct >= 50 ? 'bg-amber-400' : 'bg-red-400';
-  return (
-    <div>
-      <div className="flex justify-between text-xs mb-1">
-        <span className="text-slate-600 font-medium">{label}</span>
-        <span className="font-bold text-slate-700">{value}/{max}</span>
-      </div>
-      <div className="w-full bg-slate-100 rounded-full h-2">
-        <div className={`h-2 rounded-full transition-all duration-700 ${color}`} style={{ width: `${pct}%` }} />
-      </div>
-    </div>
-  );
-}
+import SkillProgressChart from './SkillProgressChart';
 
 export default function StudentDashboard() {
   const [data, setData] = useState(null);
@@ -47,11 +30,9 @@ export default function StudentDashboard() {
   const submissions = data?.submissions || [];
   const stars = data?.stars || 0;
   const avgGrade = data?.avgGrade || 0;
-  const avgSkills = data?.avgSkills || {};
   const upcomingDeadlines = data?.upcomingDeadlines || [];
   const pendingSubmissions = data?.pendingSubmissions || [];
   const latestStrategy = data?.latestStrategy || null;
-  const hasSkills = Object.values(avgSkills).some(v => v > 0);
 
   return (
     <div className="p-4 md:p-8 max-w-4xl mx-auto pb-24">
@@ -140,24 +121,7 @@ export default function StudentDashboard() {
       )}
 
       {/* Skill Progress */}
-      {hasSkills ? (
-        <div className="bg-white border border-slate-200 rounded-2xl p-5 mb-6 shadow-sm">
-          <h2 className="text-sm font-bold text-brand-slate mb-4 flex items-center gap-2">
-            <TrendingUp className="w-4 h-4 text-brand-green" /> Your Skill Progress
-          </h2>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            {Object.entries(SKILL_LABELS).map(([key, label]) => (
-              <SkillBar key={key} label={label} value={avgSkills[key] || 0} max={25} />
-            ))}
-          </div>
-        </div>
-      ) : (
-        <div className="bg-white border border-slate-200 rounded-2xl p-5 mb-6 shadow-sm text-center py-6 text-slate-400">
-          <TrendingUp className="w-8 h-8 mx-auto mb-2 opacity-30 text-slate-400" />
-          <p className="text-sm font-medium">No Skill Progress Data Available</p>
-          <p className="text-xs mt-1">Complete your activities and get them graded to see your skill progress.</p>
-        </div>
-      )}
+      <SkillProgressChart studentId={user.id} />
 
 
       {/* Upcoming Deadlines */}

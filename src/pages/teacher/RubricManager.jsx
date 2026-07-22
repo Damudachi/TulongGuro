@@ -49,76 +49,12 @@ const DEFAULT_RANGE_BANDS = [
   { label: 'Needs Improvement', score: 1, description: 'Does not meet.' },
 ];
 
-const PREBUILT_RUBRICS = [
-  {
-    id: 'builtin-essay',
-    name: 'Essay Writing Rubric',
-    description: 'Standard DepEd rubric for evaluating essay compositions in English and Filipino.',
-    gradeRange: 'Grades 4-6',
-    type: 'standard',
-    criteria: [
-      { name: 'Content & Ideas', points: 40, description: 'Depth of ideas, relevance to the topic, supporting details, and understanding of the prompt.' },
-      { name: 'Organization', points: 30, description: 'Logical flow, paragraph structure, clear introduction, body, and conclusion. Use of transitions.' },
-      { name: 'Language & Grammar', points: 30, description: 'Correct grammar, spelling, punctuation, sentence structure, and vocabulary usage.' }
-    ]
-  },
-  {
-    id: 'builtin-journal',
-    name: 'Journal / Reflection Rubric',
-    description: 'For evaluating personal reflections, reading journals, and diary entries.',
-    gradeRange: 'Grades 3-6',
-    type: 'standard',
-    criteria: [
-      { name: 'Reflection Depth', points: 35, description: 'Demonstrates genuine thinking, personal connections to the topic, and insightful observations.' },
-      { name: 'Content Completeness', points: 35, description: 'Addresses all aspects of the prompt, provides specific examples and details.' },
-      { name: 'Language Use', points: 30, description: 'Age-appropriate vocabulary, readable handwriting, basic grammar and sentence structure.' }
-    ]
-  },
-  {
-    id: 'builtin-creative',
-    name: 'Creative Writing Rubric',
-    description: 'For evaluating short stories, poems, and other creative writing outputs.',
-    gradeRange: 'Grades 4-6',
-    type: 'standard',
-    criteria: [
-      { name: 'Creativity & Imagination', points: 30, description: 'Originality of ideas, unique perspective, vivid imagery, and creative expression.' },
-      { name: 'Story Elements', points: 25, description: 'Clear characters, setting, plot (beginning, middle, end), conflict, and resolution.' },
-      { name: 'Language & Style', points: 25, description: 'Descriptive language, varied sentence patterns, word choice, and figurative language.' },
-      { name: 'Mechanics', points: 20, description: 'Correct spelling, punctuation, capitalization, and paragraph formatting.' }
-    ]
-  },
-  {
-    id: 'builtin-research',
-    name: 'Research Report Rubric',
-    description: 'For evaluating research papers, investigative reports, and informational writing.',
-    gradeRange: 'Grades 5-6',
-    type: 'standard',
-    criteria: [
-      { name: 'Research Quality', points: 30, description: 'Accuracy of information, use of credible sources, and depth of investigation.' },
-      { name: 'Content & Analysis', points: 30, description: 'Clear thesis, supporting evidence, logical arguments, and conclusions drawn from data.' },
-      { name: 'Organization & Format', points: 20, description: 'Proper report structure (introduction, body, conclusion), headings, and citations.' },
-      { name: 'Language & Mechanics', points: 20, description: 'Formal tone, correct grammar, spelling, and proper academic writing conventions.' }
-    ]
-  },
-  {
-    id: 'builtin-oral-written',
-    name: 'Oral / Written Presentation Rubric',
-    description: 'For evaluating written drafts of presentations, speeches, or show-and-tell scripts.',
-    gradeRange: 'Grades 3-6',
-    type: 'standard',
-    criteria: [
-      { name: 'Content & Message', points: 35, description: 'Clarity of the main message, supporting points, and relevance to the topic.' },
-      { name: 'Organization & Flow', points: 30, description: 'Logical sequence of ideas, smooth transitions, engaging introduction and conclusion.' },
-      { name: 'Language & Expression', points: 35, description: 'Appropriate vocabulary, persuasive or informative tone, and correct grammar.' }
-    ]
-  }
-];
-
 export default function RubricManager() {
   const [expandedId, setExpandedId] = useState(null);
   const [savedRubrics, setSavedRubrics] = useState([]);
+  const [prebuiltRubrics, setPrebuiltRubrics] = useState([]);
   const [teacherId, setTeacherId] = useState(null);
-  
+
   // Edit State
   const [editingRubric, setEditingRubric] = useState(null);
 
@@ -128,6 +64,13 @@ export default function RubricManager() {
       setTeacherId(user.id);
       fetchSavedRubrics(user.id);
     }
+  }, []);
+
+  useEffect(() => {
+    fetch(`${API_URL}/api/rubric-templates/builtin`)
+      .then(res => res.json())
+      .then(data => { if (data.success && data.templates) setPrebuiltRubrics(data.templates); })
+      .catch(() => {});
   }, []);
 
   const fetchSavedRubrics = async (tId) => {
@@ -175,7 +118,7 @@ export default function RubricManager() {
       }
     }
 
-    const isPrebuilt = PREBUILT_RUBRICS.some(r => r.id === editingRubric.id);
+    const isPrebuilt = prebuiltRubrics.some(r => r.id === editingRubric.id);
     
     try {
       if (isPrebuilt) {
@@ -320,7 +263,7 @@ export default function RubricManager() {
       <div className="mb-8">
         <h2 className="text-sm font-bold text-slate-500 uppercase tracking-wider mb-3">Pre-Built Rubrics</h2>
         <div className="space-y-4">
-          {PREBUILT_RUBRICS.map(r => renderRubricCard(r, false))}
+          {prebuiltRubrics.map(r => renderRubricCard(r, false))}
         </div>
       </div>
 
@@ -333,7 +276,7 @@ export default function RubricManager() {
               <div className="sticky top-0 bg-white border-b border-slate-200 p-4 flex items-center justify-between z-10">
                 <h2 className="font-bold text-lg text-brand-slate flex items-center gap-2">
                   <Edit2 className="w-5 h-5 text-brand-navy" />
-                  Edit Rubric {PREBUILT_RUBRICS.some(r => r.id === editingRubric.id) && <span className="text-xs font-normal text-slate-500">(Will save as custom)</span>}
+                  Edit Rubric {prebuiltRubrics.some(r => r.id === editingRubric.id) && <span className="text-xs font-normal text-slate-500">(Will save as custom)</span>}
                 </h2>
                 <button onClick={() => setEditingRubric(null)} className="p-2 hover:bg-slate-100 rounded-full text-slate-500">
                   <X className="w-5 h-5" />

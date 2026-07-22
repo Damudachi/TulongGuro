@@ -15,6 +15,8 @@ const path = require('path');
 const fs = require('fs');
 const sharp = require('sharp');
 const { getAllTopics, getTopicById, getTopicAIGuidance } = require('./depedTopics');
+const { getAllRubricTemplates, getRubricTemplateById } = require('./rubricTemplates');
+const { SKILLS, classifyCriterion } = require('./skillTaxonomy');
 
 const app = express();
 const prisma = new PrismaClient();
@@ -74,8 +76,12 @@ const model = genAI ? genAI.getGenerativeModel({
   model: 'gemini-3.5-flash',
   generationConfig: { responseMimeType: 'application/json' }
 }) : null;
+// A separate, smaller model in the same family — used as a fallback when the
+// primary model above is persistently unavailable (e.g. "high demand" 503s),
+// since it runs on different capacity and is far less likely to be saturated
+// at the same time.
 const modelLite = genAI ? genAI.getGenerativeModel({
-  model: 'gemini-3.5-flash',
+  model: 'gemini-3.5-flash-lite',
   generationConfig: { responseMimeType: 'application/json' }
 }) : null;
 const chatModel = genAI ? genAI.getGenerativeModel({ model: 'gemini-3.5-flash' }) : null;
@@ -84,6 +90,45 @@ if (aiConfigured) {
   console.log('🤖 Gemini AI enabled');
 } else {
   console.log('⚠ Gemini AI disabled: set GEMINI_API_KEY or GOOGLE_API_KEY in server/.env to enable AI features');
+}
+
+// Wraps a Gemini generateContent() call with retry + backoff for transient
+// upstream failures (503 "high demand", 429 rate limits, etc.) so a momentary
+// blip on Google's side doesn't surface as a hard failure to the user.
+async function generateContentWithRetry(genModel, parts, { retries = 2, baseDelayMs = 800 } = {}) {
+  let lastErr;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      return await genModel.generateContent(parts);
+    } catch (err) {
+      lastErr = err;
+      const retryable = /503|overloaded|high demand|unavailable|429|rate limit|resource.?exhausted/i.test(err.message || '');
+      if (attempt < retries && retryable) {
+        const delay = baseDelayMs * Math.pow(2, attempt);
+        console.log(`⚠ Gemini call failed (attempt ${attempt + 1}/${retries + 1}), retrying in ${delay}ms: ${(err.message || '').slice(0, 120)}`);
+        await new Promise(r => setTimeout(r, delay));
+      } else {
+        break;
+      }
+    }
+  }
+  throw lastErr;
+}
+
+// Same as generateContentWithRetry, but if the primary model still fails after
+// exhausting its retries (e.g. a sustained outage, not just a momentary blip),
+// falls back once to modelLite before giving up.
+async function generateContentWithFallback(primaryModel, parts, opts = {}) {
+  try {
+    return await generateContentWithRetry(primaryModel, parts, opts);
+  } catch (err) {
+    const retryable = /503|overloaded|high demand|unavailable|429|rate limit|resource.?exhausted/i.test(err.message || '');
+    if (retryable && modelLite && primaryModel !== modelLite) {
+      console.log(`⚠ Primary model still failing after retries, falling back to modelLite: ${(err.message || '').slice(0, 120)}`);
+      return await generateContentWithRetry(modelLite, parts, { retries: 1, baseDelayMs: opts.baseDelayMs || 800 });
+    }
+    throw err;
+  }
 }
 
 // ─────────────────────────────────────────
@@ -334,15 +379,15 @@ app.post('/api/teacher/extract-students', upload.single('file'), async (req, res
       
       if (!model) return res.status(500).json({ success: false, error: 'Gemini AI is not configured.' });
       const prompt = "Extract ONLY the full names of the students from the following raw spreadsheet text. DO NOT include any headers, IDs, grades, dates, titles (like 'List of Students' or 'Section A'), or other extraneous text. Return a pure JSON array of strings containing only the names, like [\"Juan Dela Cruz\", \"Maria Clara\"]. Do not add any markdown formatting or conversational text.\n\nText data:\n" + rawText;
-      const result = await model.generateContent(prompt);
+      const result = await generateContentWithFallback(model, prompt);
       let text = result.response.text().trim();
       if (text.startsWith('```json')) text = text.replace(/^```json/, '').replace(/```$/, '').trim();
       if (text.startsWith('```')) text = text.replace(/^```/, '').replace(/```$/, '').trim();
-      
+
       let parsedNames = [];
       try { parsedNames = JSON.parse(text); } catch (e) { parsedNames = text.split('\n'); }
       names = parsedNames.map(n => typeof n === 'string' ? n.trim().replace(/^[-*.\d\s]+/, '') : '').filter(n => n.length > 3);
-    } 
+    }
     // Image processing with Gemini
     else if (mime.startsWith('image/')) {
       if (!model) return res.status(500).json({ success: false, error: 'Gemini AI is not configured.' });
@@ -356,7 +401,7 @@ app.post('/api/teacher/extract-students', upload.single('file'), async (req, res
         }
       };
       
-      const result = await model.generateContent([prompt, imagePart]);
+      const result = await generateContentWithFallback(model, [prompt, imagePart]);
       let text = result.response.text().trim();
       if (text.startsWith('```json')) text = text.replace(/^```json/, '').replace(/```$/, '').trim();
       if (text.startsWith('```')) text = text.replace(/^```/, '').replace(/```$/, '').trim();
@@ -580,7 +625,7 @@ RULES:
       }
     }];
 
-    const result = await model.generateContent([parsePrompt, ...fileParts]);
+    const result = await generateContentWithFallback(model, [parsePrompt, ...fileParts]);
     const text = result.response.text();
     let cleaned = text
       .replace(/```json\s*/gi, '')
@@ -841,7 +886,7 @@ Rules:
 - Ensure points add up correctly
 - Return ONLY valid JSON, no markdown`;
 
-    const result = await model.generateContent([
+    const result = await generateContentWithFallback(model, [
       prompt,
       { inlineData: { data: base64Data, mimeType } }
     ]);
@@ -917,81 +962,80 @@ async function preprocessImage(inputPath) {
 // ─────────────────────────────────────────
 
 async function generateSubmissionFeedback(imagePath, activityId, studentId) {
-// 2) Fetch activity rubric context (with banded scoring support)
+    // Formats a criteria array into the "MANDATORY RUBRIC" prompt block, shared by all rubric tiers below.
+    function formatRubricCriteria(criteria, sourceLabel) {
+      return `MANDATORY RUBRIC${sourceLabel ? ` (${sourceLabel})` : ''} — You MUST use this rubric for scoring. Do NOT use any default rubric.\n\n` +
+        criteria.map((c, i) => {
+          let entry = `CRITERION ${i+1}: ${c.name} (${c.points || 0} points maximum)\n`;
+          entry += `  Description: ${c.description || 'N/A'}\n`;
+          if (c.bands?.length) {
+            entry += `  Scoring Bands:\n` + c.bands.map(b =>
+              `    • ${b.label} (${b.range || b.score} pts): ${b.description}`
+            ).join('\n');
+          }
+          return entry;
+        }).join('\n\n') +
+        `\n\nSCORING INSTRUCTIONS:\n` +
+        `- Grade each criterion independently within its point range.\n` +
+        `- The total score = sum of all criterion scores, scaled to 0-100.\n` +
+        `- In your rubricScores array, list each criterion with its name, score, maxPoints, and bandDescription.\n` +
+        `- Your "score" field must equal the sum, scaled to percentage.`;
+    }
+
+    // 2) Fetch activity + resolve rubric context via 3-tier fallback:
+    //    Activity.rubric -> ClassLesson.defaultRubric -> topic's recommended rubric template -> generic default
     let rubricContext = 'Use standard DepEd essay rubric: Content & Ideas (40 pts: 35-40 Outstanding, 25-34 Proficient, 15-24 Developing, 0-14 Beginning), Organization (30 pts: 27-30 Outstanding, 19-26 Proficient, 10-18 Developing, 0-9 Beginning), Language & Grammar (30 pts: 27-30 Outstanding, 19-26 Proficient, 10-18 Developing, 0-9 Beginning).';
     let activityContext = '';
     let subjectForPrompt = 'English';
+    let classLessonContext = '';
+    let activity = null;
     if (activityId && activityId !== 'mock-activity-id') {
-      const activity = await prisma.activity.findUnique({ where: { id: activityId }, include: { class: { select: { subject: true } } } });
+      activity = await prisma.activity.findUnique({
+        where: { id: activityId },
+        include: {
+          class: { select: { subject: true } },
+          classLesson: { select: { title: true, description: true, outputType: true, defaultRubric: true } }
+        }
+      });
       if (activity) {
         activityContext = `Activity: "${activity.title}" (${activity.type}). Instructions: "${activity.instructions || 'N/A'}".`;
         if (activity.class?.subject) subjectForPrompt = activity.class.subject;
+
+        // Tier 1: the activity's own rubric
         if (activity.rubric) {
           try {
             const parsed = JSON.parse(activity.rubric);
             if (parsed.criteria?.length) {
-              rubricContext = `MANDATORY RUBRIC — You MUST use this rubric for scoring. Do NOT use any default rubric.\n\n` +
-                parsed.criteria.map((c, i) => {
-                  let entry = `CRITERION ${i+1}: ${c.name} (${c.points || 0} points maximum)\n`;
-                  entry += `  Description: ${c.description || 'N/A'}\n`;
-                  if (c.bands?.length) {
-                    entry += `  Scoring Bands:\n` + c.bands.map(b =>
-                      `    • ${b.label} (${b.range || b.score} pts): ${b.description}`
-                    ).join('\n');
-                  }
-                  return entry;
-                }).join('\n\n') +
-                `\n\nSCORING INSTRUCTIONS:\n` +
-                `- Grade each criterion independently within its point range.\n` +
-                `- The total score = sum of all criterion scores, scaled to 0-100.\n` +
-                `- In your rubricScores array, list each criterion with its name, score, maxPoints, and bandDescription.\n` +
-                `- Your "score" field must equal the sum, scaled to percentage.`;
+              rubricContext = formatRubricCriteria(parsed.criteria, '');
             }
           } catch { }
         }
-      }
-    }
 
-    // Fetch ClassLesson data if activity is linked to one
-    let classLessonContext = '';
-    let classLessonRubric = null;
-    if (activityId && activityId !== 'mock-activity-id') {
-      const actForLesson = await prisma.activity.findUnique({
-        where: { id: activityId },
-        select: { classLessonId: true, classLesson: { select: { title: true, description: true, outputType: true, defaultRubric: true } } }
-      });
-      if (actForLesson?.classLesson) {
-        const cl = actForLesson.classLesson;
-        classLessonContext = `\nCURRICULUM LESSON CONTEXT:\nThis activity is mapped to the lesson: "${cl.title}"\nLesson Description: ${cl.description || 'N/A'}\nExpected Output Type: ${cl.outputType}\nYou MUST evaluate this submission specifically against the learning objectives of this lesson.\n`;
-        if (cl.defaultRubric && !activity?.rubric) {
-          // Use the lesson's default rubric if the activity doesn't have its own
-          try {
-            classLessonRubric = JSON.parse(cl.defaultRubric);
-          } catch {}
+        if (activity.classLesson) {
+          const cl = activity.classLesson;
+          classLessonContext = `\nCURRICULUM LESSON CONTEXT:\nThis activity is mapped to the lesson: "${cl.title}"\nLesson Description: ${cl.description || 'N/A'}\nExpected Output Type: ${cl.outputType}\nYou MUST evaluate this submission specifically against the learning objectives of this lesson.\n`;
+
+          // Tier 2: ClassLesson's default rubric, only if tier 1 didn't already set a real rubric
+          if (cl.defaultRubric && rubricContext.startsWith('Use standard DepEd')) {
+            try {
+              const parsedLesson = JSON.parse(cl.defaultRubric);
+              if (parsedLesson.criteria?.length) {
+                rubricContext = formatRubricCriteria(parsedLesson.criteria, 'from curriculum lesson plan');
+              }
+            } catch { }
+          }
         }
-      }
-    }
 
-    // If no explicit rubric on the activity, use the ClassLesson's default rubric
-    if (classLessonRubric && rubricContext.startsWith('Use standard DepEd')) {
-      const parsed = classLessonRubric;
-      if (parsed.criteria?.length) {
-        rubricContext = `MANDATORY RUBRIC (from curriculum lesson plan) — You MUST use this rubric for scoring. Do NOT use any default rubric.\n\n` +
-          parsed.criteria.map((c, i) => {
-            let entry = `CRITERION ${i+1}: ${c.name} (${c.points || 0} points maximum)\n`;
-            entry += `  Description: ${c.description || 'N/A'}\n`;
-            if (c.bands?.length) {
-              entry += `  Scoring Bands:\n` + c.bands.map(b =>
-                `    • ${b.label} (${b.range || b.score} pts): ${b.description}`
-              ).join('\n');
+        // Tier 3: the activity's DepEd topic's recommended rubric template, only if tiers 1-2 didn't set a real rubric
+        if (activity.topic && rubricContext.startsWith('Use standard DepEd')) {
+          const topicInfo = getTopicById(activity.topic);
+          if (topicInfo?.recommendedRubricId) {
+            const recommended = getRubricTemplateById(topicInfo.recommendedRubricId);
+            if (recommended?.criteria?.length) {
+              rubricContext = formatRubricCriteria(recommended.criteria, `recommended for topic "${topicInfo.name}"`);
             }
-            return entry;
-          }).join('\n\n') +
-          `\n\nSCORING INSTRUCTIONS:\n` +
-          `- Grade each criterion independently within its point range.\n` +
-          `- The total score = sum of all criterion scores, scaled to 0-100.\n` +
-          `- In your rubricScores array, list each criterion with its name, score, maxPoints, and bandDescription.\n` +
-          `- Your "score" field must equal the sum, scaled to percentage.`;
+          }
+        }
       }
     }
 
@@ -1046,13 +1090,10 @@ async function generateSubmissionFeedback(imagePath, activityId, studentId) {
       } catch { /* section context is optional, don't break grading */ }
     }
 
-    // 4) Get topic-specific AI evaluation guidance
+    // 4) Get topic-specific AI evaluation guidance (reuses the activity fetched above)
     let topicGuidance = '';
-    if (activityId && activityId !== 'mock-activity-id') {
-      const actForTopic = await prisma.activity.findUnique({ where: { id: activityId }, select: { topic: true } });
-      if (actForTopic?.topic) {
-        topicGuidance = getTopicAIGuidance(actForTopic.topic);
-      }
+    if (activity?.topic) {
+      topicGuidance = getTopicAIGuidance(activity.topic);
     }
 
     // 5) Build the prompt — includes no-text detection + pedagogical tutor persona
@@ -1320,7 +1361,8 @@ app.post('/api/teacher/submissions/:id/analyze', async (req, res) => {
         readingStrategy: aiData.readingStrategy,
         rubricData: JSON.stringify(aiData.rubricScores || []),
         skillScores: JSON.stringify(aiData.skillScores),
-        status: 'PENDING'
+        status: 'PENDING',
+        gradedAt: new Date()
       }
     });
 
@@ -1396,7 +1438,7 @@ app.put('/api/teacher/submissions/:id/grade', async (req, res) => {
 
     const updated = await prisma.submission.update({
       where: { id: req.params.id },
-      data: { hitlScore: parseInt(hitlScore), hitlFeedback, readingStrategy, rubricData: JSON.stringify(rubricData), status: 'GRADED' }
+      data: { hitlScore: parseInt(hitlScore), hitlFeedback, readingStrategy, rubricData: JSON.stringify(rubricData), status: 'GRADED', gradedAt: new Date() }
     });
 
     // FEATURE 5: Mini-RAG capture — save as grading example if teacher meaningfully changed the AI result
@@ -1644,6 +1686,105 @@ app.get('/api/student/:studentId/dashboard', async (req, res) => {
 });
 
 // ─────────────────────────────────────────
+// SKILL PROGRESS (rubric-criterion-based, curriculum-aligned 4-skill mastery over time)
+// ─────────────────────────────────────────
+app.get('/api/student/:studentId/skill-progress', async (req, res) => {
+  try {
+    const submissions = await prisma.submission.findMany({
+      where: { studentId: req.params.studentId, status: 'GRADED', rubricData: { not: null } },
+      include: {
+        activity: {
+          select: {
+            rubric: true,
+            classLessonId: true,
+            classLesson: { select: { defaultRubric: true } }
+          }
+        }
+      }
+    });
+
+    // Sort by best-available grading timestamp (gradedAt, falling back to updatedAt for legacy rows)
+    const withTimestamp = submissions
+      .map(s => ({ sub: s, ts: s.gradedAt || s.updatedAt }))
+      .filter(x => x.ts)
+      .sort((a, b) => new Date(a.ts) - new Date(b.ts));
+
+    if (!withTimestamp.length) {
+      return res.json({ success: true, hasData: false, skills: SKILLS, weeks: [], series: {} });
+    }
+
+    // Resolve each activity's rubric criteria name -> description map (cached per activity's rubric JSON)
+    const criteriaMapCache = new Map();
+    function getCriteriaMap(activity) {
+      const source = activity.rubric || activity.classLesson?.defaultRubric;
+      if (!source) return {};
+      if (criteriaMapCache.has(source)) return criteriaMapCache.get(source);
+      let map = {};
+      try {
+        const parsed = JSON.parse(source);
+        const criteria = Array.isArray(parsed) ? parsed : (parsed.criteria || []);
+        for (const c of criteria) {
+          if (c?.name) map[c.name] = c.description || '';
+        }
+      } catch { }
+      criteriaMapCache.set(source, map);
+      return map;
+    }
+
+    // Bucket into sequential "active weeks" — only periods with at least one graded
+    // submission count, relabeled 1,2,3... so breaks/inactivity don't stretch the chart.
+    const firstTs = new Date(withTimestamp[0].ts).getTime();
+    const MS_WEEK = 7 * 24 * 60 * 60 * 1000;
+    const rawWeekOf = ts => Math.floor((new Date(ts).getTime() - firstTs) / MS_WEEK);
+    const distinctRawWeeks = [...new Set(withTimestamp.map(x => rawWeekOf(x.ts)))].sort((a, b) => a - b);
+    const weekIndexMap = new Map(distinctRawWeeks.map((rw, i) => [rw, i + 1]));
+
+    const skillIds = SKILLS.map(s => s.id);
+    const running = {};
+    skillIds.forEach(id => { running[id] = { sum: 0, max: 0 }; });
+    const series = {};
+    skillIds.forEach(id => { series[id] = []; });
+    const weeks = [];
+
+    function snapshotWeek(weekIdx) {
+      weeks.push({ week: weekIdx, label: `Week ${weekIdx}` });
+      skillIds.forEach(id => {
+        const { sum, max } = running[id];
+        series[id].push({ week: weekIdx, pct: max > 0 ? Math.round((sum / max) * 100) : null });
+      });
+    }
+
+    let currentWeekIdx = null;
+    for (const { sub, ts } of withTimestamp) {
+      const weekIdx = weekIndexMap.get(rawWeekOf(ts));
+      if (currentWeekIdx !== null && weekIdx !== currentWeekIdx) {
+        snapshotWeek(currentWeekIdx);
+      }
+      currentWeekIdx = weekIdx;
+
+      const criteriaMap = sub.activity ? getCriteriaMap(sub.activity) : {};
+      let rubricScores = [];
+      try {
+        const parsed = JSON.parse(sub.rubricData);
+        if (Array.isArray(parsed)) rubricScores = parsed;
+      } catch { }
+      for (const entry of rubricScores) {
+        if (!entry || typeof entry.score !== 'number' || !entry.maxPoints) continue;
+        const description = criteriaMap[entry.criterionName] || '';
+        const skillId = classifyCriterion(entry.criterionName, description);
+        running[skillId].sum += entry.score;
+        running[skillId].max += entry.maxPoints;
+      }
+    }
+    if (currentWeekIdx !== null) snapshotWeek(currentWeekIdx);
+
+    res.json({ success: true, hasData: true, skills: SKILLS, weeks, series });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// ─────────────────────────────────────────
 // GRADEBOOK
 // ─────────────────────────────────────────
 app.get('/api/teacher/:teacherId/gradebook', async (req, res) => {
@@ -1838,7 +1979,8 @@ app.post('/api/teacher/upload', upload.single('image'), async (req, res) => {
           readingStrategy: aiData.readingStrategy,
           rubricData: JSON.stringify(aiData.rubricScores || []),
           skillScores: JSON.stringify(aiData.skillScores),
-          status: 'PENDING'
+          status: 'PENDING',
+          gradedAt: new Date()
         }
       });
     } else {
@@ -1852,7 +1994,8 @@ app.post('/api/teacher/upload', upload.single('image'), async (req, res) => {
           readingStrategy: aiData.readingStrategy,
           rubricData: JSON.stringify(aiData.rubricScores || []),
           skillScores: JSON.stringify(aiData.skillScores),
-          status: 'PENDING'
+          status: 'PENDING',
+          gradedAt: new Date()
         }
       });
     }
@@ -2073,6 +2216,11 @@ app.get('/api/topics', (req, res) => {
   res.json({ success: true, topics });
 });
 
+app.get('/api/rubric-templates/builtin', (req, res) => {
+  const templates = getAllRubricTemplates();
+  res.json({ success: true, templates });
+});
+
 // ─────────────────────────────────────────
 // STUDENT ANALYTICS (Topic-based performance)
 // ─────────────────────────────────────────
@@ -2105,7 +2253,7 @@ app.get('/api/student/:studentId/analytics', async (req, res) => {
       return {
         topicId,
         topicName: topicInfo?.name || topicId,
-        quarter: topicInfo?.quarter || null,
+        term: topicInfo?.term || null,
         avgScore: Math.round(avgScore),
         avgPercentage,
         count: data.scores.length

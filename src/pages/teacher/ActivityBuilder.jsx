@@ -31,66 +31,6 @@ const DEFAULT_RANGE_BANDS = [
   { label: 'Needs Improvement', score: 1, description: 'Does not meet expectations.' },
 ];
 
-const RUBRIC_TEMPLATES = [
-  {
-    id: 'builtin-journal',
-    name: 'Journal / Reflection Rubric',
-    description: 'For evaluating personal reflections, reading journals, and diary entries.',
-    gradeRange: 'Grades 3-6',
-    criteria: [
-      { name: 'Reflection Depth', points: 35, description: 'Demonstrates genuine thinking, personal connections to the topic, and insightful observations.' },
-      { name: 'Content Completeness', points: 35, description: 'Addresses all aspects of the prompt, provides specific examples and details.' },
-      { name: 'Language Use', points: 30, description: 'Age-appropriate vocabulary, readable handwriting, basic grammar and sentence structure.' }
-    ]
-  },
-  {
-    id: 'builtin-essay',
-    name: 'Standard DepEd Essay Rubric',
-    description: 'Standard DepEd rubric for evaluating essay compositions in English and Filipino.',
-    gradeRange: 'Grades 4-6',
-    criteria: [
-      { name: 'Content & Ideas', points: 40, description: 'Depth of ideas, relevance to the topic, supporting details, and understanding of the prompt.' },
-      { name: 'Organization', points: 30, description: 'Logical flow, paragraph structure, clear introduction, body, and conclusion. Use of transitions.' },
-      { name: 'Language & Grammar', points: 30, description: 'Correct grammar, spelling, punctuation, sentence structure, and vocabulary usage.' }
-    ]
-  },
-  {
-    id: 'builtin-creative',
-    name: 'Creative Writing Rubric',
-    description: 'For evaluating short stories, poems, and other creative writing outputs.',
-    gradeRange: 'Grades 4-6',
-    criteria: [
-      { name: 'Creativity & Imagination', points: 30, description: 'Originality of ideas, unique perspective, vivid imagery, and creative expression.' },
-      { name: 'Story Elements', points: 25, description: 'Clear characters, setting, plot (beginning, middle, end), conflict, and resolution.' },
-      { name: 'Language & Style', points: 25, description: 'Descriptive language, varied sentence patterns, word choice, and figurative language.' },
-      { name: 'Mechanics', points: 20, description: 'Correct spelling, punctuation, capitalization, and paragraph formatting.' }
-    ]
-  },
-  {
-    id: 'builtin-research',
-    name: 'Research Report Rubric',
-    description: 'For evaluating research papers, investigative reports, and informational writing.',
-    gradeRange: 'Grades 5-6',
-    criteria: [
-      { name: 'Research Quality', points: 30, description: 'Accuracy of information, use of credible sources, and depth of investigation.' },
-      { name: 'Content & Analysis', points: 30, description: 'Clear thesis, supporting evidence, logical arguments, and conclusions drawn from data.' },
-      { name: 'Organization & Format', points: 20, description: 'Proper report structure (introduction, body, conclusion), headings, and citations.' },
-      { name: 'Language & Mechanics', points: 20, description: 'Formal tone, correct grammar, spelling, and proper academic writing conventions.' }
-    ]
-  },
-  {
-    id: 'builtin-oral-written',
-    name: 'Oral / Written Presentation Rubric',
-    description: 'For evaluating written drafts of presentations, speeches, or show-and-tell scripts.',
-    gradeRange: 'Grades 3-6',
-    criteria: [
-      { name: 'Content & Message', points: 35, description: 'Clarity of the main message, supporting points, and relevance to the topic.' },
-      { name: 'Organization & Flow', points: 30, description: 'Logical sequence of ideas, smooth transitions, engaging introduction and conclusion.' },
-      { name: 'Language & Expression', points: 35, description: 'Appropriate vocabulary, persuasive or informative tone, and correct grammar.' }
-    ]
-  }
-];
-
 export default function ActivityBuilder() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
@@ -108,7 +48,8 @@ export default function ActivityBuilder() {
   const [rubricMode, setRubricMode] = useState('template'); // 'template' | 'manual' | 'upload'
   const [rubricType, setRubricType] = useState('standard'); // 'standard' | 'range'
   const [savedRubrics, setSavedRubrics] = useState([]);
-  
+  const [builtinRubrics, setBuiltinRubrics] = useState([]);
+
   useEffect(() => {
     const fetchTemplates = async () => {
       try {
@@ -129,11 +70,32 @@ export default function ActivityBuilder() {
     };
     fetchTemplates();
   }, []);
-  const initialCriteria = (savedRubrics && savedRubrics.length) ? savedRubrics[0].criteria : RUBRIC_TEMPLATES[0].criteria;
-  const [rubricCriteria, setRubricCriteria] = useState(initialCriteria);
-  const [selectedOption, setSelectedOption] = useState(() => (savedRubrics && savedRubrics.length) ? `saved:${savedRubrics[0].id}` : 'builtin:0');
-  const [showAgreement, setShowAgreement] = useState(false);
-  const [pendingBuiltinIdx, setPendingBuiltinIdx] = useState(null);
+
+  // ── Fetch built-in curriculum-aligned rubric templates ──
+  useEffect(() => {
+    fetch(`${API_URL}/api/rubric-templates/builtin`)
+      .then(res => res.json())
+      .then(data => { if (data.success && data.templates) setBuiltinRubrics(data.templates); })
+      .catch(() => {});
+  }, []);
+
+  const [rubricCriteria, setRubricCriteria] = useState([{ name: '', description: '', points: 100 }]);
+  const [selectedOption, setSelectedOption] = useState('builtin:__pending');
+
+  // Once built-in rubrics load, apply the first one as the default — but only if the
+  // teacher hasn't already picked something else (saved rubric, or a topic-recommended one).
+  useEffect(() => {
+    if (builtinRubrics.length && selectedOption === 'builtin:__pending') {
+      if (savedRubrics.length) {
+        setRubricCriteria(savedRubrics[0].criteria);
+        setSelectedOption(`saved:${savedRubrics[0].id}`);
+      } else {
+        setRubricCriteria(builtinRubrics[0].criteria);
+        setRubricType(builtinRubrics[0].type || 'standard');
+        setSelectedOption(`builtin:${builtinRubrics[0].id}`);
+      }
+    }
+  }, [builtinRubrics, savedRubrics]);
   const [additionalFiles, setAdditionalFiles] = useState([]); // { file, name }[]
   const [rubricFile, setRubricFile] = useState(null);
 
@@ -212,7 +174,7 @@ export default function ActivityBuilder() {
                   setRubricCriteria(parsed.criteria);
                   if (parsed.type) setRubricType(parsed.type);
                   if (parsed.source) setRubricMode(parsed.source);
-                  setSelectedOption('builtin:0');
+                  setSelectedOption('custom');
                 }
               } catch {}
             }
@@ -555,18 +517,34 @@ export default function ActivityBuilder() {
 
           <div>
             <label className="block text-sm font-medium text-slate-700 mb-1">DepEd Topic (Optional)</label>
-            <select value={form.topic} onChange={e => setForm({ ...form, topic: e.target.value })}
+            <select value={form.topic} onChange={e => {
+                const topicId = e.target.value;
+                setForm({ ...form, topic: topicId });
+                if (topicId) {
+                  const topicInfo = topics.find(t => t.id === topicId);
+                  const recommended = topicInfo?.recommendedRubricId
+                    ? builtinRubrics.find(t => t.id === topicInfo.recommendedRubricId)
+                    : null;
+                  if (recommended) {
+                    setRubricCriteria(recommended.criteria);
+                    setRubricType(recommended.type || 'standard');
+                    setRubricMode('template');
+                    setSelectedOption(`builtin:${recommended.id}`);
+                  }
+                }
+              }}
               className="w-full px-4 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-brand-navy outline-none">
               <option value="">— Select a topic (optional) —</option>
-              {[1, 2, 3, 4].map(q => {
-                const qTopics = topics.filter(t => t.quarter === q);
-                return qTopics.length > 0 ? (
-                  <optgroup key={q} label={`Quarter ${q}`}>
-                    {qTopics.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+              {[1, 2, 3].map(term => {
+                const termTopics = topics.filter(t => t.term === term);
+                return termTopics.length > 0 ? (
+                  <optgroup key={term} label={`Term ${term}`}>
+                    {termTopics.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
                   </optgroup>
                 ) : null;
               })}
             </select>
+            <p className="text-xs text-slate-400 mt-1">Selecting a topic suggests a matching rubric below — you can still change it.</p>
           </div>
 
           <div>
@@ -638,15 +616,17 @@ export default function ActivityBuilder() {
               <button key={val} type="button" onClick={() => {
                 setRubricMode(val);
                 if (val === 'template') {
-                  const defaultCriteria = savedRubrics && savedRubrics.length ? savedRubrics[0].criteria : RUBRIC_TEMPLATES[0].criteria;
-                  setRubricCriteria(defaultCriteria);
-                  setSelectedOption(savedRubrics && savedRubrics.length ? `saved:${savedRubrics[0].id}` : 'builtin:0');
-                  
+                  const defaultCriteria = savedRubrics && savedRubrics.length ? savedRubrics[0].criteria : builtinRubrics[0]?.criteria;
+                  if (defaultCriteria) setRubricCriteria(defaultCriteria);
+                  setSelectedOption(savedRubrics && savedRubrics.length ? `saved:${savedRubrics[0].id}` : (builtinRubrics[0] ? `builtin:${builtinRubrics[0].id}` : 'builtin:__pending'));
+
                   // Infer type if missing (for older saves)
                   let loadedType = 'standard';
                   if (savedRubrics && savedRubrics.length) {
                     if (savedRubrics[0].type) loadedType = savedRubrics[0].type;
                     else if (savedRubrics[0].criteria?.[0]?.bands?.length > 0) loadedType = 'range';
+                  } else if (builtinRubrics[0]?.type) {
+                    loadedType = builtinRubrics[0].type;
                   }
                   setRubricType(loadedType);
                 } else if (val === 'manual' && rubricMode !== 'manual') {
@@ -710,22 +690,17 @@ export default function ActivityBuilder() {
                       setRubricType(loadedType);
                     }
                   } else if (val.startsWith('builtin:')) {
-                    const idx = parseInt(val.split(':')[1] || '0', 10);
-                    // Only show notice/agreement for the Essay Writing Rubric
-                    const builtin = RUBRIC_TEMPLATES[idx];
-                    if (builtin && builtin.id === 'builtin-essay') {
-                      setPendingBuiltinIdx(idx);
-                      setShowAgreement(true);
-                    } else {
-                      // apply other built-in rubrics immediately
-                      setRubricCriteria(RUBRIC_TEMPLATES[idx].criteria);
+                    const id = val.slice(8);
+                    const builtin = builtinRubrics.find(t => t.id === id);
+                    if (builtin) {
+                      setRubricCriteria(builtin.criteria);
                       setSelectedOption(val);
-                      setRubricType(RUBRIC_TEMPLATES[idx].type || 'standard');
+                      setRubricType(builtin.type || 'standard');
                     }
                   }
                 }}
                 className="w-full border border-slate-200 p-2 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand-navy mb-3">
-                {RUBRIC_TEMPLATES.map((t, i) => <option key={t.id} value={`builtin:${i}`}>{t.name}</option>)}
+                {builtinRubrics.map(t => <option key={t.id} value={`builtin:${t.id}`}>{t.name}</option>)}
                 {savedRubrics.length > 0 && <optgroup label="Your Saved Rubrics">{savedRubrics.map(r => <option key={r.id} value={`saved:${r.id}`}>{r.name}</option>)}</optgroup>}
               </select>
               {rubricCriteria.map((c, i) => (
@@ -840,38 +815,6 @@ export default function ActivityBuilder() {
 
           {/* Removed AI-generated rubric option by request */}
         </div>
-
-        {/* Agreement Modal for built-in rubrics */}
-        {showAgreement && typeof pendingBuiltinIdx === 'number' && RUBRIC_TEMPLATES[pendingBuiltinIdx] && (
-          <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-            <div className="bg-white rounded-2xl p-6 max-w-md w-full shadow-xl">
-              <div className="flex items-center gap-3 mb-4">
-                <div className="w-10 h-10 rounded-full bg-amber-100 flex items-center justify-center">
-                  <svg className="w-5 h-5 text-amber-600" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>
-                </div>
-                <h3 className="font-bold text-brand-slate text-lg">Pre-defined Rubric Notice</h3>
-              </div>
-              <p className="text-sm text-slate-600 mb-3">
-                You are about to use the pre-defined "{RUBRIC_TEMPLATES[pendingBuiltinIdx].name}" rubric. These rubrics follow DepEd K-12 standards and are provided as a starting point.
-              </p>
-              <p className="text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-lg p-3 mb-4">
-                By using this rubric you acknowledge that you have reviewed it and will adapt it as needed for your class and activity level.
-              </p>
-              <div className="flex gap-3">
-                <button onClick={() => { setShowAgreement(false); setPendingBuiltinIdx(null); }}
-                  className="flex-1 py-2.5 border border-slate-200 text-slate-600 rounded-lg font-medium hover:bg-slate-50">Cancel</button>
-                <button onClick={() => {
-                    const idx = pendingBuiltinIdx;
-                    setRubricCriteria(RUBRIC_TEMPLATES[idx].criteria);
-                    setSelectedOption(`builtin:${idx}`);
-                    setShowAgreement(false);
-                    setPendingBuiltinIdx(null);
-                  }}
-                  className="flex-1 py-2.5 bg-brand-navy text-white rounded-lg font-medium hover:bg-blue-900">I Agree & Use</button>
-              </div>
-            </div>
-          </div>
-        )}
 
         {/* Save as Template Modal */}
         {showSaveTemplateModal && (

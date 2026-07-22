@@ -110,6 +110,7 @@ model Submission {
   status          String   @default("PENDING")
   retainUntil     DateTime?
   archivedAt      DateTime?
+  gradedAt        DateTime? // set whenever a grade is produced (AI grade or teacher HITL approval)
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 
