@@ -451,7 +451,7 @@ app.post('/api/teacher/sections', async (req, res) => {
     const sectionNamesSet = new Set(sectionStudents.map(s => s.name.toLowerCase().trim()));
     let count = sectionStudents.length + 1;
 
-    for (const studentName of studentsList) {
+    for (const studentName of (studentsList || [])) {
       if (!studentName.trim()) continue;
       const normalizedName = studentName.toLowerCase().trim();
 
@@ -541,12 +541,19 @@ app.post('/api/teacher/classes', (req, res, next) => {
 }, async (req, res) => {
   try {
     const { name, gradeLevel, subject, schoolYear, teacherId, sectionId } = req.body;
+    console.log('📋 Class creation request body:', JSON.stringify(req.body));
+    if (!sectionId || !teacherId) {
+      return res.status(400).json({ success: false, error: 'Missing required fields: sectionId and teacherId are required.' });
+    }
     const curriculumFile = req.file ? `/uploads/${req.file.filename}` : null;
+    const createData = { name, gradeLevel, subject, schoolYear, teacherId, sectionId, curriculumFile };
+    console.log('📋 Prisma create data:', JSON.stringify(createData));
     const newClass = await prisma.class.create({
-      data: { name, gradeLevel, subject, schoolYear, teacherId, sectionId, curriculumFile }
+      data: createData
     });
     res.json({ success: true, class: newClass });
   } catch (e) {
+    console.error('❌ Class creation error:', e);
     res.status(500).json({ success: false, error: e.message });
   }
 });
