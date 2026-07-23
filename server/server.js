@@ -1695,97 +1695,153 @@ app.get('/api/student/:studentId/dashboard', async (req, res) => {
 // ─────────────────────────────────────────
 // SKILL PROGRESS (rubric-criterion-based, curriculum-aligned 4-skill mastery over time)
 // ─────────────────────────────────────────
-app.get('/api/student/:studentId/skill-progress', async (req, res) => {
-  try {
-    const submissions = await prisma.submission.findMany({
-      where: { studentId: req.params.studentId, status: 'GRADED', rubricData: { not: null } },
-      include: {
-        activity: {
-          select: {
-            rubric: true,
-            classLessonId: true,
-            classLesson: { select: { defaultRubric: true } }
-          }
-        }
+// Shared by the per-student and per-section skill-progress endpoints: takes a
+// flat list of GRADED submissions (each with rubricData + activity.rubric /
+// activity.classLesson.defaultRubric included) and computes the curriculum-
+// aligned 4-skill cumulative mastery timeline described in skillTaxonomy.js.
+function computeSkillProgress(submissions) {
+  // Sort by best-available grading timestamp (gradedAt, falling back to updatedAt for legacy rows)
+  // and drop submissions with no scorable rubric data (e.g. legacy non-array
+  // rubricData shapes) — otherwise they'd occupy an empty point on the
+  // timeline, pushing all real data (and the start of the chart) to the right.
+  function hasScorableRubric(sub) {
+    try {
+      const parsed = JSON.parse(sub.rubricData);
+      return Array.isArray(parsed) && parsed.some(entry => entry && typeof entry.score === 'number' && entry.maxPoints);
+    } catch {
+      return false;
+    }
+  }
+  const withTimestamp = submissions
+    .filter(hasScorableRubric)
+    .map(s => ({ sub: s, ts: s.gradedAt || s.updatedAt }))
+    .filter(x => x.ts)
+    .sort((a, b) => new Date(a.ts) - new Date(b.ts));
+
+  if (!withTimestamp.length) {
+    return { hasData: false, weeks: [], series: {} };
+  }
+
+  // Resolve each activity's rubric criteria name -> description map (cached per activity's rubric JSON)
+  const criteriaMapCache = new Map();
+  function getCriteriaMap(activity) {
+    const source = activity.rubric || activity.classLesson?.defaultRubric;
+    if (!source) return {};
+    if (criteriaMapCache.has(source)) return criteriaMapCache.get(source);
+    let map = {};
+    try {
+      const parsed = JSON.parse(source);
+      const criteria = Array.isArray(parsed) ? parsed : (parsed.criteria || []);
+      for (const c of criteria) {
+        if (c?.name) map[c.name] = c.description || '';
       }
+    } catch { }
+    criteriaMapCache.set(source, map);
+    return map;
+  }
+
+  // Decide bucketing mode. Weekly buckets are anchored to the first graded
+  // submission and relabeled 1,2,3... so breaks/inactivity don't stretch the
+  // chart — but if everything so far falls inside that first window, weekly
+  // mode collapses to a single point (a dot, no line). So: bucket per-activity
+  // until the graded history actually spreads across a few distinct weeks,
+  // then switch to the coarser weekly rollup for a cleaner long-term trend.
+  const firstTs = new Date(withTimestamp[0].ts).getTime();
+  const MS_WEEK = 7 * 24 * 60 * 60 * 1000;
+  const rawWeekOf = ts => Math.floor((new Date(ts).getTime() - firstTs) / MS_WEEK);
+  const distinctRawWeeks = [...new Set(withTimestamp.map(x => rawWeekOf(x.ts)))].sort((a, b) => a - b);
+  const WEEKLY_MODE_MIN_WEEKS = 4;
+  const mode = distinctRawWeeks.length >= WEEKLY_MODE_MIN_WEEKS ? 'week' : 'activity';
+
+  const skillIds = SKILLS.map(s => s.id);
+  const running = {};
+  skillIds.forEach(id => { running[id] = { sum: 0, max: 0 }; });
+  const series = {};
+  skillIds.forEach(id => { series[id] = []; });
+  const points = [];
+
+  function accumulate(sub) {
+    const criteriaMap = sub.activity ? getCriteriaMap(sub.activity) : {};
+    let rubricScores = [];
+    try {
+      const parsed = JSON.parse(sub.rubricData);
+      if (Array.isArray(parsed)) rubricScores = parsed;
+    } catch { }
+    for (const entry of rubricScores) {
+      if (!entry || typeof entry.score !== 'number' || !entry.maxPoints) continue;
+      const description = criteriaMap[entry.criterionName] || '';
+      const skillId = classifyCriterion(entry.criterionName, description);
+      running[skillId].sum += entry.score;
+      running[skillId].max += entry.maxPoints;
+    }
+  }
+
+  function snapshot(pointIdx, label) {
+    points.push({ week: pointIdx, label });
+    skillIds.forEach(id => {
+      const { sum, max } = running[id];
+      series[id].push({ week: pointIdx, pct: max > 0 ? Math.round((sum / max) * 100) : null });
     });
+  }
 
-    // Sort by best-available grading timestamp (gradedAt, falling back to updatedAt for legacy rows)
-    const withTimestamp = submissions
-      .map(s => ({ sub: s, ts: s.gradedAt || s.updatedAt }))
-      .filter(x => x.ts)
-      .sort((a, b) => new Date(a.ts) - new Date(b.ts));
-
-    if (!withTimestamp.length) {
-      return res.json({ success: true, hasData: false, skills: SKILLS, weeks: [], series: {} });
-    }
-
-    // Resolve each activity's rubric criteria name -> description map (cached per activity's rubric JSON)
-    const criteriaMapCache = new Map();
-    function getCriteriaMap(activity) {
-      const source = activity.rubric || activity.classLesson?.defaultRubric;
-      if (!source) return {};
-      if (criteriaMapCache.has(source)) return criteriaMapCache.get(source);
-      let map = {};
-      try {
-        const parsed = JSON.parse(source);
-        const criteria = Array.isArray(parsed) ? parsed : (parsed.criteria || []);
-        for (const c of criteria) {
-          if (c?.name) map[c.name] = c.description || '';
-        }
-      } catch { }
-      criteriaMapCache.set(source, map);
-      return map;
-    }
-
-    // Bucket into sequential "active weeks" — only periods with at least one graded
-    // submission count, relabeled 1,2,3... so breaks/inactivity don't stretch the chart.
-    const firstTs = new Date(withTimestamp[0].ts).getTime();
-    const MS_WEEK = 7 * 24 * 60 * 60 * 1000;
-    const rawWeekOf = ts => Math.floor((new Date(ts).getTime() - firstTs) / MS_WEEK);
-    const distinctRawWeeks = [...new Set(withTimestamp.map(x => rawWeekOf(x.ts)))].sort((a, b) => a - b);
+  if (mode === 'week') {
     const weekIndexMap = new Map(distinctRawWeeks.map((rw, i) => [rw, i + 1]));
-
-    const skillIds = SKILLS.map(s => s.id);
-    const running = {};
-    skillIds.forEach(id => { running[id] = { sum: 0, max: 0 }; });
-    const series = {};
-    skillIds.forEach(id => { series[id] = []; });
-    const weeks = [];
-
-    function snapshotWeek(weekIdx) {
-      weeks.push({ week: weekIdx, label: `Week ${weekIdx}` });
-      skillIds.forEach(id => {
-        const { sum, max } = running[id];
-        series[id].push({ week: weekIdx, pct: max > 0 ? Math.round((sum / max) * 100) : null });
-      });
-    }
-
     let currentWeekIdx = null;
     for (const { sub, ts } of withTimestamp) {
       const weekIdx = weekIndexMap.get(rawWeekOf(ts));
       if (currentWeekIdx !== null && weekIdx !== currentWeekIdx) {
-        snapshotWeek(currentWeekIdx);
+        snapshot(currentWeekIdx, `Week ${currentWeekIdx}`);
       }
       currentWeekIdx = weekIdx;
-
-      const criteriaMap = sub.activity ? getCriteriaMap(sub.activity) : {};
-      let rubricScores = [];
-      try {
-        const parsed = JSON.parse(sub.rubricData);
-        if (Array.isArray(parsed)) rubricScores = parsed;
-      } catch { }
-      for (const entry of rubricScores) {
-        if (!entry || typeof entry.score !== 'number' || !entry.maxPoints) continue;
-        const description = criteriaMap[entry.criterionName] || '';
-        const skillId = classifyCriterion(entry.criterionName, description);
-        running[skillId].sum += entry.score;
-        running[skillId].max += entry.maxPoints;
-      }
+      accumulate(sub);
     }
-    if (currentWeekIdx !== null) snapshotWeek(currentWeekIdx);
+    if (currentWeekIdx !== null) snapshot(currentWeekIdx, `Week ${currentWeekIdx}`);
+  } else {
+    withTimestamp.forEach(({ sub, ts }, i) => {
+      accumulate(sub);
+      const label = new Date(ts).toLocaleDateString('en-PH', { month: 'short', day: 'numeric' });
+      snapshot(i + 1, label);
+    });
+  }
 
-    res.json({ success: true, hasData: true, skills: SKILLS, weeks, series });
+  return { hasData: true, mode, weeks: points, series };
+}
+
+const SKILL_PROGRESS_ACTIVITY_SELECT = {
+  rubric: true,
+  classLessonId: true,
+  classLesson: { select: { defaultRubric: true } }
+};
+
+app.get('/api/student/:studentId/skill-progress', async (req, res) => {
+  try {
+    const submissions = await prisma.submission.findMany({
+      where: { studentId: req.params.studentId, status: 'GRADED', rubricData: { not: null } },
+      include: { activity: { select: SKILL_PROGRESS_ACTIVITY_SELECT } }
+    });
+    const result = computeSkillProgress(submissions);
+    res.json({ success: true, skills: SKILLS, ...result });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// Section-wide version — pools every student in the section's graded work
+// into one shared timeline, for the Predictive Analytics per-section view.
+app.get('/api/teacher/:teacherId/section/:sectionId/skill-progress', async (req, res) => {
+  try {
+    const { teacherId, sectionId } = req.params;
+    const submissions = await prisma.submission.findMany({
+      where: {
+        status: 'GRADED',
+        rubricData: { not: null },
+        student: { sectionId },
+        activity: { class: { teacherId, sectionId } }
+      },
+      include: { activity: { select: SKILL_PROGRESS_ACTIVITY_SELECT } }
+    });
+    const result = computeSkillProgress(submissions);
+    res.json({ success: true, skills: SKILLS, ...result });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
   }
@@ -1814,6 +1870,66 @@ app.get('/api/teacher/:teacherId/gradebook', async (req, res) => {
       include: { section: { include: { students: { select: { id: true, name: true, username: true } } } } }
     });
     res.json({ success: true, activities, classes });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// Per-student, all-activities grade report (used by the Gradebook "click a
+// student name" drill-down). Unlike the endpoint above, this starts from
+// every activity assigned to the student's section — not just ones they've
+// already submitted — so unsubmitted activities show up as Missing/Upcoming.
+app.get('/api/teacher/:teacherId/student/:studentId/gradebook', async (req, res) => {
+  try {
+    const { teacherId, studentId } = req.params;
+    const student = await prisma.user.findUnique({
+      where: { id: studentId },
+      select: { id: true, name: true, username: true, sectionId: true }
+    });
+    if (!student) return res.status(404).json({ success: false, error: 'Student not found' });
+
+    const activities = await prisma.activity.findMany({
+      where: { class: { teacherId, sectionId: student.sectionId } },
+      include: {
+        class: { select: { name: true } },
+        submissions: {
+          where: { studentId },
+          select: { id: true, hitlScore: true, aiScore: true, status: true, createdAt: true }
+        }
+      },
+      orderBy: { deadline: 'asc' }
+    });
+
+    const now = new Date();
+    const rows = activities.map(a => {
+      const sub = a.submissions[0] || null;
+      const deadline = a.deadline ? new Date(a.deadline) : null;
+
+      let status;
+      if (sub) {
+        status = (deadline && sub.createdAt > deadline) ? 'LATE' : 'DONE';
+      } else if (deadline && deadline < now) {
+        status = 'MISSING';
+      } else {
+        status = 'UPCOMING';
+      }
+
+      const percentage = sub ? (sub.hitlScore ?? sub.aiScore ?? null) : null;
+      const grade = percentage !== null ? Math.round((percentage / 100) * (a.points || 100)) : null;
+
+      return {
+        activityId: a.id,
+        activityTitle: a.title,
+        className: a.class?.name || '',
+        deadline: a.deadline,
+        status,
+        grade,
+        totalScore: a.points || 100,
+        submissionId: sub?.id || null
+      };
+    });
+
+    res.json({ success: true, student, rows });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
   }
@@ -1946,7 +2062,7 @@ app.post('/api/student/submit', upload.array('images', 20), async (req, res) => 
 
 app.post('/api/teacher/upload', upload.single('image'), async (req, res) => {
   try {
-    const { studentId, activityId } = req.body;
+    const { studentId, activityId, skipGrading } = req.body;
     const imageFile = req.file;
     if (!imageFile) return res.status(400).json({ error: 'No image provided' });
     // Require a real student to be assigned before AI grading
@@ -1962,51 +2078,50 @@ app.post('/api/teacher/upload', upload.single('image'), async (req, res) => {
     // Upload to Supabase Storage in production, local path in dev
     const processedUrl = await uploadToCloud(processedPath, processedFilename);
 
-    
-    // 2) Call the new shared AI grading function
-    const aiData = await generateSubmissionFeedback(processedPath, activityId, studentId);
-
-    // 6) Save to DB
-    const aiFeedbackStr = JSON.stringify({
-      strengths: aiData.strengths,
-      areasForGrowth: aiData.areasForGrowth,
-      actionableSteps: aiData.actionableSteps
-    });
+    let submissionData;
+    if (skipGrading === 'true') {
+      // Store the image only — grading happens later, on demand, via
+      // POST /api/teacher/submissions/:id/analyze (see the "Ready for AI
+      // Checking" flow in HITLWorkspace). Explicitly null out any prior
+      // grading result in case this is a replacement photo.
+      submissionData = {
+        imageUrl: processedUrl,
+        status: 'PENDING',
+        aiScore: null,
+        aiFeedback: null,
+        rubricData: null,
+        skillScores: null,
+        gradedAt: null
+      };
+    } else {
+      // 2) Call the shared AI grading function
+      const aiData = await generateSubmissionFeedback(processedPath, activityId, studentId);
+      const aiFeedbackStr = JSON.stringify({
+        strengths: aiData.strengths,
+        areasForGrowth: aiData.areasForGrowth,
+        actionableSteps: aiData.actionableSteps
+      });
+      submissionData = {
+        imageUrl: processedUrl,
+        aiScore: aiData.score,
+        aiFeedback: aiFeedbackStr,
+        readingStrategy: aiData.readingStrategy,
+        rubricData: JSON.stringify(aiData.rubricScores || []),
+        skillScores: JSON.stringify(aiData.skillScores),
+        status: 'PENDING',
+        gradedAt: new Date()
+      };
+    }
 
     // Check for existing submission
     const existing = await prisma.submission.findFirst({ where: { studentId, activityId } });
     let submission;
     if (existing) {
-      submission = await prisma.submission.update({
-        where: { id: existing.id },
-        data: {
-          imageUrl: processedUrl,
-          aiScore: aiData.score,
-          aiFeedback: aiFeedbackStr,
-          readingStrategy: aiData.readingStrategy,
-          rubricData: JSON.stringify(aiData.rubricScores || []),
-          skillScores: JSON.stringify(aiData.skillScores),
-          status: 'PENDING',
-          gradedAt: new Date()
-        }
-      });
+      submission = await prisma.submission.update({ where: { id: existing.id }, data: submissionData });
     } else {
-      submission = await prisma.submission.create({
-        data: {
-          studentId,
-          activityId,
-          imageUrl: processedUrl,
-          aiScore: aiData.score,
-          aiFeedback: aiFeedbackStr,
-          readingStrategy: aiData.readingStrategy,
-          rubricData: JSON.stringify(aiData.rubricScores || []),
-          skillScores: JSON.stringify(aiData.skillScores),
-          status: 'PENDING',
-          gradedAt: new Date()
-        }
-      });
+      submission = await prisma.submission.create({ data: { studentId, activityId, ...submissionData } });
     }
-    
+
 res.json({ success: true, submission });
   } catch (e) {
     // Auto-delete uploaded files on failure

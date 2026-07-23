@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import { TrendingUp, Loader2 } from 'lucide-react';
 import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid, Legend, Tooltip } from 'recharts';
-import { API_URL } from '../../config';
+import { API_URL } from '../config';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
 
@@ -20,18 +20,25 @@ function CustomTooltip({ active, payload, label }) {
   );
 }
 
-export default function SkillProgressChart({ studentId }) {
+export default function SkillProgressChart({
+  studentId,
+  dataUrl,
+  title = 'Your Skill Progress',
+  emptyMessage = 'Complete your activities and get them graded to see your skill progress.'
+}) {
   const [data, setData] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
   const [activeTab, setActiveTab] = useState('summary');
+  const url = dataUrl || (studentId ? `${API_URL}/api/student/${studentId}/skill-progress` : null);
 
   useEffect(() => {
-    if (!studentId) { setIsLoading(false); return; }
-    fetch(`${API_URL}/api/student/${studentId}/skill-progress`)
+    if (!url) { setIsLoading(false); return; }
+    setIsLoading(true);
+    fetch(url)
       .then(r => r.json())
       .then(d => { if (d.success) setData(d); })
       .finally(() => setIsLoading(false));
-  }, [studentId]);
+  }, [url]);
 
   const chartData = useMemo(() => {
     if (!data?.hasData) return [];
@@ -62,7 +69,7 @@ export default function SkillProgressChart({ studentId }) {
       <div className="bg-white border border-slate-200 rounded-2xl p-5 mb-6 shadow-sm text-center py-6 text-slate-400">
         <TrendingUp className="w-8 h-8 mx-auto mb-2 opacity-30 text-slate-400" />
         <p className="text-sm font-medium">No Skill Progress Data Available</p>
-        <p className="text-xs mt-1">Complete your activities and get them graded to see your skill progress.</p>
+        <p className="text-xs mt-1">{emptyMessage}</p>
       </div>
     );
   }
@@ -70,11 +77,27 @@ export default function SkillProgressChart({ studentId }) {
   const { skills } = data;
   const activeSkill = activeTab === 'summary' ? null : skills.find(s => s.id === activeTab);
 
+  // On an individual skill's tab, trim any leading points before that skill's
+  // first real value — otherwise a skill assessed later than the others would
+  // start with blank space instead of flush against the left edge of its own chart.
+  let visibleChartData = chartData;
+  if (activeSkill) {
+    const firstIdx = chartData.findIndex(row => row[activeSkill.id] !== null && row[activeSkill.id] !== undefined);
+    if (firstIdx > 0) visibleChartData = chartData.slice(firstIdx);
+  }
+
+  // Thin x-axis tick labels once there are many points, so the axis stays
+  // readable — every point is still plotted, just not every point gets a label.
+  const tickInterval = Math.max(0, Math.floor(visibleChartData.length / 8));
+
   return (
     <div className="bg-white border border-slate-200 rounded-2xl p-5 mb-6 shadow-sm">
-      <h2 className="text-sm font-bold text-brand-slate mb-4 flex items-center gap-2">
-        <TrendingUp className="w-4 h-4 text-brand-green" /> Your Skill Progress
+      <h2 className="text-sm font-bold text-brand-slate mb-1 flex items-center gap-2">
+        <TrendingUp className="w-4 h-4 text-brand-green" /> {title}
       </h2>
+      {data.mode === 'activity' && (
+        <p className="text-xs text-slate-400 mb-3">Showing progress per graded activity — switches to a weekly view once there's a few more weeks of history.</p>
+      )}
 
       {/* Tabs */}
       <div className="flex flex-wrap gap-2 mb-4">
@@ -106,9 +129,9 @@ export default function SkillProgressChart({ studentId }) {
 
       <div className="w-full h-64">
         <ResponsiveContainer width="100%" height="100%">
-          <LineChart data={chartData} margin={{ top: 5, right: 12, left: -12, bottom: 0 }}>
+          <LineChart data={visibleChartData} margin={{ top: 5, right: 12, left: -12, bottom: 0 }}>
             <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-            <XAxis dataKey="label" tick={{ fontSize: 11, fill: '#64748b' }} axisLine={{ stroke: '#e2e8f0' }} tickLine={false} />
+            <XAxis dataKey="label" interval={tickInterval} tick={{ fontSize: 11, fill: '#64748b' }} axisLine={{ stroke: '#e2e8f0' }} tickLine={false} />
             <YAxis domain={[0, 100]} unit="%" tick={{ fontSize: 11, fill: '#64748b' }} axisLine={{ stroke: '#e2e8f0' }} tickLine={false} width={40} />
             <Tooltip content={<CustomTooltip />} />
             {activeTab === 'summary' ? (

@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Link, useSearchParams, useNavigate } from 'react-router-dom';
-import { Users, BarChart2, Plus, Search, Download } from 'lucide-react';
+import { Users, BarChart2, Search, Download } from 'lucide-react';
 import { API_URL } from '../../config';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
@@ -200,11 +200,6 @@ export default function Gradebook() {
                 </div>
               );
             })}
-
-            <div className="border-2 border-dashed border-slate-300 rounded-xl p-6 flex flex-col items-center justify-center text-slate-500 hover:text-brand-navy hover:border-brand-navy hover:bg-blue-50 transition-colors min-h-[160px]">
-              <Plus className="w-8 h-8 mb-2" />
-              <span className="font-medium">Add Block Section</span>
-            </div>
           </div>
 
           
@@ -248,7 +243,10 @@ export default function Gradebook() {
                           {student.name.charAt(0)}
                         </div>
                         <div>
-                          <p className="font-semibold text-brand-slate text-sm">{student.name}</p>
+                          <Link to={`/teacher/gradebook/student/${student.id}`} target="_blank" rel="noopener noreferrer"
+                            className="font-semibold text-brand-slate text-sm hover:text-brand-navy hover:underline">
+                            {student.name}
+                          </Link>
                           <p className="text-xs text-slate-400">{student.username}</p>
                         </div>
                       </div>

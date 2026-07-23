@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { Award, CheckCircle2, Star, Loader2, Lightbulb, ChevronRight, Clock, BookOpen, Bot, Sparkles, Send } from 'lucide-react';
 import { API_URL } from '../../config';
-import SkillProgressChart from './SkillProgressChart';
+import SkillProgressChart from '../../components/SkillProgressChart';
 
 export default function StudentDashboard() {
   const [data, setData] = useState(null);

@@ -1,28 +1,13 @@
 import { useState, useEffect } from 'react';
 import { AlertTriangle, TrendingDown, BarChart2, Users, ChevronDown, ChevronUp, Loader2, ShieldAlert, ArrowLeft, FileText, ChevronRight } from 'lucide-react';
 import { API_URL } from '../../config';
+import SkillProgressChart from '../../components/SkillProgressChart';
 
 const SKILL_LABELS = { vocabulary: 'Vocabulary', punctuation: 'Punctuation', thematicFlow: 'Thematic Flow', sentenceStructure: 'Sentence Structure' };
 const SEVERITY_CONFIG = {
   HIGH: { bg: 'bg-red-50', border: 'border-red-300', text: 'text-red-700', badge: 'bg-red-100 text-red-700', icon: '🔴' },
   MEDIUM: { bg: 'bg-amber-50', border: 'border-amber-300', text: 'text-amber-700', badge: 'bg-amber-100 text-amber-700', icon: '🟡' }
 };
-
-function SkillBar({ label, value, max = 25 }) {
-  const pct = Math.min(100, (value / max) * 100);
-  const color = pct >= 70 ? 'bg-green-400' : pct >= 50 ? 'bg-amber-400' : 'bg-red-400';
-  return (
-    <div>
-      <div className="flex justify-between text-xs mb-1">
-        <span className="text-slate-600 font-medium">{label}</span>
-        <span className="font-bold text-slate-700">{value}/{max}</span>
-      </div>
-      <div className="w-full bg-slate-100 rounded-full h-2">
-        <div className={`h-2 rounded-full transition-all duration-500 ${color}`} style={{ width: `${pct}%` }} />
-      </div>
-    </div>
-  );
-}
 
 function SparkTrend({ values }) {
   if (!values || values.length < 2) return null;
@@ -42,6 +27,7 @@ function SparkTrend({ values }) {
 }
 
 export default function Analytics() {
+  const user = JSON.parse(localStorage.getItem('user') || '{}');
   const [data, setData] = useState(null);
   const [sectionsList, setSectionsList] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -108,7 +94,7 @@ export default function Analytics() {
     </div>
   );
 
-  const { warnings = [], studentTrends = [], classAvgSkills = {}, warningCount = 0, sections = [] } = data || {};
+  const { warnings = [], studentTrends = [], warningCount = 0, sections = [] } = data || {};
 
   // Student Detail View
   if (selectedStudent) {
@@ -154,15 +140,12 @@ export default function Analytics() {
                 </div>
               </div>
 
-              {/* Skill Averages */}
-              <div>
-                <h3 className="text-sm font-bold text-brand-slate mb-3">Skill Averages</h3>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  {Object.entries(studentData.avgSkills).map(([skill, avg]) => (
-                    <SkillBar key={skill} label={SKILL_LABELS[skill]} value={avg} max={25} />
-                  ))}
-                </div>
-              </div>
+              {/* Skill Progress */}
+              <SkillProgressChart
+                studentId={selectedStudent.id}
+                title="Skill Progress"
+                emptyMessage="This student needs more graded activities before a skill progress trend can be shown."
+              />
 
               {/* Paper Works */}
               <div>
@@ -315,17 +298,14 @@ export default function Analytics() {
         </div>
       )}
 
-      {/* Section Average Skill Bars */}
-      <div className="bg-white border border-slate-200 rounded-xl p-6">
-        <h2 className="text-base font-bold text-brand-slate mb-4">
-          {selectedSectionId ? 'Section' : 'Overall'} Skill Averages
-        </h2>
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-          {Object.entries(classAvgSkills).map(([skill, avg]) => (
-            <SkillBar key={skill} label={SKILL_LABELS[skill]} value={avg} max={25} />
-          ))}
-        </div>
-      </div>
+      {/* Section Skill Progress (line graph) — only for a specific section */}
+      {selectedSectionId && (
+        <SkillProgressChart
+          dataUrl={`${API_URL}/api/teacher/${user.id}/section/${selectedSectionId}/skill-progress`}
+          title="Section Skill Progress"
+          emptyMessage="This section needs more graded activities before a skill progress trend can be shown."
+        />
+      )}
 
       {/* Student List — Clickable (only for a specific section) */}
       {selectedSectionId && studentTrends.length > 0 && (

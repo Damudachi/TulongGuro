@@ -273,12 +273,7 @@ export default function ClassHub() {
                     <Link to={`/teacher/batch-upload?activityId=${activity.id}&classId=${classId}`}
                       onClick={(e) => e.stopPropagation()}
                       className="text-xs bg-brand-navy text-white px-3 py-1.5 rounded-md font-medium hover:bg-blue-900 transition-colors flex items-center gap-1">
-                      <UploadCloud className="w-3.5 h-3.5" /> Grade Papers
-                    </Link>
-                    <Link to={`/teacher/gradebook/class/${classId}?activityId=${activity.id}`}
-                      onClick={(e) => e.stopPropagation()}
-                      className="text-xs bg-slate-100 text-slate-700 px-3 py-1.5 rounded-md font-medium hover:bg-slate-200 transition-colors text-center">
-                      View Grades
+                      <UploadCloud className="w-3.5 h-3.5" /> Grade & View
                     </Link>
                   </div>
                 ) : (

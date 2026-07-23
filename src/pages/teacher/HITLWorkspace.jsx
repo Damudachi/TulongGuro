@@ -382,6 +382,8 @@ export default function HITLWorkspace() {
 
   if (isLoading) return <div className="flex items-center justify-center h-64 text-slate-400"><Loader2 className="w-6 h-6 animate-spin mr-2" />Loading submission...</div>;
 
+  const activity = submission?.activity;
+
   let rubricItems;
   if (dynamicRubric) {
     rubricItems = dynamicRubric.map((r, i) => {
@@ -501,9 +503,19 @@ export default function HITLWorkspace() {
                 <h3 className="font-bold text-lg text-blue-900">Ready for AI Checking</h3>
                 <p className="text-sm text-blue-700 mt-1 max-w-sm mx-auto">This student submission has not been graded yet. Start the AI analysis to generate a rubric score and personalized feedback.</p>
               </div>
-              <button onClick={handleAnalyze} disabled={isAnalyzing} className="px-6 py-3 bg-brand-navy text-white rounded-xl font-bold flex items-center gap-2 hover:bg-blue-900 shadow-md transition-all disabled:opacity-70">
-                {isAnalyzing ? <><Loader2 className="w-5 h-5 animate-spin"/> Analyzing...</> : <><Sparkles className="w-5 h-5"/> Start AI Checking</>}
-              </button>
+              <div className="flex items-center gap-3">
+                <button onClick={handleAnalyze} disabled={isAnalyzing} className="px-6 py-3 bg-brand-navy text-white rounded-xl font-bold flex items-center gap-2 hover:bg-blue-900 shadow-md transition-all disabled:opacity-70">
+                  {isAnalyzing ? <><Loader2 className="w-5 h-5 animate-spin"/> Analyzing...</> : <><Sparkles className="w-5 h-5"/> Start AI Checking</>}
+                </button>
+                <button
+                  onClick={() => navigate(`/teacher/batch-upload?activityId=${submission.activityId}&classId=${submission.activity?.classId || ''}`)}
+                  disabled={isAnalyzing}
+                  className="px-6 py-3 bg-white text-slate-600 border-2 border-slate-200 rounded-xl font-bold hover:bg-slate-50 transition-all disabled:opacity-70"
+                >
+                  Review for Later
+                </button>
+              </div>
+              <p className="text-xs text-blue-600/70 -mt-1">"Review for Later" just saves this photo — you can come back and grade it anytime.</p>
             </div>
           )}
 
@@ -870,8 +882,10 @@ export default function HITLWorkspace() {
             Back
           </button>
           {isApproved && !isEditingAssessment ? (
-            <button onClick={() => navigate('/teacher/dashboard')} className="flex-1 py-3 px-4 rounded-xl bg-brand-green text-white font-bold hover:bg-emerald-600 transition-colors flex items-center justify-center gap-2">
-              <CheckCircle2 className="w-5 h-5" /> Done — Back to Dashboard
+            <button
+              onClick={() => navigate(`/teacher/batch-upload?activityId=${submission.activityId}&classId=${submission.activity?.classId || ''}`)}
+              className="flex-1 py-3 px-4 rounded-xl bg-brand-green text-white font-bold hover:bg-emerald-600 transition-colors flex items-center justify-center gap-2">
+              <CheckCircle2 className="w-5 h-5" /> Done
             </button>
           ) : (
             <button onClick={handleValidate} disabled={isSaving}
