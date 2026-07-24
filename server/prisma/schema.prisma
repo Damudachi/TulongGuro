@@ -2,31 +2,27 @@ generator client {
   provider = "prisma-client-js"
 }
 
-// NOTE: Change to "postgresql" and update DATABASE_URL before deploying to production.
-// For local development, keep "sqlite" with DATABASE_URL="file:./dev.db"
-// For production, set DATABASE_URL to your Supabase PostgreSQL connection string.
 datasource db {
-  provider = "sqlite"
+  provider = "postgresql"
   url      = env("DATABASE_URL")
 }
 
 model User {
-  id         String   @id @default(uuid())
-  username   String   @unique
-  name       String
-  email      String?  @unique
-  password   String
-  role       String
-  schoolName String?
-  createdAt  DateTime @default(now())
-
-  taughtClasses   Class[]   @relation("TeacherClasses")
-  ownedSections   Section[] @relation("TeacherSections")
+  id              String           @id @default(uuid())
+  username        String           @unique
+  name            String
+  email           String?          @unique
+  password        String
+  role            String
+  schoolName      String?
+  createdAt       DateTime         @default(now())
   sectionId       String?
-  section         Section?  @relation("StudentSection", fields: [sectionId], references: [id])
-  submissions     Submission[]
+  taughtClasses   Class[]          @relation("TeacherClasses")
   gradingExamples GradingExample[]
   rubricTemplates RubricTemplate[] @relation("TeacherRubricTemplates")
+  ownedSections   Section[]        @relation("TeacherSections")
+  submissions     Submission[]
+  section         Section?         @relation("StudentSection", fields: [sectionId], references: [id])
 }
 
 model Section {
@@ -34,45 +30,42 @@ model Section {
   name      String
   teacherId String
   createdAt DateTime @default(now())
-
-  teacher  User    @relation("TeacherSections", fields: [teacherId], references: [id])
-  students User[]  @relation("StudentSection")
-  classes  Class[]
+  classes   Class[]
+  teacher   User     @relation("TeacherSections", fields: [teacherId], references: [id])
+  students  User[]   @relation("StudentSection")
 }
 
 model Class {
-  id             String   @id @default(uuid())
+  id             String        @id @default(uuid())
   name           String
   gradeLevel     String?
   subject        String?
   schoolYear     String
   teacherId      String
   sectionId      String
-  createdAt      DateTime @default(now())
+  createdAt      DateTime      @default(now())
   curriculumFile String?
-
-  teacher    User          @relation("TeacherClasses", fields: [teacherId], references: [id])
-  section    Section       @relation(fields: [sectionId], references: [id])
-  activities Activity[]
-  lessons    ClassLesson[]
+  activities     Activity[]
+  section        Section       @relation(fields: [sectionId], references: [id])
+  teacher        User          @relation("TeacherClasses", fields: [teacherId], references: [id])
+  lessons        ClassLesson[]
 }
 
 model ClassLesson {
-  id             String   @id @default(uuid())
-  classId        String
-  title          String
-  description    String?
-  outputType     String   @default("Essay")
-  weekNumber     Int?
-  defaultRubric  String?  // JSON: Structured rubric configuration
-  createdAt      DateTime @default(now())
-
-  class      Class      @relation(fields: [classId], references: [id], onDelete: Cascade)
-  activities Activity[]
+  id            String     @id @default(uuid())
+  classId       String
+  title         String
+  description   String?
+  outputType    String     @default("Essay")
+  weekNumber    Int?
+  defaultRubric String?
+  createdAt     DateTime   @default(now())
+  activities    Activity[]
+  class         Class      @relation(fields: [classId], references: [id], onDelete: Cascade)
 }
 
 model Activity {
-  id              String   @id @default(uuid())
+  id              String       @id @default(uuid())
   title           String
   type            String
   topic           String?
@@ -80,64 +73,60 @@ model Activity {
   classId         String
   instructions    String?
   deadline        String?
-  submissionMode  String   @default("TEACHER_UPLOAD")
+  submissionMode  String       @default("TEACHER_UPLOAD")
   additionalFiles String?
   rubric          String?
   classLessonId   String?
-  maxAttempts     Int      @default(1)
-  createdAt       DateTime @default(now())
-
-  class       Class        @relation(fields: [classId], references: [id])
-  classLesson ClassLesson? @relation(fields: [classLessonId], references: [id])
-  submissions Submission[]
+  maxAttempts     Int          @default(1)
+  createdAt       DateTime     @default(now())
+  class           Class        @relation(fields: [classId], references: [id])
+  classLesson     ClassLesson? @relation(fields: [classLessonId], references: [id])
+  submissions     Submission[]
 }
 
 model Submission {
-  id              String   @id @default(uuid())
-  activityId      String
-  studentId       String
-  imageUrl        String?
-  aiScore         Int?
-  hitlScore       Int?
-  aiFeedback      String?
-  hitlFeedback    String?
-  readingStrategy String?
-  rubricData      String?
-  skillScores     String?  // JSON: { vocabulary, punctuation, thematicFlow, sentenceStructure }
-  covData         String?  // JSON: { originalScore, verifiedScore, conflict }
-  attemptCount    Int      @default(1)
-  privacyViolation Boolean  @default(false)
-  status          String   @default("PENDING")
-  retainUntil     DateTime?
-  archivedAt      DateTime?
-  gradedAt        DateTime? // set whenever a grade is produced (AI grade or teacher HITL approval)
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
-
-  activity Activity @relation(fields: [activityId], references: [id])
-  student  User     @relation(fields: [studentId], references: [id])
+  id               String    @id @default(uuid())
+  activityId       String
+  studentId        String
+  imageUrl         String?
+  aiScore          Int?
+  hitlScore        Int?
+  aiFeedback       String?
+  hitlFeedback     String?
+  readingStrategy  String?
+  rubricData       String?
+  skillScores      String?
+  covData          String?
+  attemptCount     Int       @default(1)
+  privacyViolation Boolean   @default(false)
+  status           String    @default("PENDING")
+  retainUntil      DateTime?
+  archivedAt       DateTime?
+  gradedAt         DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+  activity         Activity  @relation(fields: [activityId], references: [id])
+  student          User      @relation(fields: [studentId], references: [id])
 }
 
-// Mini-RAG: stores meaningful teacher edits as few-shot grading examples
 model GradingExample {
   id              String   @id @default(uuid())
   teacherId       String
-  activityType    String   // "Essay", "Journal", etc.
+  activityType    String
   gradeLevel      String?
   aiFeedback      String
   teacherFeedback String
   aiScore         Int
   teacherScore    Int
   createdAt       DateTime @default(now())
-
-  teacher User @relation(fields: [teacherId], references: [id])
+  teacher         User     @relation(fields: [teacherId], references: [id])
 }
 
 model RubricTemplate {
   id        String   @id @default(uuid())
   name      String
-  criteria  String   // JSON: Structured rubric configuration
+  criteria  String
   teacherId String
-  teacher   User     @relation("TeacherRubricTemplates", fields: [teacherId], references: [id], onDelete: Cascade)
   createdAt DateTime @default(now())
+  teacher   User     @relation("TeacherRubricTemplates", fields: [teacherId], references: [id], onDelete: Cascade)
 }

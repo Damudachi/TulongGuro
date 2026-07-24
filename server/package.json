@@ -15,6 +15,7 @@
     "@google/generative-ai": "^0.24.1",
     "@prisma/client": "^5.22.0",
     "@supabase/supabase-js": "^2.105.3",
+    "bcryptjs": "^3.0.3",
     "cors": "^2.8.6",
     "dotenv": "^17.4.2",
     "exceljs": "^4.4.0",

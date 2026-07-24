@@ -11,6 +11,7 @@ const multer = require('multer');
 const { PrismaClient } = require('@prisma/client');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const { createClient } = require('@supabase/supabase-js');
+const bcrypt = require('bcryptjs');
 const path = require('path');
 const fs = require('fs');
 const sharp = require('sharp');
@@ -23,6 +24,8 @@ const prisma = new PrismaClient();
 const port = process.env.PORT || 3000;
 
 require('dotenv').config({ path: path.join(__dirname, '.env') });
+
+const BCRYPT_SALT_ROUNDS = 10;
 
 const aiApiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || '';
 const aiConfigured = Boolean(aiApiKey && aiApiKey !== 'mock' && aiApiKey !== 'YOUR_API_KEY');
@@ -144,15 +147,17 @@ app.post('/api/auth/register', async (req, res) => {
       return res.status(400).json({ success: false, error: 'An account with this email already exists. Please log in instead.' });
     }
 
+    const hashedPassword = await bcrypt.hash(password, BCRYPT_SALT_ROUNDS);
     const user = await prisma.user.create({
-      data: { name, email, username: email, password, role: 'TEACHER', schoolName }
+      data: { name, email, username: email, password: hashedPassword, role: 'TEACHER', schoolName }
     });
 
     // Auto-seed Demo Sandbox for Onboarding
     try {
       const demoSection = await prisma.section.create({ data: { name: 'Grade 6 - Demo Section', teacherId: user.id } });
+      const demoStudentPassword = await bcrypt.hash('password', BCRYPT_SALT_ROUNDS);
       const demoStudent = await prisma.user.create({
-        data: { name: 'Demo Student', username: `DEMO-${Date.now()}`, password: 'password', role: 'STUDENT', sectionId: demoSection.id }
+        data: { name: 'Demo Student', username: `DEMO-${Date.now()}`, password: demoStudentPassword, role: 'STUDENT', sectionId: demoSection.id }
       });
       const demoClass = await prisma.class.create({
         data: { name: '[DEMO] Sandbox Demo Class', gradeLevel: 'Grade 6', subject: 'English', schoolYear: '2024-2025', teacherId: user.id, sectionId: demoSection.id }
@@ -184,7 +189,8 @@ app.post('/api/auth/register', async (req, res) => {
       console.error('Failed to seed demo class:', seedErr);
     }
 
-    res.json({ success: true, user });
+    const { password: _pw, ...safeUser } = user;
+    res.json({ success: true, user: safeUser });
   } catch (e) {
     res.status(400).json({ success: false, error: e.message });
   }
@@ -195,10 +201,12 @@ app.post('/api/auth/login', async (req, res) => {
     const { username, password, role } = req.body;
     // Include related section data so clients receive up-to-date section info on login
     const user = await prisma.user.findFirst({
-      where: { username, password, role },
+      where: { username, role },
       include: { section: true }
     });
-    if (!user) return res.status(401).json({ success: false, error: 'Invalid credentials' });
+    if (!user || !(await bcrypt.compare(password, user.password))) {
+      return res.status(401).json({ success: false, error: 'Invalid credentials' });
+    }
 
     // ── Student Sandbox: Auto-seed a demo graded essay on first login ──
     if (user.role === 'STUDENT') {
@@ -256,7 +264,8 @@ app.post('/api/auth/login', async (req, res) => {
       }
     }
 
-    res.json({ success: true, user });
+    const { password: _pw, ...safeUser } = user;
+    res.json({ success: true, user: safeUser });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
   }
@@ -443,6 +452,7 @@ app.post('/api/teacher/sections', async (req, res) => {
     const createdStudents = [];
     const skippedStudents = [];
     const linkedStudents = [];
+    const defaultStudentPassword = await bcrypt.hash('password123', BCRYPT_SALT_ROUNDS);
 
     // Get existing students already in this section for numbering
     const sectionStudents = await prisma.user.findMany({
@@ -490,9 +500,10 @@ app.post('/api/teacher/sections', async (req, res) => {
       }
 
       const user = await prisma.user.create({
-        data: { name: studentName.trim(), username: studentId, password: 'password123', role: 'STUDENT', sectionId: section.id }
+        data: { name: studentName.trim(), username: studentId, password: defaultStudentPassword, role: 'STUDENT', sectionId: section.id }
       });
-      createdStudents.push(user);
+      const { password: _pw, ...safeUser } = user;
+      createdStudents.push(safeUser);
       sectionNamesSet.add(normalizedName);
       count++;
     }
@@ -2270,15 +2281,19 @@ app.post('/api/dev/seed', async (req, res) => {
     await prisma.user.deleteMany();
     await prisma.$executeRawUnsafe('PRAGMA foreign_keys = ON');
 
+    const [teacherPassword, studentPassword] = await Promise.all([
+      bcrypt.hash('password', BCRYPT_SALT_ROUNDS),
+      bcrypt.hash('password123', BCRYPT_SALT_ROUNDS)
+    ]);
     const teacher = await prisma.user.create({
-      data: { name: 'Maria Clara', username: 'maria@school.edu.ph', email: 'maria@school.edu.ph', password: 'password', role: 'TEACHER', schoolName: 'Manila Science HS' }
+      data: { name: 'Maria Clara', username: 'maria@school.edu.ph', email: 'maria@school.edu.ph', password: teacherPassword, role: 'TEACHER', schoolName: 'Manila Science HS' }
     });
     const section = await prisma.section.create({ data: { name: 'Grade 10 - Rizal', teacherId: teacher.id } });
     const student = await prisma.user.create({
-      data: { name: 'Juan Dela Cruz', username: 'RIZAL-001', password: 'password123', role: 'STUDENT', sectionId: section.id }
+      data: { name: 'Juan Dela Cruz', username: 'RIZAL-001', password: studentPassword, role: 'STUDENT', sectionId: section.id }
     });
     const student2 = await prisma.user.create({
-      data: { name: 'Maria Santos', username: 'RIZAL-002', password: 'password123', role: 'STUDENT', sectionId: section.id }
+      data: { name: 'Maria Santos', username: 'RIZAL-002', password: studentPassword, role: 'STUDENT', sectionId: section.id }
     });
     const class1 = await prisma.class.create({
       data: { name: 'Filipino 10', gradeLevel: 'Grade 10', subject: 'Filipino', schoolYear: '2024-2025', teacherId: teacher.id, sectionId: section.id }
