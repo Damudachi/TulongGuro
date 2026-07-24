@@ -54,14 +54,17 @@ const storage = multer.diskStorage({
 });
 const upload = multer({ storage });
 
-// Helper: upload a local file to Supabase Storage and return public URL
-async function uploadToCloud(localPath, filename) {
+// Helper: upload a local file to Supabase Storage and return public URL.
+// Falls back to a local /uploads/ path when Supabase Storage isn't configured
+// (or the upload fails), so every persisted file reference — submissions,
+// curriculum files, activity attachments — goes through one consistent path.
+async function uploadToCloud(localPath, filename, { folder = 'submissions', contentType = 'image/jpeg' } = {}) {
   if (!useSupabase) return `/uploads/${filename}`;
   const buffer = fs.readFileSync(localPath);
-  const remotePath = `submissions/${filename}`;
+  const remotePath = `${folder}/${filename}`;
   const { data, error } = await supabase.storage
     .from('uploads')
-    .upload(remotePath, buffer, { contentType: 'image/jpeg', upsert: true });
+    .upload(remotePath, buffer, { contentType, upsert: true });
   if (error) {
     console.log('⚠ Supabase upload failed, using local:', error.message);
     return `/uploads/${filename}`;
@@ -72,6 +75,23 @@ async function uploadToCloud(localPath, filename) {
     try { fs.unlinkSync(localPath); } catch {}
   }
   return urlData.publicUrl;
+}
+
+// Helper: resolve a stored imageUrl (either a local /uploads/... path or a
+// Supabase Storage public URL) to a local file path readable by fs/sharp —
+// needed because AI grading always reads the image off disk. Remote images
+// are downloaded to a temp file; callers must clean it up via the returned
+// isTemp flag so we don't delete the one true copy of a local-only file.
+async function resolveLocalImagePath(imageUrl) {
+  if (/^https?:\/\//i.test(imageUrl)) {
+    const response = await fetch(imageUrl);
+    if (!response.ok) throw new Error(`Failed to download image from storage: ${response.status}`);
+    const buffer = Buffer.from(await response.arrayBuffer());
+    const tempPath = path.join(uploadsDir, `tmp-${Date.now()}-${path.basename(new URL(imageUrl).pathname)}`);
+    fs.writeFileSync(tempPath, buffer);
+    return { path: tempPath, isTemp: true };
+  }
+  return { path: path.join(__dirname, imageUrl), isTemp: false };
 }
 
 const genAI = aiConfigured ? new GoogleGenerativeAI(aiApiKey) : null;
@@ -556,7 +576,9 @@ app.post('/api/teacher/classes', (req, res, next) => {
     if (!sectionId || !teacherId) {
       return res.status(400).json({ success: false, error: 'Missing required fields: sectionId and teacherId are required.' });
     }
-    const curriculumFile = req.file ? `/uploads/${req.file.filename}` : null;
+    const curriculumFile = req.file
+      ? await uploadToCloud(req.file.path, req.file.filename, { folder: 'curriculum', contentType: req.file.mimetype })
+      : null;
     const createData = { name, gradeLevel, subject, schoolYear, teacherId, sectionId, curriculumFile };
     console.log('📋 Prisma create data:', JSON.stringify(createData));
     const newClass = await prisma.class.create({
@@ -727,7 +749,9 @@ app.post('/api/teacher/activities', (req, res, next) => {
 }, async (req, res) => {
   try {
     const { title, type, points, classId, instructions, deadline, submissionMode, rubric, topic, maxAttempts, classLessonId } = req.body;
-    const filePaths = (req.files || []).map(f => `/uploads/${f.filename}`);
+    const filePaths = await Promise.all(
+      (req.files || []).map(f => uploadToCloud(f.path, f.filename, { folder: 'activity-files', contentType: f.mimetype }))
+    );
     const activity = await prisma.activity.create({
       data: {
         title, type,
@@ -1359,11 +1383,16 @@ app.post('/api/teacher/submissions/:id/analyze', async (req, res) => {
     if (!sub) return res.status(404).json({ error: 'Submission not found' });
     if (sub.aiScore !== null) return res.status(400).json({ error: 'Already analyzed by AI' });
 
-    // The imageUrl might be /uploads/something.jpg
-    const imagePath = path.join(__dirname, sub.imageUrl);
+    // imageUrl is either a local /uploads/... path or a Supabase Storage URL
+    const { path: imagePath, isTemp } = await resolveLocalImagePath(sub.imageUrl);
     if (!fs.existsSync(imagePath)) return res.status(404).json({ error: 'Image file not found on server' });
 
-    const aiData = await generateSubmissionFeedback(imagePath, sub.activityId, sub.studentId);
+    let aiData;
+    try {
+      aiData = await generateSubmissionFeedback(imagePath, sub.activityId, sub.studentId);
+    } finally {
+      if (isTemp) { try { fs.unlinkSync(imagePath); } catch {} }
+    }
 
     const aiFeedbackStr = JSON.stringify({
       strengths: aiData.strengths,
@@ -1999,7 +2028,9 @@ app.post('/api/student/submit', upload.array('images', 20), async (req, res) => 
 
     if (imageFiles.length === 1) {
       // Single file - just use it directly
-      finalImageUrl = `/uploads/${imageFiles[0].filename}`;
+      finalImageUrl = await uploadToCloud(imageFiles[0].path, imageFiles[0].filename, {
+        contentType: imageFiles[0].mimetype || 'image/jpeg'
+      });
     } else {
       // Multiple files - stitch them vertically using sharp
       const metadataList = await Promise.all(imageFiles.map(f => sharp(f.path).metadata()));
@@ -2028,8 +2059,8 @@ app.post('/api/student/submit', upload.array('images', 20), async (req, res) => 
       .jpeg({ quality: 85 })
       .toFile(outPath);
 
-      finalImageUrl = `/uploads/${outFilename}`;
-      
+      finalImageUrl = await uploadToCloud(outPath, outFilename);
+
       // Cleanup the individual uploaded parts
       imageFiles.forEach(f => {
         try { fs.unlinkSync(f.path); } catch {}
@@ -2080,8 +2111,6 @@ app.post('/api/teacher/upload', upload.single('image'), async (req, res) => {
     if (!studentId || studentId === 'mock-student-id') {
       return res.status(400).json({ success: false, error: 'Please assign a student before grading. A student must be selected.' });
     }
-
-    const imageUrl = `/uploads/${imageFile.filename}`;
 
     // 1) Preprocess the image
     const processedPath = await preprocessImage(imageFile.path);
