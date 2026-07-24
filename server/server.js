@@ -19,11 +19,11 @@ const { getAllTopics, getTopicById, getTopicAIGuidance } = require('./depedTopic
 const { getAllRubricTemplates, getRubricTemplateById } = require('./rubricTemplates');
 const { SKILLS, classifyCriterion } = require('./skillTaxonomy');
 
+require('dotenv').config({ path: path.join(__dirname, '.env') });
+
 const app = express();
 const prisma = new PrismaClient();
 const port = process.env.PORT || 3000;
-
-require('dotenv').config({ path: path.join(__dirname, '.env') });
 
 const BCRYPT_SALT_ROUNDS = 10;
 
