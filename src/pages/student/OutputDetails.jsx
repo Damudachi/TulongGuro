@@ -6,16 +6,52 @@ import { API_URL } from '../../config';
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
 
 // Parse feedback: handles both new structured JSON and legacy plain strings
-function parseFeedback(raw) {
-  if (!raw) return null;
-  try {
-    const parsed = JSON.parse(raw);
-    if (parsed && typeof parsed === 'object' && (parsed.strengths || parsed.areasForGrowth)) {
-      return parsed;
+function parseFeedback(hitl, ai) {
+  let finalStructured = { strengths: '', areasForGrowth: [], actionableSteps: [], skillExplanations: {} };
+
+  // Parse AI first
+  if (ai) {
+    try {
+      let cleanRaw = ai.trim();
+      if (cleanRaw.startsWith('```')) {
+        const lines = cleanRaw.split('\n');
+        if (lines.length > 2) cleanRaw = lines.slice(1, -1).join('\n').trim();
+      }
+      const parsed = JSON.parse(cleanRaw);
+      if (parsed && typeof parsed === 'object') {
+        finalStructured = { ...finalStructured, ...parsed };
+      }
+    } catch {
+      finalStructured.strengths = ai;
     }
-  } catch { /* not JSON — legacy format */ }
-  // Legacy: treat as plain string
-  return { strengths: raw, areasForGrowth: [], actionableSteps: [], skillExplanations: {} };
+  }
+
+  // Parse HITL override
+  if (hitl) {
+    try {
+      let cleanRaw = hitl.trim();
+      if (cleanRaw.startsWith('```')) {
+        const lines = cleanRaw.split('\n');
+        if (lines.length > 2) cleanRaw = lines.slice(1, -1).join('\n').trim();
+      }
+      const parsed = JSON.parse(cleanRaw);
+      if (parsed && typeof parsed === 'object' && Object.keys(parsed).length > 0) {
+        finalStructured = { ...finalStructured, ...parsed };
+      } else {
+        finalStructured.strengths = hitl; // fallback if empty json?
+      }
+    } catch {
+      // Plain text teacher override
+      finalStructured.strengths = hitl;
+    }
+  }
+
+  // Prevent AI error strings from polluting the UI
+  if (finalStructured.strengths?.includes('⚠ AI grading is currently unavailable')) {
+    finalStructured.strengths = '';
+  }
+
+  return finalStructured;
 }
 
 export default function OutputDetails() {
@@ -46,13 +82,13 @@ export default function OutputDetails() {
           skillExplanations: {
             vocabulary: "You used good words like 'reform' and 'educated,' but some sentences relied on basic words like 'good' and 'bad.' Try using more descriptive alternatives.",
             punctuation: "Most sentences had correct periods and commas. Watch out for missing commas after transition words.",
-            thematicFlow: "Your ideas were connected but the essay jumped between topics in the second paragraph. Each paragraph should focus on one main idea.",
+            thematicFlow: "Your ideas were connected but the essay jumped between topics in the second paragraph. Each paragraph focus on one main idea.",
             sentenceStructure: "Good variety of sentence lengths! A few run-on sentences could be split for clarity."
           }
         }),
         aiFeedback: "Good effort on the topic.",
-        readingStrategy: "Focus on identifying 'Signpost Words' (however, therefore, consequently) when reading the next chapter. This will help you use them in your own writing.",
-        rubricData: JSON.stringify({ content: { score: 35, max: 40 }, organization: { score: 25, max: 30 }, grammar: { score: 28, max: 30 } }),
+        readingStrategy: "When you read a new text, ask yourself 'Why did the character do that?' after every major action.",
+        rubricData: JSON.stringify({ content: { score: 38, max: 40 }, organization: { score: 25, max: 30 }, grammar: { score: 25, max: 30 } }),
         student: { name: 'Juan Dela Cruz' }, updatedAt: new Date().toISOString()
       });
       setIsLoading(false);
@@ -67,25 +103,53 @@ export default function OutputDetails() {
   if (isLoading) return <div className="flex items-center justify-center h-64"><Loader2 className="w-6 h-6 animate-spin text-brand-green" /></div>;
   if (!sub) return <div className="p-8 text-center text-slate-500">Submission not found.</div>;
 
-  const score = sub.hitlScore ?? sub.aiScore ?? 0;
-  const feedback = parseFeedback(sub.hitlFeedback || sub.aiFeedback);
-  const rubric = sub.rubricData ? JSON.parse(sub.rubricData) : {
-    content: { score: 35, max: 40 }, organization: { score: 25, max: 30 }, grammar: { score: 28, max: 30 }
-  };
-  const rubricItems = [
-    { name: 'Content & Ideas', ...rubric.content, color: 'bg-brand-green' },
-    { name: 'Organization', ...rubric.organization, color: 'bg-amber-400' },
-    { name: 'Grammar', ...rubric.grammar, color: 'bg-blue-400' },
-  ];
+  const percentageScore = sub?.hitlScore ?? sub?.aiScore ?? 0;
+  const maxPoints = sub?.activity?.points || 100;
+  const score = ((percentageScore / 100) * maxPoints).toFixed(1).replace(/\.0$/, '');
+  const feedback = parseFeedback(sub.hitlFeedback, sub.aiFeedback);
+  let rubricItems = [];
+  try {
+    const rawRubric = sub.rubricData ? JSON.parse(sub.rubricData) : {
+      content: { score: 35, max: 40 }, organization: { score: 25, max: 30 }, grammar: { score: 28, max: 30 }
+    };
+    if (Array.isArray(rawRubric)) {
+      rubricItems = rawRubric.map((r, i) => {
+        let fullDesc = r.bandDescription;
+        if (sub?.activity?.rubric) {
+          try {
+            const activityRubric = JSON.parse(sub.activity.rubric);
+            const criteria = activityRubric.criteria?.find(c => c.name === r.criterionName);
+            if (criteria && criteria.bands) {
+              const band = criteria.bands.find(b => b.label.toLowerCase() === r.bandDescription?.toLowerCase());
+              if (band && band.description) {
+                fullDesc = `${band.label} — ${band.description}`;
+              }
+            }
+          } catch (e) { /* ignore */ }
+        }
+        return {
+          name: r.criterionName, score: r.score, max: r.maxPoints, desc: fullDesc,
+          color: ['bg-brand-green', 'bg-amber-400', 'bg-blue-400', 'bg-purple-400', 'bg-pink-400'][i % 5]
+        };
+      });
+    } else {
+      rubricItems = [
+        { name: 'Content & Ideas', ...rawRubric.content, color: 'bg-brand-green' },
+        { name: 'Organization', ...rawRubric.organization, color: 'bg-amber-400' },
+        { name: 'Grammar', ...rawRubric.grammar, color: 'bg-blue-400' },
+      ];
+    }
+  } catch (e) {
+    rubricItems = [
+      { name: 'Content & Ideas', score: 35, max: 40, color: 'bg-brand-green' },
+      { name: 'Organization', score: 25, max: 30, color: 'bg-amber-400' },
+      { name: 'Grammar', score: 28, max: 30, color: 'bg-blue-400' },
+    ];
+  }
 
   const hasStructuredFeedback = feedback && (feedback.areasForGrowth?.length > 0 || feedback.actionableSteps?.length > 0);
 
-  // Handle deep-link to chatbot — dispatch a custom event
-  const askStudyBuddy = (question, contextData = null) => {
-    window.dispatchEvent(new CustomEvent('open-study-buddy', { 
-      detail: { message: question, context: contextData } 
-    }));
-  };
+
 
   return (
     <div className="p-4 md:p-8 max-w-3xl mx-auto pb-24">
@@ -103,7 +167,7 @@ export default function OutputDetails() {
           </p>
           <div className="mt-6 relative z-10">
             <span className="text-6xl font-extrabold tracking-tight">{score}</span>
-            <span className="text-2xl text-green-200">/100</span>
+            <span className="text-2xl text-green-200">/{maxPoints}</span>
           </div>
         </div>
 
@@ -111,11 +175,19 @@ export default function OutputDetails() {
           <h3 className="text-sm font-bold text-slate-400 uppercase tracking-wider mb-4">Rubric Breakdown</h3>
           <div className="space-y-5">
             {rubricItems.map((item, i) => (
-              <div key={i}>
+              <div key={i} className="relative group">
                 <div className="flex justify-between text-sm mb-1.5">
                   <span className="font-medium text-slate-700">{item.name}</span>
-                  <span className="font-bold text-slate-900">{item.score}/{item.max}</span>
+                  <div className="flex items-center gap-2">
+                    <span className="font-bold text-slate-900">{item.score}% / {item.max}%</span>
+                    <span className="text-xs text-brand-navy font-bold">({((item.score / 100) * maxPoints).toFixed(1).replace(/\.0$/, '')} pts)</span>
+                  </div>
                 </div>
+                {item.desc && (
+                  <div className="hidden group-hover:block absolute bottom-full mb-2 left-0 right-0 bg-slate-800 text-white text-[10px] p-2 rounded z-10 pointer-events-none">
+                    {item.desc}
+                  </div>
+                )}
                 <div className="w-full bg-slate-100 rounded-full h-3">
                   <div className={cn('h-3 rounded-full transition-all duration-700', item.color)}
                     style={{ width: `${(item.score / item.max) * 100}%` }} />
@@ -169,21 +241,7 @@ export default function OutputDetails() {
                   </div>
                   {/* Explanation */}
                   <p className="text-sm text-slate-700 leading-relaxed pl-4">{item.explanation}</p>
-                  
-                  {/* Contextual Ask Study Buddy button */}
-                  <div className="pl-4">
-                    <button
-                      onClick={() => askStudyBuddy(`Can you help me understand this mistake: "${item.studentQuote}"?`, {
-                        assignmentTitle: sub.activity?.title,
-                        mistakeQuote: item.studentQuote,
-                        teacherExplanation: item.explanation
-                      })}
-                      className="inline-flex items-center justify-center gap-2 py-2 px-3 bg-gradient-to-r from-emerald-50 to-green-50 border border-green-200 rounded-lg text-xs font-bold text-green-700 hover:border-green-300 hover:shadow-sm transition-all"
-                    >
-                      <MessageCircle className="w-3.5 h-3.5" />
-                      Ask Study Buddy about this
-                    </button>
-                  </div>
+
                 </div>
               ))}
             </div>

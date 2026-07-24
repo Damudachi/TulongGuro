@@ -22,9 +22,14 @@ export default function ClassHub() {
   const [newActivity, setNewActivity] = useState({ title: '', type: 'Essay', points: 100, instructions: '', deadline: '', submissionMode: 'TEACHER_UPLOAD' });
   const [isEditOpen, setIsEditOpen] = useState(false);
   const [editActivity, setEditActivity] = useState(null);
-  const [editForm, setEditForm] = useState({ deadline: '', instructions: '' });
+  const [editForm, setEditForm] = useState({ title: '', type: 'Essay', points: 100, topic: '', deadline: '', instructions: '' });
+  const [deleteConfirmText, setDeleteConfirmText] = useState('');
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [isSavingEdit, setIsSavingEdit] = useState(false);
   const [showPreview, setShowPreview] = useState(false);
+  const [classLessons, setClassLessons] = useState([]);
+  const [selectedLessonId, setSelectedLessonId] = useState('');
 
   useEffect(() => {
     fetch(`${API_URL}/api/classes/${classId}`)
@@ -33,27 +38,42 @@ export default function ClassHub() {
       .finally(() => setIsLoading(false));
   }, [classId]);
 
+  useEffect(() => {
+    if (!classId) return;
+    fetch(`${API_URL}/api/teacher/classes/${classId}/lessons`)
+      .then(r => r.json())
+      .then(d => { if (d.success) setClassLessons(d.lessons || []); })
+      .catch(() => {});
+  }, [classId]);
+
   const handleCreateActivity = async (e) => {
     e.preventDefault();
     const res = await fetch(`${API_URL}/api/teacher/activities`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...newActivity, classId })
+      body: JSON.stringify({ ...newActivity, classId, classLessonId: selectedLessonId || null })
     });
     const data = await res.json();
     if (data.success) {
       setClassData(prev => ({ ...prev, activities: [data.activity, ...prev.activities] }));
       setShowActivityForm(false);
       setNewActivity({ title: '', type: 'Essay', points: 100, instructions: '', deadline: '', submissionMode: 'TEACHER_UPLOAD' });
+      setSelectedLessonId('');
     }
   };
 
   const openEditModal = (activity) => {
     setEditActivity(activity);
     setEditForm({
+      title: activity.title || '',
+      type: activity.type || 'Essay',
+      points: activity.points || 100,
+      topic: activity.topic || '',
       deadline: activity.deadline ? String(activity.deadline).split('T')[0] : '',
       instructions: activity.instructions || ''
     });
+    setDeleteConfirmText('');
+    setShowDeleteConfirm(false);
     setIsEditOpen(true);
   };
 
@@ -71,19 +91,14 @@ export default function ClassHub() {
         {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            deadline: editForm.deadline,
-            instructions: editForm.instructions
-          })
+          body: JSON.stringify(editForm)
         }
       );
       const data = await res.json();
       if (data.success) {
         setClassData(prev => ({
           ...prev,
-          activities: prev.activities.map(a => a.id === editActivity.id
-            ? { ...a, deadline: data.activity.deadline, instructions: data.activity.instructions }
-            : a)
+          activities: prev.activities.map(a => a.id === editActivity.id ? data.activity : a)
         }));
         closeEditModal();
       } else {
@@ -93,6 +108,25 @@ export default function ClassHub() {
       alert('Network error');
     } finally {
       setIsSavingEdit(false);
+    }
+  };
+
+  const handleDeleteActivity = async () => {
+    if (deleteConfirmText !== 'DELETE') return;
+    setIsDeleting(true);
+    try {
+      const res = await fetch(`${API_URL}/api/teacher/activities/${editActivity.id}`, { method: 'DELETE' });
+      const data = await res.json();
+      if (data.success) {
+        setClassData(prev => ({ ...prev, activities: prev.activities.filter(a => a.id !== editActivity.id) }));
+        closeEditModal();
+      } else {
+        alert('Failed: ' + data.error);
+      }
+    } catch (e) {
+      alert('Network error');
+    } finally {
+      setIsDeleting(false);
     }
   };
 
@@ -168,7 +202,7 @@ export default function ClassHub() {
             </div>
             <Link to={`/teacher/activity/new?classId=${classId}`}
               className="flex items-center bg-brand-navy text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-900 transition-colors">
-              <Plus className="w-4 h-4 mr-2" /> Full Builder
+              <Plus className="w-4 h-4 mr-2" /> Create Activity
             </Link>
           </div>
 
@@ -186,10 +220,6 @@ export default function ClassHub() {
             // Show proper status: check if submissions exist and their status
             const pendingCount = activity.submissions?.filter(s => s.status === 'PENDING').length || 0;
             const gradedCount = activity.submissions?.filter(s => s.status === 'GRADED').length || 0;
-            const cfg = subCount === 0 ? STATUS_CONFIG.NONE
-              : pendingCount > 0 ? STATUS_CONFIG.PENDING
-                : STATUS_CONFIG.GRADED;
-            const StatusIcon = cfg.icon;
             const isPastDeadline = activity.deadline && new Date(activity.deadline) < new Date();
             return (
               <div
@@ -216,9 +246,26 @@ export default function ClassHub() {
                       {activity.deadline ? ` • Due ${new Date(activity.deadline).toLocaleDateString('en-PH', { month: 'short', day: 'numeric' })}` : ''}
                       {isPastDeadline && activity.deadline ? <span className="text-red-500 font-semibold"> (Closed)</span> : ''}
                     </p>
-                    <span className={`text-xs font-semibold px-2 py-0.5 rounded-full flex items-center w-fit gap-1 ${cfg.color}`}>
-                      <StatusIcon className="w-3 h-3" />{cfg.label} {subCount > 0 && `(${subCount})`}
-                    </span>
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      {subCount === 0 ? (
+                        <span className={`text-xs font-semibold px-2 py-0.5 rounded-full flex items-center w-fit gap-1 ${STATUS_CONFIG.NONE.color}`}>
+                          <AlertCircle className="w-3 h-3" />{STATUS_CONFIG.NONE.label}
+                        </span>
+                      ) : (
+                        <>
+                          {pendingCount > 0 && (
+                            <span className={`text-xs font-semibold px-2 py-0.5 rounded-full flex items-center w-fit gap-1 ${STATUS_CONFIG.PENDING.color}`}>
+                              <Clock className="w-3 h-3" />Needs Grading ({pendingCount})
+                            </span>
+                          )}
+                          {gradedCount > 0 && (
+                            <span className={`text-xs font-semibold px-2 py-0.5 rounded-full flex items-center w-fit gap-1 ${STATUS_CONFIG.GRADED.color}`}>
+                              <CheckCircle2 className="w-3 h-3" />Graded ({gradedCount})
+                            </span>
+                          )}
+                        </>
+                      )}
+                    </div>
                   </div>
                 </div>
                 {isStudentSubmit ? (
@@ -226,12 +273,7 @@ export default function ClassHub() {
                     <Link to={`/teacher/batch-upload?activityId=${activity.id}&classId=${classId}`}
                       onClick={(e) => e.stopPropagation()}
                       className="text-xs bg-brand-navy text-white px-3 py-1.5 rounded-md font-medium hover:bg-blue-900 transition-colors flex items-center gap-1">
-                      <UploadCloud className="w-3.5 h-3.5" /> Grade Papers
-                    </Link>
-                    <Link to={`/teacher/gradebook/class/${classId}?activityId=${activity.id}`}
-                      onClick={(e) => e.stopPropagation()}
-                      className="text-xs bg-slate-100 text-slate-700 px-3 py-1.5 rounded-md font-medium hover:bg-slate-200 transition-colors text-center">
-                      View Grades
+                      <UploadCloud className="w-3.5 h-3.5" /> Grade & View
                     </Link>
                   </div>
                 ) : (
@@ -280,6 +322,26 @@ export default function ClassHub() {
                 <input required value={newActivity.title} onChange={e => setNewActivity({ ...newActivity, title: e.target.value })}
                   className="w-full border p-2 rounded-lg outline-none focus:ring-2 focus:ring-brand-navy" placeholder="e.g. Noli Me Tangere Reflection" />
               </div>
+              {classLessons.length > 0 && (
+                <div>
+                  <label className="block text-sm font-medium mb-1">Curriculum Lesson</label>
+                  <select value={selectedLessonId} onChange={e => {
+                    setSelectedLessonId(e.target.value);
+                    if (e.target.value) {
+                      const lesson = classLessons.find(l => l.id === e.target.value);
+                      if (lesson?.outputType) setNewActivity(prev => ({ ...prev, type: lesson.outputType }));
+                    }
+                  }}
+                    className="w-full border p-2 rounded-lg outline-none focus:ring-2 focus:ring-brand-navy text-sm">
+                    <option value="">— Select a lesson (optional) —</option>
+                    {classLessons.map(l => (
+                      <option key={l.id} value={l.id}>
+                        {l.weekNumber ? `Week ${l.weekNumber}: ` : ''}{l.title} ({l.outputType})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="block text-sm font-medium mb-1">Type</label>
@@ -335,27 +397,103 @@ export default function ClassHub() {
       {isEditOpen && editActivity && (
         <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl p-6 w-full max-w-lg shadow-xl">
-            <div className="mb-4">
-              <h2 className="text-xl font-bold text-brand-slate">Assignment Details</h2>
-              <p className="text-xs text-slate-500">Update the deadline and instructions for this activity.</p>
-            </div>
-
-            <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 mb-4">
-              <p className="font-bold text-brand-slate">{editActivity.title}</p>
-              <p className="text-xs text-slate-500">
-                {editActivity.type} • {editActivity.points} pts • {editActivity.submissionMode === 'STUDENT_SUBMIT' ? 'Student Submits' : 'Teacher Uploads'}
-              </p>
-            </div>
-
-            <form onSubmit={handleSaveEdit} className="space-y-4">
+            <div className="mb-4 flex justify-between items-start">
               <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1">Deadline</label>
+                <h2 className="text-xl font-bold text-brand-slate">Assignment Details</h2>
+                <p className="text-xs text-slate-500">Update the details for this activity.</p>
+              </div>
+              {editActivity?._count?.submissions > 0 ? (
+                <div className="text-xs text-slate-400 font-medium px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-lg cursor-not-allowed" title="Cannot delete because students have already uploaded submissions.">
+                  Cannot Delete (Has Submissions)
+                </div>
+              ) : (
+                <button onClick={() => setShowDeleteConfirm(!showDeleteConfirm)} className="text-red-500 text-sm font-semibold hover:text-red-700">
+                  Delete Activity
+                </button>
+              )}
+            </div>
+
+            {showDeleteConfirm && !editActivity?._count?.submissions && (
+              <div className="bg-red-50 border border-red-200 rounded-xl p-4 mb-4">
+                <p className="text-sm text-red-800 font-bold mb-2">Are you sure? This action cannot be undone.</p>
+                <label className="block text-xs font-medium text-red-700 mb-1">Type "DELETE" to confirm</label>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={deleteConfirmText}
+                    onChange={(e) => setDeleteConfirmText(e.target.value)}
+                    className="flex-1 border border-red-200 p-2 rounded-lg outline-none focus:ring-2 focus:ring-red-500"
+                    placeholder="DELETE"
+                  />
+                  <button
+                    type="button"
+                    onClick={handleDeleteActivity}
+                    disabled={deleteConfirmText !== 'DELETE' || isDeleting}
+                    className="bg-red-600 text-white font-bold px-4 rounded-lg hover:bg-red-700 disabled:opacity-50"
+                  >
+                    {isDeleting ? 'Deleting...' : 'Confirm'}
+                  </button>
+                </div>
+              </div>
+            )}
+
+            <form onSubmit={handleSaveEdit} className="space-y-4 max-h-[60vh] overflow-y-auto px-1">
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">Title</label>
                 <input
-                  type="date"
-                  value={editForm.deadline}
-                  onChange={(e) => setEditForm((prev) => ({ ...prev, deadline: e.target.value }))}
+                  type="text"
+                  required
+                  value={editForm.title}
+                  onChange={(e) => setEditForm((prev) => ({ ...prev, title: e.target.value }))}
                   className="w-full border border-slate-200 p-2 rounded-lg outline-none focus:ring-2 focus:ring-brand-navy"
                 />
+              </div>
+              <div className="flex gap-4">
+                <div className="flex-1">
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Type</label>
+                  <select
+                    value={editForm.type}
+                    onChange={(e) => setEditForm((prev) => ({ ...prev, type: e.target.value }))}
+                    className="w-full border border-slate-200 p-2 rounded-lg outline-none focus:ring-2 focus:ring-brand-navy"
+                  >
+                    <option value="Essay">Essay</option>
+                    <option value="Journal">Journal</option>
+                    <option value="Reflection">Reflection</option>
+                    <option value="Short Story">Short Story</option>
+                  </select>
+                </div>
+                <div className="flex-1">
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Points</label>
+                  <input
+                    type="number"
+                    required
+                    min="1"
+                    value={editForm.points}
+                    onChange={(e) => setEditForm((prev) => ({ ...prev, points: parseInt(e.target.value) || 0 }))}
+                    className="w-full border border-slate-200 p-2 rounded-lg outline-none focus:ring-2 focus:ring-brand-navy"
+                  />
+                </div>
+              </div>
+              <div className="flex gap-4">
+                <div className="flex-1">
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Topic (Optional)</label>
+                  <input
+                    type="text"
+                    value={editForm.topic}
+                    onChange={(e) => setEditForm((prev) => ({ ...prev, topic: e.target.value }))}
+                    className="w-full border border-slate-200 p-2 rounded-lg outline-none focus:ring-2 focus:ring-brand-navy"
+                    placeholder="e.g. Noli Me Tangere"
+                  />
+                </div>
+                <div className="flex-1">
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Deadline</label>
+                  <input
+                    type="date"
+                    value={editForm.deadline}
+                    onChange={(e) => setEditForm((prev) => ({ ...prev, deadline: e.target.value }))}
+                    className="w-full border border-slate-200 p-2 rounded-lg outline-none focus:ring-2 focus:ring-brand-navy"
+                  />
+                </div>
               </div>
               <div>
                 <label className="block text-sm font-medium text-slate-700 mb-1">Details</label>
@@ -367,21 +505,29 @@ export default function ClassHub() {
                   placeholder="Add or update assignment details for students..."
                 />
               </div>
-              <div className="flex gap-2 pt-2">
-                <button
-                  type="button"
-                  onClick={closeEditModal}
-                  className="flex-1 py-2 rounded-lg border border-slate-200 text-slate-600 font-medium hover:bg-slate-50"
+              <div className="flex flex-col gap-2 pt-2 pb-2">
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={closeEditModal}
+                    className="flex-1 py-2 rounded-lg border border-slate-200 text-slate-600 font-medium hover:bg-slate-50"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={isSavingEdit}
+                    className="flex-1 py-2 rounded-lg bg-brand-navy text-white font-medium hover:bg-blue-900 disabled:opacity-70"
+                  >
+                    {isSavingEdit ? 'Saving...' : 'Quick Save'}
+                  </button>
+                </div>
+                <Link
+                  to={`/teacher/activity/edit/${editActivity.id}?classId=${classId}`}
+                  className="w-full text-center py-2 rounded-lg border border-brand-navy text-brand-navy font-medium hover:bg-blue-50 mt-2"
                 >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  disabled={isSavingEdit}
-                  className="flex-1 py-2 rounded-lg bg-brand-navy text-white font-medium hover:bg-blue-900 disabled:opacity-70"
-                >
-                  {isSavingEdit ? 'Saving...' : 'Save Changes'}
-                </button>
+                  Advanced Edit (Edit Rubric)
+                </Link>
               </div>
             </form>
           </div>

@@ -15,6 +15,7 @@ import ManageSections from './pages/teacher/ManageSections';
 import Gradebook from './pages/teacher/Gradebook';
 import GradebookSection from './pages/teacher/GradebookSection';
 import GradebookClass from './pages/teacher/GradebookClass';
+import GradebookStudent from './pages/teacher/GradebookStudent';
 import Analytics from './pages/teacher/Analytics';
 import RubricManager from './pages/teacher/RubricManager';
 
@@ -42,6 +43,7 @@ function App() {
           <Route path="dashboard" element={<TeacherDashboard />} />
           <Route path="class/:classId" element={<ClassHub />} />
           <Route path="activity/new" element={<ActivityBuilder />} />
+          <Route path="activity/edit/:activityId" element={<ActivityBuilder />} />
           <Route path="batch-upload" element={<BatchUpload />} />
           <Route path="review/:submissionId" element={<HITLWorkspace />} />
           <Route path="sections" element={<ManageSections />} />
@@ -49,6 +51,7 @@ function App() {
             <Route index element={<Gradebook />} />
             <Route path="section/:sectionId" element={<GradebookSection />} />
             <Route path="class/:classId" element={<GradebookClass />} />
+            <Route path="student/:studentId" element={<GradebookStudent />} />
           </Route>
           <Route path="analytics" element={<Analytics />} />
           <Route path="rubrics" element={<RubricManager />} />

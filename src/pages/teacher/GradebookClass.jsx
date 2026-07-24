@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, Link } from 'react-router-dom';
 import { Users, Download, ChevronDown } from 'lucide-react';
 import { API_URL } from '../../config';
 
@@ -139,7 +139,10 @@ export default function GradebookClass() {
                     <div className="flex items-center gap-2">
                       <div className="w-8 h-8 rounded-full bg-blue-100 flex items-center justify-center text-brand-navy font-bold text-xs shrink-0">{student.name.charAt(0)}</div>
                       <div>
-                        <p className="font-semibold text-brand-slate text-sm">{student.name}</p>
+                        <Link to={`/teacher/gradebook/student/${student.id}`} target="_blank" rel="noopener noreferrer"
+                          className="font-semibold text-brand-slate text-sm hover:text-brand-navy hover:underline">
+                          {student.name}
+                        </Link>
                         <p className="text-xs text-slate-400">{student.username}</p>
                       </div>
                     </div>

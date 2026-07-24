@@ -1,9 +1,27 @@
 import { useState, useRef, useEffect } from 'react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { useNavigate, useSearchParams, useParams } from 'react-router-dom';
 import { ArrowLeft, CheckCircle2, Plus, Camera, Users, Upload, FileText, X, Trash2, Loader2, Save } from 'lucide-react';
 import { API_URL } from '../../config';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
+
+const getBandColor = (label, index, totalBands) => {
+  if (!label) return { bg: 'bg-slate-100', text: 'text-slate-700', border: 'border-slate-200' };
+  const n = label.toLowerCase();
+  if (n.includes('outstanding') || n.includes('excellent')) return { bg: 'bg-green-100', text: 'text-green-700', border: 'border-green-200' };
+  if (n.includes('proficient') || n.includes('very good')) return { bg: 'bg-emerald-100', text: 'text-emerald-700', border: 'border-emerald-200' };
+  if (n.includes('satisfactory')) return { bg: 'bg-amber-100', text: 'text-amber-700', border: 'border-amber-200' };
+  if (n.includes('good') || n.includes('developing')) return { bg: 'bg-blue-100', text: 'text-blue-700', border: 'border-blue-200' };
+  if (n.includes('beginning') || n.includes('needs improvement') || n.includes('poor')) return { bg: 'bg-red-100', text: 'text-red-700', border: 'border-red-200' };
+  if (totalBands > 1) {
+    const ratio = index / (totalBands - 1);
+    if (ratio <= 0.25) return { bg: 'bg-green-100', text: 'text-green-700', border: 'border-green-200' };
+    if (ratio <= 0.5) return { bg: 'bg-blue-100', text: 'text-blue-700', border: 'border-blue-200' };
+    if (ratio <= 0.75) return { bg: 'bg-amber-100', text: 'text-amber-700', border: 'border-amber-200' };
+    return { bg: 'bg-red-100', text: 'text-red-700', border: 'border-red-200' };
+  }
+  return { bg: 'bg-slate-100', text: 'text-slate-700', border: 'border-slate-200' };
+};
 
 const DEFAULT_RANGE_BANDS = [
   { label: 'Excellent', score: 5, description: 'Exceeds expectations in all aspects.' },
@@ -13,86 +31,71 @@ const DEFAULT_RANGE_BANDS = [
   { label: 'Needs Improvement', score: 1, description: 'Does not meet expectations.' },
 ];
 
-const RUBRIC_TEMPLATES = [
-  {
-    id: 'builtin-journal',
-    name: 'Journal / Reflection Rubric',
-    description: 'For evaluating personal reflections, reading journals, and diary entries.',
-    gradeRange: 'Grades 3-6',
-    criteria: [
-      { name: 'Reflection Depth', points: 35, description: 'Demonstrates genuine thinking, personal connections to the topic, and insightful observations.' },
-      { name: 'Content Completeness', points: 35, description: 'Addresses all aspects of the prompt, provides specific examples and details.' },
-      { name: 'Language Use', points: 30, description: 'Age-appropriate vocabulary, readable handwriting, basic grammar and sentence structure.' }
-    ]
-  },
-  {
-    id: 'builtin-essay',
-    name: 'Standard DepEd Essay Rubric',
-    description: 'Standard DepEd rubric for evaluating essay compositions in English and Filipino.',
-    gradeRange: 'Grades 4-6',
-    criteria: [
-      { name: 'Content & Ideas', points: 40, description: 'Depth of ideas, relevance to the topic, supporting details, and understanding of the prompt.' },
-      { name: 'Organization', points: 30, description: 'Logical flow, paragraph structure, clear introduction, body, and conclusion. Use of transitions.' },
-      { name: 'Language & Grammar', points: 30, description: 'Correct grammar, spelling, punctuation, sentence structure, and vocabulary usage.' }
-    ]
-  },
-  {
-    id: 'builtin-creative',
-    name: 'Creative Writing Rubric',
-    description: 'For evaluating short stories, poems, and other creative writing outputs.',
-    gradeRange: 'Grades 4-6',
-    criteria: [
-      { name: 'Creativity & Imagination', points: 30, description: 'Originality of ideas, unique perspective, vivid imagery, and creative expression.' },
-      { name: 'Story Elements', points: 25, description: 'Clear characters, setting, plot (beginning, middle, end), conflict, and resolution.' },
-      { name: 'Language & Style', points: 25, description: 'Descriptive language, varied sentence patterns, word choice, and figurative language.' },
-      { name: 'Mechanics', points: 20, description: 'Correct spelling, punctuation, capitalization, and paragraph formatting.' }
-    ]
-  },
-  {
-    id: 'builtin-research',
-    name: 'Research Report Rubric',
-    description: 'For evaluating research papers, investigative reports, and informational writing.',
-    gradeRange: 'Grades 5-6',
-    criteria: [
-      { name: 'Research Quality', points: 30, description: 'Accuracy of information, use of credible sources, and depth of investigation.' },
-      { name: 'Content & Analysis', points: 30, description: 'Clear thesis, supporting evidence, logical arguments, and conclusions drawn from data.' },
-      { name: 'Organization & Format', points: 20, description: 'Proper report structure (introduction, body, conclusion), headings, and citations.' },
-      { name: 'Language & Mechanics', points: 20, description: 'Formal tone, correct grammar, spelling, and proper academic writing conventions.' }
-    ]
-  },
-  {
-    id: 'builtin-oral-written',
-    name: 'Oral / Written Presentation Rubric',
-    description: 'For evaluating written drafts of presentations, speeches, or show-and-tell scripts.',
-    gradeRange: 'Grades 3-6',
-    criteria: [
-      { name: 'Content & Message', points: 35, description: 'Clarity of the main message, supporting points, and relevance to the topic.' },
-      { name: 'Organization & Flow', points: 30, description: 'Logical sequence of ideas, smooth transitions, engaging introduction and conclusion.' },
-      { name: 'Language & Expression', points: 35, description: 'Appropriate vocabulary, persuasive or informative tone, and correct grammar.' }
-    ]
-  }
-];
-
 export default function ActivityBuilder() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
+  const { activityId: editActivityId } = useParams();
+  const isEditMode = !!editActivityId;
   const classId = searchParams.get('classId');
   const fileInputRef = useRef(null);
   const rubricFileRef = useRef(null);
+  const [isLoadingEdit, setIsLoadingEdit] = useState(false);
 
   const [isSaving, setIsSaving] = useState(false);
   const [topics, setTopics] = useState([]);
+  const [classLessons, setClassLessons] = useState([]);
+  const [selectedLessonId, setSelectedLessonId] = useState('');
   const [rubricMode, setRubricMode] = useState('template'); // 'template' | 'manual' | 'upload'
   const [rubricType, setRubricType] = useState('standard'); // 'standard' | 'range'
-  const [savedRubrics, setSavedRubrics] = useState(() => {
-    try { return JSON.parse(localStorage.getItem('savedRubrics') || '[]'); }
-    catch { return []; }
-  });
-  const initialCriteria = (savedRubrics && savedRubrics.length) ? savedRubrics[0].criteria : RUBRIC_TEMPLATES[0].criteria;
-  const [rubricCriteria, setRubricCriteria] = useState(initialCriteria);
-  const [selectedOption, setSelectedOption] = useState(() => (savedRubrics && savedRubrics.length) ? `saved:${savedRubrics[0].id}` : 'builtin:0');
-  const [showAgreement, setShowAgreement] = useState(false);
-  const [pendingBuiltinIdx, setPendingBuiltinIdx] = useState(null);
+  const [savedRubrics, setSavedRubrics] = useState([]);
+  const [builtinRubrics, setBuiltinRubrics] = useState([]);
+
+  useEffect(() => {
+    const fetchTemplates = async () => {
+      try {
+        const user = JSON.parse(localStorage.getItem('user') || '{}');
+        if (!user.id) return;
+        const res = await fetch(`${API_URL}/api/teacher/rubric-templates/${user.id}`);
+        const data = await res.json();
+        if (data.success && data.templates) {
+          const parsedTemplates = data.templates.map(t => ({
+            ...t,
+            criteria: typeof t.criteria === 'string' ? JSON.parse(t.criteria) : t.criteria
+          }));
+          setSavedRubrics(parsedTemplates);
+        }
+      } catch (err) {
+        console.error('Failed to load cloud templates:', err);
+      }
+    };
+    fetchTemplates();
+  }, []);
+
+  // ── Fetch built-in curriculum-aligned rubric templates ──
+  useEffect(() => {
+    fetch(`${API_URL}/api/rubric-templates/builtin`)
+      .then(res => res.json())
+      .then(data => { if (data.success && data.templates) setBuiltinRubrics(data.templates); })
+      .catch(() => {});
+  }, []);
+
+  const [rubricCriteria, setRubricCriteria] = useState([{ name: '', description: '', points: 100 }]);
+  const [selectedOption, setSelectedOption] = useState('builtin:__pending');
+
+  // Once built-in rubrics load, apply the first one as the default — but only if the
+  // teacher hasn't already picked something else (saved rubric, or a topic-recommended one).
+  useEffect(() => {
+    if (builtinRubrics.length && selectedOption === 'builtin:__pending') {
+      if (savedRubrics.length) {
+        setRubricCriteria(savedRubrics[0].criteria);
+        setSelectedOption(`saved:${savedRubrics[0].id}`);
+      } else {
+        setRubricCriteria(builtinRubrics[0].criteria);
+        setRubricType(builtinRubrics[0].type || 'standard');
+        setSelectedOption(`builtin:${builtinRubrics[0].id}`);
+      }
+    }
+  }, [builtinRubrics, savedRubrics]);
   const [additionalFiles, setAdditionalFiles] = useState([]); // { file, name }[]
   const [rubricFile, setRubricFile] = useState(null);
 
@@ -113,6 +116,7 @@ export default function ActivityBuilder() {
     deadline: '',
     instructions: '',
     submissionMode: 'TEACHER_UPLOAD',
+    maxAttempts: 1,
   });
 
   // ── Fetch topics on mount ──
@@ -122,6 +126,65 @@ export default function ActivityBuilder() {
       .then(data => { if (data.success) setTopics(data.topics); })
       .catch(() => {});
   }, []);
+
+  // Fetch class lessons from parsed curriculum
+  useEffect(() => {
+    if (!classId) return;
+    fetch(`${API_URL}/api/teacher/classes/${classId}/lessons`)
+      .then(res => res.json())
+      .then(data => { if (data.success) setClassLessons(data.lessons || []); })
+      .catch(() => {});
+  }, [classId]);
+
+  // ── Edit Mode: Fetch existing activity and pre-fill form ──
+  useEffect(() => {
+    if (!isEditMode || !editActivityId) return;
+    setIsLoadingEdit(true);
+    fetch(`${API_URL}/api/activities/${editActivityId}/submissions`)
+      .then(r => r.json())
+      .catch(() => null);
+    // Fetch the activity from the class activities list
+    // We need a direct activity fetch. Let's use the submissions endpoint parent activity.
+    // Actually, there's no direct activity fetch, so we'll use the class endpoint.
+    // For now, we'll fetch from a search across teacher classes.
+    const user = JSON.parse(localStorage.getItem('user') || '{}');
+    if (!user.id) { setIsLoadingEdit(false); return; }
+    fetch(`${API_URL}/api/teacher/${user.id}/classes`)
+      .then(r => r.json())
+      .then(data => {
+        if (!data.success) return;
+        for (const cls of data.classes) {
+          const activity = cls.activities?.find(a => a.id === editActivityId);
+          if (activity) {
+            setForm({
+              title: activity.title || '',
+              type: activity.type || 'Essay',
+              topic: activity.topic || '',
+              points: activity.points || 100,
+              deadline: activity.deadline ? String(activity.deadline).split('T')[0] : '',
+              instructions: activity.instructions || '',
+              submissionMode: activity.submissionMode || 'TEACHER_UPLOAD',
+              maxAttempts: activity.maxAttempts || 1,
+            });
+            // Pre-fill rubric if it exists
+            if (activity.rubric) {
+              try {
+                const parsed = JSON.parse(activity.rubric);
+                if (parsed.criteria?.length) {
+                  setRubricCriteria(parsed.criteria);
+                  if (parsed.type) setRubricType(parsed.type);
+                  if (parsed.source) setRubricMode(parsed.source);
+                  setSelectedOption('custom');
+                }
+              } catch {}
+            }
+            break;
+          }
+        }
+      })
+      .catch(() => {})
+      .finally(() => setIsLoadingEdit(false));
+  }, [isEditMode, editActivityId]);
 
   // ── Rubric helpers ──
   const updateCriterion = (idx, field, val) => {
@@ -150,7 +213,7 @@ export default function ActivityBuilder() {
   };
 
   const activeCriteria = (rubricMode === 'upload' && extractedCriteria) ? extractedCriteria : rubricCriteria;
-  const totalPoints = activeCriteria.reduce((s, c) => s + (c.points || 0), 0);
+  const totalPercentage = activeCriteria.reduce((s, c) => s + (c.points || 0), 0);
 
   // ── Upload rubric extraction ──
   const handleRubricUpload = async (e) => {
@@ -195,23 +258,38 @@ export default function ActivityBuilder() {
     setShowSaveTemplateModal(true);
   };
 
-  const confirmSaveTemplate = () => {
+  const confirmSaveTemplate = async () => {
     const criteriaToSave = (rubricMode === 'upload' && extractedCriteria) ? extractedCriteria : rubricCriteria;
-    const newTemplate = {
-      id: `custom-${Date.now()}`,
-      name: templateTitle || 'My Custom Rubric',
-      description: 'Custom rubric saved by teacher.',
-      gradeRange: 'Custom',
-      criteria: criteriaToSave,
-      type: rubricType,
-      savedAt: new Date().toISOString(),
-    };
-    const updated = [...savedRubrics, newTemplate];
-    setSavedRubrics(updated);
-    localStorage.setItem('savedRubrics', JSON.stringify(updated));
-    setShowSaveTemplateModal(false);
-    setTemplateTitle('');
-    alert(`✓ "${newTemplate.name}" has been saved to your rubrics.`);
+    if (!criteriaToSave.length) return;
+    const user = JSON.parse(localStorage.getItem('user') || '{}');
+    if (!user.id) return alert('User not found. Please log in again.');
+
+    try {
+      const res = await fetch(`${API_URL}/api/teacher/rubric-templates`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: templateTitle || 'My Custom Rubric',
+          criteria: criteriaToSave,
+          teacherId: user.id
+        })
+      });
+      const data = await res.json();
+      if (data.success) {
+        const savedTemplate = {
+          ...data.template,
+          criteria: typeof data.template.criteria === 'string' ? JSON.parse(data.template.criteria) : data.template.criteria
+        };
+        setSavedRubrics(prev => [savedTemplate, ...prev]);
+        setShowSaveTemplateModal(false);
+        setTemplateTitle('');
+        alert(`✓ "${savedTemplate.name}" has been saved to cloud templates.`);
+      } else {
+        alert('Failed to save template: ' + data.error);
+      }
+    } catch (err) {
+      alert('Network error while saving template.');
+    }
   };
 
   // ── Additional files ──
@@ -223,26 +301,50 @@ export default function ActivityBuilder() {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (rubricMode !== 'upload' && totalPoints !== form.points) {
-      if (!window.confirm(`Rubric total (${totalPoints} pts) doesn't match activity points (${form.points} pts). Continue?`)) return;
+    if (rubricMode !== 'upload' && totalPercentage !== 100) {
+      alert(`Rubric weight must total 100%. Currently it is ${totalPercentage}%.`);
+      return;
+    }
+    if (!form.points || form.points < 1) {
+      alert("Total Points must be greater than 0.");
+      return;
     }
     setIsSaving(true);
     try {
-      const fd = new FormData();
-      Object.entries(form).forEach(([k, v]) => fd.append(k, v));
-      fd.append('classId', classId || 'mock-class-id');
+      if (isEditMode) {
+        // UPDATE existing activity via JSON
+        const criteriaForSubmit = (rubricMode === 'upload' && extractedCriteria) ? extractedCriteria : rubricCriteria;
+        const res = await fetch(`${API_URL}/api/teacher/activities/${editActivityId}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            ...form,
+            classLessonId: selectedLessonId || null,
+            rubric: JSON.stringify({ source: rubricMode, type: rubricType, criteria: criteriaForSubmit })
+          })
+        });
+        const data = await res.json();
+        if (data.success) navigate(-1);
+        else alert('Error: ' + data.error);
+      } else {
+        // CREATE new activity via FormData
+        const fd = new FormData();
+        Object.entries(form).forEach(([k, v]) => fd.append(k, v));
+        fd.append('classId', classId || 'mock-class-id');
+        if (selectedLessonId) fd.append('classLessonId', selectedLessonId);
 
-      // Build rubric JSON — include extracted criteria for upload mode
-      const criteriaForSubmit = (rubricMode === 'upload' && extractedCriteria) ? extractedCriteria : rubricCriteria;
-      fd.append('rubric', JSON.stringify({ source: rubricMode, type: rubricType, criteria: criteriaForSubmit }));
+        // Build rubric JSON — include extracted criteria for upload mode
+        const criteriaForSubmit = (rubricMode === 'upload' && extractedCriteria) ? extractedCriteria : rubricCriteria;
+        fd.append('rubric', JSON.stringify({ source: rubricMode, type: rubricType, criteria: criteriaForSubmit }));
 
-      additionalFiles.forEach(f => fd.append('additionalFiles', f.file));
-      if (rubricFile && rubricMode === 'upload') fd.append('additionalFiles', rubricFile);
+        additionalFiles.forEach(f => fd.append('additionalFiles', f.file));
+        if (rubricFile && rubricMode === 'upload') fd.append('additionalFiles', rubricFile);
 
-      const res = await fetch(`${API_URL}/api/teacher/activities`, { method: 'POST', body: fd });
-      const data = await res.json();
-      if (data.success) navigate(-1);
-      else alert('Error: ' + data.error);
+        const res = await fetch(`${API_URL}/api/teacher/activities`, { method: 'POST', body: fd });
+        const data = await res.json();
+        if (data.success) navigate(-1);
+        else alert('Error: ' + data.error);
+      }
     } catch { alert('Network error'); }
     finally { setIsSaving(false); }
   };
@@ -256,8 +358,17 @@ export default function ActivityBuilder() {
             <input type="text" value={c.name} onChange={e => updateCriterion(i, 'name', e.target.value)}
               className="flex-1 px-3 py-1.5 border border-slate-200 rounded text-sm font-medium focus:outline-none focus:ring-1 focus:ring-brand-navy" placeholder="Criterion name" />
             {rubricType === 'standard' && (
-              <input type="number" value={c.points} onChange={e => updateCriterion(i, 'points', e.target.value)}
-                className="w-20 px-3 py-1.5 border border-slate-200 rounded text-sm text-center focus:outline-none focus:ring-1 focus:ring-brand-navy" placeholder="pts" />
+              <div className="flex items-center gap-2">
+                <input type="number" value={c.points === 0 ? '' : c.points} onChange={e => {
+                  const val = e.target.value;
+                  updateCriterion(i, 'points', val === '' ? 0 : parseInt(val) || 0);
+                }}
+                  className="w-20 px-3 py-1.5 border border-slate-200 rounded-lg text-sm" />
+                <span className="text-slate-500 font-medium">%</span>
+                <span className="text-brand-navy font-bold text-sm ml-2">
+                  = {((c.points / 100) * (form.points || 0)).toFixed(1).replace(/\.0$/, '')} pts
+                </span>
+              </div>
             )}
             <button type="button" onClick={() => removeCriterion(i)} className="text-slate-400 hover:text-red-500 mt-1"><Trash2 className="w-4 h-4" /></button>
           </div>
@@ -287,8 +398,8 @@ export default function ActivityBuilder() {
         <Plus className="w-4 h-4 mr-1" /> Add Criterion
       </button>
       {rubricType === 'standard' && (
-        <div className={cn('text-sm font-bold mt-2 px-3 py-2 rounded-lg', totalPoints === form.points ? 'text-green-600 bg-green-50' : 'text-amber-600 bg-amber-50')}>
-          Total: {totalPoints}/{form.points} pts {totalPoints !== form.points && `(${form.points - totalPoints > 0 ? '+' : ''}${form.points - totalPoints} remaining)`}
+        <div className={cn('text-sm font-bold mt-2 px-3 py-2 rounded-lg', totalPercentage === 100 ? 'text-green-600 bg-green-50' : 'text-amber-600 bg-amber-50')}>
+          Total Weight: {totalPercentage}% {totalPercentage !== 100 && `(${100 - totalPercentage > 0 ? '+' : ''}${100 - totalPercentage}% remaining)`}
         </div>
       )}
     </div>
@@ -299,7 +410,7 @@ export default function ActivityBuilder() {
       <button onClick={() => navigate(-1)} className="flex items-center text-sm text-slate-500 hover:text-brand-slate mb-6">
         <ArrowLeft className="w-4 h-4 mr-1" /> Back to Class
       </button>
-      <h1 className="text-2xl font-bold text-brand-slate mb-6">Create New Activity</h1>
+      <h1 className="text-2xl font-bold text-brand-slate mb-6">{isEditMode ? 'Edit Activity' : 'Create New Activity'}</h1>
 
       <form className="space-y-6" onSubmit={handleSubmit}>
 
@@ -316,7 +427,7 @@ export default function ActivityBuilder() {
               </div>
               <div>
                 <p className="font-bold text-brand-slate text-sm">📷 Teacher Uploads</p>
-                <p className="text-xs text-slate-500 mt-0.5">Teacher scans student papers via Batch Upload and triggers AI grading.</p>
+                <p className="text-xs text-slate-500 mt-0.5">Teacher scans student papers via Scan & Grade Papers and triggers AI grading.</p>
               </div>
               {form.submissionMode === 'TEACHER_UPLOAD' && <span className="text-xs font-bold text-brand-navy flex items-center gap-1"><CheckCircle2 className="w-3.5 h-3.5" /> Selected</span>}
             </button>
@@ -356,25 +467,84 @@ export default function ActivityBuilder() {
             </div>
             <div>
               <label className="block text-sm font-medium text-slate-700 mb-1">Total Points</label>
-              <input type="number" min={1} value={form.points} onChange={e => setForm({ ...form, points: parseInt(e.target.value) || 100 })}
-                className="w-full px-4 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-brand-navy outline-none" />
+              <div className="flex items-center border border-slate-200 rounded-lg overflow-hidden focus-within:ring-2 focus-within:ring-brand-navy focus-within:border-brand-navy bg-white">
+                <button type="button" onClick={() => setForm(f => ({ ...f, points: Math.max(1, (f.points || 0) - 5) }))} className="px-3 py-2 bg-slate-50 text-slate-600 hover:bg-slate-200 font-bold border-r border-slate-200 transition-colors">-</button>
+                <input type="number" min={1} value={form.points === 0 ? '' : form.points} onChange={e => {
+                    const val = e.target.value;
+                    setForm({ ...form, points: val === '' ? 0 : parseInt(val) || 0 });
+                  }}
+                  className="w-full px-4 py-2 text-center outline-none" />
+                <button type="button" onClick={() => setForm(f => ({ ...f, points: (f.points || 0) + 5 }))} className="px-3 py-2 bg-slate-50 text-slate-600 hover:bg-slate-200 font-bold border-l border-slate-200 transition-colors">+</button>
+              </div>
             </div>
           </div>
 
+          {classLessons.length > 0 && (
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-1">Curriculum Lesson / Topic</label>
+              <select value={selectedLessonId} onChange={e => {
+                const lessonId = e.target.value;
+                setSelectedLessonId(lessonId);
+                if (lessonId) {
+                  const lesson = classLessons.find(l => l.id === lessonId);
+                  if (lesson?.outputType) {
+                    setForm(prev => ({ ...prev, type: lesson.outputType }));
+                  }
+                  // Auto-apply default rubric if lesson has one
+                  if (lesson?.defaultRubric) {
+                    try {
+                      const parsed = typeof lesson.defaultRubric === 'string' ? JSON.parse(lesson.defaultRubric) : lesson.defaultRubric;
+                      if (parsed.criteria?.length) {
+                        setRubricCriteria(parsed.criteria);
+                        setRubricMode('template');
+                        setSelectedOption('lesson-rubric');
+                      }
+                    } catch {}
+                  }
+                }
+              }}
+                className="w-full px-4 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-brand-navy outline-none">
+                <option value="">— Select a lesson from curriculum —</option>
+                {classLessons.map(l => (
+                  <option key={l.id} value={l.id}>
+                    {l.weekNumber ? `Week ${l.weekNumber}: ` : ''}{l.title} ({l.outputType})
+                  </option>
+                ))}
+              </select>
+              <p className="text-xs text-slate-400 mt-1">Selecting a lesson auto-applies its output type and default rubric.</p>
+            </div>
+          )}
+
           <div>
             <label className="block text-sm font-medium text-slate-700 mb-1">DepEd Topic (Optional)</label>
-            <select value={form.topic} onChange={e => setForm({ ...form, topic: e.target.value })}
+            <select value={form.topic} onChange={e => {
+                const topicId = e.target.value;
+                setForm({ ...form, topic: topicId });
+                if (topicId) {
+                  const topicInfo = topics.find(t => t.id === topicId);
+                  const recommended = topicInfo?.recommendedRubricId
+                    ? builtinRubrics.find(t => t.id === topicInfo.recommendedRubricId)
+                    : null;
+                  if (recommended) {
+                    setRubricCriteria(recommended.criteria);
+                    setRubricType(recommended.type || 'standard');
+                    setRubricMode('template');
+                    setSelectedOption(`builtin:${recommended.id}`);
+                  }
+                }
+              }}
               className="w-full px-4 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-brand-navy outline-none">
               <option value="">— Select a topic (optional) —</option>
-              {[1, 2, 3, 4].map(q => {
-                const qTopics = topics.filter(t => t.quarter === q);
-                return qTopics.length > 0 ? (
-                  <optgroup key={q} label={`Quarter ${q}`}>
-                    {qTopics.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+              {[1, 2, 3].map(term => {
+                const termTopics = topics.filter(t => t.term === term);
+                return termTopics.length > 0 ? (
+                  <optgroup key={term} label={`Term ${term}`}>
+                    {termTopics.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
                   </optgroup>
                 ) : null;
               })}
             </select>
+            <p className="text-xs text-slate-400 mt-1">Selecting a topic suggests a matching rubric below — you can still change it.</p>
           </div>
 
           <div>
@@ -382,9 +552,21 @@ export default function ActivityBuilder() {
               Deadline {form.submissionMode === 'STUDENT_SUBMIT' && <span className="text-red-500">*</span>}
             </label>
             <input type="date" value={form.deadline} onChange={e => setForm({ ...form, deadline: e.target.value })}
+              min={form.submissionMode === 'STUDENT_SUBMIT' ? new Date().toISOString().split('T')[0] : undefined}
               required={form.submissionMode === 'STUDENT_SUBMIT'}
               className="w-full px-4 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-brand-navy outline-none" />
           </div>
+
+          {form.submissionMode === 'STUDENT_SUBMIT' && (
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-1">
+                Max Submission Attempts
+              </label>
+              <input type="number" min={1} max={10} value={form.maxAttempts} onChange={e => setForm({ ...form, maxAttempts: parseInt(e.target.value) || 1 })}
+                className="w-full px-4 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-brand-navy outline-none" />
+              <p className="text-xs text-slate-400 mt-1">How many times a student can re-submit before the deadline (default: 1).</p>
+            </div>
+          )}
 
           <div>
             <label className="block text-sm font-medium text-slate-700 mb-1">Instructions for Students</label>
@@ -434,15 +616,17 @@ export default function ActivityBuilder() {
               <button key={val} type="button" onClick={() => {
                 setRubricMode(val);
                 if (val === 'template') {
-                  const defaultCriteria = savedRubrics && savedRubrics.length ? savedRubrics[0].criteria : RUBRIC_TEMPLATES[0].criteria;
-                  setRubricCriteria(defaultCriteria);
-                  setSelectedOption(savedRubrics && savedRubrics.length ? `saved:${savedRubrics[0].id}` : 'builtin:0');
-                  
+                  const defaultCriteria = savedRubrics && savedRubrics.length ? savedRubrics[0].criteria : builtinRubrics[0]?.criteria;
+                  if (defaultCriteria) setRubricCriteria(defaultCriteria);
+                  setSelectedOption(savedRubrics && savedRubrics.length ? `saved:${savedRubrics[0].id}` : (builtinRubrics[0] ? `builtin:${builtinRubrics[0].id}` : 'builtin:__pending'));
+
                   // Infer type if missing (for older saves)
                   let loadedType = 'standard';
                   if (savedRubrics && savedRubrics.length) {
                     if (savedRubrics[0].type) loadedType = savedRubrics[0].type;
                     else if (savedRubrics[0].criteria?.[0]?.bands?.length > 0) loadedType = 'range';
+                  } else if (builtinRubrics[0]?.type) {
+                    loadedType = builtinRubrics[0].type;
                   }
                   setRubricType(loadedType);
                 } else if (val === 'manual' && rubricMode !== 'manual') {
@@ -472,7 +656,7 @@ export default function ActivityBuilder() {
               <button type="button" onClick={() => setRubricType('standard')}
                 className={cn('flex-1 py-2 px-3 text-xs font-bold rounded-lg border-2 transition-all',
                   rubricType === 'standard' ? 'border-brand-green bg-green-50 text-green-700' : 'border-slate-200 text-slate-500 hover:border-green-300')}>
-                📊 Standard (Points)
+                📊 Standard (Percentage)
               </button>
               <button type="button" onClick={() => {
                 setRubricType('range');
@@ -506,22 +690,17 @@ export default function ActivityBuilder() {
                       setRubricType(loadedType);
                     }
                   } else if (val.startsWith('builtin:')) {
-                    const idx = parseInt(val.split(':')[1] || '0', 10);
-                    // Only show notice/agreement for the Essay Writing Rubric
-                    const builtin = RUBRIC_TEMPLATES[idx];
-                    if (builtin && builtin.id === 'builtin-essay') {
-                      setPendingBuiltinIdx(idx);
-                      setShowAgreement(true);
-                    } else {
-                      // apply other built-in rubrics immediately
-                      setRubricCriteria(RUBRIC_TEMPLATES[idx].criteria);
+                    const id = val.slice(8);
+                    const builtin = builtinRubrics.find(t => t.id === id);
+                    if (builtin) {
+                      setRubricCriteria(builtin.criteria);
                       setSelectedOption(val);
-                      setRubricType(RUBRIC_TEMPLATES[idx].type || 'standard');
+                      setRubricType(builtin.type || 'standard');
                     }
                   }
                 }}
                 className="w-full border border-slate-200 p-2 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand-navy mb-3">
-                {RUBRIC_TEMPLATES.map((t, i) => <option key={t.id} value={`builtin:${i}`}>{t.name}</option>)}
+                {builtinRubrics.map(t => <option key={t.id} value={`builtin:${t.id}`}>{t.name}</option>)}
                 {savedRubrics.length > 0 && <optgroup label="Your Saved Rubrics">{savedRubrics.map(r => <option key={r.id} value={`saved:${r.id}`}>{r.name}</option>)}</optgroup>}
               </select>
               {rubricCriteria.map((c, i) => (
@@ -533,20 +712,26 @@ export default function ActivityBuilder() {
                       <p className="text-xs text-slate-500">{c.description}</p>
                     </div>
                     {rubricType === 'standard' && (
-                      <span className="text-sm font-bold text-brand-navy shrink-0">{c.points} pts</span>
+                      <div className="flex flex-col items-center justify-center shrink-0 min-w-[60px]">
+                        <span className="text-sm font-bold text-brand-navy">{c.points}%</span>
+                        <span className="text-[11px] font-semibold text-slate-400">({((c.points / 100) * (form.points || 0)).toFixed(1).replace(/\.0$/, '')} pts)</span>
+                      </div>
                     )}
                   </div>
                   {rubricType === 'range' && c.bands && c.bands.length > 0 && (
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mt-2 ml-8">
-                      {c.bands.map((band, bi) => (
-                        <div key={bi} className="rounded-lg border border-slate-200 bg-white p-2">
-                          <div className="flex items-center gap-2 mb-1">
-                            <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-100 text-slate-700">{band.label}</span>
-                            <span className="text-xs font-bold text-brand-slate">{band.score} pts</span>
+                      {c.bands.map((band, bi) => {
+                        const color = getBandColor(band.label, bi, c.bands.length);
+                        return (
+                          <div key={bi} className={`rounded-lg border ${color.border} bg-white p-2`}>
+                            <div className="flex items-center gap-2 mb-1">
+                              <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${color.bg} ${color.text}`}>{band.label}</span>
+                              <span className="text-xs font-bold text-brand-slate">{band.score} pts</span>
+                            </div>
+                            <p className="text-[11px] text-slate-500 leading-relaxed">{band.description}</p>
                           </div>
-                          <p className="text-[11px] text-slate-500 leading-relaxed">{band.description}</p>
-                        </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   )}
                 </div>
@@ -631,38 +816,6 @@ export default function ActivityBuilder() {
           {/* Removed AI-generated rubric option by request */}
         </div>
 
-        {/* Agreement Modal for built-in rubrics */}
-        {showAgreement && typeof pendingBuiltinIdx === 'number' && RUBRIC_TEMPLATES[pendingBuiltinIdx] && (
-          <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-            <div className="bg-white rounded-2xl p-6 max-w-md w-full shadow-xl">
-              <div className="flex items-center gap-3 mb-4">
-                <div className="w-10 h-10 rounded-full bg-amber-100 flex items-center justify-center">
-                  <svg className="w-5 h-5 text-amber-600" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>
-                </div>
-                <h3 className="font-bold text-brand-slate text-lg">Pre-defined Rubric Notice</h3>
-              </div>
-              <p className="text-sm text-slate-600 mb-3">
-                You are about to use the pre-defined "{RUBRIC_TEMPLATES[pendingBuiltinIdx].name}" rubric. These rubrics follow DepEd K-12 standards and are provided as a starting point.
-              </p>
-              <p className="text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-lg p-3 mb-4">
-                By using this rubric you acknowledge that you have reviewed it and will adapt it as needed for your class and activity level.
-              </p>
-              <div className="flex gap-3">
-                <button onClick={() => { setShowAgreement(false); setPendingBuiltinIdx(null); }}
-                  className="flex-1 py-2.5 border border-slate-200 text-slate-600 rounded-lg font-medium hover:bg-slate-50">Cancel</button>
-                <button onClick={() => {
-                    const idx = pendingBuiltinIdx;
-                    setRubricCriteria(RUBRIC_TEMPLATES[idx].criteria);
-                    setSelectedOption(`builtin:${idx}`);
-                    setShowAgreement(false);
-                    setPendingBuiltinIdx(null);
-                  }}
-                  className="flex-1 py-2.5 bg-brand-navy text-white rounded-lg font-medium hover:bg-blue-900">I Agree & Use</button>
-              </div>
-            </div>
-          </div>
-        )}
-
         {/* Save as Template Modal */}
         {showSaveTemplateModal && (
           <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
@@ -692,7 +845,7 @@ export default function ActivityBuilder() {
             className="px-6 py-2 rounded-lg text-slate-600 font-medium hover:bg-slate-100 mr-4 transition-colors">Cancel</button>
           <button type="submit" disabled={isSaving}
             className="px-6 py-2 rounded-lg bg-brand-navy text-white font-medium hover:bg-blue-900 transition-colors shadow-lg shadow-blue-900/20 disabled:opacity-60">
-            {isSaving ? 'Publishing...' : 'Publish Activity'}
+            {isSaving ? (isEditMode ? 'Updating...' : 'Publishing...') : (isEditMode ? 'Update Activity' : 'Publish Activity')}
           </button>
         </div>
       </form>

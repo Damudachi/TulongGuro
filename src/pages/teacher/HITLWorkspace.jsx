@@ -5,11 +5,20 @@ import { API_URL } from '../../config';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
 
-/** Try to parse structured AI feedback JSON. Returns null if plain string. */
+/** Try to parse structured AI feedback JSON. Returns null if plain string or if it contains an AI error. */
 function parseStructuredFeedback(raw) {
   if (!raw || typeof raw !== 'string') return null;
+  if (raw.includes('⚠ AI grading is currently unavailable')) return null;
+
   try {
-    const obj = JSON.parse(raw);
+    let cleanRaw = raw.trim();
+    if (cleanRaw.startsWith('```')) {
+      const lines = cleanRaw.split('\n');
+      if (lines.length > 2) {
+        cleanRaw = lines.slice(1, -1).join('\n').trim();
+      }
+    }
+    const obj = JSON.parse(cleanRaw);
     if (obj && typeof obj === 'object' && 'strengths' in obj) {
       return {
         strengths: obj.strengths || '',
@@ -53,6 +62,7 @@ export default function HITLWorkspace() {
 
   const [submission, setSubmission] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
 
   // Structured feedback state
   const [structuredFeedback, setStructuredFeedback] = useState({ ...EMPTY_STRUCTURED });
@@ -62,6 +72,7 @@ export default function HITLWorkspace() {
 
   const [readingStrategy, setReadingStrategy] = useState('');
   const [scores, setScores] = useState({ content: 35, organization: 25, grammar: 25 });
+  const [dynamicRubric, setDynamicRubric] = useState(null);
   const [isEditingAssessment, setIsEditingAssessment] = useState(false);
   const [isChatOpen, setIsChatOpen] = useState(false);
   const [chatHistory, setChatHistory] = useState([
@@ -100,23 +111,61 @@ export default function HITLWorkspace() {
           const sub = d.submission;
           setSubmission(sub);
 
-          // Try structured parse on hitlFeedback first, then aiFeedback
-          const rawFeedback = sub.hitlFeedback || sub.aiFeedback || '';
-          const parsed = parseStructuredFeedback(rawFeedback);
-          if (parsed) {
-            setStructuredFeedback(parsed);
-            setIsStructured(true);
-          } else {
-            setLegacyFeedbackText(rawFeedback);
-            setIsStructured(false);
+          // Merge AI and HITL feedback
+          let finalStructured = { strengths: '', areasForGrowth: [], actionableSteps: [], skillExplanations: {} };
+          
+          const parsedAi = parseStructuredFeedback(sub.aiFeedback);
+          if (parsedAi) {
+            finalStructured = { ...parsedAi };
+          } else if (sub.aiFeedback) {
+            finalStructured.strengths = sub.aiFeedback;
           }
+          
+          if (sub.hitlFeedback) {
+            const parsedHitl = parseStructuredFeedback(sub.hitlFeedback);
+            if (parsedHitl) {
+              finalStructured = { ...parsedHitl };
+            } else {
+              // Teacher saved plain text override; put it in strengths, keep AI's arrays if they exist
+              finalStructured.strengths = sub.hitlFeedback;
+            }
+          }
+          
+          if (finalStructured.strengths?.includes('⚠ AI grading is currently unavailable')) {
+            finalStructured.strengths = '';
+          }
+          
+          setStructuredFeedback(finalStructured);
+          setIsStructured(true);
 
           setReadingStrategy(sub.readingStrategy || '');
-          if (sub.rubricData) {
+          if (sub.rubricData && sub.rubricData !== '[]') {
             try {
               const rd = JSON.parse(sub.rubricData);
-              setScores({ content: rd.content?.score ?? 35, organization: rd.organization?.score ?? 25, grammar: rd.grammar?.score ?? 25 });
+              if (Array.isArray(rd)) {
+                const initialScores = {};
+                rd.forEach(r => initialScores[r.criterionName] = r.score);
+                setScores(initialScores);
+                setDynamicRubric(rd);
+              } else {
+                setScores({ content: rd.content?.score ?? 35, organization: rd.organization?.score ?? 25, grammar: rd.grammar?.score ?? 25 });
+              }
             } catch { }
+          } else if (sub.aiScore === null && sub.status === 'PENDING') {
+            if (sub.activity?.rubric) {
+              try {
+                const parsedRubric = JSON.parse(sub.activity.rubric);
+                if (parsedRubric.criteria?.length) {
+                  const initialScores = {};
+                  parsedRubric.criteria.forEach(c => initialScores[c.name] = 0);
+                  setScores(initialScores);
+                } else {
+                  setScores({ content: 0, organization: 0, grammar: 0 });
+                }
+              } catch { setScores({ content: 0, organization: 0, grammar: 0 }); }
+            } else {
+              setScores({ content: 0, organization: 0, grammar: 0 });
+            }
           }
           if (sub.covData) {
             try { setCovData(JSON.parse(sub.covData)); } catch { }
@@ -129,7 +178,9 @@ export default function HITLWorkspace() {
 
   useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [chatHistory]);
 
-  const totalScore = scores.content + scores.organization + scores.grammar;
+  const totalScore = dynamicRubric
+    ? dynamicRubric.reduce((sum, item) => sum + (scores[item.criterionName] || 0), 0)
+    : ((scores.content || 0) + (scores.organization || 0) + (scores.grammar || 0));
 
   // ── Structured feedback helpers ──
   const updateStrengths = (val) => setStructuredFeedback(prev => ({ ...prev, strengths: val }));
@@ -190,10 +241,10 @@ export default function HITLWorkspace() {
       const res = await fetch(`${API_URL}/api/teacher/refine`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ currentFeedback: feedbackText, prompt: msg })
+        body: JSON.stringify({ currentFeedback: feedbackText, prompt: msg, isStructured })
       });
       const data = await res.json();
-      setChatHistory(prev => [...prev, { role: 'ai', text: data.refinedFeedback }]);
+      setChatHistory(prev => [...prev, { role: 'ai', text: data.refinedFeedback, isStructuredResponse: data.isStructured }]);
     } catch {
       setChatHistory(prev => [...prev, { role: 'ai', text: 'Error reaching AI. Please check your connection.' }]);
     } finally {
@@ -201,8 +252,23 @@ export default function HITLWorkspace() {
     }
   };
 
-  const applyFeedback = (text) => {
-    if (isStructured) {
+  const applyFeedback = (text, isStructuredResponse) => {
+    if (isStructured && isStructuredResponse) {
+      // Try to parse the AI response as structured JSON and merge intelligently
+      try {
+        const parsed = JSON.parse(text);
+        setStructuredFeedback(prev => ({
+          ...prev,
+          strengths: parsed.strengths || prev.strengths,
+          areasForGrowth: Array.isArray(parsed.areasForGrowth) ? parsed.areasForGrowth : prev.areasForGrowth,
+          actionableSteps: Array.isArray(parsed.actionableSteps) ? parsed.actionableSteps : prev.actionableSteps,
+        }));
+      } catch {
+        // If JSON parsing fails, fall back to setting strengths
+        setStructuredFeedback(prev => ({ ...prev, strengths: text }));
+      }
+    } else if (isStructured) {
+      // Plain text AI response for structured feedback — set as strengths only
       setStructuredFeedback(prev => ({ ...prev, strengths: text }));
     } else {
       setLegacyFeedbackText(text);
@@ -227,7 +293,7 @@ export default function HITLWorkspace() {
             hitlFeedback,
             readingStrategy,
             teacherId: user.id,
-            rubricData: { content: { score: scores.content, max: 40 }, organization: { score: scores.organization, max: 30 }, grammar: { score: scores.grammar, max: 30 } }
+            rubricData: dynamicRubric ? dynamicRubric.map(r => ({ ...r, score: scores[r.criterionName] })) : { content: { score: scores.content, max: 40 }, organization: { score: scores.organization, max: 30 }, grammar: { score: scores.grammar, max: 30 } }
           })
         });
       }
@@ -244,16 +310,127 @@ export default function HITLWorkspace() {
       alert('Save failed. Please try again.');
     } finally {
       setIsSaving(false);
+      setIsEditingAssessment(false);
+    }
+  };
+
+  const handleAnalyze = async () => {
+    if (!submissionId) return;
+    setIsAnalyzing(true);
+    try {
+      const res = await fetch(`${API_URL}/api/teacher/submissions/${submissionId}/analyze`, {
+        method: 'POST'
+      });
+      const data = await res.json();
+      if (data.success && data.submission) {
+        const sub = data.submission;
+        setSubmission(sub);
+        
+        // Merge AI and HITL feedback
+        let finalStructured = { strengths: '', areasForGrowth: [], actionableSteps: [], skillExplanations: {} };
+        
+        const parsedAi = parseStructuredFeedback(sub.aiFeedback);
+        if (parsedAi) {
+          finalStructured = { ...parsedAi };
+        } else if (sub.aiFeedback) {
+          finalStructured.strengths = sub.aiFeedback;
+        }
+        
+        if (sub.hitlFeedback) {
+          const parsedHitl = parseStructuredFeedback(sub.hitlFeedback);
+          if (parsedHitl) {
+            finalStructured = { ...parsedHitl };
+          } else {
+            finalStructured.strengths = sub.hitlFeedback;
+          }
+        }
+        
+        if (finalStructured.strengths?.includes('⚠ AI grading is currently unavailable')) {
+          finalStructured.strengths = '';
+        }
+        
+        setStructuredFeedback(finalStructured);
+        setIsStructured(true);
+
+        setReadingStrategy(sub.readingStrategy || '');
+        if (sub.rubricData && sub.rubricData !== '[]') {
+          try {
+            const rd = JSON.parse(sub.rubricData);
+            if (Array.isArray(rd)) {
+              const initialScores = {};
+              rd.forEach(r => initialScores[r.criterionName] = r.score);
+              setScores(initialScores);
+              setDynamicRubric(rd);
+            } else {
+              setScores({ content: rd.content?.score ?? 35, organization: rd.organization?.score ?? 25, grammar: rd.grammar?.score ?? 25 });
+            }
+          } catch { }
+        }
+        if (sub.covData) {
+          try { setCovData(JSON.parse(sub.covData)); } catch { }
+        }
+      } else {
+        alert('Analysis failed: ' + (data.error || 'Unknown error'));
+        window.location.reload();
+      }
+    } catch (e) {
+      alert('Network error during analysis.');
+    } finally {
+      setIsAnalyzing(false);
     }
   };
 
   if (isLoading) return <div className="flex items-center justify-center h-64 text-slate-400"><Loader2 className="w-6 h-6 animate-spin mr-2" />Loading submission...</div>;
 
-  const rubricItems = [
-    { key: 'content', name: 'Content & Ideas', max: 40, color: 'bg-brand-green' },
-    { key: 'organization', name: 'Organization', max: 30, color: 'bg-amber-400' },
-    { key: 'grammar', name: 'Grammar', max: 30, color: 'bg-blue-400' },
-  ];
+  const activity = submission?.activity;
+
+  let rubricItems;
+  if (dynamicRubric) {
+    rubricItems = dynamicRubric.map((r, i) => {
+      let fullDesc = r.bandDescription;
+      if (submission?.activity?.rubric) {
+        try {
+          const activityRubric = JSON.parse(submission.activity.rubric);
+          const criteria = activityRubric.criteria?.find(c => c.name === r.criterionName);
+          if (criteria && criteria.bands) {
+            const band = criteria.bands.find(b => b.label.toLowerCase() === r.bandDescription?.toLowerCase());
+            if (band && band.description) {
+              fullDesc = `${band.label} — ${band.description}`;
+            }
+          }
+        } catch (e) { /* ignore */ }
+      }
+      return {
+        key: r.criterionName,
+        name: r.criterionName,
+        max: r.maxPoints,
+        color: ['bg-brand-green', 'bg-amber-400', 'bg-blue-400', 'bg-purple-400', 'bg-pink-400'][i % 5],
+        desc: fullDesc
+      };
+    });
+  } else if (submission?.activity?.rubric) {
+    // Fallback: parse the activity's rubric definition so the UI shows the correct criteria
+    // even before AI grading has run (e.g. Student Submit flow)
+    try {
+      const parsedActivityRubric = JSON.parse(submission.activity.rubric);
+      if (parsedActivityRubric.criteria?.length) {
+        rubricItems = parsedActivityRubric.criteria.map((c, i) => ({
+          key: c.name,
+          name: c.name,
+          max: c.points || 0,
+          color: ['bg-brand-green', 'bg-amber-400', 'bg-blue-400', 'bg-purple-400', 'bg-pink-400'][i % 5],
+          desc: c.description || ''
+        }));
+      }
+    } catch { /* ignore */ }
+  }
+  if (!rubricItems || rubricItems.length === 0) {
+    rubricItems = [
+      { key: 'content', name: 'Content & Ideas', max: 40, color: 'bg-brand-green' },
+      { key: 'organization', name: 'Organization', max: 30, color: 'bg-amber-400' },
+      { key: 'grammar', name: 'Grammar', max: 30, color: 'bg-blue-400' },
+    ];
+  }
 
   const skillLabels = {
     vocabulary: 'Vocabulary',
@@ -298,14 +475,47 @@ export default function HITLWorkspace() {
         <div className="p-6 md:p-8 flex-1 space-y-6">
 
           {/* AI Failure Banner — shows when AI grading failed (score 0 + error feedback) */}
-          {submission?.aiFeedback?.startsWith('⚠') && (
+          {submission?.aiFeedback?.includes('⚠ AI grading is currently unavailable') && (
             <div className="flex items-start gap-3 p-4 bg-red-50 border-2 border-red-300 rounded-xl text-sm">
               <span className="text-xl shrink-0">🚫</span>
               <div>
                 <p className="font-bold text-red-800">AI Grading Unavailable</p>
-                <p className="text-red-700 text-xs mt-0.5">{submission.aiFeedback}</p>
+                <p className="text-red-700 text-xs mt-0.5">
+                  {(() => {
+                    try {
+                      const obj = JSON.parse(submission.aiFeedback);
+                      return obj.strengths || submission.aiFeedback;
+                    } catch {
+                      return submission.aiFeedback;
+                    }
+                  })()}
+                </p>
                 <p className="text-red-600 text-xs mt-1 font-medium">Please grade this submission manually using the rubric sliders below.</p>
               </div>
+            </div>
+          )}
+
+          {/* AI Ready Banner — shows when student submitted but AI hasn't graded yet */}
+          {submission?.aiScore === null && submission?.status === 'PENDING' && !submission?.aiFeedback?.includes('⚠') && (
+            <div className="flex flex-col items-center justify-center p-8 bg-blue-50 border-2 border-blue-200 rounded-2xl text-center space-y-4">
+              <Sparkles className="w-12 h-12 text-blue-400" />
+              <div>
+                <h3 className="font-bold text-lg text-blue-900">Ready for AI Checking</h3>
+                <p className="text-sm text-blue-700 mt-1 max-w-sm mx-auto">This student submission has not been graded yet. Start the AI analysis to generate a rubric score and personalized feedback.</p>
+              </div>
+              <div className="flex items-center gap-3">
+                <button onClick={handleAnalyze} disabled={isAnalyzing} className="px-6 py-3 bg-brand-navy text-white rounded-xl font-bold flex items-center gap-2 hover:bg-blue-900 shadow-md transition-all disabled:opacity-70">
+                  {isAnalyzing ? <><Loader2 className="w-5 h-5 animate-spin"/> Analyzing...</> : <><Sparkles className="w-5 h-5"/> Start AI Checking</>}
+                </button>
+                <button
+                  onClick={() => navigate(`/teacher/batch-upload?activityId=${submission.activityId}&classId=${submission.activity?.classId || ''}`)}
+                  disabled={isAnalyzing}
+                  className="px-6 py-3 bg-white text-slate-600 border-2 border-slate-200 rounded-xl font-bold hover:bg-slate-50 transition-all disabled:opacity-70"
+                >
+                  Review for Later
+                </button>
+              </div>
+              <p className="text-xs text-blue-600/70 -mt-1">"Review for Later" just saves this photo — you can come back and grade it anytime.</p>
             </div>
           )}
 
@@ -323,13 +533,13 @@ export default function HITLWorkspace() {
           )}
 
           {/* No Text Detected Banner */}
-          {submission?.aiScore === 0 && !submission?.aiFeedback?.startsWith('⚠') && (
+          {submission?.aiScore === 0 && !submission?.aiFeedback?.includes('⚠') && !submission?.privacyViolation && (
             <div className="flex items-start gap-3 p-4 bg-amber-50 border-2 border-amber-300 rounded-xl text-sm">
               <span className="text-xl shrink-0">📄</span>
               <div>
                 <p className="font-bold text-amber-800">No Readable Text Detected</p>
                 <p className="text-amber-700 text-xs mt-0.5">
-                  {submission.aiFeedback || 'The AI could not find readable handwritten or printed text in this image. The image may be blank, contain only drawings, or be too blurry.'}
+                  {structuredFeedback?.strengths || submission?.aiFeedback || 'The AI could not find readable handwritten or printed text in this image. The image may be blank, contain only drawings, or be too blurry.'}
                 </p>
                 <p className="text-amber-600 text-xs mt-1 font-medium">You can re-upload a clearer photo or grade manually.</p>
               </div>
@@ -361,17 +571,24 @@ export default function HITLWorkspace() {
               )}
             </div>
             <div className="flex items-center gap-4">
-              {!isEditingAssessment && !isApproved && (
+              {!isEditingAssessment ? (
                 <button
                   onClick={() => setIsEditingAssessment(true)}
                   className="text-xs font-bold text-brand-navy border-2 border-brand-navy/20 bg-blue-50 px-3 py-1.5 rounded-lg hover:bg-blue-100 transition-colors"
                 >
                   Edit Assessment
                 </button>
+              ) : (
+                <button
+                  onClick={() => setIsEditingAssessment(false)}
+                  className="text-xs font-bold text-slate-500 border-2 border-slate-200 bg-white px-3 py-1.5 rounded-lg hover:bg-slate-50 transition-colors"
+                >
+                  Cancel Edit
+                </button>
               )}
               <div className="text-center bg-blue-50 px-4 py-2 rounded-xl border border-blue-100">
                 <span className="block text-xs font-bold text-brand-navy uppercase tracking-wider mb-1">Total Score</span>
-                <span className="text-3xl font-bold text-brand-navy">{totalScore}<span className="text-xl text-blue-300">/100</span></span>
+                <span className="text-3xl font-bold text-brand-navy">{submission?.aiScore === null && submission?.status === 'PENDING' ? '--' : ((totalScore / 100) * (activity?.points || 100)).toFixed(1).replace(/\.0$/, '')}<span className="text-xl text-blue-300">/{activity?.points || 100}</span></span>
               </div>
             </div>
           </div>
@@ -381,12 +598,20 @@ export default function HITLWorkspace() {
             <h3 className="text-sm font-bold text-slate-400 uppercase tracking-wider mb-4">Rubric Breakdown <span className="text-slate-300 font-normal normal-case">{isEditingAssessment ? '(drag to adjust)' : '(read-only)'}</span></h3>
             <div className="space-y-4">
               {rubricItems.map(item => (
-                <div key={item.key}>
+                <div key={item.key} className="relative group">
                   <div className="flex justify-between text-sm mb-1">
                     <span className="font-medium text-slate-700">{item.name}</span>
-                    <span className="font-bold text-slate-900">{scores[item.key]}/{item.max}</span>
+                    <div className="flex items-center gap-2">
+                      <span className="font-bold text-slate-900">{scores[item.key] || 0}% / {item.max}%</span>
+                      <span className="text-xs text-brand-navy font-bold">({(((scores[item.key] || 0) / 100) * (activity?.points || 100)).toFixed(1).replace(/\.0$/, '')} pts)</span>
+                    </div>
                   </div>
-                  <input type="range" min={0} max={item.max} value={scores[item.key]}
+                  {item.desc && (
+                    <div className="hidden group-hover:block absolute bottom-full mb-2 left-0 right-0 bg-slate-800 text-white text-[10px] p-2 rounded z-10 pointer-events-none">
+                      {item.desc}
+                    </div>
+                  )}
+                  <input type="range" min={0} max={item.max} value={scores[item.key] || 0}
                     disabled={!isEditingAssessment}
                     onChange={e => setScores(prev => ({ ...prev, [item.key]: parseInt(e.target.value) }))}
                     className={`w-full accent-brand-navy ${!isEditingAssessment ? 'opacity-50 cursor-not-allowed' : ''}`} />
@@ -453,34 +678,32 @@ export default function HITLWorkspace() {
             </div>
 
             {isStructured ? (
-              <div className="space-y-5">
+              isEditingAssessment ? (
+                /* ── EDIT MODE: editable textareas ── */
+                <div className="space-y-5">
 
-                {/* ── Strengths ── */}
-                <div>
-                  <label className="block text-sm font-semibold text-slate-700 mb-1.5">✅ Strengths</label>
-                  <textarea
-                    disabled={!isEditingAssessment}
-                    className={`w-full p-4 bg-white border-2 border-emerald-200 rounded-xl text-sm text-slate-700 focus:border-brand-green focus:ring-4 focus:ring-brand-green/10 outline-none transition-all leading-relaxed resize-none ${!isEditingAssessment ? 'opacity-70 cursor-not-allowed bg-slate-50' : ''}`}
-                    rows={3}
-                    value={structuredFeedback.strengths}
-                    onChange={e => updateStrengths(e.target.value)}
-                  />
-                </div>
+                  {/* ✅ Strengths */}
+                  <div>
+                    <label className="block text-sm font-semibold text-slate-700 mb-1.5">✅ Strengths</label>
+                    <textarea
+                      className="w-full p-4 bg-white border-2 border-emerald-200 rounded-xl text-sm text-slate-700 focus:border-brand-green focus:ring-4 focus:ring-brand-green/10 outline-none transition-all leading-relaxed resize-none"
+                      rows={3}
+                      value={structuredFeedback.strengths}
+                      onChange={e => updateStrengths(e.target.value)}
+                    />
+                  </div>
 
-                {/* ── Areas for Growth ── */}
-                <div>
-                  <div className="flex items-center justify-between mb-2">
-                    <label className="text-sm font-semibold text-slate-700">📝 Areas for Growth</label>
-                    {isEditingAssessment && (
+                  {/* 📈 Areas for Growth */}
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
+                      <label className="text-sm font-semibold text-slate-700">📈 Areas for Growth</label>
                       <button onClick={addAreaForGrowth} className="flex items-center text-xs font-bold text-brand-navy bg-blue-50 hover:bg-blue-100 px-2.5 py-1 rounded-full transition-colors border border-blue-200">
                         <Plus className="w-3 h-3 mr-1" /> Add
                       </button>
-                    )}
-                  </div>
-                  <div className="space-y-3">
-                    {structuredFeedback.areasForGrowth.map((area, idx) => (
-                      <div key={idx} className="relative bg-slate-50 border border-slate-200 rounded-xl p-4 group">
-                        {isEditingAssessment && (
+                    </div>
+                    <div className="space-y-3">
+                      {structuredFeedback.areasForGrowth.map((area, idx) => (
+                        <div key={idx} className="relative bg-slate-50 border border-slate-200 rounded-xl p-4 group">
                           <button
                             onClick={() => removeAreaForGrowth(idx)}
                             className="absolute top-2 right-2 p-1 rounded-full text-slate-300 hover:text-red-500 hover:bg-red-50 transition-colors opacity-0 group-hover:opacity-100"
@@ -488,80 +711,147 @@ export default function HITLWorkspace() {
                           >
                             <Trash2 className="w-3.5 h-3.5" />
                           </button>
-                        )}
-                        {/* Student quote highlighted */}
-                        <div className="bg-amber-50 border-l-4 border-amber-400 rounded-r-lg px-3 py-2 mb-2">
-                          <p className="text-[10px] font-bold text-amber-600 uppercase tracking-wider mb-0.5">Student wrote:</p>
+                          <div className="bg-amber-50 border-l-4 border-amber-400 rounded-r-lg px-3 py-2 mb-2">
+                            <p className="text-[10px] font-bold text-amber-600 uppercase tracking-wider mb-0.5">Student wrote:</p>
+                            <textarea
+                              className="w-full bg-transparent text-sm text-amber-900 italic outline-none resize-none leading-relaxed"
+                              rows={1}
+                              value={area.studentQuote}
+                              onChange={e => updateAreaForGrowth(idx, 'studentQuote', e.target.value)}
+                              placeholder="Exact quote from essay..."
+                            />
+                          </div>
                           <textarea
-                            disabled={!isEditingAssessment}
-                            className={`w-full bg-transparent text-sm text-amber-900 italic outline-none resize-none leading-relaxed ${!isEditingAssessment ? 'cursor-not-allowed' : ''}`}
-                            rows={1}
-                            value={area.studentQuote}
-                            onChange={e => updateAreaForGrowth(idx, 'studentQuote', e.target.value)}
-                            placeholder="Exact quote from essay..."
+                            className="w-full bg-white border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-700 outline-none focus:border-brand-navy focus:ring-2 focus:ring-brand-navy/10 resize-none leading-relaxed"
+                            rows={2}
+                            value={area.explanation}
+                            onChange={e => updateAreaForGrowth(idx, 'explanation', e.target.value)}
+                            placeholder="Why this needs improvement..."
                           />
                         </div>
-                        {/* Explanation */}
-                        <textarea
-                          disabled={!isEditingAssessment}
-                          className={`w-full bg-white border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-700 outline-none focus:border-brand-navy focus:ring-2 focus:ring-brand-navy/10 resize-none leading-relaxed ${!isEditingAssessment ? 'opacity-70 cursor-not-allowed bg-slate-50' : ''}`}
-                          rows={2}
-                          value={area.explanation}
-                          onChange={e => updateAreaForGrowth(idx, 'explanation', e.target.value)}
-                          placeholder="Why this needs improvement..."
-                        />
-                      </div>
-                    ))}
-                    {structuredFeedback.areasForGrowth.length === 0 && (
-                      <p className="text-xs text-slate-400 italic py-2">No areas for growth added yet.</p>
-                    )}
+                      ))}
+                      {structuredFeedback.areasForGrowth.length === 0 && (
+                        <p className="text-xs text-slate-400 italic py-2">No areas for growth added yet.</p>
+                      )}
+                    </div>
                   </div>
-                </div>
 
-                {/* ── Action Steps ── */}
-                <div>
-                  <div className="flex items-center justify-between mb-2">
-                    <label className="text-sm font-semibold text-slate-700">🎯 Action Steps</label>
-                    <button onClick={addActionStep} className="flex items-center text-xs font-bold text-brand-navy bg-blue-50 hover:bg-blue-100 px-2.5 py-1 rounded-full transition-colors border border-blue-200">
-                      <Plus className="w-3 h-3 mr-1" /> Add
-                    </button>
-                  </div>
-                  <div className="space-y-2">
-                    {structuredFeedback.actionableSteps.map((step, idx) => (
-                      <div key={idx} className="flex items-start gap-2 group">
-                        <span className="shrink-0 w-6 h-6 rounded-full bg-brand-navy/10 text-brand-navy text-xs font-bold flex items-center justify-center mt-1">
-                          {idx + 1}
-                        </span>
-                        <input
-                          type="text"
-                          className="flex-1 px-3 py-2 bg-white border border-slate-200 rounded-lg text-sm text-slate-700 outline-none focus:border-brand-navy focus:ring-2 focus:ring-brand-navy/10"
-                          value={step}
-                          onChange={e => updateActionStep(idx, e.target.value)}
-                          placeholder="Action step..."
-                        />
-                        <button
-                          onClick={() => removeActionStep(idx)}
-                          className="shrink-0 p-1.5 rounded-full text-slate-300 hover:text-red-500 hover:bg-red-50 transition-colors opacity-0 group-hover:opacity-100 mt-0.5"
-                          title="Remove"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
-                      </div>
-                    ))}
-                    {structuredFeedback.actionableSteps.length === 0 && (
-                      <p className="text-xs text-slate-400 italic py-2">No action steps added yet.</p>
-                    )}
+                  {/* 🎯 Action Steps */}
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
+                      <label className="text-sm font-semibold text-slate-700">🎯 Action Steps</label>
+                      <button onClick={addActionStep} className="flex items-center text-xs font-bold text-brand-navy bg-blue-50 hover:bg-blue-100 px-2.5 py-1 rounded-full transition-colors border border-blue-200">
+                        <Plus className="w-3 h-3 mr-1" /> Add
+                      </button>
+                    </div>
+                    <div className="space-y-2">
+                      {structuredFeedback.actionableSteps.map((step, idx) => (
+                        <div key={idx} className="flex items-start gap-2 group">
+                          <span className="shrink-0 w-6 h-6 rounded-full bg-brand-navy/10 text-brand-navy text-xs font-bold flex items-center justify-center mt-1">
+                            {idx + 1}
+                          </span>
+                          <input
+                            type="text"
+                            className="flex-1 px-3 py-2 bg-white border border-slate-200 rounded-lg text-sm text-slate-700 outline-none focus:border-brand-navy focus:ring-2 focus:ring-brand-navy/10"
+                            value={step}
+                            onChange={e => updateActionStep(idx, e.target.value)}
+                            placeholder="Action step..."
+                          />
+                          <button
+                            onClick={() => removeActionStep(idx)}
+                            className="shrink-0 p-1.5 rounded-full text-slate-300 hover:text-red-500 hover:bg-red-50 transition-colors opacity-0 group-hover:opacity-100 mt-0.5"
+                            title="Remove"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      ))}
+                      {structuredFeedback.actionableSteps.length === 0 && (
+                        <p className="text-xs text-slate-400 italic py-2">No action steps added yet.</p>
+                      )}
+                    </div>
                   </div>
                 </div>
-              </div>
+              ) : (
+                /* ── READ-ONLY MODE: beautiful cards like student view ── */
+                <div className="space-y-4">
+
+                  {/* ✅ Strengths Card */}
+                  {structuredFeedback.strengths && (
+                    <div className="bg-emerald-50/70 rounded-2xl border border-emerald-200 p-5">
+                      <div className="flex items-center gap-2 mb-2">
+                        <div className="bg-green-100 p-1.5 rounded-lg">
+                          <CheckCircle2 className="w-4 h-4 text-green-600" />
+                        </div>
+                        <h4 className="text-sm font-bold text-green-700 uppercase tracking-wider">What the Student Did Well</h4>
+                      </div>
+                      <p className="text-sm text-slate-700 leading-relaxed">{structuredFeedback.strengths}</p>
+                    </div>
+                  )}
+
+                  {/* 📈 Areas for Growth Card */}
+                  {structuredFeedback.areasForGrowth.length > 0 && (
+                    <div className="bg-amber-50/50 rounded-2xl border border-amber-200 p-5">
+                      <div className="flex items-center gap-2 mb-3">
+                        <div className="bg-amber-100 p-1.5 rounded-lg">
+                          <AlertTriangle className="w-4 h-4 text-amber-600" />
+                        </div>
+                        <h4 className="text-sm font-bold text-amber-700 uppercase tracking-wider">Areas for Growth</h4>
+                        <span className="text-xs text-amber-500 font-medium ml-auto">{structuredFeedback.areasForGrowth.length} area{structuredFeedback.areasForGrowth.length > 1 ? 's' : ''}</span>
+                      </div>
+                      <div className="space-y-3">
+                        {structuredFeedback.areasForGrowth.map((area, idx) => (
+                          <div key={idx} className="space-y-2 pb-3 border-b border-amber-100 last:border-0 last:pb-0">
+                            <div className="bg-amber-50 border-l-4 border-amber-400 p-3 rounded-r-lg">
+                              <p className="text-[10px] font-bold text-amber-600 uppercase tracking-wider mb-1">From the essay:</p>
+                              <p className="text-sm text-amber-900 italic leading-relaxed">"{area.studentQuote}"</p>
+                            </div>
+                            <p className="text-sm text-slate-700 leading-relaxed pl-4">{area.explanation}</p>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* 🎯 Action Steps Card */}
+                  {structuredFeedback.actionableSteps.length > 0 && (
+                    <div className="bg-blue-50/50 rounded-2xl border border-blue-200 p-5">
+                      <div className="flex items-center gap-2 mb-3">
+                        <div className="bg-blue-100 p-1.5 rounded-lg">
+                          <Info className="w-4 h-4 text-blue-600" />
+                        </div>
+                        <h4 className="text-sm font-bold text-blue-700 uppercase tracking-wider">Action Steps</h4>
+                        <span className="text-xs text-blue-500 font-medium ml-auto">{structuredFeedback.actionableSteps.length} step{structuredFeedback.actionableSteps.length > 1 ? 's' : ''}</span>
+                      </div>
+                      <div className="space-y-2">
+                        {structuredFeedback.actionableSteps.map((step, idx) => (
+                          <div key={idx} className="flex items-start gap-3">
+                            <div className="bg-blue-100 text-blue-700 text-xs font-bold w-6 h-6 rounded-full flex items-center justify-center shrink-0 mt-0.5">
+                              {idx + 1}
+                            </div>
+                            <p className="text-sm text-slate-700 leading-relaxed">{step}</p>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )
             ) : (
-              /* Legacy plain-text fallback */
-              <textarea
-                className="w-full p-4 bg-white border-2 border-slate-200 rounded-xl text-sm text-slate-700 focus:border-brand-navy focus:ring-4 focus:ring-brand-navy/10 outline-none transition-all leading-relaxed resize-none"
-                rows={4}
-                value={legacyFeedbackText}
-                onChange={e => setLegacyFeedbackText(e.target.value)}
-              />
+              isEditingAssessment ? (
+                <textarea
+                  className="w-full p-4 bg-white border-2 border-slate-200 rounded-xl text-sm text-slate-700 focus:border-brand-navy focus:ring-4 focus:ring-brand-navy/10 outline-none transition-all leading-relaxed resize-none"
+                  rows={4}
+                  value={legacyFeedbackText}
+                  onChange={e => setLegacyFeedbackText(e.target.value)}
+                />
+              ) : (
+                legacyFeedbackText && (
+                  <div className="bg-slate-50 rounded-2xl border border-slate-200 p-5">
+                    <p className="text-sm text-slate-700 leading-relaxed">{legacyFeedbackText}</p>
+                  </div>
+                )
+              )
             )}
           </div>
 
@@ -572,10 +862,17 @@ export default function HITLWorkspace() {
               <h3 className="text-sm font-bold flex items-center text-brand-amber uppercase tracking-wider">
                 <Info className="w-4 h-4 mr-1" /> Personalized Reading Strategy
               </h3>
-              <Edit2 className="w-4 h-4 text-brand-amber" />
+              {isEditingAssessment && <Edit2 className="w-4 h-4 text-brand-amber" />}
             </div>
-            <textarea className="w-full p-4 ml-2 bg-amber-50/50 border-2 border-brand-amber/30 rounded-xl text-sm text-slate-800 focus:border-brand-amber focus:ring-4 focus:ring-brand-amber/20 outline-none transition-all leading-relaxed resize-none"
-              rows={3} value={readingStrategy} onChange={e => setReadingStrategy(e.target.value)} />
+            {isEditingAssessment ? (
+              <textarea
+                className="w-full p-4 ml-2 bg-amber-50/50 border-2 border-brand-amber/30 rounded-xl text-sm text-slate-800 focus:border-brand-amber focus:ring-4 focus:ring-brand-amber/20 outline-none transition-all leading-relaxed resize-none"
+                rows={3} value={readingStrategy} onChange={e => setReadingStrategy(e.target.value)} />
+            ) : (
+              readingStrategy && (
+                <p className="text-sm text-slate-700 leading-relaxed ml-2 p-4 bg-amber-50/30 rounded-xl">{readingStrategy}</p>
+              )
+            )}
           </div>
         </div>
 
@@ -584,15 +881,17 @@ export default function HITLWorkspace() {
           <button onClick={() => navigate(-1)} className="flex-1 py-3 px-4 rounded-xl border-2 border-slate-200 text-slate-700 font-bold hover:bg-slate-50 transition-colors">
             Back
           </button>
-          {isApproved ? (
-            <button onClick={() => navigate('/teacher/dashboard')} className="flex-1 py-3 px-4 rounded-xl bg-brand-green text-white font-bold hover:bg-emerald-600 transition-colors flex items-center justify-center gap-2">
-              <CheckCircle2 className="w-5 h-5" /> Done — Back to Dashboard
+          {isApproved && !isEditingAssessment ? (
+            <button
+              onClick={() => navigate(`/teacher/batch-upload?activityId=${submission.activityId}&classId=${submission.activity?.classId || ''}`)}
+              className="flex-1 py-3 px-4 rounded-xl bg-brand-green text-white font-bold hover:bg-emerald-600 transition-colors flex items-center justify-center gap-2">
+              <CheckCircle2 className="w-5 h-5" /> Done
             </button>
           ) : (
             <button onClick={handleValidate} disabled={isSaving}
               className="flex-1 py-3 px-4 rounded-xl bg-brand-green text-white font-bold hover:bg-emerald-600 transition-colors shadow-lg shadow-emerald-500/20 flex items-center justify-center gap-2 disabled:opacity-60">
               {isSaving ? <Loader2 className="w-5 h-5 animate-spin" /> : <Check className="w-5 h-5" />}
-              {isSaving ? 'Saving...' : 'Validate & Release'}
+              {isSaving ? 'Saving...' : (isApproved ? 'Save Changes' : 'Validate & Release')}
             </button>
           )}
         </div>
@@ -623,7 +922,7 @@ export default function HITLWorkspace() {
                 {msg.text}
               </div>
               {msg.role === 'ai' && idx > 0 && (
-                <button onClick={() => applyFeedback(msg.text)}
+                <button onClick={() => applyFeedback(msg.text, msg.isStructuredResponse)}
                   className="mt-2 text-xs font-bold text-brand-green flex items-center bg-green-50 px-3 py-1.5 rounded-full hover:bg-green-100 transition-colors border border-green-200">
                   <Check className="w-3.5 h-3.5 mr-1" /> Apply to Feedback
                 </button>

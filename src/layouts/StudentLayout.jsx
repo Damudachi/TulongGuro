@@ -3,7 +3,7 @@ import { Home, Star, User, LogOut, Settings, Book, ChevronDown } from 'lucide-re
 import { clsx } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 import { useState, useEffect } from 'react';
-import StudentChatbot from '../components/StudentChatbot';
+// Chatbot removed
 
 function cn(...inputs) {
   return twMerge(clsx(inputs));
@@ -134,8 +134,7 @@ export default function StudentLayout() {
 
       {/* Desktop Side Nav moved above */}
 
-      {/* AI Study Buddy Chatbot — available on all student pages */}
-      <StudentChatbot />
+      {/* Chatbot removed */}
     </div>
   );
 }
