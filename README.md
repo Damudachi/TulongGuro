@@ -1,16 +1,36 @@
-# React + Vite
+# TulongGuro
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+An AI-assisted grading and classroom management LMS. React + Vite frontend, Express + Prisma backend, Supabase Postgres database.
 
-Currently, two official plugins are available:
+## Setup (for collaborators)
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+1. Clone the repo and install dependencies:
+   ```
+   npm install
+   cd server && npm install
+   ```
 
-## React Compiler
+2. Copy the env template and fill in real values:
+   ```
+   cp .env.example server/.env
+   ```
+   `server/.env` is gitignored on purpose — **never commit it**. Get the actual `DATABASE_URL` and `GEMINI_API_KEY` values from whoever owns the Supabase project, through a private channel (DM, password manager, etc.), not through git. Everyone on the team should point at the same Supabase project so login/data stays consistent — connecting to a different or stale database (e.g. a local `dev.db`) will cause working credentials to appear as "Invalid credentials", since passwords are stored as bcrypt hashes and only exist correctly in the shared migrated database.
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+3. Generate the Prisma client:
+   ```
+   cd server && npx prisma generate
+   ```
 
-## Expanding the ESLint configuration
+4. Run it:
+   ```
+   # backend (from server/)
+   npm run dev
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+   # frontend (from repo root)
+   npm run dev
+   ```
+
+## Deployment
+
+- Backend: Render, via `render.yaml` (Blueprint deploy)
+- Frontend: Vercel, via `vercel.json` — set `VITE_API_URL` to the deployed backend URL
