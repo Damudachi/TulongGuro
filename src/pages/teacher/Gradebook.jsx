@@ -218,9 +218,12 @@ export default function Gradebook() {
                   <div className="flex items-center gap-2"><Users className="w-4 h-4" /> Student</div>
                 </th>
                 {activeTypes.map(type => (
-                  <th key={type} className="px-6 py-3 text-center font-bold text-slate-700 min-w-[140px]">
+                  <th key={type} className="px-6 py-3 text-center font-bold text-slate-700 min-w-[140px] align-top">
                     <div className="text-sm">{type}</div>
                     <div className="text-[10px] text-slate-400 font-normal">{typeGroups[type].length} item{typeGroups[type].length !== 1 ? 's' : ''}</div>
+                    <div className="text-[10px] text-slate-400 font-normal leading-snug mt-1 max-w-[160px] mx-auto">
+                      {typeGroups[type].map(a => a.title).join(', ')}
+                    </div>
                   </th>
                 ))}
                 <th className="px-4 py-3 text-center font-bold text-slate-700 min-w-[100px]">Overall</th>

@@ -119,9 +119,15 @@ export default function GradebookClass() {
             <tr className="bg-slate-50 border-b border-slate-200">
               <th className="px-4 py-3 text-left font-bold text-slate-700 sticky left-0 bg-slate-50 min-w-[200px]">Student</th>
               {activeTypes.map(type => (
-                <th key={type} className="px-6 py-3 text-center font-bold text-slate-700 min-w-[140px]">
+                <th key={type} className="px-6 py-3 text-center font-bold text-slate-700 min-w-[140px] align-top">
                   <div className="text-sm">{type}</div>
                   <div className="text-[10px] text-slate-400 font-normal">{(typeGroups[type] || []).length} item{(typeGroups[type] || []).length !== 1 ? 's' : ''}</div>
+                  {/* Spell out which activities feed this column — a column only
+                      splits off when an activity's Type differs, so seeing the
+                      grouping makes a mis-typed activity obvious. */}
+                  <div className="text-[10px] text-slate-400 font-normal leading-snug mt-1 max-w-[160px] mx-auto">
+                    {(typeGroups[type] || []).map(a => a.title).join(', ')}
+                  </div>
                 </th>
               ))}
               <th className="px-4 py-3 text-center font-bold text-slate-700 min-w-[100px]">GWA</th>

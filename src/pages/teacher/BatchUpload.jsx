@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
-import { ArrowLeft, UploadCloud, X, Loader2, Wifi, WifiOff, ShieldCheck, Info, FileText } from 'lucide-react';
+import { ArrowLeft, UploadCloud, X, Loader2, Wifi, WifiOff, ShieldCheck, Info, FileText, Camera, Sparkles, Plus } from 'lucide-react';
 import { getQueue, buildJob, enqueue, flushQueue } from '../../utils/offlineQueue';
 import { API_URL } from '../../config';
 import ImageRedactor from '../../components/ImageRedactor';
@@ -17,7 +17,9 @@ export default function BatchUpload() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const activityId = searchParams.get('activityId');
-  const classId = searchParams.get('classId');
+  // classId can be missing when we're linked here without it — resolve it from
+  // the activity so the roster still loads instead of rendering "No students found".
+  const [classId, setClassId] = useState(searchParams.get('classId') || '');
 
   const [students, setStudents] = useState([]);
   const [activityMeta, setActivityMeta] = useState(null);
@@ -28,12 +30,23 @@ export default function BatchUpload() {
   const [isFlushing, setIsFlushing] = useState(false);
   const [piiConfirmed, setPiiConfirmed] = useState(false);
 
-  // Per-student staged (picked but not yet uploaded) files, and upload-in-flight tracking
+  // Per-student staged pages (picked but not yet uploaded), and upload-in-flight tracking.
+  // Shape: { [studentId]: { pages: [{ file, preview }] } }
   const [stagedByStudentId, setStagedByStudentId] = useState({});
   const [uploadingStudentId, setUploadingStudentId] = useState(null);
-  const [redactingStudentId, setRedactingStudentId] = useState(null);
+  const [redacting, setRedacting] = useState(null);   // { studentId, pageIndex }
+  const [confirmingStudent, setConfirmingStudent] = useState(null); // student pending the "start AI checking?" prompt
   const fileInputRef = useRef(null);
+  const cameraInputRef = useRef(null);
   const pendingUploadStudentId = useRef(null);
+
+  useEffect(() => {
+    if (classId || !activityId) return;
+    fetch(`${API_URL}/api/activities/${activityId}`)
+      .then(r => r.json())
+      .then(d => { if (d.success && d.activity?.classId) setClassId(d.activity.classId); })
+      .catch(() => {});
+  }, [classId, activityId]);
 
   useEffect(() => {
     if (classId) {
@@ -70,17 +83,23 @@ export default function BatchUpload() {
   const maxPoints = activityMeta?.points || 100;
 
   // ── Per-student staged upload (teacher-upload mode) ──
-  const triggerFilePick = (studentId) => {
+  const MAX_PAGES = 20;
+
+  const triggerFilePick = (studentId, source = 'files') => {
     pendingUploadStudentId.current = studentId;
-    fileInputRef.current?.click();
+    (source === 'camera' ? cameraInputRef : fileInputRef).current?.click();
   };
 
   const handleFilePicked = (e) => {
-    const file = e.target.files?.[0];
+    const picked = Array.from(e.target.files || []);
     const targetStudentId = pendingUploadStudentId.current;
     e.target.value = '';
-    if (!file || !targetStudentId) return;
-    setStagedByStudentId(prev => ({ ...prev, [targetStudentId]: { file, preview: URL.createObjectURL(file) } }));
+    if (picked.length === 0 || !targetStudentId) return;
+    setStagedByStudentId(prev => {
+      const existing = prev[targetStudentId]?.pages || [];
+      const added = picked.map(file => ({ file, preview: URL.createObjectURL(file) }));
+      return { ...prev, [targetStudentId]: { pages: [...existing, ...added].slice(0, MAX_PAGES) } };
+    });
   };
 
   const cancelStaged = (studentId) => {
@@ -91,33 +110,55 @@ export default function BatchUpload() {
     });
   };
 
-  const handleRedactConfirm = (redactedBlob) => {
-    const redactedFile = new File([redactedBlob], 'redacted.jpg', { type: 'image/jpeg' });
-    setStagedByStudentId(prev => ({
-      ...prev,
-      [redactingStudentId]: { file: redactedFile, preview: URL.createObjectURL(redactedBlob) }
-    }));
-    setRedactingStudentId(null);
+  const removePage = (studentId, pageIndex) => {
+    setStagedByStudentId(prev => {
+      const pages = (prev[studentId]?.pages || []).filter((_, i) => i !== pageIndex);
+      if (pages.length === 0) {
+        const next = { ...prev };
+        delete next[studentId];
+        return next;
+      }
+      return { ...prev, [studentId]: { pages } };
+    });
   };
-  const handleRedactCancel = () => setRedactingStudentId(null);
 
-  const confirmUpload = async (studentId) => {
-    const staged = stagedByStudentId[studentId];
-    if (!staged || !piiConfirmed) return;
+  const handleRedactConfirm = (redactedBlob) => {
+    const { studentId, pageIndex } = redacting;
+    const redactedFile = new File([redactedBlob], `redacted-${pageIndex + 1}.jpg`, { type: 'image/jpeg' });
+    setStagedByStudentId(prev => {
+      const pages = [...(prev[studentId]?.pages || [])];
+      pages[pageIndex] = { file: redactedFile, preview: URL.createObjectURL(redactedBlob) };
+      return { ...prev, [studentId]: { pages } };
+    });
+    setRedacting(null);
+  };
+  const handleRedactCancel = () => setRedacting(null);
+
+  /**
+   * Upload the staged pages for a student.
+   * @param {boolean} startAiChecking — when true, jump straight to the AI review
+   *   workspace after upload; when false the photo is saved for later review.
+   */
+  const uploadStaged = async (studentId, startAiChecking) => {
+    const pages = stagedByStudentId[studentId]?.pages || [];
+    if (pages.length === 0 || !piiConfirmed) return;
+    setConfirmingStudent(null);
     setUploadingStudentId(studentId);
 
-    if (!navigator.onLine) {
-      const job = buildJob(`${API_URL}/api/teacher/upload`, { studentId, activityId, skipGrading: 'true' }, staged.file);
-      enqueue(job);
+    const queueOffline = () => {
+      // The offline queue carries one image per job, so multi-page outputs are
+      // queued as separate pages and re-stitched server-side on flush.
+      pages.forEach(p => enqueue(buildJob(`${API_URL}/api/teacher/upload`, { studentId, activityId, skipGrading: 'true' }, p.file)));
       setQueuedCount(getQueue().length);
       cancelStaged(studentId);
       setUploadingStudentId(null);
-      return;
-    }
+    };
+
+    if (!navigator.onLine) return queueOffline();
 
     try {
       const formData = new FormData();
-      formData.append('image', staged.file);
+      pages.forEach(p => formData.append('images', p.file));
       formData.append('studentId', studentId);
       formData.append('activityId', activityId);
       formData.append('skipGrading', 'true');
@@ -126,17 +167,17 @@ export default function BatchUpload() {
       if (data.success) {
         setActivitySubmissions(prev => [...prev.filter(s => s.studentId !== studentId), data.submission]);
         cancelStaged(studentId);
-        navigate(`/teacher/review/${data.submission.id}`);
+        if (startAiChecking) {
+          navigate(`/teacher/review/${data.submission.id}`);
+        } else {
+          setUploadingStudentId(null);
+        }
       } else {
         alert(data.error || 'Upload failed. Please try again.');
         setUploadingStudentId(null);
       }
     } catch {
-      const job = buildJob(`${API_URL}/api/teacher/upload`, { studentId, activityId, skipGrading: 'true' }, staged.file);
-      enqueue(job);
-      setQueuedCount(getQueue().length);
-      cancelStaged(studentId);
-      setUploadingStudentId(null);
+      queueOffline();
     }
   };
 
@@ -151,16 +192,50 @@ export default function BatchUpload() {
   return (
     <div className="p-4 md:p-8 max-w-5xl mx-auto flex flex-col gap-6 pb-24">
       {/* PII Redactor Overlay */}
-      {redactingStudentId && (
+      {redacting && (
         <ImageRedactor
-          imageSrc={stagedByStudentId[redactingStudentId]?.preview}
+          imageSrc={stagedByStudentId[redacting.studentId]?.pages[redacting.pageIndex]?.preview}
           onConfirm={handleRedactConfirm}
           onCancel={handleRedactCancel}
         />
       )}
 
-      {/* Hidden shared file input for per-student upload */}
-      <input ref={fileInputRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={handleFilePicked} />
+      {/* "Start AI checking now?" confirmation */}
+      {confirmingStudent && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm">
+          <div className="bg-white rounded-2xl w-full max-w-sm overflow-hidden shadow-2xl">
+            <div className="p-6 text-center">
+              <div className="w-14 h-14 bg-blue-50 text-brand-navy rounded-full flex items-center justify-center mx-auto mb-4">
+                <Sparkles className="w-7 h-7" />
+              </div>
+              <h3 className="text-lg font-bold text-brand-slate mb-1">Start AI checking now?</h3>
+              <p className="text-sm text-slate-500 leading-relaxed">
+                Upload {(stagedByStudentId[confirmingStudent.id]?.pages || []).length} page(s) for{' '}
+                <span className="font-semibold text-brand-slate">{confirmingStudent.name}</span>. You can have the AI
+                check it right away, or just save the photo and review it later.
+              </p>
+            </div>
+            <div className="px-6 pb-6 flex flex-col gap-2">
+              <button onClick={() => uploadStaged(confirmingStudent.id, true)}
+                className="w-full py-3 bg-brand-navy text-white rounded-xl font-bold hover:bg-blue-900 transition-colors flex items-center justify-center gap-2">
+                <Sparkles className="w-4 h-4" /> Yes, start AI checking
+              </button>
+              <button onClick={() => uploadStaged(confirmingStudent.id, false)}
+                className="w-full py-3 border-2 border-slate-200 rounded-xl font-bold text-slate-600 hover:bg-slate-50 transition-colors">
+                No, just save it for later
+              </button>
+              <button onClick={() => setConfirmingStudent(null)}
+                className="w-full py-2 text-sm font-medium text-slate-400 hover:text-slate-600 transition-colors">
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Hidden shared file inputs for per-student upload */}
+      <input ref={fileInputRef} type="file" accept="image/*" multiple className="hidden" onChange={handleFilePicked} />
+      <input ref={cameraInputRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={handleFilePicked} />
 
       {/* Offline Banner */}
       {!isStudentSubmitMode && !isOnline && (
@@ -195,7 +270,7 @@ export default function BatchUpload() {
         <p className="text-slate-500 text-sm">
           {isStudentSubmitMode
             ? 'Review student-submitted outputs for this activity.'
-            : 'Upload each student\'s essay photo — grade it now, or upload and review it later.'}
+            : 'Take a photo or upload each student\'s output — add multiple pages if the output spans more than one sheet. Grade it now, or save it and review it later.'}
         </p>
       </div>
 
@@ -248,7 +323,8 @@ export default function BatchUpload() {
           <div className="space-y-3">
             {students.map((student) => {
               const sub = submissionsByStudentId[student.id] || null;
-              const staged = !isStudentSubmitMode ? stagedByStudentId[student.id] : null;
+              const stagedPages = !isStudentSubmitMode ? (stagedByStudentId[student.id]?.pages || []) : [];
+              const staged = stagedPages.length > 0;
               const statusKey = sub?.status || 'NONE';
               const statusCfg = SUBMISSION_STATUS[statusKey] || SUBMISSION_STATUS.NONE;
               const scorePercent = sub?.hitlScore ?? sub?.aiScore ?? null;
@@ -257,9 +333,16 @@ export default function BatchUpload() {
 
               return (
                 <div key={student.id} className="flex items-center gap-4 border border-slate-200 rounded-xl p-3">
-                  <div className="w-20 h-24 rounded-lg overflow-hidden bg-slate-100 border border-slate-200 shrink-0">
+                  <div className="w-20 h-24 rounded-lg overflow-hidden bg-slate-100 border border-slate-200 shrink-0 relative">
                     {staged ? (
-                      <img src={staged.preview} alt="staged upload" className="w-full h-full object-cover" />
+                      <>
+                        <img src={stagedPages[0].preview} alt="staged upload" className="w-full h-full object-cover" />
+                        {stagedPages.length > 1 && (
+                          <span className="absolute bottom-1 right-1 bg-black/70 text-white text-[10px] font-bold px-1.5 py-0.5 rounded">
+                            {stagedPages.length} pages
+                          </span>
+                        )}
+                      </>
                     ) : sub?.imageUrl ? (
                       <img
                         src={sub.imageUrl.startsWith('http') ? sub.imageUrl : `${API_URL}${sub.imageUrl}`}
@@ -276,9 +359,33 @@ export default function BatchUpload() {
                     <p className="font-semibold text-brand-slate truncate">{student.name}</p>
                     <p className="text-xs text-slate-500">{student.username}</p>
                     {staged ? (
-                      <span className="inline-flex mt-2 text-[11px] font-bold px-2 py-0.5 rounded-full bg-blue-100 text-blue-700">
-                        Ready to upload
-                      </span>
+                      <>
+                        <span className="inline-flex mt-2 text-[11px] font-bold px-2 py-0.5 rounded-full bg-blue-100 text-blue-700">
+                          Ready to upload — {stagedPages.length} page{stagedPages.length > 1 ? 's' : ''}
+                        </span>
+                        <div className="flex flex-wrap gap-1.5 mt-2">
+                          {stagedPages.map((page, i) => (
+                            <div key={i} className="relative w-10 h-12 rounded-md overflow-hidden border border-slate-200 group/page">
+                              <img src={page.preview} alt={`page ${i + 1}`} className="w-full h-full object-cover" />
+                              <button type="button" onClick={() => setRedacting({ studentId: student.id, pageIndex: i })}
+                                title={`Redact name on page ${i + 1}`}
+                                className="absolute inset-0 bg-black/50 text-white opacity-0 group-hover/page:opacity-100 transition-opacity flex items-center justify-center">
+                                <ShieldCheck className="w-3.5 h-3.5" />
+                              </button>
+                              <button type="button" onClick={() => removePage(student.id, i)} title={`Remove page ${i + 1}`}
+                                className="absolute -top-0.5 -right-0.5 w-4 h-4 bg-red-500 text-white rounded-full flex items-center justify-center opacity-0 group-hover/page:opacity-100 transition-opacity">
+                                <X className="w-2.5 h-2.5" />
+                              </button>
+                            </div>
+                          ))}
+                          {stagedPages.length < MAX_PAGES && (
+                            <button type="button" onClick={() => triggerFilePick(student.id)} title="Add another page"
+                              className="w-10 h-12 rounded-md border-2 border-dashed border-slate-300 text-slate-400 flex items-center justify-center hover:border-brand-navy hover:text-brand-navy transition-colors">
+                              <Plus className="w-3.5 h-3.5" />
+                            </button>
+                          )}
+                        </div>
+                      </>
                     ) : (
                       <>
                         {sub?.createdAt && (
@@ -307,44 +414,43 @@ export default function BatchUpload() {
                     )
                   ) : staged ? (
                     <div className="flex flex-col items-end gap-1.5 shrink-0">
-                      <div className="flex gap-1">
-                        <button type="button" onClick={() => setRedactingStudentId(student.id)} title="Redact Name"
-                          className="p-1.5 bg-slate-100 text-slate-600 rounded-md hover:bg-slate-200">
-                          <ShieldCheck className="w-3.5 h-3.5" />
-                        </button>
-                        <button type="button" onClick={() => cancelStaged(student.id)} title="Remove"
-                          className="p-1.5 bg-slate-100 text-slate-600 rounded-md hover:bg-red-100 hover:text-red-600">
-                          <X className="w-3.5 h-3.5" />
-                        </button>
-                      </div>
-                      <button type="button" onClick={() => confirmUpload(student.id)}
+                      <button type="button" onClick={() => cancelStaged(student.id)}
+                        className="text-xs text-slate-400 hover:text-red-600 font-medium flex items-center gap-1">
+                        <X className="w-3.5 h-3.5" /> Discard all
+                      </button>
+                      <button type="button" onClick={() => setConfirmingStudent(student)}
                         disabled={!piiConfirmed || isUploading}
                         className={cn('text-xs px-3 py-1.5 rounded-md font-medium flex items-center gap-1',
                           piiConfirmed ? 'bg-brand-navy text-white hover:bg-blue-900' : 'bg-slate-200 text-slate-400 cursor-not-allowed')}>
                         {isUploading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : 'Confirm Upload'}
                       </button>
                     </div>
-                  ) : sub?.id ? (
-                    <div className="flex flex-col items-center gap-1 shrink-0 w-24">
-                      <button type="button" onClick={() => triggerFilePick(student.id)} disabled={!piiConfirmed}
-                        title={!piiConfirmed ? 'Confirm the privacy checkbox above first' : 'Upload a new photo (replaces the current one)'}
-                        className={cn('text-xs px-3 py-1.5 rounded-md font-medium flex items-center justify-center gap-1 w-full',
-                          piiConfirmed ? 'bg-slate-100 text-slate-700 hover:bg-slate-200' : 'bg-slate-100 text-slate-300 cursor-not-allowed')}>
-                        <UploadCloud className="w-3.5 h-3.5" /> Upload
-                      </button>
-                      <Link to={`/teacher/review/${sub.id}`}
-                        className="text-xs bg-brand-navy text-white px-3 py-1.5 rounded-md font-medium hover:bg-blue-900 w-full text-center">
-                        Review
-                      </Link>
-                      {grade !== null && <span className="text-xs font-bold text-brand-slate">{grade}/{maxPoints}</span>}
-                    </div>
                   ) : (
-                    <button type="button" onClick={() => triggerFilePick(student.id)} disabled={!piiConfirmed}
-                      title={!piiConfirmed ? 'Confirm the privacy checkbox above first' : ''}
-                      className={cn('text-xs px-3 py-1.5 rounded-md font-medium flex items-center gap-1 shrink-0',
-                        piiConfirmed ? 'bg-brand-navy text-white hover:bg-blue-900' : 'bg-slate-200 text-slate-400 cursor-not-allowed')}>
-                      <UploadCloud className="w-3.5 h-3.5" /> Upload
-                    </button>
+                    <div className="flex flex-col items-center gap-1 shrink-0 w-28">
+                      <div className="flex gap-1 w-full">
+                        <button type="button" onClick={() => triggerFilePick(student.id, 'camera')} disabled={!piiConfirmed}
+                          title={!piiConfirmed ? 'Confirm the privacy checkbox above first' : 'Take a photo'}
+                          className={cn('text-xs px-2 py-1.5 rounded-md font-medium flex items-center justify-center gap-1 flex-1',
+                            piiConfirmed ? 'bg-brand-navy text-white hover:bg-blue-900' : 'bg-slate-200 text-slate-400 cursor-not-allowed')}>
+                          <Camera className="w-3.5 h-3.5" /> Photo
+                        </button>
+                        <button type="button" onClick={() => triggerFilePick(student.id)} disabled={!piiConfirmed}
+                          title={!piiConfirmed ? 'Confirm the privacy checkbox above first' : 'Choose image files (multiple pages allowed)'}
+                          className={cn('text-xs px-2 py-1.5 rounded-md font-medium flex items-center justify-center gap-1 flex-1',
+                            piiConfirmed ? 'bg-slate-100 text-slate-700 hover:bg-slate-200' : 'bg-slate-100 text-slate-300 cursor-not-allowed')}>
+                          <UploadCloud className="w-3.5 h-3.5" /> Files
+                        </button>
+                      </div>
+                      {sub?.id && (
+                        <>
+                          <Link to={`/teacher/review/${sub.id}`}
+                            className="text-xs bg-brand-navy text-white px-3 py-1.5 rounded-md font-medium hover:bg-blue-900 w-full text-center">
+                            Review
+                          </Link>
+                          {grade !== null && <span className="text-xs font-bold text-brand-slate">{grade}/{maxPoints}</span>}
+                        </>
+                      )}
+                    </div>
                   )}
                 </div>
               );

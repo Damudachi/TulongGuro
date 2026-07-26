@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import { Plus, Search, FileText, User, ArrowLeft, Clock, CheckCircle2, AlertCircle, UploadCloud, Trash2, Eye, X } from 'lucide-react';
 import { API_URL } from '../../config';
+import { ACTIVITY_TYPES } from '../../constants/activityTypes';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
 
@@ -347,7 +348,9 @@ export default function ClassHub() {
                   <label className="block text-sm font-medium mb-1">Type</label>
                   <select value={newActivity.type} onChange={e => setNewActivity({ ...newActivity, type: e.target.value })}
                     className="w-full border p-2 rounded-lg outline-none focus:ring-2 focus:ring-brand-navy">
-                    {['Essay', 'Short Answer', 'Journal', 'Reflection', 'Quiz'].map(t => <option key={t}>{t}</option>)}
+                    {ACTIVITY_TYPES.map(t => <option key={t}>{t}</option>)}
+                    {/* A lesson's outputType may fall outside the list — keep it selectable */}
+                    {newActivity.type && !ACTIVITY_TYPES.includes(newActivity.type) && <option key={newActivity.type}>{newActivity.type}</option>}
                   </select>
                 </div>
                 <div>

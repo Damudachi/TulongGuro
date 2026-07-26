@@ -1,10 +1,16 @@
 import { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
-import { BookOpen, UserCircle, GraduationCap, Eye, EyeOff } from 'lucide-react';
+import { BookOpen, UserCircle, GraduationCap, Eye, EyeOff, Building2 } from 'lucide-react';
 import { API_URL } from '../config';
 
+const ROLES = {
+  teacher: { label: 'Teacher', icon: UserCircle, accent: 'text-brand-navy', header: 'bg-brand-navy', button: 'bg-brand-navy hover:bg-blue-900', idLabel: 'Email Address', idPlaceholder: 'teacher@deped.gov.ph', idType: 'email', home: '/teacher/dashboard' },
+  student: { label: 'Student', icon: GraduationCap, accent: 'text-brand-green', header: 'bg-brand-green', button: 'bg-brand-green hover:bg-emerald-600', idLabel: 'Student ID', idPlaceholder: 'Enter your ID (e.g. RIZAL-001)', idType: 'text', home: '/student/dashboard' },
+  admin: { label: 'Admin', icon: Building2, accent: 'text-slate-700', header: 'bg-slate-800', button: 'bg-slate-800 hover:bg-slate-900', idLabel: 'Email Address', idPlaceholder: 'admin@school.edu.ph', idType: 'email', home: '/admin/teachers' },
+};
+
 export default function Login() {
-  const [role, setRole] = useState('teacher'); // 'teacher' | 'student'
+  const [role, setRole] = useState('teacher'); // 'teacher' | 'student' | 'admin'
   const navigate = useNavigate();
 
   const [identifier, setIdentifier] = useState('');
@@ -25,13 +31,9 @@ export default function Login() {
       
       if (data.success) {
         localStorage.setItem('user', JSON.stringify(data.user));
-        if (role === 'teacher') {
-          navigate('/teacher/dashboard');
-        } else {
-          navigate('/student/dashboard');
-        }
+        navigate(ROLES[role].home);
       } else {
-        setErrorMsg('Invalid credentials. Did you run the seed script?');
+        setErrorMsg('Invalid credentials. Please check your details and try again.');
       }
     } catch (err) {
       setErrorMsg('Cannot connect to server.');
@@ -41,7 +43,7 @@ export default function Login() {
   return (
     <div className="min-h-screen bg-brand-bg flex items-center justify-center p-4">
       <div className="max-w-md w-full bg-white rounded-2xl shadow-xl overflow-hidden">
-        <div className={`p-8 text-white text-center transition-colors duration-300 ${role === 'teacher' ? 'bg-brand-navy' : 'bg-brand-green'}`}>
+        <div className={`p-8 text-white text-center transition-colors duration-300 ${ROLES[role].header}`}>
           <BookOpen className="w-12 h-12 mx-auto mb-4" />
           <h1 className="text-3xl font-bold mb-2">TulongGuro</h1>
           <p className="text-white/80">AI-Assisted Grading for Philippine Schools</p>
@@ -49,36 +51,37 @@ export default function Login() {
 
         <div className="p-8">
           <div className="flex bg-slate-100 p-1 rounded-lg mb-8">
-            <button
-              onClick={() => setRole('teacher')}
-              className={`flex-1 flex items-center justify-center py-2 px-4 rounded-md text-sm font-medium transition-all ${
-                role === 'teacher' ? 'bg-white shadow text-brand-navy' : 'text-slate-500 hover:text-slate-700'
-              }`}
-            >
-              <UserCircle className="w-4 h-4 mr-2" />
-              Teacher
-            </button>
-            <button
-              onClick={() => setRole('student')}
-              className={`flex-1 flex items-center justify-center py-2 px-4 rounded-md text-sm font-medium transition-all ${
-                role === 'student' ? 'bg-white shadow text-brand-green' : 'text-slate-500 hover:text-slate-700'
-              }`}
-            >
-              <GraduationCap className="w-4 h-4 mr-2" />
-              Student
-            </button>
+            {Object.entries(ROLES).map(([key, cfg]) => (
+              <button
+                key={key}
+                onClick={() => setRole(key)}
+                className={`flex-1 flex items-center justify-center py-2 px-2 rounded-md text-sm font-medium transition-all ${
+                  role === key ? `bg-white shadow ${cfg.accent}` : 'text-slate-500 hover:text-slate-700'
+                }`}
+              >
+                <cfg.icon className="w-4 h-4 mr-1.5" />
+                {cfg.label}
+              </button>
+            ))}
           </div>
 
-          <form onSubmit={handleLogin} className="space-y-6">
+          {/* autoComplete="off" throughout: shared classroom devices should not
+              offer the previous user's credentials to the next one. */}
+          <form onSubmit={handleLogin} className="space-y-6" autoComplete="off">
             <div>
               <label className="block text-sm font-medium text-slate-700 mb-2">
-                {role === 'teacher' ? 'Email Address' : 'Student ID'}
+                {ROLES[role].idLabel}
               </label>
               <input
-                type={role === 'teacher' ? 'email' : 'text'}
+                type={ROLES[role].idType}
                 required
+                name="tg-identifier"
+                autoComplete="off"
+                autoCorrect="off"
+                autoCapitalize="none"
+                spellCheck={false}
                 className="w-full px-4 py-3 rounded-lg border border-slate-200 focus:ring-2 focus:ring-brand-navy focus:border-transparent outline-none transition-all"
-                placeholder={role === 'teacher' ? 'teacher@deped.gov.ph' : 'Enter your ID (e.g. RIZAL-001)'}
+                placeholder={ROLES[role].idPlaceholder}
                 value={identifier}
                 onChange={(e) => setIdentifier(e.target.value)}
               />
@@ -89,6 +92,8 @@ export default function Login() {
                 <input
                   type={showPassword ? "text" : "password"}
                   required
+                  name="tg-password"
+                  autoComplete="new-password"
                   className="w-full px-4 py-3 rounded-lg border border-slate-200 focus:ring-2 focus:ring-brand-navy focus:border-transparent outline-none transition-all pr-12"
                   placeholder="••••••••"
                   value={password}
@@ -106,11 +111,9 @@ export default function Login() {
             
             <button
               type="submit"
-              className={`w-full py-3 rounded-lg text-white font-medium transition-all ${
-                role === 'teacher' ? 'bg-brand-navy hover:bg-blue-900' : 'bg-brand-green hover:bg-emerald-600'
-              }`}
+              className={`w-full py-3 rounded-lg text-white font-medium transition-all ${ROLES[role].button}`}
             >
-              Log In as {role === 'teacher' ? 'Teacher' : 'Student'}
+              Log In as {ROLES[role].label}
             </button>
             {errorMsg && (
               <div className="mt-4 p-3 bg-red-50 border border-red-200 text-red-600 text-sm rounded-lg text-center font-medium">
@@ -119,12 +122,20 @@ export default function Login() {
             )}
           </form>
 
-          {role === 'teacher' && (
+          {/* Teacher and student accounts are created for you — only a school
+              registers itself, which creates its first admin. */}
+          {role === 'admin' ? (
             <p className="text-center mt-6 text-sm text-slate-600">
-              Don't have a teacher account?{' '}
-              <Link to="/register" className="text-brand-navy font-semibold hover:underline">
-                Sign up here
+              School not registered yet?{' '}
+              <Link to="/register" className="text-slate-800 font-semibold hover:underline">
+                Register your school
               </Link>
+            </p>
+          ) : (
+            <p className="text-center mt-6 text-xs text-slate-400 leading-relaxed">
+              {role === 'teacher'
+                ? 'Teacher accounts are created by your school admin. Ask them for your login details.'
+                : 'Student accounts are created by your teacher. Ask them for your Student ID.'}
             </p>
           )}
         </div>

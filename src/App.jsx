@@ -3,6 +3,13 @@ import Login from './pages/Login';
 import Register from './pages/Register';
 import TeacherLayout from './layouts/TeacherLayout';
 import StudentLayout from './layouts/StudentLayout';
+import AdminLayout from './layouts/AdminLayout';
+
+// Admin Pages
+import AdminTeachers from './pages/admin/Teachers';
+import AdminTeacherDetail from './pages/admin/TeacherDetail';
+import AdminCurriculum from './pages/admin/Curriculum';
+import AdminRubrics from './pages/admin/Rubrics';
 
 // Teacher Pages
 import TeacherDashboard from './pages/teacher/Dashboard';
@@ -25,6 +32,7 @@ import OutputDetails from './pages/student/OutputDetails';
 import Awards from './pages/student/Awards';
 import Profile from './pages/student/Profile';
 import SubmitWork from './pages/student/SubmitWork';
+import ActivityDetails from './pages/student/ActivityDetails';
 import StudentSettings from './pages/student/Settings';
 import Subjects from './pages/student/Subjects';
 import SubjectActivities from './pages/student/SubjectActivities';
@@ -36,6 +44,15 @@ function App() {
       <Routes>
         <Route path="/" element={<Login />} />
         <Route path="/register" element={<Register />} />
+
+        {/* Admin Routes */}
+        <Route path="/admin" element={<AdminLayout />}>
+          <Route index element={<Navigate to="teachers" />} />
+          <Route path="teachers" element={<AdminTeachers />} />
+          <Route path="teachers/:teacherId" element={<AdminTeacherDetail />} />
+          <Route path="curriculum" element={<AdminCurriculum />} />
+          <Route path="rubrics" element={<AdminRubrics />} />
+        </Route>
 
         {/* Teacher Routes */}
         <Route path="/teacher" element={<TeacherLayout />}>
@@ -69,6 +86,7 @@ function App() {
           <Route path="awards" element={<Awards />} />
           <Route path="profile" element={<Profile />} />
           <Route path="submit" element={<SubmitWork />} />
+          <Route path="activity/:activityId" element={<ActivityDetails />} />
           <Route path="settings" element={<StudentSettings />} />
         </Route>
       </Routes>

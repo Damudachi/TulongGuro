@@ -7,14 +7,32 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+/// A school tenant. Admins, teachers, sections, curriculums and school-wide
+/// rubric templates all hang off one School so nothing leaks across schools.
+model School {
+  id              String           @id @default(uuid())
+  name            String           @unique
+  /// Optional school branding, set at registration. Null falls back to an
+  /// initials placeholder and the default TulongGuro palette.
+  logoUrl         String?
+  brandColor      String?
+  createdAt       DateTime         @default(now())
+  curriculums     Curriculum[]
+  rubricTemplates RubricTemplate[]
+  sections        Section[]
+  users           User[]
+}
+
 model User {
   id              String           @id @default(uuid())
   username        String           @unique
   name            String
   email           String?          @unique
   password        String
+  /// ADMIN | TEACHER | STUDENT
   role            String
   schoolName      String?
+  schoolId        String?
   createdAt       DateTime         @default(now())
   sectionId       String?
   taughtClasses   Class[]          @relation("TeacherClasses")
@@ -22,17 +40,53 @@ model User {
   rubricTemplates RubricTemplate[] @relation("TeacherRubricTemplates")
   ownedSections   Section[]        @relation("TeacherSections")
   submissions     Submission[]
+  school          School?          @relation(fields: [schoolId], references: [id])
   section         Section?         @relation("StudentSection", fields: [sectionId], references: [id])
 }
 
 model Section {
-  id        String   @id @default(uuid())
-  name      String
-  teacherId String
-  createdAt DateTime @default(now())
-  classes   Class[]
-  teacher   User     @relation("TeacherSections", fields: [teacherId], references: [id])
-  students  User[]   @relation("StudentSection")
+  id         String   @id @default(uuid())
+  name       String
+  /// Sections are segmented by grade level so a school roster stays navigable.
+  gradeLevel String?
+  teacherId  String
+  schoolId   String?
+  createdAt  DateTime @default(now())
+  classes    Class[]
+  school     School?  @relation(fields: [schoolId], references: [id])
+  teacher    User     @relation("TeacherSections", fields: [teacherId], references: [id])
+  students   User[]   @relation("StudentSection")
+}
+
+/// A school-wide curriculum for one grade level + subject, published by an
+/// admin. Teachers get it suggested when they create a matching course shell.
+model Curriculum {
+  id          String             @id @default(uuid())
+  schoolId    String
+  gradeLevel  String
+  subject     String
+  title       String
+  description String?
+  sourceFile  String?
+  createdAt   DateTime           @default(now())
+  school      School             @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  lessons     CurriculumLesson[]
+
+  @@unique([schoolId, gradeLevel, subject])
+}
+
+/// Template lesson copied into a class's ClassLesson rows when a teacher
+/// applies the curriculum to a new course shell.
+model CurriculumLesson {
+  id            String     @id @default(uuid())
+  curriculumId  String
+  title         String
+  description   String?
+  outputType    String     @default("Essay")
+  weekNumber    Int?
+  defaultRubric String?
+  createdAt     DateTime   @default(now())
+  curriculum    Curriculum @relation(fields: [curriculumId], references: [id], onDelete: Cascade)
 }
 
 model Class {
@@ -126,7 +180,11 @@ model RubricTemplate {
   id        String   @id @default(uuid())
   name      String
   criteria  String
-  teacherId String
+  /// Set for a teacher's private template; null for a school-wide one.
+  teacherId String?
+  /// Set for an admin-published, school-wide template; null for a private one.
+  schoolId  String?
   createdAt DateTime @default(now())
-  teacher   User     @relation("TeacherRubricTemplates", fields: [teacherId], references: [id], onDelete: Cascade)
+  school    School?  @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  teacher   User?    @relation("TeacherRubricTemplates", fields: [teacherId], references: [id], onDelete: Cascade)
 }

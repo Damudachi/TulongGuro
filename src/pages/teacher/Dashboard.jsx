@@ -1,11 +1,78 @@
 import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
-import { Plus, Users, FileText, BookOpen, Filter, ChevronRight, Loader2, UploadCloud, X } from 'lucide-react';
+import { Plus, Users, FileText, BookOpen, Filter, ChevronRight, Loader2, UploadCloud, X, Sparkles } from 'lucide-react';
 import { API_URL } from '../../config';
+import { ONBOARDING, hasSeenOnboarding, markOnboardingSeen, markAllOnboardingSeen } from '../../utils/onboarding';
+import { GRADE_LEVELS, SUBJECTS, SCHOOL_YEARS, DEFAULT_SCHOOL_YEAR } from '../../constants/school';
+import SchoolBadge from '../../components/SchoolBadge';
+
+const WIZARD_STEPS = ['Class', 'Section', 'Curriculum', 'Confirm'];
+
+/** A class seeded purely for onboarding — not a real class the teacher made. */
+const isDemoClass = (cls) => cls.name.includes('[DEMO]');
+
+/**
+ * Looks up the school curriculum the admin published for this grade + subject.
+ * Returns null while incomplete or when the school has nothing for that pair.
+ */
+function useCurriculumSuggestion(gradeLevel, subject) {
+  const [suggestion, setSuggestion] = useState(null);
+  const [isChecking, setIsChecking] = useState(false);
+
+  useEffect(() => {
+    const user = JSON.parse(localStorage.getItem('user') || '{}');
+    if (!user.id || !gradeLevel || !subject) {
+      setSuggestion(null);
+      return;
+    }
+    let cancelled = false;
+    setIsChecking(true);
+    fetch(`${API_URL}/api/teacher/${user.id}/curriculum-suggestion?gradeLevel=${encodeURIComponent(gradeLevel)}&subject=${encodeURIComponent(subject)}`)
+      .then(r => r.json())
+      .then(d => { if (!cancelled) setSuggestion(d.success ? d.curriculum : null); })
+      .catch(() => { if (!cancelled) setSuggestion(null); })
+      .finally(() => { if (!cancelled) setIsChecking(false); });
+    return () => { cancelled = true; };
+  }, [gradeLevel, subject]);
+
+  return { suggestion, isChecking };
+}
+
+/** Shared banner shown once a matching school curriculum is found. */
+function CurriculumSuggestion({ suggestion, isChecking, useIt, onToggle }) {
+  if (isChecking) {
+    return (
+      <div className="flex items-center gap-2 text-xs text-slate-400 p-3 bg-slate-50 border border-slate-200 rounded-xl">
+        <Loader2 className="w-3.5 h-3.5 animate-spin" /> Checking your school's curriculum...
+      </div>
+    );
+  }
+  if (!suggestion) return null;
+  return (
+    <label className="flex items-start gap-3 p-3 bg-emerald-50 border-2 border-emerald-200 rounded-xl cursor-pointer">
+      <input type="checkbox" checked={useIt} onChange={e => onToggle(e.target.checked)}
+        className="mt-0.5 w-4 h-4 accent-brand-green shrink-0" />
+      <div>
+        <p className="text-sm font-bold text-emerald-800 flex items-center gap-1.5">
+          <Sparkles className="w-4 h-4" /> Curriculum found for this class
+        </p>
+        <p className="text-xs text-emerald-700 mt-0.5 leading-relaxed">
+          Your school published <span className="font-semibold">{suggestion.title}</span> for{' '}
+          {suggestion.subject} · {suggestion.gradeLevel}. Applying it copies{' '}
+          <span className="font-semibold">{suggestion.lessons?.length || 0} lesson(s)</span> and their
+          default rubrics into this class.
+        </p>
+      </div>
+    </label>
+  );
+}
 
 function WizardEmptyState({ onComplete, sections = [] }) {
   const [step, setStep] = useState(1);
   const [className, setClassName] = useState('');
+  const [subject, setSubject] = useState('');
+  const [gradeLevel, setGradeLevel] = useState('');
+  const [schoolYear, setSchoolYear] = useState(DEFAULT_SCHOOL_YEAR);
   const [sectionName, setSectionName] = useState('');
   const [sectionId, setSectionId] = useState('');
   const [isCreatingNew, setIsCreatingNew] = useState(sections.length === 0);
@@ -15,7 +82,16 @@ function WizardEmptyState({ onComplete, sections = [] }) {
   const [parseStatus, setParseStatus] = useState('');
   const [error, setError] = useState('');
 
+  const [useCurriculum, setUseCurriculum] = useState(true);
+  const { suggestion, isChecking } = useCurriculumSuggestion(gradeLevel, subject);
+
+  // Class name is optional — fall back to "Subject — Grade Level" like the
+  // Add Class modal does, rather than to a hardcoded subject.
+  const resolvedName = className.trim() || [subject, gradeLevel].filter(Boolean).join(' — ');
+  const canLeaveStep1 = !!resolvedName && !!subject && !!gradeLevel;
+
   const handleCreate = async () => {
+    if (isSubmitting || isParsing) return;   // guard against a double click
     setError('');
     setIsSubmitting(true);
     try {
@@ -39,12 +115,13 @@ function WizardEmptyState({ onComplete, sections = [] }) {
 
       // Use FormData to support curriculum file upload
       const fd = new FormData();
-      fd.append('name', className || 'English — Grade 6');
+      fd.append('name', resolvedName);
       fd.append('teacherId', user.id);
       fd.append('sectionId', finalSectionId);
-      fd.append('subject', 'English');
-      fd.append('gradeLevel', 'Grade 6');
-      fd.append('schoolYear', '2024-2025');
+      fd.append('subject', subject);
+      fd.append('gradeLevel', gradeLevel);
+      fd.append('schoolYear', schoolYear);
+      if (suggestion && useCurriculum) fd.append('curriculumId', suggestion.id);
       if (curriculumFile) fd.append('curriculumFile', curriculumFile);
 
       const clsRes = await fetch(`${API_URL}/api/teacher/classes`, {
@@ -91,31 +168,81 @@ function WizardEmptyState({ onComplete, sections = [] }) {
       {/* Progress Header */}
       <div className="bg-gradient-to-r from-brand-navy to-blue-700 p-6 text-white">
         <h2 className="text-xl font-bold mb-1">Welcome to TulongGuro! 👋</h2>
-        <p className="text-blue-200 text-sm">Let's set up your first class in 4 quick steps.</p>
+        <p className="text-blue-200 text-sm">Let's set up your first class in {WIZARD_STEPS.length} quick steps.</p>
         <div className="flex gap-2 mt-4">
-          <div className={`h-1.5 rounded-full flex-1 transition-all ${step >= 1 ? 'bg-white' : 'bg-white/30'}`} />
-          <div className={`h-1.5 rounded-full flex-1 transition-all ${step >= 2 ? 'bg-white' : 'bg-white/30'}`} />
-          <div className={`h-1.5 rounded-full flex-1 transition-all ${step >= 3 ? 'bg-white' : 'bg-white/30'}`} />
-          <div className={`h-1.5 rounded-full flex-1 transition-all ${step >= 4 ? 'bg-white' : 'bg-white/30'}`} />
+          {WIZARD_STEPS.map((label, i) => (
+            <div key={label} className="flex-1">
+              <div className={`h-1.5 rounded-full transition-all ${step >= i + 1 ? 'bg-white' : 'bg-white/30'}`} />
+              <p className={`text-[10px] mt-1.5 font-bold uppercase tracking-wider transition-colors ${step >= i + 1 ? 'text-white' : 'text-blue-200/50'}`}>
+                {label}
+              </p>
+            </div>
+          ))}
         </div>
       </div>
 
       <div className="p-6">
         {step === 1 && (
           <div className="animate-fade-in">
-            <label className="block text-sm font-bold text-brand-slate mb-1">Step 1: Name your Class</label>
-            <p className="text-xs text-slate-500 mb-3">Give your class a clear name, e.g. "English Grade 6"</p>
-            <input
-              type="text"
-              value={className}
-              onChange={e => setClassName(e.target.value)}
-              placeholder="e.g. English Grade 6"
-              className="w-full border-2 border-slate-200 p-3 rounded-xl text-sm focus:border-brand-navy focus:ring-2 focus:ring-brand-navy/10 outline-none transition-all"
-              autoFocus
-            />
+            <label className="block text-sm font-bold text-brand-slate mb-1">Step 1 of {WIZARD_STEPS.length}: Class details</label>
+            <p className="text-xs text-slate-500 mb-3">Tell us what you teach — nothing is filled in for you.</p>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs font-semibold text-slate-500 mb-1">Subject *</label>
+                <select
+                  value={subject}
+                  onChange={e => setSubject(e.target.value)}
+                  className="w-full border-2 border-slate-200 p-2.5 rounded-xl text-sm focus:border-brand-navy outline-none transition-all"
+                >
+                  <option value="">-- Select --</option>
+                  {SUBJECTS.map(s => <option key={s} value={s}>{s}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-slate-500 mb-1">Grade Level *</label>
+                <select
+                  value={gradeLevel}
+                  onChange={e => setGradeLevel(e.target.value)}
+                  className="w-full border-2 border-slate-200 p-2.5 rounded-xl text-sm focus:border-brand-navy outline-none transition-all"
+                >
+                  <option value="">-- Select --</option>
+                  {GRADE_LEVELS.map(g => <option key={g} value={g}>{g}</option>)}
+                </select>
+              </div>
+            </div>
+
+            <div className="mt-3">
+              <label className="block text-xs font-semibold text-slate-500 mb-1">School Year *</label>
+              <select
+                value={schoolYear}
+                onChange={e => setSchoolYear(e.target.value)}
+                className="w-full border-2 border-slate-200 p-2.5 rounded-xl text-sm focus:border-brand-navy outline-none transition-all"
+              >
+                {SCHOOL_YEARS.map(sy => <option key={sy} value={sy}>{sy}</option>)}
+              </select>
+            </div>
+
+            <div className="mt-3">
+              <label className="block text-xs font-semibold text-slate-500 mb-1">Class Name</label>
+              <input
+                type="text"
+                value={className}
+                onChange={e => setClassName(e.target.value)}
+                placeholder={resolvedName || 'e.g. Filipino — Grade 10'}
+                className="w-full border-2 border-slate-200 p-3 rounded-xl text-sm focus:border-brand-navy focus:ring-2 focus:ring-brand-navy/10 outline-none transition-all"
+              />
+              <p className="text-xs text-slate-400 mt-1">Leave blank to use "Subject — Grade Level" automatically</p>
+            </div>
+
+            <div className="mt-3">
+              <CurriculumSuggestion suggestion={suggestion} isChecking={isChecking}
+                useIt={useCurriculum} onToggle={setUseCurriculum} />
+            </div>
+
             <button
-              onClick={() => { if (className.trim()) setStep(2); }}
-              disabled={!className.trim()}
+              onClick={() => { if (canLeaveStep1) setStep(2); }}
+              disabled={!canLeaveStep1}
               className="mt-4 w-full bg-brand-navy text-white py-3 rounded-xl font-bold hover:bg-blue-900 disabled:opacity-40 disabled:cursor-not-allowed transition-all flex items-center justify-center gap-2"
             >
               Next <ChevronRight className="w-4 h-4" />
@@ -125,9 +252,9 @@ function WizardEmptyState({ onComplete, sections = [] }) {
 
         {step === 2 && (
           <div className="animate-fade-in">
-            <label className="block text-sm font-bold text-brand-slate mb-1">Step 2: Choose or Name your Block Section</label>
+            <label className="block text-sm font-bold text-brand-slate mb-1">Step 2 of {WIZARD_STEPS.length}: Choose or name your block section</label>
             <p className="text-xs text-slate-500 mb-3">This is your homeroom group, e.g. "Grade 6 — Sampaguita"</p>
-            
+
             {sections.length > 0 ? (
               <div className="space-y-3">
                 <select
@@ -191,9 +318,16 @@ function WizardEmptyState({ onComplete, sections = [] }) {
 
         {step === 3 && (
           <div className="animate-fade-in">
-            <label className="block text-sm font-bold text-brand-slate mb-1">Step 3: Upload Curriculum / Lesson Plan</label>
-            <p className="text-xs text-slate-500 mb-3">Upload your curriculum guide or lesson plan (PDF or DOCX). The AI will extract lessons and generate rubrics.</p>
-            
+            <label className="block text-sm font-bold text-brand-slate mb-1">Step 3 of {WIZARD_STEPS.length}: Upload curriculum / lesson plan</label>
+            {suggestion && useCurriculum ? (
+              <p className="text-xs text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg p-3 mb-3 leading-relaxed">
+                You're applying your school's <strong>{suggestion.title}</strong>, so there's nothing to upload here.
+                You can still add your own file to layer extra lessons on top.
+              </p>
+            ) : (
+              <p className="text-xs text-slate-500 mb-3">Upload your curriculum guide or lesson plan (PDF or DOCX). The AI will extract lessons and generate rubrics.</p>
+            )}
+
             {!curriculumFile ? (
               <label className="block border-2 border-dashed border-slate-300 rounded-xl p-8 text-center cursor-pointer hover:border-brand-navy hover:bg-blue-50 transition-colors">
                 <UploadCloud className="w-10 h-10 mx-auto mb-2 text-slate-400" />
@@ -230,12 +364,12 @@ function WizardEmptyState({ onComplete, sections = [] }) {
 
         {step === 4 && (
           <div className="animate-fade-in">
-            <label className="block text-sm font-bold text-brand-slate mb-1">Step 4: Confirm & Create</label>
+            <label className="block text-sm font-bold text-brand-slate mb-1">Step 4 of {WIZARD_STEPS.length}: Confirm &amp; create</label>
             <p className="text-xs text-slate-500 mb-4">Your class will be created with these settings:</p>
             <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 mb-4 space-y-2">
               <div className="flex justify-between items-center">
                 <span className="text-xs font-medium text-slate-500">Class Name</span>
-                <span className="text-sm font-bold text-brand-slate">{className}</span>
+                <span className="text-sm font-bold text-brand-slate">{resolvedName}</span>
               </div>
               <div className="flex justify-between items-center">
                 <span className="text-xs font-medium text-slate-500">Block Section</span>
@@ -243,8 +377,20 @@ function WizardEmptyState({ onComplete, sections = [] }) {
               </div>
               <div className="flex justify-between items-center">
                 <span className="text-xs font-medium text-slate-500">Subject</span>
-                <span className="text-sm font-bold text-brand-slate">English (Grade 6)</span>
+                <span className="text-sm font-bold text-brand-slate">{subject} ({gradeLevel})</span>
               </div>
+              <div className="flex justify-between items-center">
+                <span className="text-xs font-medium text-slate-500">School Year</span>
+                <span className="text-sm font-bold text-brand-slate">{schoolYear}</span>
+              </div>
+              {suggestion && useCurriculum && (
+                <div className="flex justify-between items-center gap-3">
+                  <span className="text-xs font-medium text-slate-500 shrink-0">School Curriculum</span>
+                  <span className="text-sm font-bold text-emerald-700 text-right">
+                    {suggestion.title} ({suggestion.lessons?.length || 0} lessons)
+                  </span>
+                </div>
+              )}
               {curriculumFile && (
                 <div className="flex justify-between items-center">
                   <span className="text-xs font-medium text-slate-500">Curriculum File</span>
@@ -274,36 +420,36 @@ function WizardEmptyState({ onComplete, sections = [] }) {
   );
 }
 
-const GRADE_LEVELS = ['Grade 1','Grade 2','Grade 3','Grade 4','Grade 5','Grade 6','Grade 7','Grade 8','Grade 9','Grade 10'];
-const SUBJECTS = ['Filipino','English','Mathematics','Science','Araling Panlipunan','MAPEH','TLE','ESP','Pagsasaling-wika','Reading & Literacy'];
-const SCHOOL_YEARS = ['2024-2025','2025-2026','2026-2027'];
 
 export default function TeacherDashboard() {
   const [classes, setClasses] = useState([]);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [sections, setSections] = useState([]);
-  const [form, setForm] = useState({ name: '', gradeLevel: 'Grade 6', subject: 'English', schoolYear: '2024-2025', sectionId: '' });
+  const [form, setForm] = useState({ name: '', gradeLevel: '', subject: '', schoolYear: DEFAULT_SCHOOL_YEAR, sectionId: '' });
   const [modalCurriculumFile, setModalCurriculumFile] = useState(null);
   const [modalIsParsing, setModalIsParsing] = useState(false);
   const [modalParseStatus, setModalParseStatus] = useState('');
+  const [isCreatingClass, setIsCreatingClass] = useState(false);
+  const [useModalCurriculum, setUseModalCurriculum] = useState(true);
   const [filters, setFilters] = useState({ gradeLevel: '', subject: '' });
   const [isLoading, setIsLoading] = useState(true);
-  const [showWalkthrough, setShowWalkthrough] = useState(() => {
-    const user = JSON.parse(localStorage.getItem('user') || '{}');
-    return user.id ? !localStorage.getItem(`hasSeenTeacherWalkthrough_${user.id}`) : false;
-  });
+  const [showWalkthrough, setShowWalkthrough] = useState(() => !hasSeenOnboarding(ONBOARDING.TEACHER_WALKTHROUGH));
   const [walkthroughStep, setWalkthroughStep] = useState(0);
-
-  const [showWelcomeModal, setShowWelcomeModal] = useState(() => {
-    const user = JSON.parse(localStorage.getItem('user') || '{}');
-    return user.id ? !localStorage.getItem(`hasSeenTeacherWelcome_${user.id}`) : false;
-  });
+  const [showWelcomeModal, setShowWelcomeModal] = useState(() => !hasSeenOnboarding(ONBOARDING.TEACHER_WELCOME));
 
   const dismissWelcome = () => {
-    const user = JSON.parse(localStorage.getItem('user') || '{}');
-    if (user.id) localStorage.setItem(`hasSeenTeacherWelcome_${user.id}`, 'true');
+    markOnboardingSeen(ONBOARDING.TEACHER_WELCOME);
     setShowWelcomeModal(false);
   };
+
+  const dismissWalkthrough = () => {
+    markOnboardingSeen(ONBOARDING.TEACHER_WALKTHROUGH);
+    setShowWalkthrough(false);
+  };
+
+  // Suggest the school curriculum as soon as grade level + subject are chosen.
+  const { suggestion: modalSuggestion, isChecking: isCheckingModalCurriculum } =
+    useCurriculumSuggestion(form.gradeLevel, form.subject);
 
   useEffect(() => {
     const user = JSON.parse(localStorage.getItem('user') || '{}');
@@ -314,12 +460,13 @@ export default function TeacherDashboard() {
     ]).then(([clsData, secData]) => {
       if (clsData.success) {
         setClasses(clsData.classes);
-        // Remove onboarding for existing accounts
-        if (clsData.classes.length > 0) {
+        // Skip onboarding only for accounts that have done real work. Every new
+        // teacher is seeded with a [DEMO] class, so counting it here suppressed
+        // onboarding for exactly the people who needed it.
+        if (clsData.classes.some(c => !isDemoClass(c))) {
           setShowWelcomeModal(false);
           setShowWalkthrough(false);
-          localStorage.setItem(`hasSeenTeacherWelcome_${user.id}`, 'true');
-          localStorage.setItem(`hasSeenTeacherWalkthrough_${user.id}`, 'true');
+          markAllOnboardingSeen([ONBOARDING.TEACHER_WELCOME, ONBOARDING.TEACHER_WALKTHROUGH]);
         }
       }
       if (secData.success) setSections(secData.sections);
@@ -328,11 +475,16 @@ export default function TeacherDashboard() {
 
   const handleAddClass = async (e) => {
     e.preventDefault();
+    // Without this guard a second click (or an impatient double-submit on a
+    // slow connection) fires the request twice and creates two course shells.
+    if (isCreatingClass) return;
+    if (!form.subject || !form.gradeLevel) return alert('Please choose a subject and grade level.');
     if (!form.sectionId) return alert('Please select a block section.');
+    setIsCreatingClass(true);
     try {
       const user = JSON.parse(localStorage.getItem('user') || '{}');
-      const name = form.name || `${form.subject} ${form.gradeLevel}`.trim();
-      
+      const name = form.name.trim() || `${form.subject} — ${form.gradeLevel}`;
+
       const fd = new FormData();
       fd.append('name', name);
       fd.append('gradeLevel', form.gradeLevel);
@@ -340,6 +492,7 @@ export default function TeacherDashboard() {
       fd.append('schoolYear', form.schoolYear);
       fd.append('teacherId', user.id);
       fd.append('sectionId', form.sectionId);
+      if (modalSuggestion && useModalCurriculum) fd.append('curriculumId', modalSuggestion.id);
       if (modalCurriculumFile) fd.append('curriculumFile', modalCurriculumFile);
 
       const res = await fetch(`${API_URL}/api/teacher/classes`, {
@@ -348,6 +501,9 @@ export default function TeacherDashboard() {
       });
       const data = await res.json();
       if (data.success) {
+        if (data.duplicate) {
+          alert('You already have a class for this section, subject and school year. Opening the existing one instead.');
+        }
         if (modalCurriculumFile && data.class?.id) {
           setModalIsParsing(true);
           setModalParseStatus('Scanning curriculum & generating rubrics...');
@@ -364,14 +520,16 @@ export default function TeacherDashboard() {
           setModalIsParsing(false);
         }
         setIsModalOpen(false);
-        setForm({ name: '', gradeLevel: 'Grade 6', subject: 'English', schoolYear: '2024-2025', sectionId: '' });
+        setForm({ name: '', gradeLevel: '', subject: '', schoolYear: DEFAULT_SCHOOL_YEAR, sectionId: '' });
         setModalCurriculumFile(null);
         window.location.reload();
       } else {
         alert('Failed: ' + data.error);
+        setIsCreatingClass(false);
       }
     } catch (e) {
       alert('Network error');
+      setIsCreatingClass(false);
     }
   };
 
@@ -393,17 +551,17 @@ export default function TeacherDashboard() {
     },
     {
       emoji: '📝',
-      title: 'Step 1: Open the Demo Class',
+      title: 'Step 1 of 3: Open the Demo Class',
       text: 'Click on the "[DEMO] Sandbox Demo Class" card below. Inside, you\'ll find a pre-loaded essay from a "Demo Student" waiting for your review.',
     },
     {
       emoji: '🤖',
-      title: 'Step 2: Try the Teacher Review Workspace',
+      title: 'Step 2 of 3: Try the Teacher Review Workspace',
       text: 'Click "Review" on any graded essay to see the AI feedback and edit it before the student sees it. You\'ll see the AI\'s suggested score, feedback, and a scanned essay. Adjust anything you want — the AI is your co-pilot, not the final judge.',
     },
     {
       emoji: '✅',
-      title: 'Step 3: You\'re Ready!',
+      title: 'Step 3 of 3: You\'re Ready!',
       text: 'Once you\'re comfortable, delete the Demo Class and create your own using the quick setup wizard. Add your real students and start grading!',
     },
   ];
@@ -412,6 +570,7 @@ export default function TeacherDashboard() {
     <div className="p-4 md:p-8 max-w-6xl mx-auto">
       <div className="flex flex-col md:flex-row md:items-center justify-between mb-8 gap-4">
         <div>
+          <SchoolBadge subtitle="Teacher Dashboard" className="mb-3" />
           <h1 className="text-2xl font-bold text-brand-slate">Assigned Classes</h1>
           <p className="text-slate-500 text-sm">Manage your subjects and block sections</p>
         </div>
@@ -420,8 +579,9 @@ export default function TeacherDashboard() {
         </Link>
       </div>
 
-      {/* Interactive Walkthrough Banner */}
-      {hasDemo && showWalkthrough && (
+      {/* Interactive Walkthrough Banner — only after the welcome modal is
+          dismissed, so the teacher never faces two onboarding flows at once. */}
+      {hasDemo && showWalkthrough && !showWelcomeModal && (
         <div className="mb-6 bg-gradient-to-r from-blue-50 to-indigo-50 border-2 border-blue-200 rounded-2xl overflow-hidden shadow-sm">
           <div className="p-5">
             <div className="flex items-start gap-4">
@@ -432,14 +592,7 @@ export default function TeacherDashboard() {
                 <h3 className="font-bold text-brand-slate text-base mb-1">{walkthroughSteps[walkthroughStep].title}</h3>
                 <p className="text-sm text-slate-600 leading-relaxed">{walkthroughSteps[walkthroughStep].text}</p>
               </div>
-              <button
-                onClick={() => {
-                  const user = JSON.parse(localStorage.getItem('user') || '{}');
-                  setShowWalkthrough(false);
-                  if (user.id) localStorage.setItem(`hasSeenTeacherWalkthrough_${user.id}`, 'true');
-                }}
-                className="text-slate-400 hover:text-slate-600 text-xs font-medium shrink-0"
-              >
+              <button onClick={dismissWalkthrough} className="text-slate-400 hover:text-slate-600 text-xs font-medium shrink-0">
                 Dismiss
               </button>
             </div>
@@ -458,12 +611,7 @@ export default function TeacherDashboard() {
                     Next <ChevronRight className="w-3 h-3" />
                   </button>
                 ) : (
-                  <button
-                    onClick={() => {
-                      const user = JSON.parse(localStorage.getItem('user') || '{}');
-                      setShowWalkthrough(false);
-                      if (user.id) localStorage.setItem(`hasSeenTeacherWalkthrough_${user.id}`, 'true');
-                    }}
+                  <button onClick={dismissWalkthrough}
                     className="text-xs font-bold text-white bg-brand-green px-4 py-1.5 rounded-lg hover:bg-emerald-600 transition-colors"
                   >
                     Got it! Let's go 🚀
@@ -565,21 +713,29 @@ export default function TeacherDashboard() {
             <p className="text-slate-500 text-sm mb-5">Set up a new subject for a block section.</p>
             <form onSubmit={handleAddClass} className="space-y-4">
 
-              {/* Grade Level + Subject side by side (Fixed) */}
+              {/* Grade Level + Subject side by side */}
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-1">Grade Level</label>
-                  <div className="w-full border border-slate-200 p-2 rounded-lg bg-slate-50 text-slate-600 text-sm font-medium cursor-not-allowed">
-                    Grade 6
-                  </div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Grade Level *</label>
+                  <select required value={form.gradeLevel} onChange={e => setForm({ ...form, gradeLevel: e.target.value })}
+                    className="w-full border border-slate-200 p-2 rounded-lg outline-none focus:ring-2 focus:ring-brand-navy text-sm">
+                    <option value="">-- Select --</option>
+                    {GRADE_LEVELS.map(g => <option key={g} value={g}>{g}</option>)}
+                  </select>
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-1">Subject</label>
-                  <div className="w-full border border-slate-200 p-2 rounded-lg bg-slate-50 text-slate-600 text-sm font-medium cursor-not-allowed">
-                    English
-                  </div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Subject *</label>
+                  <select required value={form.subject} onChange={e => setForm({ ...form, subject: e.target.value })}
+                    className="w-full border border-slate-200 p-2 rounded-lg outline-none focus:ring-2 focus:ring-brand-navy text-sm">
+                    <option value="">-- Select --</option>
+                    {SUBJECTS.map(s => <option key={s} value={s}>{s}</option>)}
+                  </select>
                 </div>
               </div>
+
+              {/* School curriculum matched to the grade + subject just chosen */}
+              <CurriculumSuggestion suggestion={modalSuggestion} isChecking={isCheckingModalCurriculum}
+                useIt={useModalCurriculum} onToggle={setUseModalCurriculum} />
 
               {/* Class Name (auto-generated preview, editable) */}
               <div>
@@ -641,10 +797,13 @@ export default function TeacherDashboard() {
               </div>
 
               <div className="flex gap-2 pt-2">
-                <button type="button" onClick={() => setIsModalOpen(false)}
-                  className="flex-1 py-2 rounded-lg border border-slate-200 text-slate-600 font-medium hover:bg-slate-50">Cancel</button>
-                <button type="submit"
-                  className="flex-1 py-2 rounded-lg bg-brand-navy text-white font-medium hover:bg-blue-900">Create Class</button>
+                <button type="button" onClick={() => setIsModalOpen(false)} disabled={isCreatingClass}
+                  className="flex-1 py-2 rounded-lg border border-slate-200 text-slate-600 font-medium hover:bg-slate-50 disabled:opacity-40">Cancel</button>
+                <button type="submit" disabled={isCreatingClass}
+                  className={`flex-1 py-2 rounded-lg text-white font-medium flex items-center justify-center gap-2 ${
+                    isCreatingClass ? 'bg-slate-300 cursor-not-allowed' : 'bg-brand-navy hover:bg-blue-900'}`}>
+                  {isCreatingClass ? <><Loader2 className="w-4 h-4 animate-spin" /> Creating...</> : 'Create Class'}
+                </button>
               </div>
             </form>
           </div>

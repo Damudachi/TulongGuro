@@ -10,8 +10,14 @@ import { ShieldCheck, Eraser, Check, X, RotateCcw, ZoomIn, ZoomOut } from 'lucid
  *   imageSrc (string)   — object URL or base64 of the image
  *   onConfirm (fn)      — called with the redacted Blob when done
  *   onCancel (fn)       — called when user cancels
+ *   perspective (string)— 'teacher' (default) or 'student'. Students are
+ *                         redacting their own paper, so they get first-person copy.
  */
-export default function ImageRedactor({ imageSrc, onConfirm, onCancel }) {
+export default function ImageRedactor({ imageSrc, onConfirm, onCancel, perspective = 'teacher' }) {
+  const isStudent = perspective === 'student';
+  const copy = isStudent
+    ? { title: 'Redact Your Name', subtitle: 'Draw a box over your name to block it out', tip: 'Draw a rectangle over your name to redact it' }
+    : { title: 'Redact Student Name', subtitle: 'Draw a box over the name to block it out', tip: "Draw a rectangle over the student's name to redact it" };
   const canvasRef = useRef(null);
   const [img, setImg] = useState(null);
   const [isDrawing, setIsDrawing] = useState(false);
@@ -137,8 +143,8 @@ export default function ImageRedactor({ imageSrc, onConfirm, onCancel }) {
         <div className="flex items-center gap-2">
           <ShieldCheck className="w-5 h-5 text-red-500" />
           <div>
-            <h3 className="font-bold text-brand-slate text-sm">Redact Student Name</h3>
-            <p className="text-[10px] text-slate-400">Draw a box over the name to block it out</p>
+            <h3 className="font-bold text-brand-slate text-sm">{copy.title}</h3>
+            <p className="text-[10px] text-slate-400">{copy.subtitle}</p>
           </div>
         </div>
         <div className="flex items-center gap-2">
@@ -174,7 +180,7 @@ export default function ImageRedactor({ imageSrc, onConfirm, onCancel }) {
         <p className="text-xs text-red-700 font-medium">
           <Eraser className="w-3 h-3 inline mr-1" />
           {rects.length === 0
-            ? 'Draw a rectangle over the student\'s name to redact it'
+            ? copy.tip
             : `${rects.length} area(s) redacted. Add more or confirm below.`
           }
         </p>
@@ -188,7 +194,7 @@ export default function ImageRedactor({ imageSrc, onConfirm, onCancel }) {
         </button>
         <button onClick={handleConfirm}
           className="flex-1 py-3 bg-brand-green text-white rounded-xl font-bold hover:bg-emerald-600 transition-colors shadow-lg shadow-emerald-500/20 flex items-center justify-center gap-2">
-          <Check className="w-4 h-4" /> {rects.length > 0 ? 'Confirm Redaction' : 'Skip (No Name Found)'}
+          <Check className="w-4 h-4" /> {rects.length > 0 ? 'Confirm Redaction' : isStudent ? 'Skip (My Name Is Not Shown)' : 'Skip (No Name Found)'}
         </button>
       </div>
     </div>

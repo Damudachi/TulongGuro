@@ -157,24 +157,73 @@ async function generateContentWithFallback(primaryModel, parts, opts = {}) {
 // ─────────────────────────────────────────
 // AUTH
 // ─────────────────────────────────────────
-app.post('/api/auth/register', async (req, res) => {
+// Public sign-up now registers a SCHOOL and its first ADMIN. Teacher accounts
+// are created by that admin (see /api/admin/:adminId/teachers) and student
+// accounts by teachers (see /api/teacher/sections) — neither can self-register.
+// Accepts JSON, or multipart/form-data when the admin attaches a school logo.
+app.post('/api/auth/register', (req, res, next) => {
+  const ct = req.headers['content-type'] || '';
+  if (ct.includes('multipart/form-data')) {
+    upload.single('logo')(req, res, next);
+  } else {
+    next();
+  }
+}, async (req, res) => {
   try {
-    const { name, email, password, schoolName } = req.body;
+    const { name, email, password, schoolName, brandColor } = req.body;
+    if (!name || !email || !password || !schoolName) {
+      return res.status(400).json({ success: false, error: 'Name, email, password and school name are all required.' });
+    }
+    // Branding is optional; reject only a malformed colour rather than silently
+    // storing something the UI can't render.
+    if (brandColor && !/^#[0-9a-fA-F]{6}$/.test(brandColor)) {
+      return res.status(400).json({ success: false, error: 'School colour must be a hex value like #1E3A8A.' });
+    }
 
-    // Check for existing email before attempting to create
     const existing = await prisma.user.findFirst({ where: { email } });
     if (existing) {
       return res.status(400).json({ success: false, error: 'An account with this email already exists. Please log in instead.' });
     }
 
+    const trimmedSchool = schoolName.trim();
+    const existingSchool = await prisma.school.findUnique({ where: { name: trimmedSchool } });
+    if (existingSchool) {
+      return res.status(400).json({
+        success: false,
+        error: `"${trimmedSchool}" is already registered. Ask your school's admin to create a teacher account for you.`
+      });
+    }
+
+    const logoUrl = req.file
+      ? await uploadToCloud(req.file.path, req.file.filename, { folder: 'school-logos', contentType: req.file.mimetype })
+      : null;
+
+    const school = await prisma.school.create({
+      data: { name: trimmedSchool, logoUrl, brandColor: brandColor || null }
+    });
     const hashedPassword = await bcrypt.hash(password, BCRYPT_SALT_ROUNDS);
     const user = await prisma.user.create({
-      data: { name, email, username: email, password: hashedPassword, role: 'TEACHER', schoolName }
+      data: {
+        name, email, username: email, password: hashedPassword,
+        role: 'ADMIN', schoolName: trimmedSchool, schoolId: school.id
+      }
     });
 
-    // Auto-seed Demo Sandbox for Onboarding
+    const { password: _pw, ...safeAdmin } = user;
+    return res.json({ success: true, user: safeAdmin, school });
+  } catch (e) {
+    return res.status(400).json({ success: false, error: e.message });
+  }
+});
+
+/** Seeds the demo sandbox class the teacher walkthrough refers to. */
+async function seedDemoSandbox(user) {
     try {
-      const demoSection = await prisma.section.create({ data: { name: 'Grade 6 - Demo Section', teacherId: user.id } });
+      // schoolId is deliberately left null: the sandbox is personal scratch
+      // space, so it stays out of the school-wide section list colleagues see.
+      const demoSection = await prisma.section.create({
+        data: { name: 'Grade 6 - Demo Section', gradeLevel: 'Grade 6', teacherId: user.id }
+      });
       const demoStudentPassword = await bcrypt.hash('password', BCRYPT_SALT_ROUNDS);
       const demoStudent = await prisma.user.create({
         data: { name: 'Demo Student', username: `DEMO-${Date.now()}`, password: demoStudentPassword, role: 'STUDENT', sectionId: demoSection.id }
@@ -208,13 +257,7 @@ app.post('/api/auth/register', async (req, res) => {
     } catch (seedErr) {
       console.error('Failed to seed demo class:', seedErr);
     }
-
-    const { password: _pw, ...safeUser } = user;
-    res.json({ success: true, user: safeUser });
-  } catch (e) {
-    res.status(400).json({ success: false, error: e.message });
-  }
-});
+}
 
 app.post('/api/auth/login', async (req, res) => {
   try {
@@ -222,7 +265,7 @@ app.post('/api/auth/login', async (req, res) => {
     // Include related section data so clients receive up-to-date section info on login
     const user = await prisma.user.findFirst({
       where: { username, role },
-      include: { section: true }
+      include: { section: true, school: true }
     });
     if (!user || !(await bcrypt.compare(password, user.password))) {
       return res.status(401).json({ success: false, error: 'Invalid credentials' });
@@ -286,6 +329,558 @@ app.post('/api/auth/login', async (req, res) => {
 
     const { password: _pw, ...safeUser } = user;
     res.json({ success: true, user: safeUser });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+/**
+ * The school a user belongs to, for the header badge on every dashboard.
+ * Admins and teachers carry schoolId directly; students inherit it from their
+ * section, so resolve through that when their own is unset.
+ */
+app.get('/api/users/:userId/school', async (req, res) => {
+  try {
+    const user = await prisma.user.findUnique({
+      where: { id: req.params.userId },
+      include: { school: true, section: { include: { school: true } } }
+    });
+    if (!user) return res.status(404).json({ success: false, error: 'User not found' });
+
+    const school = user.school || user.section?.school || null;
+    res.json({
+      success: true,
+      // schoolName is the pre-tenancy fallback for accounts not yet migrated.
+      school: school || (user.schoolName ? { id: null, name: user.schoolName } : null)
+    });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// ─────────────────────────────────────────
+// ADMIN — school-level administration
+// ─────────────────────────────────────────
+
+/** Resolves an admin's school, or throws so the caller can 403. */
+async function requireAdminSchool(adminId) {
+  const admin = await prisma.user.findUnique({ where: { id: adminId }, include: { school: true } });
+  if (!admin || admin.role !== 'ADMIN' || !admin.schoolId) {
+    const err = new Error('Not authorized — an admin account is required.');
+    err.status = 403;
+    throw err;
+  }
+  return admin;
+}
+
+function sendAdminError(res, e) {
+  res.status(e.status || 500).json({ success: false, error: e.message });
+}
+
+/** School overview: teachers, sections, curriculums and rubric counts. */
+app.get('/api/admin/:adminId/overview', async (req, res) => {
+  try {
+    const admin = await requireAdminSchool(req.params.adminId);
+    const [teachers, sections, curriculums, rubricCount] = await Promise.all([
+      prisma.user.findMany({
+        where: { schoolId: admin.schoolId, role: 'TEACHER' },
+        select: { id: true, name: true, email: true, username: true, createdAt: true, _count: { select: { taughtClasses: true, ownedSections: true } } },
+        orderBy: { createdAt: 'desc' }
+      }),
+      prisma.section.findMany({
+        where: { schoolId: admin.schoolId },
+        select: { id: true, name: true, gradeLevel: true, teacher: { select: { name: true } }, _count: { select: { students: true } } },
+        orderBy: [{ gradeLevel: 'asc' }, { name: 'asc' }]
+      }),
+      prisma.curriculum.findMany({
+        where: { schoolId: admin.schoolId },
+        include: { _count: { select: { lessons: true } } },
+        orderBy: [{ gradeLevel: 'asc' }, { subject: 'asc' }]
+      }),
+      prisma.rubricTemplate.count({ where: { schoolId: admin.schoolId } })
+    ]);
+    res.json({ success: true, school: admin.school, teachers, sections, curriculums, rubricCount });
+  } catch (e) { sendAdminError(res, e); }
+});
+
+/** Create a teacher account inside the admin's school. */
+app.post('/api/admin/:adminId/teachers', async (req, res) => {
+  try {
+    const admin = await requireAdminSchool(req.params.adminId);
+    const { name, email, password } = req.body;
+    if (!name?.trim() || !email?.trim() || !password) {
+      return res.status(400).json({ success: false, error: 'Name, email and a temporary password are required.' });
+    }
+    const normalizedEmail = email.trim().toLowerCase();
+    const clash = await prisma.user.findFirst({ where: { OR: [{ email: normalizedEmail }, { username: normalizedEmail }] } });
+    if (clash) return res.status(400).json({ success: false, error: 'An account with this email already exists.' });
+
+    const teacher = await prisma.user.create({
+      data: {
+        name: name.trim(),
+        email: normalizedEmail,
+        username: normalizedEmail,
+        password: await bcrypt.hash(password, BCRYPT_SALT_ROUNDS),
+        role: 'TEACHER',
+        schoolId: admin.schoolId,
+        schoolName: admin.school?.name || admin.schoolName
+      }
+    });
+    // Give them the same sandbox a self-registered teacher used to get, so the
+    // onboarding walkthrough has something to point at.
+    await seedDemoSandbox(teacher);
+
+    const { password: _pw, ...safeTeacher } = teacher;
+    res.json({ success: true, teacher: safeTeacher });
+  } catch (e) { sendAdminError(res, e); }
+});
+
+/** Reset a teacher's password to a new temporary one. */
+app.put('/api/admin/:adminId/teachers/:teacherId/password', async (req, res) => {
+  try {
+    const admin = await requireAdminSchool(req.params.adminId);
+    const { password } = req.body;
+    if (!password) return res.status(400).json({ success: false, error: 'A new password is required.' });
+    const teacher = await prisma.user.findUnique({ where: { id: req.params.teacherId } });
+    if (!teacher || teacher.schoolId !== admin.schoolId) {
+      return res.status(404).json({ success: false, error: 'Teacher not found in your school.' });
+    }
+    await prisma.user.update({
+      where: { id: teacher.id },
+      data: { password: await bcrypt.hash(password, BCRYPT_SALT_ROUNDS) }
+    });
+    res.json({ success: true });
+  } catch (e) { sendAdminError(res, e); }
+});
+
+/** Remove a teacher, but only while they still have no classes of their own. */
+app.delete('/api/admin/:adminId/teachers/:teacherId', async (req, res) => {
+  try {
+    const admin = await requireAdminSchool(req.params.adminId);
+    const teacher = await prisma.user.findUnique({
+      where: { id: req.params.teacherId },
+      include: { _count: { select: { taughtClasses: true } } }
+    });
+    if (!teacher || teacher.schoolId !== admin.schoolId) {
+      return res.status(404).json({ success: false, error: 'Teacher not found in your school.' });
+    }
+    // Real classes carry student submissions; only the seeded demo is disposable.
+    const realClasses = await prisma.class.count({
+      where: { teacherId: teacher.id, NOT: { name: { contains: '[DEMO]' } } }
+    });
+    if (realClasses > 0) {
+      return res.status(400).json({ success: false, error: 'This teacher still has classes. Reassign or delete them first.' });
+    }
+    await prisma.rubricTemplate.deleteMany({ where: { teacherId: teacher.id } });
+    await prisma.gradingExample.deleteMany({ where: { teacherId: teacher.id } });
+    const demoClasses = await prisma.class.findMany({ where: { teacherId: teacher.id }, select: { id: true } });
+    for (const cls of demoClasses) {
+      await prisma.submission.deleteMany({ where: { activity: { classId: cls.id } } });
+      await prisma.activity.deleteMany({ where: { classId: cls.id } });
+      await prisma.classLesson.deleteMany({ where: { classId: cls.id } });
+    }
+    await prisma.class.deleteMany({ where: { teacherId: teacher.id } });
+    const ownSections = await prisma.section.findMany({ where: { teacherId: teacher.id }, select: { id: true } });
+    await prisma.user.deleteMany({ where: { sectionId: { in: ownSections.map(s => s.id) }, role: 'STUDENT' } });
+    await prisma.section.deleteMany({ where: { teacherId: teacher.id } });
+    await prisma.user.delete({ where: { id: teacher.id } });
+    res.json({ success: true });
+  } catch (e) { sendAdminError(res, e); }
+});
+
+/** Loads a teacher, asserting they belong to the admin's school. */
+async function teacherInSchool(admin, teacherId) {
+  const teacher = await prisma.user.findUnique({ where: { id: teacherId } });
+  if (!teacher || teacher.schoolId !== admin.schoolId || teacher.role !== 'TEACHER') {
+    const err = new Error('Teacher not found in your school.');
+    err.status = 404;
+    throw err;
+  }
+  return teacher;
+}
+
+/** Full profile for one teacher: their course shells and their sections. */
+app.get('/api/admin/:adminId/teachers/:teacherId', async (req, res) => {
+  try {
+    const admin = await requireAdminSchool(req.params.adminId);
+    const teacher = await teacherInSchool(admin, req.params.teacherId);
+
+    const [classes, sections] = await Promise.all([
+      prisma.class.findMany({
+        where: { teacherId: teacher.id },
+        include: {
+          section: { select: { id: true, name: true, gradeLevel: true, _count: { select: { students: true } } } },
+          _count: { select: { activities: true, lessons: true } },
+          activities: { select: { id: true, _count: { select: { submissions: true } } } }
+        },
+        orderBy: { createdAt: 'desc' }
+      }),
+      prisma.section.findMany({
+        where: { teacherId: teacher.id },
+        include: {
+          students: { select: { id: true, name: true, username: true }, orderBy: { username: 'asc' } },
+          _count: { select: { classes: true } }
+        },
+        orderBy: [{ gradeLevel: 'asc' }, { name: 'asc' }]
+      })
+    ]);
+
+    const { password: _pw, ...safeTeacher } = teacher;
+    res.json({
+      success: true,
+      teacher: safeTeacher,
+      classes: classes.map(c => ({
+        id: c.id, name: c.name, gradeLevel: c.gradeLevel, subject: c.subject, schoolYear: c.schoolYear,
+        createdAt: c.createdAt,
+        section: c.section,
+        activityCount: c._count.activities,
+        lessonCount: c._count.lessons,
+        // Drives the "can this be deleted?" guard in the UI.
+        submissionCount: c.activities.reduce((n, a) => n + a._count.submissions, 0)
+      })),
+      sections
+    });
+  } catch (e) { sendAdminError(res, e); }
+});
+
+/** Edit a teacher's name or email. */
+app.put('/api/admin/:adminId/teachers/:teacherId', async (req, res) => {
+  try {
+    const admin = await requireAdminSchool(req.params.adminId);
+    const teacher = await teacherInSchool(admin, req.params.teacherId);
+    const { name, email } = req.body;
+
+    const data = {};
+    if (name !== undefined) {
+      if (!name.trim()) return res.status(400).json({ success: false, error: 'Name cannot be empty.' });
+      data.name = name.trim();
+    }
+    if (email !== undefined) {
+      const normalized = email.trim().toLowerCase();
+      if (!normalized) return res.status(400).json({ success: false, error: 'Email cannot be empty.' });
+      const clash = await prisma.user.findFirst({
+        where: { OR: [{ email: normalized }, { username: normalized }], NOT: { id: teacher.id } }
+      });
+      if (clash) return res.status(400).json({ success: false, error: 'Another account already uses this email.' });
+      data.email = normalized;
+      // username mirrors email for staff accounts — keep them in step or login breaks.
+      data.username = normalized;
+    }
+
+    const updated = await prisma.user.update({ where: { id: teacher.id }, data });
+    const { password: _pw, ...safeTeacher } = updated;
+    res.json({ success: true, teacher: safeTeacher });
+  } catch (e) { sendAdminError(res, e); }
+});
+
+/** Delete a course shell. Refuses once students have submitted work to it. */
+app.delete('/api/admin/:adminId/classes/:classId', async (req, res) => {
+  try {
+    const admin = await requireAdminSchool(req.params.adminId);
+    const cls = await prisma.class.findUnique({
+      where: { id: req.params.classId },
+      include: { teacher: true, activities: { select: { id: true, _count: { select: { submissions: true } } } } }
+    });
+    if (!cls || cls.teacher?.schoolId !== admin.schoolId) {
+      return res.status(404).json({ success: false, error: 'Class not found in your school.' });
+    }
+    const submissions = cls.activities.reduce((n, a) => n + a._count.submissions, 0);
+    if (submissions > 0) {
+      return res.status(400).json({
+        success: false,
+        error: `This class has ${submissions} student submission(s). Delete those first if you really mean to remove it.`
+      });
+    }
+    await prisma.activity.deleteMany({ where: { classId: cls.id } });
+    await prisma.classLesson.deleteMany({ where: { classId: cls.id } });
+    await prisma.class.delete({ where: { id: cls.id } });
+    res.json({ success: true });
+  } catch (e) { sendAdminError(res, e); }
+});
+
+/** Loads a section, asserting it belongs to the admin's school. */
+async function sectionInSchool(admin, sectionId) {
+  const section = await prisma.section.findUnique({
+    where: { id: sectionId },
+    include: { teacher: true }
+  });
+  const belongs = section && (section.schoolId === admin.schoolId || section.teacher?.schoolId === admin.schoolId);
+  if (!belongs) {
+    const err = new Error('Section not found in your school.');
+    err.status = 404;
+    throw err;
+  }
+  return section;
+}
+
+/** Rename a section or change its grade level. */
+app.put('/api/admin/:adminId/sections/:sectionId', async (req, res) => {
+  try {
+    const admin = await requireAdminSchool(req.params.adminId);
+    const section = await sectionInSchool(admin, req.params.sectionId);
+    const { name, gradeLevel } = req.body;
+
+    const data = {};
+    if (name !== undefined) {
+      if (!name.trim()) return res.status(400).json({ success: false, error: 'Section name cannot be empty.' });
+      data.name = name.trim();
+    }
+    if (gradeLevel !== undefined) data.gradeLevel = gradeLevel || null;
+
+    const updated = await prisma.section.update({ where: { id: section.id }, data });
+    res.json({ success: true, section: updated });
+  } catch (e) { sendAdminError(res, e); }
+});
+
+/** Add students to a section by name. */
+app.post('/api/admin/:adminId/sections/:sectionId/students', async (req, res) => {
+  try {
+    const admin = await requireAdminSchool(req.params.adminId);
+    const section = await sectionInSchool(admin, req.params.sectionId);
+    const { studentsList } = req.body;
+    if (!Array.isArray(studentsList) || studentsList.length === 0) {
+      return res.status(400).json({ success: false, error: 'Provide at least one student name.' });
+    }
+
+    const result = await enrolStudents(section, studentsList, {
+      schoolId: admin.schoolId,
+      teacherId: section.teacherId
+    });
+
+    const parts = [];
+    if (result.createdStudents.length) parts.push(`${result.createdStudents.length} new account(s) created`);
+    if (result.linkedStudents.length) parts.push(`${result.linkedStudents.length} existing account(s) moved here`);
+    if (result.skippedStudents.length) parts.push(`${result.skippedStudents.length} already in this section`);
+    res.json({ success: true, ...result, message: parts.join(', ') || 'No changes.' });
+  } catch (e) { sendAdminError(res, e); }
+});
+
+/** Remove a student from a section — deletes the account when it has no work. */
+app.delete('/api/admin/:adminId/sections/:sectionId/students/:studentId', async (req, res) => {
+  try {
+    const admin = await requireAdminSchool(req.params.adminId);
+    const section = await sectionInSchool(admin, req.params.sectionId);
+    const student = await prisma.user.findUnique({
+      where: { id: req.params.studentId },
+      include: { _count: { select: { submissions: true } } }
+    });
+    if (!student || student.sectionId !== section.id || student.role !== 'STUDENT') {
+      return res.status(404).json({ success: false, error: 'Student not found in this section.' });
+    }
+
+    if (student._count.submissions > 0) {
+      // Graded work must survive, so unassign rather than delete the account.
+      await prisma.user.update({ where: { id: student.id }, data: { sectionId: null } });
+      return res.json({ success: true, detached: true, message: `${student.name} has submitted work, so their account was kept and only removed from this section.` });
+    }
+    await prisma.user.delete({ where: { id: student.id } });
+    res.json({ success: true, detached: false, message: `${student.name} was removed.` });
+  } catch (e) { sendAdminError(res, e); }
+});
+
+/** Delete a section, once nothing depends on it. */
+app.delete('/api/admin/:adminId/sections/:sectionId', async (req, res) => {
+  try {
+    const admin = await requireAdminSchool(req.params.adminId);
+    const section = await sectionInSchool(admin, req.params.sectionId);
+    const [classCount, studentCount] = await Promise.all([
+      prisma.class.count({ where: { sectionId: section.id } }),
+      prisma.user.count({ where: { sectionId: section.id, role: 'STUDENT' } })
+    ]);
+    if (classCount > 0) {
+      return res.status(400).json({ success: false, error: `${classCount} class(es) still use this section. Delete those first.` });
+    }
+    if (studentCount > 0) {
+      return res.status(400).json({ success: false, error: `Remove the ${studentCount} student(s) from this section first.` });
+    }
+    await prisma.section.delete({ where: { id: section.id } });
+    res.json({ success: true });
+  } catch (e) { sendAdminError(res, e); }
+});
+
+// ── Curriculums ──
+
+app.get('/api/admin/:adminId/curriculums', async (req, res) => {
+  try {
+    const admin = await requireAdminSchool(req.params.adminId);
+    const curriculums = await prisma.curriculum.findMany({
+      where: { schoolId: admin.schoolId },
+      include: { lessons: { orderBy: [{ weekNumber: 'asc' }, { createdAt: 'asc' }] } },
+      orderBy: [{ gradeLevel: 'asc' }, { subject: 'asc' }]
+    });
+    res.json({ success: true, curriculums });
+  } catch (e) { sendAdminError(res, e); }
+});
+
+/**
+ * Publish a curriculum for one grade level + subject. An uploaded PDF/DOCX is
+ * parsed by the same extractor the per-class flow uses, so an admin gets
+ * lessons + default rubrics generated once for the whole school.
+ */
+app.post('/api/admin/:adminId/curriculums', upload.single('curriculumFile'), async (req, res) => {
+  try {
+    const admin = await requireAdminSchool(req.params.adminId);
+    const { gradeLevel, subject, title, description } = req.body;
+    if (!gradeLevel || !subject || !title?.trim()) {
+      return res.status(400).json({ success: false, error: 'Grade level, subject and title are required.' });
+    }
+
+    const duplicate = await prisma.curriculum.findFirst({
+      where: { schoolId: admin.schoolId, gradeLevel, subject }
+    });
+    if (duplicate) {
+      return res.status(400).json({
+        success: false,
+        error: `${subject} for ${gradeLevel} already has a curriculum. Delete it first to replace it.`
+      });
+    }
+
+    const sourceFile = req.file
+      ? await uploadToCloud(req.file.path, req.file.filename, { folder: 'curriculum', contentType: req.file.mimetype })
+      : null;
+
+    const curriculum = await prisma.curriculum.create({
+      data: { schoolId: admin.schoolId, gradeLevel, subject, title: title.trim(), description: description || null, sourceFile }
+    });
+
+    let parseWarning = null;
+    if (req.file) {
+      try {
+        const lessons = await extractLessonsFromCurriculum(req.file.path, subject, gradeLevel);
+        if (lessons.length) {
+          await prisma.curriculumLesson.createMany({
+            data: lessons.map(l => ({
+              curriculumId: curriculum.id,
+              title: l.title,
+              description: l.description || null,
+              outputType: l.outputType || 'Essay',
+              weekNumber: l.weekNumber ?? null,
+              defaultRubric: l.defaultRubric ? JSON.stringify(l.defaultRubric) : null
+            }))
+          });
+        } else {
+          parseWarning = 'No lessons could be extracted from that file. You can still add them by hand.';
+        }
+      } catch (parseErr) {
+        parseWarning = 'Curriculum file could not be parsed: ' + parseErr.message;
+      }
+    }
+
+    const saved = await prisma.curriculum.findUnique({
+      where: { id: curriculum.id },
+      include: { lessons: true }
+    });
+    res.json({ success: true, curriculum: saved, warning: parseWarning });
+  } catch (e) { sendAdminError(res, e); }
+});
+
+app.post('/api/admin/:adminId/curriculums/:curriculumId/lessons', async (req, res) => {
+  try {
+    const admin = await requireAdminSchool(req.params.adminId);
+    const curriculum = await prisma.curriculum.findUnique({ where: { id: req.params.curriculumId } });
+    if (!curriculum || curriculum.schoolId !== admin.schoolId) {
+      return res.status(404).json({ success: false, error: 'Curriculum not found in your school.' });
+    }
+    const { title, description, outputType, weekNumber } = req.body;
+    if (!title?.trim()) return res.status(400).json({ success: false, error: 'Lesson title is required.' });
+    const lesson = await prisma.curriculumLesson.create({
+      data: {
+        curriculumId: curriculum.id,
+        title: title.trim(),
+        description: description || null,
+        outputType: outputType || 'Essay',
+        weekNumber: weekNumber ? parseInt(weekNumber) : null
+      }
+    });
+    res.json({ success: true, lesson });
+  } catch (e) { sendAdminError(res, e); }
+});
+
+app.delete('/api/admin/:adminId/curriculums/:curriculumId/lessons/:lessonId', async (req, res) => {
+  try {
+    const admin = await requireAdminSchool(req.params.adminId);
+    const lesson = await prisma.curriculumLesson.findUnique({
+      where: { id: req.params.lessonId },
+      include: { curriculum: true }
+    });
+    if (!lesson || lesson.curriculum.schoolId !== admin.schoolId) {
+      return res.status(404).json({ success: false, error: 'Lesson not found in your school.' });
+    }
+    await prisma.curriculumLesson.delete({ where: { id: lesson.id } });
+    res.json({ success: true });
+  } catch (e) { sendAdminError(res, e); }
+});
+
+app.delete('/api/admin/:adminId/curriculums/:curriculumId', async (req, res) => {
+  try {
+    const admin = await requireAdminSchool(req.params.adminId);
+    const curriculum = await prisma.curriculum.findUnique({ where: { id: req.params.curriculumId } });
+    if (!curriculum || curriculum.schoolId !== admin.schoolId) {
+      return res.status(404).json({ success: false, error: 'Curriculum not found in your school.' });
+    }
+    await prisma.curriculum.delete({ where: { id: curriculum.id } });
+    res.json({ success: true });
+  } catch (e) { sendAdminError(res, e); }
+});
+
+// ── School-wide rubric templates ──
+
+app.get('/api/admin/:adminId/rubrics', async (req, res) => {
+  try {
+    const admin = await requireAdminSchool(req.params.adminId);
+    const rubrics = await prisma.rubricTemplate.findMany({
+      where: { schoolId: admin.schoolId },
+      orderBy: { createdAt: 'desc' }
+    });
+    res.json({ success: true, rubrics });
+  } catch (e) { sendAdminError(res, e); }
+});
+
+app.post('/api/admin/:adminId/rubrics', async (req, res) => {
+  try {
+    const admin = await requireAdminSchool(req.params.adminId);
+    const { name, criteria } = req.body;
+    if (!name?.trim() || !Array.isArray(criteria) || criteria.length === 0) {
+      return res.status(400).json({ success: false, error: 'A name and at least one criterion are required.' });
+    }
+    const total = criteria.reduce((sum, c) => sum + (parseInt(c.points) || 0), 0);
+    if (total !== 100) {
+      return res.status(400).json({ success: false, error: `Criteria weights must total 100%. They currently total ${total}%.` });
+    }
+    const rubric = await prisma.rubricTemplate.create({
+      data: { name: name.trim(), criteria: JSON.stringify(criteria), schoolId: admin.schoolId, teacherId: null }
+    });
+    res.json({ success: true, rubric });
+  } catch (e) { sendAdminError(res, e); }
+});
+
+app.delete('/api/admin/:adminId/rubrics/:rubricId', async (req, res) => {
+  try {
+    const admin = await requireAdminSchool(req.params.adminId);
+    const rubric = await prisma.rubricTemplate.findUnique({ where: { id: req.params.rubricId } });
+    if (!rubric || rubric.schoolId !== admin.schoolId) {
+      return res.status(404).json({ success: false, error: 'Rubric not found in your school.' });
+    }
+    await prisma.rubricTemplate.delete({ where: { id: rubric.id } });
+    res.json({ success: true });
+  } catch (e) { sendAdminError(res, e); }
+});
+
+/**
+ * Curriculum suggested for a teacher creating a course shell. Matched on the
+ * teacher's school + the grade level and subject they just picked.
+ */
+app.get('/api/teacher/:teacherId/curriculum-suggestion', async (req, res) => {
+  try {
+    const { gradeLevel, subject } = req.query;
+    const teacher = await prisma.user.findUnique({ where: { id: req.params.teacherId } });
+    if (!teacher?.schoolId || !gradeLevel || !subject) return res.json({ success: true, curriculum: null });
+
+    const curriculum = await prisma.curriculum.findFirst({
+      where: { schoolId: teacher.schoolId, gradeLevel, subject },
+      include: { lessons: { orderBy: [{ weekNumber: 'asc' }, { createdAt: 'asc' }] } }
+    });
+    res.json({ success: true, curriculum });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
   }
@@ -373,11 +968,28 @@ app.delete('/api/teacher/demo-data/:classId', async (req, res) => {
 // ─────────────────────────────────────────
 // Returns ALL sections — sections are homeroom groups, not teacher-owned
 app.get('/api/teacher/:teacherId/sections', async (req, res) => {
+  // Sections are shared across a school: colleagues teach the same block, so
+  // every teacher in the school sees them. Teachers with no school yet fall
+  // back to just their own, so nothing leaks between unaffiliated accounts.
+  const teacher = await prisma.user.findUnique({ where: { id: req.params.teacherId } });
+  const where = teacher?.schoolId
+    ? { OR: [{ schoolId: teacher.schoolId }, { teacherId: teacher.id }] }
+    : { teacherId: req.params.teacherId };
+
   const sections = await prisma.section.findMany({
-    include: { _count: { select: { students: true } }, students: { select: { id: true, name: true, username: true } } },
-    orderBy: { name: 'asc' }
+    where,
+    include: {
+      _count: { select: { students: true } },
+      students: { select: { id: true, name: true, username: true } },
+      teacher: { select: { id: true, name: true } }
+    },
+    orderBy: [{ gradeLevel: 'asc' }, { name: 'asc' }]
   });
-  res.json({ success: true, sections });
+  // `isOwn` lets the UI show which sections this teacher may edit.
+  res.json({
+    success: true,
+    sections: sections.map(s => ({ ...s, isOwn: s.teacherId === req.params.teacherId }))
+  });
 });
 
 app.post('/api/teacher/extract-students', upload.single('file'), async (req, res) => {
@@ -453,80 +1065,97 @@ app.post('/api/teacher/extract-students', upload.single('file'), async (req, res
   }
 });
 
+/**
+ * Adds student names to a section, creating accounts as needed.
+ *
+ * Names already in the section are skipped; names that already have an account
+ * elsewhere in the same school are re-homed rather than duplicated. Never
+ * crosses into another school — two schools may both have a "Maria Santos".
+ *
+ * Shared by the teacher roster flow and the admin console.
+ */
+async function enrolStudents(section, studentsList, { schoolId, teacherId }) {
+  const createdStudents = [];
+  const skippedStudents = [];
+  const linkedStudents = [];
+  const names = (studentsList || []).filter(n => n && n.trim());
+  if (names.length === 0) return { createdStudents, skippedStudents, linkedStudents };
+
+  const defaultStudentPassword = await bcrypt.hash('password123', BCRYPT_SALT_ROUNDS);
+
+  const sectionStudents = await prisma.user.findMany({ where: { sectionId: section.id, role: 'STUDENT' } });
+  const sectionNamesSet = new Set(sectionStudents.map(s => s.name.toLowerCase().trim()));
+  let count = sectionStudents.length + 1;
+
+  // Fetched once rather than per name — this used to be an N-query loop.
+  const schoolStudents = await prisma.user.findMany({
+    where: { role: 'STUDENT', section: schoolId ? { schoolId } : { teacherId } }
+  });
+
+  for (const studentName of names) {
+    const normalizedName = studentName.toLowerCase().trim();
+
+    if (sectionNamesSet.has(normalizedName)) {
+      skippedStudents.push({ name: studentName.trim(), reason: 'Already in this section' });
+      continue;
+    }
+
+    const existingAccount = schoolStudents.find(s => s.name.toLowerCase().trim() === normalizedName);
+    if (existingAccount) {
+      await prisma.user.update({ where: { id: existingAccount.id }, data: { sectionId: section.id } });
+      linkedStudents.push({ name: studentName.trim(), username: existingAccount.username, from: 'existing account' });
+      sectionNamesSet.add(normalizedName);
+      continue;
+    }
+
+    // Student IDs are derived from the section name, e.g. "Grade 6 - Rizal" -> RIZAL-001
+    const prefix = section.name.split('-')[1]?.trim().toUpperCase().replace(/[^A-Z]/g, '').slice(0, 6) || 'SEC';
+    let studentId = `${prefix}-${String(count).padStart(3, '0')}`;
+    while (await prisma.user.findUnique({ where: { username: studentId } })) {
+      count++;
+      studentId = `${prefix}-${String(count).padStart(3, '0')}`;
+    }
+
+    const user = await prisma.user.create({
+      data: { name: studentName.trim(), username: studentId, password: defaultStudentPassword, role: 'STUDENT', sectionId: section.id }
+    });
+    const { password: _pw, ...safeUser } = user;
+    createdStudents.push(safeUser);
+    sectionNamesSet.add(normalizedName);
+    count++;
+  }
+
+  return { createdStudents, skippedStudents, linkedStudents };
+}
+
 app.post('/api/teacher/sections', async (req, res) => {
   try {
-    const { name, teacherId, studentsList } = req.body;
+    const { name, teacherId, studentsList, gradeLevel } = req.body;
+    const creator = await prisma.user.findUnique({ where: { id: teacherId } });
+    const schoolId = creator?.schoolId || null;
 
-    // 1) Check if a section with this exact name already exists
-    let section = await prisma.section.findFirst({ where: { name: name.trim() } });
+    // 1) Reuse an existing section with this name from the same school (or from
+    //    this teacher when they have no school). Scoped so two schools can both
+    //    have a "Grade 6 - Sampaguita" without sharing one section record.
+    let section = await prisma.section.findFirst({
+      where: schoolId ? { name: name.trim(), schoolId } : { name: name.trim(), teacherId }
+    });
     let isExisting = false;
 
     if (section) {
       isExisting = true;
+      // Backfill grade level if the section predates the field.
+      if (gradeLevel && !section.gradeLevel) {
+        section = await prisma.section.update({ where: { id: section.id }, data: { gradeLevel } });
+      }
     } else {
-      section = await prisma.section.create({ data: { name: name.trim(), teacherId } });
+      section = await prisma.section.create({
+        data: { name: name.trim(), teacherId, schoolId, gradeLevel: gradeLevel || null }
+      });
     }
 
-    // 2) For each student name, check if they already exist ANYWHERE in the system
-    //    A student should only have ONE account across all subjects/teachers
-    const createdStudents = [];
-    const skippedStudents = [];
-    const linkedStudents = [];
-    const defaultStudentPassword = await bcrypt.hash('password123', BCRYPT_SALT_ROUNDS);
-
-    // Get existing students already in this section for numbering
-    const sectionStudents = await prisma.user.findMany({
-      where: { sectionId: section.id, role: 'STUDENT' }
-    });
-    const sectionNamesSet = new Set(sectionStudents.map(s => s.name.toLowerCase().trim()));
-    let count = sectionStudents.length + 1;
-
-    for (const studentName of (studentsList || [])) {
-      if (!studentName.trim()) continue;
-      const normalizedName = studentName.toLowerCase().trim();
-
-      // Already in this section? Skip entirely
-      if (sectionNamesSet.has(normalizedName)) {
-        skippedStudents.push({ name: studentName.trim(), reason: 'Already in this section' });
-        continue;
-      }
-
-      // Check if student exists ANYWHERE in the system (global dedup)
-      const allStudents = await prisma.user.findMany({
-        where: { role: 'STUDENT' }
-      });
-      const globalMatch = allStudents.find(s => s.name.toLowerCase().trim() === normalizedName);
-
-      if (globalMatch) {
-        // Student exists globally — move them to this section (their homeroom)
-        await prisma.user.update({
-          where: { id: globalMatch.id },
-          data: { sectionId: section.id }
-        });
-        linkedStudents.push({ name: studentName.trim(), username: globalMatch.username, from: 'existing account' });
-        sectionNamesSet.add(normalizedName);
-        continue;
-      }
-
-      // Truly new student — create account
-      const paddedNum = String(count).padStart(3, '0');
-      const prefix = name.split('-')[1]?.trim().toUpperCase().replace(/[^A-Z]/g, '').slice(0, 6) || 'SEC';
-      let studentId = `${prefix}-${paddedNum}`;
-
-      // Ensure username is unique
-      while (await prisma.user.findUnique({ where: { username: studentId } })) {
-        count++;
-        studentId = `${prefix}-${String(count).padStart(3, '0')}`;
-      }
-
-      const user = await prisma.user.create({
-        data: { name: studentName.trim(), username: studentId, password: defaultStudentPassword, role: 'STUDENT', sectionId: section.id }
-      });
-      const { password: _pw, ...safeUser } = user;
-      createdStudents.push(safeUser);
-      sectionNamesSet.add(normalizedName);
-      count++;
-    }
+    const { createdStudents, skippedStudents, linkedStudents } =
+      await enrolStudents(section, studentsList, { schoolId, teacherId });
 
     let message = isExisting
       ? `Section "${section.name}" already exists. `
@@ -571,20 +1200,52 @@ app.post('/api/teacher/classes', (req, res, next) => {
   }
 }, async (req, res) => {
   try {
-    const { name, gradeLevel, subject, schoolYear, teacherId, sectionId } = req.body;
-    console.log('📋 Class creation request body:', JSON.stringify(req.body));
+    const { name, gradeLevel, subject, schoolYear, teacherId, sectionId, curriculumId } = req.body;
     if (!sectionId || !teacherId) {
       return res.status(400).json({ success: false, error: 'Missing required fields: sectionId and teacherId are required.' });
     }
+
+    // Guard against double-submits (impatient click, retried request): the same
+    // teacher + section + subject + school year is always the same course shell.
+    const duplicate = await prisma.class.findFirst({
+      where: { teacherId, sectionId, schoolYear, subject: subject || null, gradeLevel: gradeLevel || null }
+    });
+    if (duplicate) {
+      return res.json({ success: true, class: duplicate, duplicate: true });
+    }
+
     const curriculumFile = req.file
       ? await uploadToCloud(req.file.path, req.file.filename, { folder: 'curriculum', contentType: req.file.mimetype })
       : null;
-    const createData = { name, gradeLevel, subject, schoolYear, teacherId, sectionId, curriculumFile };
-    console.log('📋 Prisma create data:', JSON.stringify(createData));
     const newClass = await prisma.class.create({
-      data: createData
+      data: { name, gradeLevel, subject, schoolYear, teacherId, sectionId, curriculumFile }
     });
-    res.json({ success: true, class: newClass });
+
+    // Apply the school curriculum the teacher accepted: copy its lesson
+    // templates into this class so activities can be mapped to them.
+    let appliedLessons = 0;
+    if (curriculumId) {
+      const teacher = await prisma.user.findUnique({ where: { id: teacherId } });
+      const curriculum = await prisma.curriculum.findUnique({
+        where: { id: curriculumId },
+        include: { lessons: true }
+      });
+      if (curriculum && teacher?.schoolId === curriculum.schoolId && curriculum.lessons.length) {
+        await prisma.classLesson.createMany({
+          data: curriculum.lessons.map(l => ({
+            classId: newClass.id,
+            title: l.title,
+            description: l.description,
+            outputType: l.outputType,
+            weekNumber: l.weekNumber,
+            defaultRubric: l.defaultRubric
+          }))
+        });
+        appliedLessons = curriculum.lessons.length;
+      }
+    }
+
+    res.json({ success: true, class: newClass, appliedLessons });
   } catch (e) {
     console.error('❌ Class creation error:', e);
     res.status(500).json({ success: false, error: e.message });
@@ -592,21 +1253,16 @@ app.post('/api/teacher/classes', (req, res, next) => {
 });
 
 // Parse uploaded curriculum file and generate ClassLesson records with default rubrics
-app.post('/api/teacher/classes/:id/parse-curriculum', async (req, res) => {
-  try {
-    const classRecord = await prisma.class.findUnique({
-      where: { id: req.params.id },
-      select: { id: true, curriculumFile: true, subject: true, gradeLevel: true }
-    });
-    if (!classRecord) return res.status(404).json({ success: false, error: 'Class not found' });
-    if (!classRecord.curriculumFile) return res.status(400).json({ success: false, error: 'No curriculum file uploaded for this class' });
-
+/**
+ * Runs a curriculum/lesson-plan document through the AI extractor and returns
+ * plain lesson objects. Shared by the per-class parse endpoint and the
+ * school-wide admin curriculum builder.
+ */
+async function extractLessonsFromCurriculum(filePath, subjectInput, gradeLevelInput) {
     if (!aiConfigured || !model) {
-      return res.status(503).json({ success: false, error: 'AI is not configured. Cannot parse curriculum.' });
+      throw new Error('AI is not configured. Cannot parse curriculum.');
     }
-
-    const filePath = path.join(__dirname, classRecord.curriculumFile);
-    if (!fs.existsSync(filePath)) return res.status(404).json({ success: false, error: 'Curriculum file not found on disk' });
+    if (!fs.existsSync(filePath)) throw new Error('Curriculum file not found on disk');
 
     const fileBuffer = fs.readFileSync(filePath);
     const ext = path.extname(filePath).toLowerCase();
@@ -614,8 +1270,8 @@ app.post('/api/teacher/classes/:id/parse-curriculum', async (req, res) => {
     if (ext === '.docx') mimeType = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
     else if (ext === '.doc') mimeType = 'application/msword';
 
-    const subject = classRecord.subject || 'English';
-    const gradeLevel = classRecord.gradeLevel || 'Grade 6';
+    const subject = subjectInput || 'English';
+    const gradeLevel = gradeLevelInput || 'Grade 6';
 
     const parsePrompt = `You are an expert curriculum analyst for the Philippine DepEd K-12 MATATAG system.
 
@@ -630,7 +1286,7 @@ You MUST respond with valid JSON matching this exact schema:
       "title": "<Lesson/topic/week title, e.g. 'Week 1: Elements of a Short Story'>",
       "description": "<Brief 1-2 sentence description of what the lesson covers>",
       "weekNumber": <integer week number if identifiable, or null>,
-      "outputType": "<One of: Essay, Short Answer, Journal, Reflection, Creative Writing, Research Paper, Outline, Report, Letter, Poem, Speech, Summary>",
+      "outputType": "<One of: Essay, Short Answer, Journal, Reflection, Creative Writing, Research Paper, Survey/Form, Outline, Report, Letter, Poem, Speech, Summary>",
       "defaultRubric": {
         "criteria": [
           {
@@ -675,7 +1331,20 @@ RULES:
       .trim();
 
     const parsed = JSON.parse(cleaned);
-    const lessons = parsed.lessons || [];
+    return parsed.lessons || [];
+}
+
+app.post('/api/teacher/classes/:id/parse-curriculum', async (req, res) => {
+  try {
+    const classRecord = await prisma.class.findUnique({
+      where: { id: req.params.id },
+      select: { id: true, curriculumFile: true, subject: true, gradeLevel: true }
+    });
+    if (!classRecord) return res.status(404).json({ success: false, error: 'Class not found' });
+    if (!classRecord.curriculumFile) return res.status(400).json({ success: false, error: 'No curriculum file uploaded for this class' });
+
+    const filePath = path.join(__dirname, classRecord.curriculumFile);
+    const lessons = await extractLessonsFromCurriculum(filePath, classRecord.subject, classRecord.gradeLevel);
 
     if (lessons.length === 0) {
       return res.json({ success: true, lessons: [], message: 'No lessons found in the document.' });
@@ -821,11 +1490,18 @@ app.delete('/api/teacher/activities/:activityId', async (req, res) => {
 // ─────────────────────────────────────────
 app.get('/api/teacher/rubric-templates/:teacherId', async (req, res) => {
   try {
+    // A teacher's own templates plus any their admin published school-wide.
+    const teacher = await prisma.user.findUnique({ where: { id: req.params.teacherId } });
     const templates = await prisma.rubricTemplate.findMany({
-      where: { teacherId: req.params.teacherId },
+      where: teacher?.schoolId
+        ? { OR: [{ teacherId: req.params.teacherId }, { schoolId: teacher.schoolId }] }
+        : { teacherId: req.params.teacherId },
       orderBy: { createdAt: 'desc' }
     });
-    res.json({ success: true, templates });
+    res.json({
+      success: true,
+      templates: templates.map(t => ({ ...t, isSchoolWide: !!t.schoolId }))
+    });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
   }
@@ -967,6 +1643,15 @@ Rules:
   }
 });
 
+app.get('/api/activities/:activityId', async (req, res) => {
+  const activity = await prisma.activity.findUnique({
+    where: { id: req.params.activityId },
+    include: { class: { select: { id: true, name: true } } }
+  });
+  if (!activity) return res.status(404).json({ success: false, error: 'Activity not found' });
+  res.json({ success: true, activity });
+});
+
 app.get('/api/activities/:activityId/submissions', async (req, res) => {
   const submissions = await prisma.submission.findMany({
     where: { activityId: req.params.activityId },
@@ -997,6 +1682,44 @@ async function preprocessImage(inputPath) {
     console.log('⚠ Image preprocessing fallback (using original):', e.message);
     return inputPath;
   }
+}
+
+/**
+ * Combine one or more uploaded page images into a single local image file.
+ * A single file is returned as-is; multiple files are stitched vertically so
+ * multi-page outputs reach the AI as one continuous document.
+ * Returns { path, filename, isStitched }.
+ */
+async function stitchPages(imageFiles) {
+  if (imageFiles.length === 1) {
+    return { path: imageFiles[0].path, filename: imageFiles[0].filename, isStitched: false };
+  }
+
+  const metadataList = await Promise.all(imageFiles.map(f => sharp(f.path).metadata()));
+  const totalHeight = metadataList.reduce((sum, m) => sum + (m.height || 0), 0);
+  const maxWidth = Math.max(...metadataList.map(m => m.width || 0));
+
+  let currentTop = 0;
+  const compositeOps = imageFiles.map((f, i) => {
+    const op = { input: f.path, top: currentTop, left: 0 };
+    currentTop += metadataList[i].height || 0;
+    return op;
+  });
+
+  const outFilename = `stitched-${Date.now()}-${Math.floor(Math.random() * 1000)}.jpg`;
+  const outPath = path.join(__dirname, 'uploads', outFilename);
+
+  await sharp({
+    create: { width: maxWidth, height: totalHeight, channels: 3, background: { r: 255, g: 255, b: 255 } }
+  })
+    .composite(compositeOps)
+    .jpeg({ quality: 85 })
+    .toFile(outPath);
+
+  // Cleanup the individual uploaded parts
+  imageFiles.forEach(f => { try { fs.unlinkSync(f.path); } catch {} });
+
+  return { path: outPath, filename: outFilename, isStitched: true };
 }
 
 // ─────────────────────────────────────────
@@ -1410,7 +2133,11 @@ app.post('/api/teacher/submissions/:id/analyze', async (req, res) => {
         skillScores: JSON.stringify(aiData.skillScores),
         status: 'PENDING',
         gradedAt: new Date()
-      }
+      },
+      // The HITL workspace re-renders from this payload — without the relations
+      // it loses activity.points (score denominator) and activity.classId
+      // (the "Done" button's link back to the class roster).
+      include: { student: true, activity: { include: { class: true } } }
     });
 
     res.json({ success: true, submission: updated });
@@ -1485,7 +2212,8 @@ app.put('/api/teacher/submissions/:id/grade', async (req, res) => {
 
     const updated = await prisma.submission.update({
       where: { id: req.params.id },
-      data: { hitlScore: parseInt(hitlScore), hitlFeedback, readingStrategy, rubricData: JSON.stringify(rubricData), status: 'GRADED', gradedAt: new Date() }
+      data: { hitlScore: parseInt(hitlScore), hitlFeedback, readingStrategy, rubricData: JSON.stringify(rubricData), status: 'GRADED', gradedAt: new Date() },
+      include: { student: true, activity: { include: { class: true } } }
     });
 
     // FEATURE 5: Mini-RAG capture — save as grading example if teacher meaningfully changed the AI result
@@ -2017,6 +2745,131 @@ app.get('/api/student/:studentId/activities', async (req, res) => {
   }
 });
 
+// Every class the student's section is enrolled in, with that student's own
+// activities, scores and feedback. Backs the student Subjects / Activities /
+// Gradebook pages.
+app.get('/api/student/:studentId/subjects', async (req, res) => {
+  try {
+    const { studentId } = req.params;
+    const student = await prisma.user.findUnique({
+      where: { id: studentId },
+      include: {
+        section: {
+          include: {
+            classes: {
+              include: {
+                teacher: { select: { name: true } },
+                activities: { orderBy: { createdAt: 'desc' } }
+              }
+            }
+          }
+        }
+      }
+    });
+
+    const mySubmissions = await prisma.submission.findMany({
+      where: { studentId },
+      select: {
+        id: true, activityId: true, status: true, hitlScore: true, aiScore: true,
+        hitlFeedback: true, aiFeedback: true, updatedAt: true
+      }
+    });
+    const submissionByActivity = {};
+    mySubmissions.forEach(s => { submissionByActivity[s.activityId] = s; });
+
+    // Feedback is stored as either a JSON blob or plain text — surface a short
+    // human-readable line either way.
+    const feedbackSummary = (sub) => {
+      const raw = sub.hitlFeedback || sub.aiFeedback;
+      if (!raw) return null;
+      try {
+        const parsed = JSON.parse(raw);
+        return parsed.strengths || null;
+      } catch {
+        return raw;
+      }
+    };
+
+    const subjects = (student?.section?.classes || []).map(cls => {
+      const activities = cls.activities.map(a => {
+        const sub = submissionByActivity[a.id];
+        let submission = null;
+        if (sub) {
+          const percent = sub.hitlScore ?? sub.aiScore ?? null;
+          submission = {
+            id: sub.id,
+            status: sub.status,
+            // Released to the student only once the teacher has validated it
+            score: sub.status === 'GRADED' && percent !== null
+              ? Math.round((percent / 100) * (a.points || 100))
+              : null,
+            percent: sub.status === 'GRADED' ? percent : null,
+            feedback: sub.status === 'GRADED' ? feedbackSummary(sub) : null,
+            updatedAt: sub.updatedAt
+          };
+        }
+        return {
+          id: a.id,
+          title: a.title,
+          type: a.type || 'Activity',
+          points: a.points || 100,
+          deadline: a.deadline,
+          submissionMode: a.submissionMode,
+          submission
+        };
+      });
+
+      const gradedPercents = activities
+        .map(a => a.submission?.percent)
+        .filter(p => p !== null && p !== undefined);
+
+      return {
+        id: cls.id,
+        name: cls.name,
+        subject: cls.subject,
+        gradeLevel: cls.gradeLevel,
+        schoolYear: cls.schoolYear,
+        teacherName: cls.teacher?.name || '',
+        activityCount: activities.length,
+        gradedCount: gradedPercents.length,
+        overallGrade: gradedPercents.length
+          ? Math.round(gradedPercents.reduce((a, b) => a + b, 0) / gradedPercents.length)
+          : null,
+        activities
+      };
+    });
+
+    res.json({ success: true, subjects });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// Single activity as seen by a student — used by the read-only detail page for
+// TEACHER_UPLOAD activities, which the student cannot submit to themselves.
+app.get('/api/student/:studentId/activities/:activityId', async (req, res) => {
+  try {
+    const { studentId, activityId } = req.params;
+    const activity = await prisma.activity.findUnique({
+      where: { id: activityId },
+      include: { class: { select: { id: true, name: true, subject: true } } }
+    });
+    if (!activity) return res.status(404).json({ success: false, error: 'Activity not found' });
+
+    const mySubmission = await prisma.submission.findFirst({
+      where: { studentId, activityId },
+      select: { id: true, status: true, imageUrl: true, hitlScore: true, aiScore: true, attemptCount: true, updatedAt: true }
+    });
+
+    res.json({
+      success: true,
+      activity: { ...activity, className: activity.class?.name || '', mySubmission: mySubmission || null }
+    });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
 // Student self-submission — stores image only, NO AI grading (teacher triggers AI via HITL)
 app.post('/api/student/submit', upload.array('images', 20), async (req, res) => {
   try {
@@ -2024,48 +2877,10 @@ app.post('/api/student/submit', upload.array('images', 20), async (req, res) => 
     const imageFiles = req.files;
     if (!imageFiles || imageFiles.length === 0) return res.status(400).json({ error: 'No image provided' });
     
-    let finalImageUrl = '';
-
-    if (imageFiles.length === 1) {
-      // Single file - just use it directly
-      finalImageUrl = await uploadToCloud(imageFiles[0].path, imageFiles[0].filename, {
-        contentType: imageFiles[0].mimetype || 'image/jpeg'
-      });
-    } else {
-      // Multiple files - stitch them vertically using sharp
-      const metadataList = await Promise.all(imageFiles.map(f => sharp(f.path).metadata()));
-      const totalHeight = metadataList.reduce((sum, m) => sum + (m.height || 0), 0);
-      const maxWidth = Math.max(...metadataList.map(m => m.width || 0));
-
-      let currentTop = 0;
-      const compositeOps = imageFiles.map((f, i) => {
-        const op = { input: f.path, top: currentTop, left: 0 };
-        currentTop += metadataList[i].height || 0;
-        return op;
-      });
-
-      const outFilename = `stitched-${Date.now()}-${Math.floor(Math.random()*1000)}.jpg`;
-      const outPath = path.join(__dirname, 'uploads', outFilename);
-
-      await sharp({
-        create: {
-          width: maxWidth,
-          height: totalHeight,
-          channels: 3,
-          background: { r: 255, g: 255, b: 255 }
-        }
-      })
-      .composite(compositeOps)
-      .jpeg({ quality: 85 })
-      .toFile(outPath);
-
-      finalImageUrl = await uploadToCloud(outPath, outFilename);
-
-      // Cleanup the individual uploaded parts
-      imageFiles.forEach(f => {
-        try { fs.unlinkSync(f.path); } catch {}
-      });
-    }
+    const combined = await stitchPages(imageFiles);
+    const finalImageUrl = await uploadToCloud(combined.path, combined.filename, {
+      contentType: combined.isStitched ? 'image/jpeg' : (imageFiles[0].mimetype || 'image/jpeg')
+    });
 
     // Check for existing submission and update, or create new
     const existing = await prisma.submission.findFirst({ where: { studentId, activityId } });
@@ -2102,18 +2917,20 @@ app.post('/api/student/submit', upload.array('images', 20), async (req, res) => 
   }
 });
 
-app.post('/api/teacher/upload', upload.single('image'), async (req, res) => {
+// Accepts a single page as `image` (legacy / offline queue) or multiple pages as `images`.
+app.post('/api/teacher/upload', upload.fields([{ name: 'image', maxCount: 1 }, { name: 'images', maxCount: 20 }]), async (req, res) => {
   try {
     const { studentId, activityId, skipGrading } = req.body;
-    const imageFile = req.file;
-    if (!imageFile) return res.status(400).json({ error: 'No image provided' });
+    const imageFiles = [...(req.files?.images || []), ...(req.files?.image || [])];
+    if (imageFiles.length === 0) return res.status(400).json({ error: 'No image provided' });
     // Require a real student to be assigned before AI grading
     if (!studentId || studentId === 'mock-student-id') {
       return res.status(400).json({ success: false, error: 'Please assign a student before grading. A student must be selected.' });
     }
 
-    // 1) Preprocess the image
-    const processedPath = await preprocessImage(imageFile.path);
+    // 1) Stitch multi-page outputs into one image, then preprocess it
+    const combined = await stitchPages(imageFiles);
+    const processedPath = await preprocessImage(combined.path);
     const processedFilename = path.basename(processedPath);
     // Upload to Supabase Storage in production, local path in dev
     const processedUrl = await uploadToCloud(processedPath, processedFilename);
@@ -2166,11 +2983,9 @@ res.json({ success: true, submission });
   } catch (e) {
     // Auto-delete uploaded files on failure
     try {
-      if (req.files) {
-        req.files.forEach(f => {
-          try { fs.unlinkSync(f.path); } catch {}
-        });
-      }
+      Object.values(req.files || {}).flat().forEach(f => {
+        try { fs.unlinkSync(f.path); } catch {}
+      });
     } catch {}
     res.status(500).json({ success: false, error: e.message });
   }

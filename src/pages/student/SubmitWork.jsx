@@ -175,6 +175,7 @@ export default function SubmitWork() {
           imageSrc={redactingFile.objectUrl}
           onConfirm={handleRedactConfirm}
           onCancel={handleRedactCancel}
+          perspective="student"
         />
         {pendingFiles.length > 1 && (
           <div className="fixed top-14 left-1/2 -translate-x-1/2 z-[120] bg-black/80 text-white text-xs font-bold px-4 py-2 rounded-full">

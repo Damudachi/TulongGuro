@@ -1,11 +1,13 @@
 import { useState, useEffect, useRef } from 'react';
 import { Users, Plus, ChevronDown, X, Upload, Pencil, UserPlus, Loader2, Search } from 'lucide-react';
 import { API_URL } from '../../config';
+import { GRADE_LEVELS } from '../../constants/school';
 
 export default function ManageSections() {
   const [sections, setSections] = useState([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [name, setName] = useState('');
+  const [gradeLevel, setGradeLevel] = useState('');
   const [studentsText, setStudentsText] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [expandedId, setExpandedId] = useState(null);
@@ -39,11 +41,11 @@ export default function ManageSections() {
       const res = await fetch(`${API_URL}/api/teacher/sections`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, teacherId: user.id, studentsList: studentNames })
+        body: JSON.stringify({ name, gradeLevel, teacherId: user.id, studentsList: studentNames })
       });
       const data = await res.json();
       if (data.success) {
-        setName(''); setStudentsText(''); setShowForm(false);
+        setName(''); setGradeLevel(''); setStudentsText(''); setShowForm(false);
         fetchSections();
         let msg = data.message || `Created ${data.createdStudents.length} student accounts.`;
         if (data.skippedStudents?.length > 0) msg += `\n\nSkipped (already in section):\n${data.skippedStudents.map(s => `• ${s.name}`).join('\n')}`;
@@ -160,13 +162,26 @@ export default function ManageSections() {
             <Plus className="w-5 h-5 mr-2 text-brand-navy" /> New Section
           </h2>
           <form onSubmit={handleCreate} className="space-y-4">
-            <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">Section Name</label>
-              <input type="text" required value={name} onChange={(e) => setName(e.target.value)}
-                className="w-full px-4 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-brand-navy outline-none"
-                placeholder="e.g. Grade 10 - Rizal" />
-              <p className="text-xs text-slate-400 mt-1">If this section already exists, students will be added to it.</p>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div className="sm:col-span-2">
+                <label className="block text-sm font-medium text-slate-700 mb-1">Section Name</label>
+                <input type="text" required value={name} onChange={(e) => setName(e.target.value)}
+                  className="w-full px-4 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-brand-navy outline-none"
+                  placeholder="e.g. Rizal" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">Grade Level *</label>
+                <select required value={gradeLevel} onChange={(e) => setGradeLevel(e.target.value)}
+                  className="w-full px-4 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-brand-navy outline-none">
+                  <option value="">-- Select --</option>
+                  {GRADE_LEVELS.map(g => <option key={g} value={g}>{g}</option>)}
+                </select>
+              </div>
             </div>
+            <p className="text-xs text-slate-400 -mt-2">
+              Sections are shared with everyone at your school and grouped by grade level. If this
+              section already exists, students will be added to it.
+            </p>
             <div>
               <div className="flex justify-between items-center mb-1">
                 <label className="block text-sm font-medium text-slate-700">Student Names (One per line)</label>
@@ -217,7 +232,26 @@ export default function ManageSections() {
             );
           }
 
-          return filteredSections.map(section => {
+          // Segment by grade level, ordered by the canonical grade list so
+          // "Grade 10" doesn't sort between "Grade 1" and "Grade 2".
+          const byGrade = filteredSections.reduce((acc, s) => {
+            const key = s.gradeLevel || 'Unassigned grade level';
+            (acc[key] = acc[key] || []).push(s);
+            return acc;
+          }, {});
+          const gradeOrder = [...GRADE_LEVELS, 'Unassigned grade level'];
+          const gradeKeys = Object.keys(byGrade).sort((a, b) => gradeOrder.indexOf(a) - gradeOrder.indexOf(b));
+
+          return gradeKeys.map(grade => (
+            <div key={grade} className="pt-2">
+              <div className="flex items-center gap-2 mb-2">
+                <span className="text-xs font-bold text-brand-navy bg-blue-50 px-2.5 py-1 rounded-full">{grade}</span>
+                <span className="text-xs text-slate-400">
+                  {byGrade[grade].length} section{byGrade[grade].length === 1 ? '' : 's'}
+                </span>
+              </div>
+              <div className="space-y-3">
+          {byGrade[grade].map(section => {
             const isOpen = expandedId === section.id;
             const studentCount = section._count?.students || section.students?.length || 0;
             return (
@@ -228,7 +262,14 @@ export default function ManageSections() {
                       {studentCount}
                     </div>
                     <div>
-                      <h3 className="font-bold text-brand-slate">{section.name}</h3>
+                      <h3 className="font-bold text-brand-slate flex items-center gap-2">
+                        {section.name}
+                        {section.isOwn === false && (
+                          <span className="text-[10px] font-bold text-slate-500 bg-slate-100 px-2 py-0.5 rounded-full">
+                            {section.teacher?.name || 'Colleague'}
+                          </span>
+                        )}
+                      </h3>
                       <p className="text-xs text-slate-500">{studentCount} student{studentCount !== 1 ? 's' : ''}</p>
                     </div>
                   </button>
@@ -299,7 +340,10 @@ export default function ManageSections() {
                 )}
               </div>
             );
-          });
+          })}
+              </div>
+            </div>
+          ));
         })()}
       </div>
     </div>

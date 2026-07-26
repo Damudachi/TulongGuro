@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from 'react';
 import { useNavigate, useSearchParams, useParams } from 'react-router-dom';
 import { ArrowLeft, CheckCircle2, Plus, Camera, Users, Upload, FileText, X, Trash2, Loader2, Save } from 'lucide-react';
 import { API_URL } from '../../config';
+import { ACTIVITY_TYPES } from '../../constants/activityTypes';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
 
@@ -462,8 +463,12 @@ export default function ActivityBuilder() {
               <label className="block text-sm font-medium text-slate-700 mb-1">Type</label>
               <select value={form.type} onChange={e => setForm({ ...form, type: e.target.value })}
                 className="w-full px-4 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-brand-navy outline-none">
-                {['Essay', 'Short Answer', 'Journal', 'Reflection', 'Creative Writing', 'Research Paper'].map(t => <option key={t}>{t}</option>)}
+                {ACTIVITY_TYPES.map(t => <option key={t}>{t}</option>)}
+                {/* A lesson's outputType (or an older activity) may use a type not in the
+                    list — keep it selectable so it isn't silently rewritten to Essay. */}
+                {form.type && !ACTIVITY_TYPES.includes(form.type) && <option key={form.type}>{form.type}</option>}
               </select>
+              <p className="text-xs text-slate-400 mt-1">The gradebook shows one column per type.</p>
             </div>
             <div>
               <label className="block text-sm font-medium text-slate-700 mb-1">Total Points</label>

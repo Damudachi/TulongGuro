@@ -1,18 +1,45 @@
 import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
-import { Award, CheckCircle2, Star, Loader2, Lightbulb, ChevronRight, Clock, BookOpen, Bot, Sparkles, Send } from 'lucide-react';
+import { Award, CheckCircle2, Star, Loader2, Lightbulb, ChevronRight, Clock, BookOpen, Send } from 'lucide-react';
 import { API_URL } from '../../config';
 import SkillProgressChart from '../../components/SkillProgressChart';
+import { ONBOARDING, hasSeenOnboarding, markOnboardingSeen } from '../../utils/onboarding';
+import SchoolBadge from '../../components/SchoolBadge';
+
+const WELCOME_STEPS = [
+  {
+    icon: Award,
+    tone: 'bg-emerald-100 text-brand-green',
+    title: 'Welcome to TulongGuro! 🎉',
+    body: 'TulongGuro uses AI to help your teacher grade faster, but your teacher always makes the final decision.',
+  },
+  {
+    icon: Send,
+    tone: 'bg-blue-100 text-brand-navy',
+    title: 'Submitting Your Work 📤',
+    body: 'Some activities you upload yourself. For others your teacher submits the paper for you — each activity tells you which.',
+  },
+  {
+    icon: Lightbulb,
+    tone: 'bg-amber-100 text-amber-500',
+    title: 'Reading Strategies 💡',
+    body: 'Look out for the orange cards — these are personalized reading tips just for you, to help you improve.',
+  },
+];
 
 export default function StudentDashboard() {
   const [data, setData] = useState(null);
-  const [analytics, setAnalytics] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
   const [showWelcome, setShowWelcome] = useState(false);
   const [welcomeStep, setWelcomeStep] = useState(0);
 
+  const dismissWelcome = () => {
+    markOnboardingSeen(ONBOARDING.STUDENT_WELCOME);
+    setShowWelcome(false);
+  };
+
   useEffect(() => {
-    if (!localStorage.getItem('hasSeenStudentWelcome')) {
+    if (!hasSeenOnboarding(ONBOARDING.STUDENT_WELCOME)) {
       setShowWelcome(true);
     }
     const user = JSON.parse(localStorage.getItem('user') || '{}');
@@ -34,6 +61,13 @@ export default function StudentDashboard() {
   const pendingSubmissions = data?.pendingSubmissions || [];
   const latestStrategy = data?.latestStrategy || null;
 
+  // Teacher-upload activities have nothing for the student to submit, so they
+  // open a read-only detail page instead of the submit form.
+  const activityLink = (activityId, submissionMode) =>
+    submissionMode === 'STUDENT_SUBMIT'
+      ? `/student/submit?activityId=${activityId}`
+      : `/student/activity/${activityId}`;
+
   return (
     <div className="p-4 md:p-8 max-w-4xl mx-auto pb-24">
       {/* Student Onboarding Welcome Modal */}
@@ -41,47 +75,48 @@ export default function StudentDashboard() {
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-sm">
           <div className="bg-white rounded-3xl w-full max-w-md overflow-hidden shadow-2xl animate-fade-in-up">
             <div className="p-8 text-center relative">
-              {welcomeStep === 0 && (
-                <div className="animate-fade-in">
-                  <div className="w-20 h-20 bg-emerald-100 text-brand-green rounded-full flex items-center justify-center mx-auto mb-6">
-                    <Award className="w-10 h-10" />
-                  </div>
-                  <h2 className="text-2xl font-bold text-brand-slate mb-3">Welcome to TulongGuro! 🎉</h2>
-                  <p className="text-slate-600 leading-relaxed">
-                    TulongGuro uses AI to help your teacher grade faster, but <span className="font-bold text-brand-slate">your teacher always makes the final decision.</span>
-                  </p>
+              <button onClick={dismissWelcome}
+                className="absolute top-4 right-5 text-xs font-medium text-slate-400 hover:text-slate-600 transition-colors">
+                Skip
+              </button>
+
+              <div className="animate-fade-in">
+                <div className={`w-20 h-20 rounded-full flex items-center justify-center mx-auto mb-6 ${WELCOME_STEPS[welcomeStep].tone}`}>
+                  {(() => {
+                    const Icon = WELCOME_STEPS[welcomeStep].icon;
+                    return <Icon className="w-10 h-10" />;
+                  })()}
                 </div>
-              )}
-              {welcomeStep === 1 && (
-                <div className="animate-fade-in">
-                  <div className="w-20 h-20 bg-amber-100 text-amber-500 rounded-full flex items-center justify-center mx-auto mb-6">
-                    <Lightbulb className="w-10 h-10" />
-                  </div>
-                  <h2 className="text-2xl font-bold text-brand-slate mb-3">Reading Strategies 💡</h2>
-                  <p className="text-slate-600 leading-relaxed">
-                    Look out for the <span className="font-bold text-amber-600">orange cards</span>—these are personalized reading tips just for you to help you improve!
-                  </p>
-                </div>
-              )}
+                <p className="text-xs font-bold uppercase tracking-wider text-slate-400 mb-2">
+                  Step {welcomeStep + 1} of {WELCOME_STEPS.length}
+                </p>
+                <h2 className="text-2xl font-bold text-brand-slate mb-3">{WELCOME_STEPS[welcomeStep].title}</h2>
+                <p className="text-slate-600 leading-relaxed">{WELCOME_STEPS[welcomeStep].body}</p>
+              </div>
 
               <div className="mt-10 flex flex-col gap-4">
                 <div className="flex justify-center gap-2 mb-2">
-                  {[0, 1].map(step => (
+                  {WELCOME_STEPS.map((_, step) => (
                     <div key={step} className={`h-2 rounded-full transition-all ${welcomeStep === step ? 'w-8 bg-brand-green' : 'w-2 bg-slate-200'}`} />
                   ))}
                 </div>
-                <button
-                  onClick={() => {
-                    if (welcomeStep < 1) setWelcomeStep(prev => prev + 1);
-                    else {
-                      setShowWelcome(false);
-                      localStorage.setItem('hasSeenStudentWelcome', 'true');
-                    }
-                  }}
-                  className="w-full bg-brand-green text-white font-bold py-3.5 rounded-xl hover:bg-emerald-600 transition-colors shadow-lg shadow-brand-green/20"
-                >
-                  {welcomeStep < 1 ? 'Next' : "Let's Go!"}
-                </button>
+                <div className="flex gap-3">
+                  {welcomeStep > 0 && (
+                    <button onClick={() => setWelcomeStep(s => s - 1)}
+                      className="flex-1 border-2 border-slate-200 text-slate-600 font-bold py-3.5 rounded-xl hover:bg-slate-50 transition-colors">
+                      Back
+                    </button>
+                  )}
+                  <button
+                    onClick={() => {
+                      if (welcomeStep < WELCOME_STEPS.length - 1) setWelcomeStep(s => s + 1);
+                      else dismissWelcome();
+                    }}
+                    className="flex-1 bg-brand-green text-white font-bold py-3.5 rounded-xl hover:bg-emerald-600 transition-colors shadow-lg shadow-brand-green/20"
+                  >
+                    {welcomeStep < WELCOME_STEPS.length - 1 ? 'Next' : "Let's Go!"}
+                  </button>
+                </div>
               </div>
             </div>
           </div>
@@ -91,6 +126,7 @@ export default function StudentDashboard() {
       {/* Hero */}
       <div className="bg-gradient-to-br from-brand-green to-emerald-600 text-white p-6 rounded-2xl mb-6 relative overflow-hidden shadow-lg">
         <div className="absolute top-0 right-0 p-4 opacity-10"><Award className="w-40 h-40" /></div>
+        <SchoolBadge tone="onColor" size="sm" className="relative z-10 mb-4 pb-4 border-b border-white/20" />
         <h1 className="text-2xl font-bold mb-1 relative z-10">Hello, {firstName}! 👋</h1>
         <p className="text-green-100 text-sm relative z-10">{data?.student?.section?.name || 'Student'}</p>
         <div className="flex gap-3 mt-5 relative z-10 flex-wrap">
@@ -143,7 +179,7 @@ export default function StudentDashboard() {
               const urgency = daysLeft <= 1 ? 'border-red-300 bg-red-50' : daysLeft <= 3 ? 'border-amber-200 bg-amber-50' : 'border-slate-200 bg-white';
               const urgencyText = daysLeft <= 1 ? 'text-red-600' : daysLeft <= 3 ? 'text-amber-600' : 'text-slate-500';
               return (
-                <Link key={item.id} to={`/student/submit?activityId=${item.id}`}
+                <Link key={item.id} to={activityLink(item.id, item.submissionMode)}
                   className={`block p-4 rounded-xl border ${urgency} flex items-center justify-between hover:shadow-md hover:border-brand-navy transition-all cursor-pointer group`}>
                   <div className="flex items-start gap-3">
                     <div className="bg-blue-50 p-2 rounded-lg text-brand-navy mt-0.5 shrink-0">
@@ -159,7 +195,9 @@ export default function StudentDashboard() {
                       {daysLeft <= 0 ? 'Due today!' : daysLeft === 1 ? 'Due tomorrow' : `${daysLeft} days left`}
                     </p>
                     <p className="text-[10px] text-slate-400">{dueDate.toLocaleDateString('en-PH', { month: 'short', day: 'numeric' })}</p>
-                    <p className="text-[10px] font-bold text-brand-green mt-1 opacity-0 group-hover:opacity-100 transition-opacity">Submit Now →</p>
+                    <p className="text-[10px] font-bold text-brand-green mt-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                      {item.submissionMode === 'STUDENT_SUBMIT' ? 'Submit Now →' : 'View Details →'}
+                    </p>
                   </div>
                 </Link>
               );
@@ -182,7 +220,7 @@ export default function StudentDashboard() {
         ) : (
           <div className="space-y-3">
             {pendingSubmissions.map(sub => (
-              <Link key={sub.id} to={`/student/submit?activityId=${sub.activityId}`}
+              <Link key={sub.id} to={activityLink(sub.activityId, sub.activity?.submissionMode)}
                 className="block bg-white p-4 rounded-xl border border-slate-200 hover:border-amber-300 hover:shadow-md transition-all group cursor-pointer">
                 <div className="flex justify-between items-center">
                   <div className="flex items-center gap-3">

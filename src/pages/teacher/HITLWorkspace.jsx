@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useMemo } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { ArrowLeft, Check, Edit2, Info, Sparkles, X, Send, Bot, Loader2, CheckCircle2, ChevronDown, Plus, Trash2, AlertTriangle } from 'lucide-react';
 import { API_URL } from '../../config';
+import { ONBOARDING, hasSeenOnboarding, markOnboardingSeen } from '../../utils/onboarding';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
 
@@ -89,7 +90,7 @@ export default function HITLWorkspace() {
   const chatEndRef = useRef(null);
 
   useEffect(() => {
-    if (!localStorage.getItem('hasSeenAICopilotTooltip')) {
+    if (!hasSeenOnboarding(ONBOARDING.TEACHER_COPILOT_TIP)) {
       setShowTooltip(true);
     }
   }, []);
@@ -181,6 +182,18 @@ export default function HITLWorkspace() {
   const totalScore = dynamicRubric
     ? dynamicRubric.reduce((sum, item) => sum + (scores[item.criterionName] || 0), 0)
     : ((scores.content || 0) + (scores.organization || 0) + (scores.grammar || 0));
+
+  // AI grading hasn't produced a result yet. The AI-failure case still counts as
+  // "done" so the teacher can fall back to grading manually.
+  const aiFailed = !!submission?.aiFeedback?.includes('⚠ AI grading is currently unavailable');
+  const awaitingAiCheck = submission?.aiScore === null && submission?.status === 'PENDING' && !aiFailed;
+  const canValidate = !awaitingAiCheck && !isAnalyzing;
+
+  // Where the "Done" / "Review for Later" buttons return to. Falls back to the
+  // activity's class so a missing classId never lands on an empty roster.
+  const rosterLink = submission
+    ? `/teacher/batch-upload?activityId=${submission.activityId}${submission.activity?.classId ? `&classId=${submission.activity.classId}` : ''}`
+    : '/teacher/dashboard';
 
   // ── Structured feedback helpers ──
   const updateStrengths = (val) => setStructuredFeedback(prev => ({ ...prev, strengths: val }));
@@ -323,9 +336,12 @@ export default function HITLWorkspace() {
       });
       const data = await res.json();
       if (data.success && data.submission) {
-        const sub = data.submission;
+        // Keep the relations we already loaded if the response omits them —
+        // activity.points is the score denominator and activity.classId is the
+        // link back to the class roster.
+        const sub = { ...submission, ...data.submission, activity: data.submission.activity || submission?.activity, student: data.submission.student || submission?.student };
         setSubmission(sub);
-        
+
         // Merge AI and HITL feedback
         let finalStructured = { strengths: '', areasForGrowth: [], actionableSteps: [], skillExplanations: {} };
         
@@ -508,7 +524,7 @@ export default function HITLWorkspace() {
                   {isAnalyzing ? <><Loader2 className="w-5 h-5 animate-spin"/> Analyzing...</> : <><Sparkles className="w-5 h-5"/> Start AI Checking</>}
                 </button>
                 <button
-                  onClick={() => navigate(`/teacher/batch-upload?activityId=${submission.activityId}&classId=${submission.activity?.classId || ''}`)}
+                  onClick={() => navigate(rosterLink)}
                   disabled={isAnalyzing}
                   className="px-6 py-3 bg-white text-slate-600 border-2 border-slate-200 rounded-xl font-bold hover:bg-slate-50 transition-all disabled:opacity-70"
                 >
@@ -660,7 +676,7 @@ export default function HITLWorkspace() {
                     setIsChatOpen(true);
                     if (showTooltip) {
                       setShowTooltip(false);
-                      localStorage.setItem('hasSeenAICopilotTooltip', 'true');
+                      markOnboardingSeen(ONBOARDING.TEACHER_COPILOT_TIP);
                     }
                   }}
                   className="flex items-center text-xs font-bold text-brand-navy bg-blue-50 hover:bg-blue-100 px-3 py-1.5 rounded-full transition-colors border border-blue-200">
@@ -883,15 +899,19 @@ export default function HITLWorkspace() {
           </button>
           {isApproved && !isEditingAssessment ? (
             <button
-              onClick={() => navigate(`/teacher/batch-upload?activityId=${submission.activityId}&classId=${submission.activity?.classId || ''}`)}
+              onClick={() => navigate(rosterLink)}
               className="flex-1 py-3 px-4 rounded-xl bg-brand-green text-white font-bold hover:bg-emerald-600 transition-colors flex items-center justify-center gap-2">
               <CheckCircle2 className="w-5 h-5" /> Done
             </button>
           ) : (
-            <button onClick={handleValidate} disabled={isSaving}
-              className="flex-1 py-3 px-4 rounded-xl bg-brand-green text-white font-bold hover:bg-emerald-600 transition-colors shadow-lg shadow-emerald-500/20 flex items-center justify-center gap-2 disabled:opacity-60">
+            <button onClick={handleValidate} disabled={isSaving || !canValidate}
+              title={!canValidate ? 'Run AI checking first — there is nothing to validate yet.' : ''}
+              className={cn('flex-1 py-3 px-4 rounded-xl font-bold transition-colors flex items-center justify-center gap-2',
+                canValidate
+                  ? 'bg-brand-green text-white hover:bg-emerald-600 shadow-lg shadow-emerald-500/20 disabled:opacity-60'
+                  : 'bg-slate-200 text-slate-400 cursor-not-allowed')}>
               {isSaving ? <Loader2 className="w-5 h-5 animate-spin" /> : <Check className="w-5 h-5" />}
-              {isSaving ? 'Saving...' : (isApproved ? 'Save Changes' : 'Validate & Release')}
+              {isSaving ? 'Saving...' : isAnalyzing ? 'AI checking...' : awaitingAiCheck ? 'Waiting for AI check' : (isApproved ? 'Save Changes' : 'Validate & Release')}
             </button>
           )}
         </div>
