@@ -8,6 +8,7 @@ import AdminLayout from './layouts/AdminLayout';
 // Admin Pages
 import AdminTeachers from './pages/admin/Teachers';
 import AdminTeacherDetail from './pages/admin/TeacherDetail';
+import AdminSectionDetail from './pages/admin/SectionDetail';
 import AdminCurriculum from './pages/admin/Curriculum';
 import AdminRubrics from './pages/admin/Rubrics';
 
@@ -50,6 +51,7 @@ function App() {
           <Route index element={<Navigate to="teachers" />} />
           <Route path="teachers" element={<AdminTeachers />} />
           <Route path="teachers/:teacherId" element={<AdminTeacherDetail />} />
+          <Route path="sections/:sectionId" element={<AdminSectionDetail />} />
           <Route path="curriculum" element={<AdminCurriculum />} />
           <Route path="rubrics" element={<AdminRubrics />} />
         </Route>

@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import {
-  ArrowLeft, Loader2, Pencil, Trash2, Check, X, KeyRound, UserPlus,
+  ArrowLeft, Loader2, Pencil, Trash2, Check, X, KeyRound, UserPlus, UserCog,
   BookOpen, Users, GraduationCap, AlertTriangle, Copy,
 } from 'lucide-react';
 import { API_URL } from '../../config';
@@ -32,6 +32,8 @@ export default function AdminTeacherDetail() {
   const [profileForm, setProfileForm] = useState({ name: '', email: '' });
   const [newCredentials, setNewCredentials] = useState(null);
 
+  const [reassignClassId, setReassignClassId] = useState(null);
+  const [reassignTo, setReassignTo] = useState('');
   const [editingSectionId, setEditingSectionId] = useState(null);
   const [sectionForm, setSectionForm] = useState({ name: '', gradeLevel: '' });
   const [addingToSectionId, setAddingToSectionId] = useState(null);
@@ -88,6 +90,24 @@ export default function AdminTeacherDetail() {
     call(`${API_URL}/api/admin/${admin.id}/classes/${cls.id}`, { method: 'DELETE' });
   };
 
+  const reassignClass = (cls) => {
+    if (!reassignTo || reassignTo === cls.teacherId) return;
+    call(
+      `${API_URL}/api/admin/${admin.id}/classes/${cls.id}`,
+      { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ teacherId: reassignTo }) },
+      (d) => {
+        setReassignClassId(null);
+        setReassignTo('');
+        const r = d.retained;
+        setNotice(
+          `"${d.class.name}" moved to ${d.class.teacher.name}. ` +
+          (r ? `${r.activities} activit${r.activities === 1 ? 'y' : 'ies'} and ${r.submissions} submission(s) ` +
+               `(${r.graded} already graded) came with it — nothing was reset.` : '')
+        );
+      }
+    );
+  };
+
   const saveSection = (section) => call(
     `${API_URL}/api/admin/${admin.id}/sections/${section.id}`,
     { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(sectionForm) },
@@ -130,7 +150,8 @@ export default function AdminTeacherDetail() {
     );
   }
 
-  const { teacher, classes, sections } = data;
+  const { teacher, classes, sections, teachers = [] } = data;
+  const otherTeachers = teachers.filter(t => t.id !== teacher.id);
   const totalStudents = sections.reduce((n, s) => n + s.students.length, 0);
 
   return (
@@ -259,15 +280,52 @@ export default function AdminTeacherDetail() {
                     {cls.submissionCount} submission{cls.submissionCount === 1 ? '' : 's'}
                   </p>
                 </div>
-                <button onClick={() => deleteClass(cls)} disabled={busy || cls.submissionCount > 0}
-                  title={cls.submissionCount > 0 ? 'Has student submissions — cannot be deleted' : 'Delete course shell'}
-                  className="p-2 rounded-lg bg-slate-100 text-slate-500 hover:bg-red-100 hover:text-red-600 shrink-0 disabled:opacity-30 disabled:hover:bg-slate-100 disabled:hover:text-slate-500">
-                  <Trash2 className="w-4 h-4" />
-                </button>
+                <div className="flex gap-1 shrink-0">
+                  <button
+                    onClick={() => {
+                      setReassignClassId(reassignClassId === cls.id ? null : cls.id);
+                      setReassignTo(otherTeachers[0]?.id || '');
+                    }}
+                    disabled={otherTeachers.length === 0}
+                    title={otherTeachers.length === 0 ? 'No other teacher in this school to move it to' : 'Move to another teacher'}
+                    className={cn('p-2 rounded-lg disabled:opacity-30',
+                      reassignClassId === cls.id ? 'bg-brand-navy text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200')}>
+                    <UserCog className="w-4 h-4" />
+                  </button>
+                  <button onClick={() => deleteClass(cls)} disabled={busy || cls.submissionCount > 0}
+                    title={cls.submissionCount > 0 ? 'Has student submissions — cannot be deleted' : 'Delete course shell'}
+                    className="p-2 rounded-lg bg-slate-100 text-slate-500 hover:bg-red-100 hover:text-red-600 disabled:opacity-30 disabled:hover:bg-slate-100 disabled:hover:text-slate-500">
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                </div>
               </div>
-              {cls.submissionCount > 0 && (
+
+              {reassignClassId === cls.id && (
+                <div className="mt-3 p-3 bg-blue-50/70 border border-blue-200 rounded-xl">
+                  <label className="block text-xs font-medium text-slate-600 mb-1.5">Move this course shell to</label>
+                  <div className="flex flex-wrap gap-2">
+                    <select value={reassignTo} onChange={e => setReassignTo(e.target.value)}
+                      className="flex-1 min-w-[200px] border border-slate-200 bg-white p-2 rounded-lg text-sm outline-none focus:ring-2 focus:ring-brand-navy">
+                      {otherTeachers.map(t => <option key={t.id} value={t.id}>{t.name} ({t.email})</option>)}
+                    </select>
+                    <button onClick={() => reassignClass(cls)} disabled={busy || !reassignTo}
+                      className="text-xs font-bold text-white bg-brand-navy px-3 py-2 rounded-lg hover:bg-blue-900 flex items-center gap-1.5 disabled:opacity-40">
+                      {busy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5" />} Move
+                    </button>
+                    <button onClick={() => setReassignClassId(null)}
+                      className="text-xs font-bold text-slate-500 border border-slate-200 px-3 py-2 rounded-lg hover:bg-white">Cancel</button>
+                  </div>
+                  <p className="text-[11px] text-slate-500 mt-2 leading-relaxed">
+                    All {cls.activityCount} activit{cls.activityCount === 1 ? 'y' : 'ies'} and{' '}
+                    {cls.submissionCount} submission(s) move with it — student progress, scores and released
+                    feedback are kept exactly as they are. The new teacher picks up where this one left off.
+                  </p>
+                </div>
+              )}
+
+              {cls.submissionCount > 0 && reassignClassId !== cls.id && (
                 <p className="text-[11px] text-amber-600 mt-2 flex items-center gap-1">
-                  <AlertTriangle className="w-3 h-3" /> Locked — students have submitted work to this class.
+                  <AlertTriangle className="w-3 h-3" /> Has student work — can be moved to another teacher, but not deleted.
                 </p>
               )}
             </div>
@@ -309,18 +367,19 @@ export default function AdminTeacherDetail() {
                   </div>
                 ) : (
                   <>
-                    <div className="min-w-0">
+                    <Link to={`/admin/sections/${section.id}`} className="min-w-0 group">
                       <div className="flex items-center gap-2 flex-wrap">
-                        <p className="font-bold text-brand-slate">{section.name}</p>
+                        <p className="font-bold text-brand-slate group-hover:text-brand-navy">{section.name}</p>
                         <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-blue-50 text-brand-navy">
                           {section.gradeLevel || 'No grade level'}
                         </span>
                       </div>
                       <p className="text-xs text-slate-500 mt-0.5">
                         {section.students.length} student{section.students.length === 1 ? '' : 's'} ·{' '}
-                        {section._count.classes} class{section._count.classes === 1 ? '' : 'es'}
+                        {section._count.classes} class{section._count.classes === 1 ? '' : 'es'} ·{' '}
+                        <span className="text-brand-navy font-medium group-hover:underline">open section →</span>
                       </p>
-                    </div>
+                    </Link>
                     <div className="flex gap-1 shrink-0">
                       <button onClick={() => { setAddingToSectionId(addingToSectionId === section.id ? null : section.id); setStudentsText(''); }}
                         title="Add students"

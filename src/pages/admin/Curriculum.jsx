@@ -50,7 +50,12 @@ export default function AdminCurriculum() {
         setShowForm(false);
         setForm({ gradeLevel: '', subject: '', title: '', description: '' });
         setFile(null);
-        setNotice(d.warning || `Published "${d.curriculum.title}" with ${d.curriculum.lessons?.length || 0} lesson(s).`);
+        const lessons = d.curriculum.lessons?.length || 0;
+        const rubrics = d.savedRubrics || 0;
+        setNotice(d.warning || (
+          `Published "${d.curriculum.title}" with ${lessons} lesson(s)` +
+          (rubrics ? ` and saved ${rubrics} reusable rubric(s) to your School Rubrics.` : '.')
+        ));
         load();
       } else {
         setError(d.error || 'Could not publish this curriculum.');
@@ -69,6 +74,24 @@ export default function AdminCurriculum() {
       const res = await fetch(`${API_URL}/api/admin/${admin.id}/curriculums/${curriculum.id}`, { method: 'DELETE' });
       const d = await res.json();
       if (d.success) load(); else alert(d.error);
+    } finally { setBusy(false); }
+  };
+
+  const handlePromoteRubrics = async (curriculum) => {
+    setBusy(true);
+    setNotice('');
+    try {
+      const res = await fetch(`${API_URL}/api/admin/${admin.id}/curriculums/${curriculum.id}/promote-rubrics`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}'
+      });
+      const d = await res.json();
+      if (d.success) {
+        setNotice(d.savedRubrics
+          ? `Saved ${d.savedRubrics} rubric(s) to School Rubrics, tagged ${curriculum.gradeLevel} · ${curriculum.subject}.`
+          : 'Every rubric from this curriculum is already saved.');
+      } else setError(d.error);
+    } catch {
+      setError('Network error. Please try again.');
     } finally { setBusy(false); }
   };
 
@@ -156,6 +179,23 @@ export default function AdminCurriculum() {
                 {isOpen && (
                   <div className="border-t border-slate-100 p-4 space-y-3">
                     {c.description && <p className="text-sm text-slate-600">{c.description}</p>}
+
+                    {/* Curriculums uploaded before rubric-saving existed keep their
+                        rubrics inside the lessons — this lifts them out into
+                        reusable School Rubrics. */}
+                    {c.lessons.some(l => l.defaultRubric) && (
+                      <div className="flex items-center justify-between gap-3 bg-emerald-50 border border-emerald-200 rounded-xl p-3">
+                        <p className="text-xs text-emerald-800 leading-relaxed">
+                          {c.lessons.filter(l => l.defaultRubric).length} lesson(s) here carry a rubric. Save them as
+                          reusable templates under <span className="font-semibold">School Rubrics</span>, tagged{' '}
+                          {c.gradeLevel} · {c.subject}.
+                        </p>
+                        <button onClick={() => handlePromoteRubrics(c)} disabled={busy}
+                          className="shrink-0 text-xs font-bold text-white bg-brand-green px-3 py-2 rounded-lg hover:bg-emerald-600 flex items-center gap-1.5 disabled:opacity-40">
+                          <Sparkles className="w-3.5 h-3.5" /> Save Rubrics
+                        </button>
+                      </div>
+                    )}
 
                     {c.lessons.length === 0 ? (
                       <p className="text-sm text-slate-400 italic">No lessons yet — add them below.</p>

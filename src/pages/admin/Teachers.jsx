@@ -228,15 +228,19 @@ export default function AdminTeachers() {
               <p className="text-xs font-bold text-brand-navy bg-blue-50 inline-block px-2.5 py-1 rounded-full mb-2">{grade}</p>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 {sectionsByGrade[grade].map(s => (
-                  <div key={s.id} className="bg-white border border-slate-200 rounded-xl p-3 flex items-center justify-between">
+                  <Link key={s.id} to={`/admin/sections/${s.id}`}
+                    className="bg-white border border-slate-200 rounded-xl p-3 flex items-center justify-between gap-2 hover:border-brand-navy hover:shadow-sm transition-all group">
                     <div className="min-w-0">
-                      <p className="font-semibold text-brand-slate text-sm truncate">{s.name}</p>
+                      <p className="font-semibold text-brand-slate text-sm truncate group-hover:text-brand-navy">{s.name}</p>
                       <p className="text-xs text-slate-400 truncate">Adviser: {s.teacher?.name || '—'}</p>
                     </div>
-                    <span className="text-xs font-bold text-slate-500 bg-slate-100 px-2 py-1 rounded-full shrink-0">
-                      {s._count?.students || 0} students
-                    </span>
-                  </div>
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <span className="text-xs font-bold text-slate-500 bg-slate-100 px-2 py-1 rounded-full">
+                        {s._count?.students || 0} students
+                      </span>
+                      <ChevronRight className="w-4 h-4 text-slate-300 group-hover:text-brand-navy transition-colors" />
+                    </div>
+                  </Link>
                 ))}
               </div>
             </div>

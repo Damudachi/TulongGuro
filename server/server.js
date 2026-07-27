@@ -505,7 +505,7 @@ app.get('/api/admin/:adminId/teachers/:teacherId', async (req, res) => {
     const admin = await requireAdminSchool(req.params.adminId);
     const teacher = await teacherInSchool(admin, req.params.teacherId);
 
-    const [classes, sections] = await Promise.all([
+    const [classes, sections, teachers] = await Promise.all([
       prisma.class.findMany({
         where: { teacherId: teacher.id },
         include: {
@@ -522,6 +522,12 @@ app.get('/api/admin/:adminId/teachers/:teacherId', async (req, res) => {
           _count: { select: { classes: true } }
         },
         orderBy: [{ gradeLevel: 'asc' }, { name: 'asc' }]
+      }),
+      // Candidates for reassigning a course shell.
+      prisma.user.findMany({
+        where: { schoolId: admin.schoolId, role: 'TEACHER' },
+        select: { id: true, name: true, email: true },
+        orderBy: { name: 'asc' }
       })
     ]);
 
@@ -529,6 +535,7 @@ app.get('/api/admin/:adminId/teachers/:teacherId', async (req, res) => {
     res.json({
       success: true,
       teacher: safeTeacher,
+      teachers,
       classes: classes.map(c => ({
         id: c.id, name: c.name, gradeLevel: c.gradeLevel, subject: c.subject, schoolYear: c.schoolYear,
         createdAt: c.createdAt,
@@ -573,6 +580,90 @@ app.put('/api/admin/:adminId/teachers/:teacherId', async (req, res) => {
   } catch (e) { sendAdminError(res, e); }
 });
 
+/**
+ * Reassign a course shell to a different teacher (and/or rename it).
+ *
+ * Everything a class owns — activities, lessons, and every submission with its
+ * score and feedback — hangs off the Class row, so it all follows the shell
+ * automatically. Only Class.teacherId changes; no student work is touched.
+ */
+app.put('/api/admin/:adminId/classes/:classId', async (req, res) => {
+  try {
+    const admin = await requireAdminSchool(req.params.adminId);
+    const cls = await prisma.class.findUnique({
+      where: { id: req.params.classId },
+      include: {
+        teacher: true,
+        activities: { select: { id: true, _count: { select: { submissions: true } } } }
+      }
+    });
+    if (!cls || cls.teacher?.schoolId !== admin.schoolId) {
+      return res.status(404).json({ success: false, error: 'Class not found in your school.' });
+    }
+
+    const { name, teacherId } = req.body;
+    const data = {};
+
+    if (name !== undefined) {
+      if (!name.trim()) return res.status(400).json({ success: false, error: 'Class name cannot be empty.' });
+      data.name = name.trim();
+    }
+
+    let previousTeacher = null;
+    if (teacherId !== undefined && teacherId !== cls.teacherId) {
+      const nextTeacher = await prisma.user.findUnique({ where: { id: teacherId } });
+      if (!nextTeacher || nextTeacher.role !== 'TEACHER' || nextTeacher.schoolId !== admin.schoolId) {
+        return res.status(400).json({ success: false, error: 'Choose a teacher from your own school.' });
+      }
+      // The new teacher must not already have an identical shell, or they'd end
+      // up with two for the same section, subject and school year.
+      const clash = await prisma.class.findFirst({
+        where: {
+          teacherId: nextTeacher.id,
+          sectionId: cls.sectionId,
+          schoolYear: cls.schoolYear,
+          subject: cls.subject,
+          gradeLevel: cls.gradeLevel,
+          NOT: { id: cls.id }
+        }
+      });
+      if (clash) {
+        return res.status(400).json({
+          success: false,
+          error: `${nextTeacher.name} already has "${clash.name}" for this section, subject and school year.`
+        });
+      }
+      previousTeacher = cls.teacher;
+      data.teacherId = nextTeacher.id;
+    }
+
+    if (Object.keys(data).length === 0) {
+      return res.status(400).json({ success: false, error: 'Nothing to change.' });
+    }
+
+    const updated = await prisma.class.update({
+      where: { id: cls.id },
+      data,
+      include: { teacher: { select: { id: true, name: true, email: true } } }
+    });
+
+    const submissionCount = cls.activities.reduce((n, a) => n + a._count.submissions, 0);
+    const gradedCount = previousTeacher
+      ? await prisma.submission.count({ where: { activity: { classId: cls.id }, status: 'GRADED' } })
+      : 0;
+
+    res.json({
+      success: true,
+      class: updated,
+      // Reported back so the admin can see nothing was left behind.
+      retained: previousTeacher
+        ? { activities: cls.activities.length, submissions: submissionCount, graded: gradedCount }
+        : null,
+      previousTeacher: previousTeacher ? { id: previousTeacher.id, name: previousTeacher.name } : null
+    });
+  } catch (e) { sendAdminError(res, e); }
+});
+
 /** Delete a course shell. Refuses once students have submitted work to it. */
 app.delete('/api/admin/:adminId/classes/:classId', async (req, res) => {
   try {
@@ -613,12 +704,49 @@ async function sectionInSchool(admin, sectionId) {
   return section;
 }
 
-/** Rename a section or change its grade level. */
+/** Everything about one section: roster, classes using it, and the adviser. */
+app.get('/api/admin/:adminId/sections/:sectionId', async (req, res) => {
+  try {
+    const admin = await requireAdminSchool(req.params.adminId);
+    await sectionInSchool(admin, req.params.sectionId);
+
+    const [section, teachers] = await Promise.all([
+      prisma.section.findUnique({
+        where: { id: req.params.sectionId },
+        include: {
+          teacher: { select: { id: true, name: true, email: true } },
+          students: {
+            select: { id: true, name: true, username: true, _count: { select: { submissions: true } } },
+            orderBy: { username: 'asc' }
+          },
+          classes: {
+            select: {
+              id: true, name: true, subject: true, gradeLevel: true, schoolYear: true,
+              teacher: { select: { id: true, name: true } },
+              _count: { select: { activities: true } }
+            },
+            orderBy: { createdAt: 'desc' }
+          }
+        }
+      }),
+      // Candidates for the adviser dropdown.
+      prisma.user.findMany({
+        where: { schoolId: admin.schoolId, role: 'TEACHER' },
+        select: { id: true, name: true, email: true },
+        orderBy: { name: 'asc' }
+      })
+    ]);
+
+    res.json({ success: true, section, teachers });
+  } catch (e) { sendAdminError(res, e); }
+});
+
+/** Rename a section, change its grade level, or reassign its adviser. */
 app.put('/api/admin/:adminId/sections/:sectionId', async (req, res) => {
   try {
     const admin = await requireAdminSchool(req.params.adminId);
     const section = await sectionInSchool(admin, req.params.sectionId);
-    const { name, gradeLevel } = req.body;
+    const { name, gradeLevel, teacherId } = req.body;
 
     const data = {};
     if (name !== undefined) {
@@ -626,8 +754,20 @@ app.put('/api/admin/:adminId/sections/:sectionId', async (req, res) => {
       data.name = name.trim();
     }
     if (gradeLevel !== undefined) data.gradeLevel = gradeLevel || null;
+    if (teacherId !== undefined && teacherId !== section.teacherId) {
+      // Reassigning the adviser must stay inside the school.
+      const nextTeacher = await prisma.user.findUnique({ where: { id: teacherId } });
+      if (!nextTeacher || nextTeacher.role !== 'TEACHER' || nextTeacher.schoolId !== admin.schoolId) {
+        return res.status(400).json({ success: false, error: 'Choose a teacher from your own school.' });
+      }
+      data.teacherId = teacherId;
+    }
 
-    const updated = await prisma.section.update({ where: { id: section.id }, data });
+    const updated = await prisma.section.update({
+      where: { id: section.id },
+      data,
+      include: { teacher: { select: { id: true, name: true } } }
+    });
     res.json({ success: true, section: updated });
   } catch (e) { sendAdminError(res, e); }
 });
@@ -700,6 +840,61 @@ app.delete('/api/admin/:adminId/sections/:sectionId', async (req, res) => {
 
 // ── Curriculums ──
 
+/**
+ * Promotes the rubrics the AI generated for each lesson into real, reusable
+ * school rubric templates tagged with the curriculum's grade level + subject.
+ *
+ * Without this the rubric only lived inside CurriculumLesson.defaultRubric, so
+ * a teacher could only reach it by picking that exact lesson. Lessons often
+ * share one rubric shape, so identical ones are collapsed by name.
+ *
+ * Returns how many distinct templates were saved.
+ */
+async function saveCurriculumRubrics(curriculum, lessons) {
+  const byName = new Map();
+
+  for (const lesson of lessons) {
+    const criteria = lesson.defaultRubric?.criteria;
+    if (!Array.isArray(criteria) || criteria.length === 0) continue;
+
+    // Weights must total 100 to be usable in the activity builder.
+    const total = criteria.reduce((sum, c) => sum + (parseInt(c.points) || 0), 0);
+    if (total !== 100) continue;
+
+    const outputType = lesson.outputType || 'Essay';
+    // Name by what the rubric grades, not by the lesson — a "Survey/Form"
+    // rubric is reusable across every survey lesson in the curriculum.
+    const name = `${outputType} — ${curriculum.subject} ${curriculum.gradeLevel}`;
+    if (!byName.has(name)) byName.set(name, { name, outputType, criteria });
+  }
+
+  if (byName.size === 0) return 0;
+
+  // Don't duplicate a template the school already has under the same name.
+  const existing = await prisma.rubricTemplate.findMany({
+    where: { schoolId: curriculum.schoolId, name: { in: [...byName.keys()] } },
+    select: { name: true }
+  });
+  const taken = new Set(existing.map(r => r.name));
+  const fresh = [...byName.values()].filter(r => !taken.has(r.name));
+  if (fresh.length === 0) return 0;
+
+  await prisma.rubricTemplate.createMany({
+    data: fresh.map(r => ({
+      name: r.name,
+      criteria: JSON.stringify(r.criteria),
+      schoolId: curriculum.schoolId,
+      teacherId: null,
+      gradeLevel: curriculum.gradeLevel,
+      subject: curriculum.subject,
+      curriculumId: curriculum.id,
+      outputType: r.outputType
+    }))
+  });
+  console.log(`📐 Saved ${fresh.length} rubric template(s) from curriculum "${curriculum.title}"`);
+  return fresh.length;
+}
+
 app.get('/api/admin/:adminId/curriculums', async (req, res) => {
   try {
     const admin = await requireAdminSchool(req.params.adminId);
@@ -744,6 +939,7 @@ app.post('/api/admin/:adminId/curriculums', upload.single('curriculumFile'), asy
     });
 
     let parseWarning = null;
+    let savedRubrics = 0;
     if (req.file) {
       try {
         const lessons = await extractLessonsFromCurriculum(req.file.path, subject, gradeLevel);
@@ -758,6 +954,7 @@ app.post('/api/admin/:adminId/curriculums', upload.single('curriculumFile'), asy
               defaultRubric: l.defaultRubric ? JSON.stringify(l.defaultRubric) : null
             }))
           });
+          savedRubrics = await saveCurriculumRubrics(curriculum, lessons);
         } else {
           parseWarning = 'No lessons could be extracted from that file. You can still add them by hand.';
         }
@@ -768,9 +965,38 @@ app.post('/api/admin/:adminId/curriculums', upload.single('curriculumFile'), asy
 
     const saved = await prisma.curriculum.findUnique({
       where: { id: curriculum.id },
+      include: { lessons: true, rubrics: true }
+    });
+    res.json({ success: true, curriculum: saved, savedRubrics, warning: parseWarning });
+  } catch (e) { sendAdminError(res, e); }
+});
+
+/**
+ * Save this curriculum's lesson rubrics as reusable school templates.
+ *
+ * Upload does this automatically; this endpoint covers curriculums that
+ * predate the feature or whose lessons were added by hand afterwards.
+ */
+app.post('/api/admin/:adminId/curriculums/:curriculumId/promote-rubrics', async (req, res) => {
+  try {
+    const admin = await requireAdminSchool(req.params.adminId);
+    const curriculum = await prisma.curriculum.findUnique({
+      where: { id: req.params.curriculumId },
       include: { lessons: true }
     });
-    res.json({ success: true, curriculum: saved, warning: parseWarning });
+    if (!curriculum || curriculum.schoolId !== admin.schoolId) {
+      return res.status(404).json({ success: false, error: 'Curriculum not found in your school.' });
+    }
+
+    // saveCurriculumRubrics works on the parser's shape, so reparse the stored JSON.
+    const lessons = curriculum.lessons.map(l => {
+      let defaultRubric = null;
+      try { defaultRubric = l.defaultRubric ? JSON.parse(l.defaultRubric) : null; } catch { /* skip malformed */ }
+      return { outputType: l.outputType, defaultRubric };
+    });
+
+    const savedRubrics = await saveCurriculumRubrics(curriculum, lessons);
+    res.json({ success: true, savedRubrics });
   } catch (e) { sendAdminError(res, e); }
 });
 
@@ -781,7 +1007,7 @@ app.post('/api/admin/:adminId/curriculums/:curriculumId/lessons', async (req, re
     if (!curriculum || curriculum.schoolId !== admin.schoolId) {
       return res.status(404).json({ success: false, error: 'Curriculum not found in your school.' });
     }
-    const { title, description, outputType, weekNumber } = req.body;
+    const { title, description, outputType, weekNumber, defaultRubric } = req.body;
     if (!title?.trim()) return res.status(400).json({ success: false, error: 'Lesson title is required.' });
     const lesson = await prisma.curriculumLesson.create({
       data: {
@@ -789,7 +1015,10 @@ app.post('/api/admin/:adminId/curriculums/:curriculumId/lessons', async (req, re
         title: title.trim(),
         description: description || null,
         outputType: outputType || 'Essay',
-        weekNumber: weekNumber ? parseInt(weekNumber) : null
+        weekNumber: weekNumber ? parseInt(weekNumber) : null,
+        // Optional — lets a hand-added lesson carry a rubric the same way a
+        // parsed one does, so it can be promoted to a school template too.
+        defaultRubric: defaultRubric ? JSON.stringify(defaultRubric) : null
       }
     });
     res.json({ success: true, lesson });
@@ -828,9 +1057,15 @@ app.delete('/api/admin/:adminId/curriculums/:curriculumId', async (req, res) => 
 app.get('/api/admin/:adminId/rubrics', async (req, res) => {
   try {
     const admin = await requireAdminSchool(req.params.adminId);
+    const { gradeLevel, subject } = req.query;
     const rubrics = await prisma.rubricTemplate.findMany({
-      where: { schoolId: admin.schoolId },
-      orderBy: { createdAt: 'desc' }
+      where: {
+        schoolId: admin.schoolId,
+        ...(gradeLevel ? { gradeLevel } : {}),
+        ...(subject ? { subject } : {})
+      },
+      include: { curriculum: { select: { id: true, title: true } } },
+      orderBy: [{ gradeLevel: 'asc' }, { subject: 'asc' }, { createdAt: 'desc' }]
     });
     res.json({ success: true, rubrics });
   } catch (e) { sendAdminError(res, e); }
@@ -839,7 +1074,7 @@ app.get('/api/admin/:adminId/rubrics', async (req, res) => {
 app.post('/api/admin/:adminId/rubrics', async (req, res) => {
   try {
     const admin = await requireAdminSchool(req.params.adminId);
-    const { name, criteria } = req.body;
+    const { name, criteria, gradeLevel, subject, outputType } = req.body;
     if (!name?.trim() || !Array.isArray(criteria) || criteria.length === 0) {
       return res.status(400).json({ success: false, error: 'A name and at least one criterion are required.' });
     }
@@ -848,9 +1083,41 @@ app.post('/api/admin/:adminId/rubrics', async (req, res) => {
       return res.status(400).json({ success: false, error: `Criteria weights must total 100%. They currently total ${total}%.` });
     }
     const rubric = await prisma.rubricTemplate.create({
-      data: { name: name.trim(), criteria: JSON.stringify(criteria), schoolId: admin.schoolId, teacherId: null }
+      data: {
+        name: name.trim(),
+        criteria: JSON.stringify(criteria),
+        schoolId: admin.schoolId,
+        teacherId: null,
+        // Null on either means the rubric applies to any grade level / subject.
+        gradeLevel: gradeLevel || null,
+        subject: subject || null,
+        outputType: outputType || null
+      }
     });
     res.json({ success: true, rubric });
+  } catch (e) { sendAdminError(res, e); }
+});
+
+/** Retag an existing rubric's grade level / subject. */
+app.put('/api/admin/:adminId/rubrics/:rubricId', async (req, res) => {
+  try {
+    const admin = await requireAdminSchool(req.params.adminId);
+    const rubric = await prisma.rubricTemplate.findUnique({ where: { id: req.params.rubricId } });
+    if (!rubric || rubric.schoolId !== admin.schoolId) {
+      return res.status(404).json({ success: false, error: 'Rubric not found in your school.' });
+    }
+    const { name, gradeLevel, subject, outputType } = req.body;
+    const data = {};
+    if (name !== undefined) {
+      if (!name.trim()) return res.status(400).json({ success: false, error: 'Name cannot be empty.' });
+      data.name = name.trim();
+    }
+    if (gradeLevel !== undefined) data.gradeLevel = gradeLevel || null;
+    if (subject !== undefined) data.subject = subject || null;
+    if (outputType !== undefined) data.outputType = outputType || null;
+
+    const updated = await prisma.rubricTemplate.update({ where: { id: rubric.id }, data });
+    res.json({ success: true, rubric: updated });
   } catch (e) { sendAdminError(res, e); }
 });
 
@@ -1491,10 +1758,18 @@ app.delete('/api/teacher/activities/:activityId', async (req, res) => {
 app.get('/api/teacher/rubric-templates/:teacherId', async (req, res) => {
   try {
     // A teacher's own templates plus any their admin published school-wide.
+    // ?gradeLevel=&subject= narrows school rubrics to the ones tagged for that
+    // class (untagged ones apply everywhere, so they always come through).
+    const { gradeLevel, subject } = req.query;
     const teacher = await prisma.user.findUnique({ where: { id: req.params.teacherId } });
+
+    const schoolScope = { schoolId: teacher?.schoolId };
+    if (gradeLevel) schoolScope.OR = [{ gradeLevel }, { gradeLevel: null }];
+    if (subject) schoolScope.AND = [{ OR: [{ subject }, { subject: null }] }];
+
     const templates = await prisma.rubricTemplate.findMany({
       where: teacher?.schoolId
-        ? { OR: [{ teacherId: req.params.teacherId }, { schoolId: teacher.schoolId }] }
+        ? { OR: [{ teacherId: req.params.teacherId }, schoolScope] }
         : { teacherId: req.params.teacherId },
       orderBy: { createdAt: 'desc' }
     });
@@ -2621,7 +2896,11 @@ app.get('/api/teacher/:teacherId/section/:sectionId/skill-progress', async (req,
 app.get('/api/teacher/:teacherId/gradebook', async (req, res) => {
   try {
     const { classId } = req.query;
-    const whereClause = classId ? { classId } : { class: { teacherId: req.params.teacherId } };
+    // Always scope to the requesting teacher. Filtering by classId alone let a
+    // teacher read any class's grades by id — including one reassigned away.
+    const whereClause = classId
+      ? { classId, class: { teacherId: req.params.teacherId } }
+      : { class: { teacherId: req.params.teacherId } };
     const activities = await prisma.activity.findMany({
       where: whereClause,
       include: {
@@ -3290,9 +3569,12 @@ app.get('/api/teacher/:teacherId/gradebook/export', async (req, res) => {
     const { classId, sectionId, format = 'csv' } = req.query;
     const teacherId = req.params.teacherId;
 
-    // Determine which classes to export
+    // Determine which classes to export — always confirming this teacher owns
+    // them, so a class reassigned away can't still be exported by its old owner.
     let classIds = [];
     if (classId) {
+      const owned = await prisma.class.findFirst({ where: { id: classId, teacherId }, select: { id: true } });
+      if (!owned) return res.status(404).json({ success: false, error: 'Class not found for this teacher.' });
       classIds = [classId];
     } else if (sectionId) {
       const sectionClasses = await prisma.class.findMany({

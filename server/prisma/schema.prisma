@@ -71,6 +71,7 @@ model Curriculum {
   createdAt   DateTime           @default(now())
   school      School             @relation(fields: [schoolId], references: [id], onDelete: Cascade)
   lessons     CurriculumLesson[]
+  rubrics     RubricTemplate[]
 
   @@unique([schoolId, gradeLevel, subject])
 }
@@ -177,14 +178,24 @@ model GradingExample {
 }
 
 model RubricTemplate {
-  id        String   @id @default(uuid())
-  name      String
-  criteria  String
+  id           String      @id @default(uuid())
+  name         String
+  criteria     String
   /// Set for a teacher's private template; null for a school-wide one.
-  teacherId String?
+  teacherId    String?
   /// Set for an admin-published, school-wide template; null for a private one.
-  schoolId  String?
-  createdAt DateTime @default(now())
-  school    School?  @relation(fields: [schoolId], references: [id], onDelete: Cascade)
-  teacher   User?    @relation("TeacherRubricTemplates", fields: [teacherId], references: [id], onDelete: Cascade)
+  schoolId     String?
+  /// Segmentation: which grade level and subject this rubric is meant for.
+  /// Null on both means "any" — the pre-segmentation default.
+  gradeLevel   String?
+  subject      String?
+  /// Set when the rubric was extracted from an uploaded curriculum, so
+  /// deleting that curriculum can clean up the rubrics it generated.
+  curriculumId String?
+  /// The lesson output type the rubric was generated for, e.g. Essay.
+  outputType   String?
+  createdAt    DateTime    @default(now())
+  curriculum   Curriculum? @relation(fields: [curriculumId], references: [id], onDelete: SetNull)
+  school       School?     @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  teacher      User?       @relation("TeacherRubricTemplates", fields: [teacherId], references: [id], onDelete: Cascade)
 }
