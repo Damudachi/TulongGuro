@@ -33,25 +33,50 @@ const aiConfigured = Boolean(aiApiKey && aiApiKey !== 'mock' && aiApiKey !== 'YO
 app.use(cors());
 app.use(express.json());
 
-// File storage: Supabase Storage in production, local disk in development
-const STORAGE_BUCKET = process.env.SUPABASE_BUCKET || 'uploads';
-const useSupabase = !!(process.env.SUPABASE_URL && process.env.SUPABASE_KEY);
+// File storage: Supabase Storage in production, local disk in development.
+//
+// Dashboard env-var fields (Render, Vercel, Fly) take a raw value, but .env
+// syntax wants quotes — so a value pasted from one into the other arrives as
+// `"https://…"`, quotes included, and every request 404s for a reason that
+// nothing in the logs explains. Trailing newlines from a copied key do the
+// same. Normalising here costs nothing and removes a whole class of
+// "it's set but it doesn't work".
+function envValue(name) {
+  const raw = process.env[name];
+  if (typeof raw !== 'string') return '';
+  return raw.trim().replace(/^["'](.*)["']$/s, '$1').trim();
+}
+
+const STORAGE_BUCKET = envValue('SUPABASE_BUCKET') || 'uploads';
+const supabaseUrl = envValue('SUPABASE_URL');
+const supabaseKey = envValue('SUPABASE_KEY');
+const useSupabase = !!(supabaseUrl && supabaseKey);
 let supabase = null;
 if (useSupabase) {
-  supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
+  supabase = createClient(supabaseUrl, supabaseKey);
   console.log('☁ Using Supabase Storage for file uploads');
 } else {
   console.log('📁 Using local disk for file uploads (set SUPABASE_URL/KEY for cloud)');
   // Most hosts (Render, Fly, Heroku, containers) give each instance a fresh
   // filesystem, so anything written here disappears on the next deploy or
-  // restart — submitted photos then 404 for everyone. Loud on purpose.
+  // restart — submitted photos then 404 for everyone. Loud on purpose, and
+  // specific about which variable is actually missing: "set both of them" is
+  // useless advice when one of the two is already set.
+  const missing = [
+    !supabaseUrl && 'SUPABASE_URL',
+    !supabaseKey && 'SUPABASE_KEY',
+  ].filter(Boolean);
   console.warn(
     '\n⚠  UPLOADS ARE NOT DURABLE\n' +
+    `   Missing environment variable(s): ${missing.join(', ')}\n` +
+    `   (SUPABASE_URL is ${supabaseUrl ? 'set' : 'NOT set'}, ` +
+    `SUPABASE_KEY is ${supabaseKey ? 'set' : 'NOT set'})\n\n` +
     '   Submitted photos are being written to this server\'s local disk.\n' +
     '   On a hosted deployment that disk is wiped on every restart/redeploy,\n' +
-    '   which makes previously uploaded work show as a broken image.\n' +
-    '   Fix: set SUPABASE_URL and SUPABASE_KEY, and create a PUBLIC storage\n' +
-    '   bucket named "uploads" in your Supabase project.\n'
+    '   which makes previously uploaded work show as a broken image.\n\n' +
+    '   Fix: set the variable(s) above on the service that runs this process,\n' +
+    '   then redeploy. SUPABASE_KEY must be the service_role / sb_secret key —\n' +
+    '   the anon or publishable key cannot write to the bucket.\n'
   );
 }
 
