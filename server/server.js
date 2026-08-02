@@ -41,6 +41,17 @@ if (useSupabase) {
   console.log('☁ Using Supabase Storage for file uploads');
 } else {
   console.log('📁 Using local disk for file uploads (set SUPABASE_URL/KEY for cloud)');
+  // Most hosts (Render, Fly, Heroku, containers) give each instance a fresh
+  // filesystem, so anything written here disappears on the next deploy or
+  // restart — submitted photos then 404 for everyone. Loud on purpose.
+  console.warn(
+    '\n⚠  UPLOADS ARE NOT DURABLE\n' +
+    '   Submitted photos are being written to this server\'s local disk.\n' +
+    '   On a hosted deployment that disk is wiped on every restart/redeploy,\n' +
+    '   which makes previously uploaded work show as a broken image.\n' +
+    '   Fix: set SUPABASE_URL and SUPABASE_KEY, and create a PUBLIC storage\n' +
+    '   bucket named "uploads" in your Supabase project.\n'
+  );
 }
 
 // Local uploads dir (used in dev or as temp staging for sharp)
@@ -48,9 +59,24 @@ const uploadsDir = path.join(__dirname, 'uploads');
 if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir);
 app.use('/uploads', express.static(uploadsDir));
 
+/**
+ * Make a phone-camera filename safe to use as both a URL path segment and a
+ * Supabase Storage object key. Names like "Screenshot 2026-05-07 19:55.png"
+ * arrive routinely; spaces survive in an <img src> but colons, #, ? and
+ * non-ASCII do not, and Supabase rejects several of them outright.
+ */
+function safeUploadName(originalname) {
+  const ext = (path.extname(originalname || '') || '.jpg').toLowerCase().replace(/[^a-z0-9.]/g, '');
+  const base = path.basename(originalname || 'upload', path.extname(originalname || ''))
+    .normalize('NFKD').replace(/[^\w-]+/g, '-')   // collapse spaces/punctuation/accents
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 60);
+  return `${Date.now()}-${base || 'upload'}${ext || '.jpg'}`;
+}
+
 const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, uploadsDir),
-  filename: (req, file, cb) => cb(null, `${Date.now()}-${file.originalname}`)
+  filename: (req, file, cb) => cb(null, safeUploadName(file.originalname))
 });
 const upload = multer({ storage });
 
@@ -329,6 +355,47 @@ app.post('/api/auth/login', async (req, res) => {
 
     const { password: _pw, ...safeUser } = user;
     res.json({ success: true, user: safeUser });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+/**
+ * Storage health — answers "why are images broken?" without shell access.
+ * Reports where uploads go and how many stored images are actually reachable.
+ */
+app.get('/api/health/storage', async (req, res) => {
+  try {
+    const subs = await prisma.submission.findMany({
+      where: { imageUrl: { not: null } },
+      select: { imageUrl: true }
+    });
+
+    let remote = 0, onDisk = 0, missing = 0, frontendAsset = 0;
+    const missingSamples = [];
+    for (const s of subs) {
+      const url = s.imageUrl;
+      if (/^https?:\/\//i.test(url)) { remote++; continue; }
+      if (!url.startsWith('/uploads/')) { frontendAsset++; continue; }
+      const abs = path.join(__dirname, url.replace(/^\//, ''));
+      if (fs.existsSync(abs)) onDisk++;
+      else { missing++; if (missingSamples.length < 5) missingSamples.push(url); }
+    }
+
+    res.json({
+      success: true,
+      driver: useSupabase ? 'supabase-storage' : 'local-disk',
+      durable: useSupabase,
+      totalWithImage: subs.length,
+      remote,
+      onDisk,
+      missing,
+      frontendAsset,
+      missingSamples,
+      advice: useSupabase
+        ? null
+        : 'Uploads are on local disk and will be lost on restart. Set SUPABASE_URL and SUPABASE_KEY, then create a public "uploads" bucket.'
+    });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
   }
@@ -1675,6 +1742,16 @@ app.get('/api/classes/:classId', async (req, res) => {
 });
 
 // Activities endpoint: accepts BOTH multipart/form-data (with files) and JSON (quick-create)
+/**
+ * Attempts allowed on a student-submit activity. `0` means unlimited — stored
+ * as 0 rather than null so the existing Int column needs no migration.
+ */
+function normalizeMaxAttempts(value) {
+  const n = parseInt(value, 10);
+  if (Number.isNaN(n) || n < 0) return 1;
+  return n;   // 0 === unlimited
+}
+
 app.post('/api/teacher/activities', (req, res, next) => {
   const ct = req.headers['content-type'] || '';
   if (ct.includes('multipart/form-data')) {
@@ -1696,7 +1773,7 @@ app.post('/api/teacher/activities', (req, res, next) => {
         classId, instructions,
         deadline: deadline || null,
         submissionMode: submissionMode || 'TEACHER_UPLOAD',
-        maxAttempts: parseInt(maxAttempts) || 1,
+        maxAttempts: normalizeMaxAttempts(maxAttempts),
         additionalFiles: filePaths.length ? JSON.stringify(filePaths) : null,
         rubric: rubric || null,
         classLessonId: classLessonId || null
@@ -1720,7 +1797,7 @@ app.put('/api/teacher/activities/:activityId', async (req, res) => {
     if (deadline !== undefined) updateData.deadline = deadline ? String(deadline) : null;
     if (instructions !== undefined) updateData.instructions = instructions ? String(instructions) : null;
     if (submissionMode !== undefined) updateData.submissionMode = String(submissionMode);
-    if (maxAttempts !== undefined) updateData.maxAttempts = parseInt(maxAttempts) || 1;
+    if (maxAttempts !== undefined) updateData.maxAttempts = normalizeMaxAttempts(maxAttempts);
     if (rubric !== undefined) updateData.rubric = rubric || null;
     if (req.body.classLessonId !== undefined) updateData.classLessonId = req.body.classLessonId || null;
 
@@ -2820,7 +2897,7 @@ app.get('/api/student/:studentId/dashboard', async (req, res) => {
       className: a.class?.name || '',
       classId: a.class?.id || '',
       submissionMode: a.submissionMode || 'TEACHER_UPLOAD',
-      maxAttempts: a.maxAttempts || 1
+      maxAttempts: a.maxAttempts ?? 1
     })).sort((a, b) => new Date(a.deadline) - new Date(b.deadline));
 
     res.json({ success: true, student, submissions, pendingSubmissions, avgGrade, stars, avgSkills, latestStrategy, upcomingDeadlines });
@@ -3258,7 +3335,8 @@ app.post('/api/student/submit', upload.array('images', 20), async (req, res) => 
     // Check for existing submission and update, or create new
     const existing = await prisma.submission.findFirst({ where: { studentId, activityId } });
     const activity = await prisma.activity.findUnique({ where: { id: activityId }, select: { maxAttempts: true, deadline: true } });
-    const maxAttempts = activity?.maxAttempts || 1;
+    // 0 means unlimited re-submissions.
+    const maxAttempts = activity?.maxAttempts ?? 1;
     let submission;
     if (existing) {
       // Block resubmission if already graded by teacher
@@ -3270,7 +3348,7 @@ app.post('/api/student/submit', upload.array('images', 20), async (req, res) => 
         return res.status(400).json({ success: false, error: 'The deadline for this activity has passed. Resubmission is no longer allowed.' });
       }
       // Block if max attempts reached
-      if (existing.attemptCount >= maxAttempts) {
+      if (maxAttempts !== 0 && existing.attemptCount >= maxAttempts) {
         return res.status(400).json({ success: false, error: `You have used all ${maxAttempts} attempt(s) for this activity.` });
       }
       submission = await prisma.submission.update({

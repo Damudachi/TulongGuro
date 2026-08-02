@@ -71,7 +71,7 @@ export default function Settings() {
                   className={`flex-1 md:flex-none flex items-center justify-center md:justify-start gap-2 px-2 py-2.5 md:px-4 md:py-3
                               text-sm font-bold rounded-xl md:rounded-2xl transition-all ${
                     activeTab === tab.id
-                      ? 'bg-aqua-600 text-white md:shadow-pop'
+                      ? 'bg-royal-600 text-white md:shadow-pop'
                       : 'text-navy-500 hover:bg-cream-100'
                   }`}>
                   <tab.icon className="w-4 h-4 md:w-5 md:h-5 shrink-0" />
@@ -88,10 +88,10 @@ export default function Settings() {
               <>
                 <h2 className="font-display text-lg font-extrabold text-navy-700 mb-3">Notifications</h2>
                 <div className="divide-y-2 divide-cream-200">
-                  <Toggle accent="bg-aqua-600" label="Email Notifications"
+                  <Toggle accent="bg-royal-600" label="Email Notifications"
                     checked={notifications.emailNotifications}
                     onChange={(v) => setNotifications(p => ({ ...p, emailNotifications: v }))} />
-                  <Toggle accent="bg-aqua-600" label="Push Notifications"
+                  <Toggle accent="bg-royal-600" label="Push Notifications"
                     checked={notifications.pushNotifications}
                     onChange={(v) => setNotifications(p => ({ ...p, pushNotifications: v }))} />
                 </div>
@@ -115,7 +115,7 @@ export default function Settings() {
                     </select>
                   </div>
                   <div className="border-t-2 border-cream-200">
-                    <Toggle accent="bg-aqua-600" label="Show Awards on Profile"
+                    <Toggle accent="bg-royal-600" label="Show Awards on Profile"
                       checked={privacy.showAwards}
                       onChange={(v) => setPrivacy(p => ({ ...p, showAwards: v }))} />
                   </div>
@@ -151,7 +151,7 @@ export default function Settings() {
                   onClick={handleSave}
                   type="button"
                   className="flex-1 inline-flex items-center justify-center gap-2 rounded-full py-2.5 px-5 font-bold text-sm
-                             text-white bg-aqua-600 shadow-pop hover:bg-aqua-700
+                             text-white bg-royal-600 shadow-pop hover:bg-royal-700
                              active:translate-y-1 active:shadow-none transition-all"
                 >
                   <Save className="w-4 h-4" /> Save Changes

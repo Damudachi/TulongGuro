@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { ArrowLeft, Camera, UploadCloud, FileText, CheckCircle2, Clock, Loader2, ChevronRight, AlertTriangle, ShieldCheck, BookOpen, Calendar, Award, RefreshCw, Eye } from 'lucide-react';
 import { API_URL } from '../../config';
-import { resolveUploadUrl } from '../../utils/uploads';
+import SubmissionImage from '../../components/SubmissionImage';
 import ImageRedactor from '../../components/ImageRedactor';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
@@ -168,7 +168,7 @@ export default function SubmitWork() {
 
   if (isLoading) return (
     <div className="flex items-center justify-center h-64">
-      <Loader2 className="w-6 h-6 animate-spin text-aqua-600" />
+      <Loader2 className="w-6 h-6 animate-spin text-royal-600" />
     </div>
   );
 
@@ -240,7 +240,7 @@ export default function SubmitWork() {
           <button
             onClick={handlePrivacyConfirm}
             className="flex-1 inline-flex items-center justify-center gap-2 rounded-full py-3 px-4 font-bold text-sm
-                       text-white bg-aqua-600 shadow-pop hover:bg-aqua-700
+                       text-white bg-royal-600 shadow-pop hover:bg-royal-700
                        active:translate-y-1 active:shadow-none transition-all"
           >
             <ShieldCheck className="w-4 h-4" /> I Understand &amp; Confirm
@@ -268,7 +268,7 @@ export default function SubmitWork() {
             </button>
             <button onClick={() => navigate('/student/dashboard')}
               className="flex-1 inline-flex items-center justify-center gap-2 rounded-full py-3 px-6 font-bold text-sm
-                         text-white bg-aqua-600 shadow-pop hover:bg-aqua-700
+                         text-white bg-royal-600 shadow-pop hover:bg-royal-700
                          active:translate-y-1 active:shadow-none transition-all">
               Go to Dashboard <ChevronRight className="w-4 h-4" />
             </button>
@@ -319,11 +319,14 @@ export default function SubmitWork() {
                 </span>
               </div>
             )}
-            {selected.maxAttempts > 1 && (
+            {(selected.maxAttempts === 0 || selected.maxAttempts > 1) && (
               <div className="bg-white/15 px-3.5 py-2 rounded-xl">
                 <span className="block text-[10px] uppercase tracking-wider font-extrabold mb-0.5 text-royal-100">Attempts</span>
                 <span className="font-extrabold flex items-center">
-                  <RefreshCw className="w-4 h-4 mr-1.5" /> {sub ? sub.attemptCount || 1 : 0}/{selected.maxAttempts}
+                  <RefreshCw className="w-4 h-4 mr-1.5" />
+                  {selected.maxAttempts === 0
+                    ? `${sub ? sub.attemptCount || 1 : 0} · Unlimited`
+                    : `${sub ? sub.attemptCount || 1 : 0}/${selected.maxAttempts}`}
                 </span>
               </div>
             )}
@@ -365,12 +368,12 @@ export default function SubmitWork() {
               </div>
               {sub.imageUrl && (
                 <div className="rounded-2xl overflow-hidden border-2 border-cream-200 bg-cream-50">
-                  <img src={resolveUploadUrl(sub.imageUrl)} alt="Your submitted work" className="w-full object-contain max-h-[600px]" />
+                  <SubmissionImage url={sub.imageUrl} alt="Your submitted work" className="w-full object-contain max-h-[600px]" />
                 </div>
               )}
             </div>
 
-            {(sub.attemptCount || 1) < (selected.maxAttempts || 1) ? (
+            {selected.maxAttempts === 0 || (sub.attemptCount || 1) < (selected.maxAttempts || 1) ? (
               <>
                 <button
                   onClick={() => setResubmitMode(true)}
@@ -381,7 +384,9 @@ export default function SubmitWork() {
                   <RefreshCw className="w-5 h-5" /> Re-submit Work
                 </button>
                 <p className="text-[11px] font-semibold text-navy-400 text-center">
-                  Attempt {sub.attemptCount || 1} of {selected.maxAttempts || 1}. Re-submitting will replace your current submission.
+                  {selected.maxAttempts === 0
+                    ? `Attempt ${sub.attemptCount || 1}. You can re-submit as many times as you need.`
+                    : `Attempt ${sub.attemptCount || 1} of ${selected.maxAttempts || 1}.`} Re-submitting will replace your current submission.
                 </p>
               </>
             ) : (
@@ -436,7 +441,7 @@ export default function SubmitWork() {
                 className={cn('border-2 border-dashed rounded-3xl transition-all',
                   previews.length > 0
                     ? 'border-cream-300 p-4 bg-white'
-                    : 'border-cream-300 hover:border-aqua-400 hover:bg-aqua-50 cursor-pointer bg-white')}
+                    : 'border-cream-300 hover:border-royal-400 hover:bg-royal-50 cursor-pointer bg-white')}
               >
                 {previews.length > 0 ? (
                   <div className="space-y-4">
@@ -456,22 +461,22 @@ export default function SubmitWork() {
                       ))}
                       {files.length < 20 && (
                         <button type="button" onClick={() => fileRef.current?.click()}
-                          className="rounded-2xl border-2 border-dashed border-cream-300 flex flex-col items-center justify-center text-navy-400 hover:border-aqua-400 hover:bg-aqua-50 cursor-pointer aspect-[3/4] transition-all">
+                          className="rounded-2xl border-2 border-dashed border-cream-300 flex flex-col items-center justify-center text-navy-400 hover:border-royal-400 hover:bg-royal-50 cursor-pointer aspect-[3/4] transition-all">
                           <Camera className="w-6 h-6 mb-2 text-navy-300" />
                           <span className="text-xs font-extrabold">Add Page</span>
                         </button>
                       )}
                     </div>
-                    <div className="flex items-center justify-between bg-aqua-100 px-4 py-3 rounded-2xl border-2 border-aqua-200">
-                      <span className="text-sm font-extrabold text-aqua-800">{files.length} page(s) attached</span>
+                    <div className="flex items-center justify-between bg-royal-100 px-4 py-3 rounded-2xl border-2 border-royal-200">
+                      <span className="text-sm font-extrabold text-royal-800">{files.length} page(s) attached</span>
                     </div>
                   </div>
                 ) : (
                   <div className="p-12 flex flex-col items-center justify-center text-navy-400">
-                    <div className="bg-aqua-100 p-5 rounded-3xl mb-4"><Camera className="w-8 h-8 text-aqua-600" /></div>
+                    <div className="bg-royal-100 p-5 rounded-3xl mb-4"><Camera className="w-8 h-8 text-royal-600" /></div>
                     <p className="font-display font-extrabold text-navy-700 mb-1">Take a photo of your essay</p>
                     <p className="text-sm font-semibold">or drag &amp; drop an image file</p>
-                    <div className="mt-4 flex items-center text-aqua-700 font-extrabold text-sm">
+                    <div className="mt-4 flex items-center text-royal-700 font-extrabold text-sm">
                       <UploadCloud className="w-4 h-4 mr-1.5" /> Browse Files
                     </div>
                   </div>
@@ -484,8 +489,8 @@ export default function SubmitWork() {
             {files.length > 0 && (
               <>
                 <button onClick={handleSubmit} disabled={isSubmitting}
-                  className="w-full py-4 bg-aqua-600 text-white rounded-3xl font-extrabold text-lg shadow-pop
-                             hover:bg-aqua-700 active:translate-y-1 active:shadow-none transition-all
+                  className="w-full py-4 bg-royal-600 text-white rounded-3xl font-extrabold text-lg shadow-pop
+                             hover:bg-royal-700 active:translate-y-1 active:shadow-none transition-all
                              disabled:opacity-60 disabled:pointer-events-none flex items-center justify-center gap-3">
                   {isSubmitting ? (
                     <><Loader2 className="w-5 h-5 animate-spin" /> Submitting...</>
@@ -533,10 +538,10 @@ export default function SubmitWork() {
             return (
               <button key={activity.id} onClick={() => handleSelectActivity(activity)}
                 className="w-full text-left p-5 rounded-3xl border-2 border-slate-200 bg-white
-                           hover:border-aqua-400 hover:-translate-y-0.5 hover:shadow-card transition-all group">
+                           hover:border-royal-400 hover:-translate-y-0.5 hover:shadow-card transition-all group">
                 <div className="flex items-start justify-between gap-3">
                   <div className="flex items-start gap-3 min-w-0">
-                    <div className="p-2.5 rounded-2xl bg-aqua-100 text-aqua-700 shrink-0 group-hover:bg-aqua-500 group-hover:text-white transition-colors">
+                    <div className="p-2.5 rounded-2xl bg-royal-100 text-royal-700 shrink-0 group-hover:bg-royal-500 group-hover:text-white transition-colors">
                       <FileText className="w-4 h-4" />
                     </div>
                     <div className="min-w-0">
@@ -547,9 +552,11 @@ export default function SubmitWork() {
                           {isPastDeadline ? '⏰ Deadline passed' : `Due: ${new Date(activity.deadline).toLocaleDateString('en-PH', { month: 'short', day: 'numeric' })}`}
                         </p>
                       )}
-                      {activity.maxAttempts > 1 && (
+                      {(activity.maxAttempts === 0 || activity.maxAttempts > 1) && (
                         <p className="text-xs text-navy-400 mt-0.5 font-semibold">
-                          {sub ? `Attempt ${sub.attemptCount || 1}/${activity.maxAttempts}` : `${activity.maxAttempts} attempts allowed`}
+                          {activity.maxAttempts === 0
+                            ? (sub ? `Attempt ${sub.attemptCount || 1} · Unlimited re-submits` : 'Unlimited re-submits')
+                            : (sub ? `Attempt ${sub.attemptCount || 1}/${activity.maxAttempts}` : `${activity.maxAttempts} attempts allowed`)}
                         </p>
                       )}
                     </div>
@@ -560,7 +567,7 @@ export default function SubmitWork() {
                         <StatusIcon className="w-3 h-3" /> {STATUS_LABEL[sub.status]?.label}
                       </span>
                     )}
-                    <ChevronRight className="w-4 h-4 text-navy-300 group-hover:text-aqua-600 transition-colors" />
+                    <ChevronRight className="w-4 h-4 text-navy-300 group-hover:text-royal-600 transition-colors" />
                   </div>
                 </div>
               </button>

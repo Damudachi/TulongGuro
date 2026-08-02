@@ -37,12 +37,12 @@ export default function Awards() {
       </div>
 
       {/* ── Stars summary ── */}
-      <div className="bg-navy-700 text-white px-5 py-5 rounded-3xl mb-6">
+      <div className="bg-royal-900 text-white px-5 py-5 rounded-3xl mb-6">
         <div className="flex items-center justify-between gap-4">
           <div className="min-w-0">
-            <p className="text-sky-300 text-sm font-bold">Your Stars</p>
+            <p className="text-white/75 text-sm font-bold">Your Stars</p>
             <p className="font-display text-4xl font-extrabold mt-0.5">{stars}</p>
-            <p className="text-sky-200/70 text-xs font-semibold mt-1.5">
+            <p className="text-white/60 text-xs font-semibold mt-1.5">
               {unlocked.length} of {AWARDS.length} awards unlocked
             </p>
           </div>

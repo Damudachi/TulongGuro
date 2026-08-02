@@ -1,5 +1,5 @@
 import { Link, Outlet, useLocation } from 'react-router-dom';
-import useSchool from '../utils/useSchool';
+import { useSchoolTheme } from '../utils/useSchool';
 import { Home, Star, User, LogOut, Settings, Book, ChevronDown, BookOpen } from 'lucide-react';
 import { clsx } from 'clsx';
 import { twMerge } from 'tailwind-merge';
@@ -11,7 +11,7 @@ function cn(...inputs) {
 
 export default function StudentLayout() {
   // Paints the school's brand colour across every page in this role.
-  useSchool();
+  useSchoolTheme();
   const location = useLocation();
   const [expandedSubjects, setExpandedSubjects] = useState(location.pathname.startsWith('/student/subjects'));
   const user = JSON.parse(localStorage.getItem('user') || '{}');
@@ -45,8 +45,8 @@ export default function StudentLayout() {
         className={cn(
           'flex items-center gap-3 px-3 py-3 rounded-2xl text-sm font-bold transition-all',
           isActive
-            ? 'bg-aqua-500 text-white shadow-pop'
-            : 'text-sky-200/70 hover:bg-white/10 hover:text-white'
+            ? 'bg-royal-500 tg-on-brand shadow-pop'
+            : 'text-white/60 hover:bg-white/10 hover:text-white'
         )}
       >
         <span className={cn('w-8 h-8 rounded-xl grid place-items-center shrink-0',
@@ -58,9 +58,7 @@ export default function StudentLayout() {
     );
   };
 
-  // Mobile dock: the active item expands to show its label, the rest stay as
-  // icons. Keeps five destinations on a narrow phone without crowding.
-  // Subjects sits second — it's the day-to-day destination after Home.
+  // Subjects sits second in the dock — it's the day-to-day destination after Home.
   const dockItems = [
     navItems[0],
     { name: 'Subjects', path: '/student/subjects', icon: Book },
@@ -70,14 +68,14 @@ export default function StudentLayout() {
   return (
     <div className="min-h-screen bg-cream-100 flex flex-col pb-24 md:pb-0 md:flex-row">
       {/* ── Desktop sidebar ── */}
-      <nav className="hidden md:flex flex-col w-64 bg-navy-700 shrink-0 rounded-r-[2rem] overflow-hidden">
+      <nav className="hidden md:flex flex-col w-64 bg-royal-900 shrink-0 rounded-r-[2rem] overflow-hidden">
         <Link to="/student/dashboard" className="flex items-center gap-3 px-5 py-6">
-          <span className="w-11 h-11 rounded-2xl bg-aqua-500 text-white grid place-items-center shadow-pop shrink-0">
+          <span className="w-11 h-11 rounded-2xl bg-royal-500 tg-on-brand grid place-items-center shadow-pop shrink-0">
             <BookOpen className="w-5 h-5" />
           </span>
           <span className="flex flex-col leading-none min-w-0">
             <span className="font-display text-lg font-extrabold text-white truncate">TulongGuro</span>
-            <span className="text-[10px] font-extrabold uppercase tracking-wider text-aqua-300 mt-1">Student</span>
+            <span className="text-[10px] font-extrabold uppercase tracking-wider text-royal-200 mt-1">Student</span>
           </span>
         </Link>
 
@@ -92,8 +90,8 @@ export default function StudentLayout() {
               className={cn(
                 'w-full flex items-center gap-3 px-3 py-3 rounded-2xl text-sm font-bold transition-all',
                 subjectsActive
-                  ? 'bg-aqua-500 text-white shadow-pop'
-                  : 'text-sky-200/70 hover:bg-white/10 hover:text-white'
+                  ? 'bg-royal-500 tg-on-brand shadow-pop'
+                  : 'text-white/60 hover:bg-white/10 hover:text-white'
               )}
             >
               <span className={cn('w-8 h-8 rounded-xl grid place-items-center shrink-0',
@@ -114,7 +112,7 @@ export default function StudentLayout() {
                       to={item.path}
                       className={cn(
                         'block px-3 py-2 rounded-xl text-sm font-bold transition-colors',
-                        isActive ? 'text-white bg-white/10' : 'text-sky-200/60 hover:text-white hover:bg-white/5'
+                        isActive ? 'text-white bg-white/10' : 'text-white/50 hover:text-white hover:bg-white/5'
                       )}
                     >
                       {item.name}
@@ -131,18 +129,18 @@ export default function StudentLayout() {
         {/* Account block */}
         <div className="p-3 mt-2 border-t border-white/10">
           <div className="flex items-center gap-3 px-2 py-2.5 mb-1">
-            <span className="w-9 h-9 rounded-xl bg-aqua-500 text-white grid place-items-center font-extrabold text-sm shrink-0">
+            <span className="w-9 h-9 rounded-xl bg-royal-500 tg-on-brand grid place-items-center font-extrabold text-sm shrink-0">
               {(user.name || 'S').charAt(0)}
             </span>
             <div className="min-w-0">
               <p className="text-sm font-bold text-white truncate">{user.name || 'Student'}</p>
-              <p className="text-[11px] font-semibold text-sky-200/60 truncate">{user.username || 'Student'}</p>
+              <p className="text-[11px] font-semibold text-white/50 truncate">{user.username || 'Student'}</p>
             </div>
           </div>
           <Link
             to="/login"
             onClick={() => localStorage.removeItem('user')}
-            className="flex items-center gap-3 px-3 py-2.5 rounded-2xl text-sm font-bold text-sky-200/70 hover:bg-red-500 hover:text-white transition-colors"
+            className="flex items-center gap-3 px-3 py-2.5 rounded-2xl text-sm font-bold text-white/60 hover:bg-red-500 hover:text-white transition-colors"
           >
             <LogOut className="w-4 h-4" /> Sign Out
           </Link>
@@ -153,9 +151,13 @@ export default function StudentLayout() {
         <Outlet />
       </main>
 
-      {/* ── Mobile floating dock ── */}
+      {/* ── Mobile floating dock ──
+          Icon-only, equal-width cells. Labelling the active item used to widen
+          it and squeeze the rest into the remaining space, which got visibly
+          cramped once sign-out joined the row; the active cell is now marked by
+          its brand fill instead, and every destination keeps the same tap area. */}
       <nav className="tg-bottom-nav fixed bottom-0 left-0 right-0 px-3 pt-2 md:hidden z-50 pointer-events-none">
-        <div className="pointer-events-auto flex items-center justify-between gap-1 bg-navy-700 rounded-[1.5rem] p-2 shadow-card-lg">
+        <div className="pointer-events-auto flex items-stretch gap-1 bg-royal-900 rounded-[1.5rem] p-1.5 shadow-card-lg">
           {dockItems.map((item) => {
             const isActive = item.path === '/student/subjects'
               ? subjectsActive
@@ -165,18 +167,27 @@ export default function StudentLayout() {
                 key={item.name}
                 to={item.path}
                 aria-label={item.name}
+                aria-current={isActive ? 'page' : undefined}
                 className={cn(
-                  'flex items-center justify-center gap-1.5 rounded-2xl transition-all min-h-11',
+                  'flex-1 min-w-0 grid place-items-center rounded-2xl min-h-12 transition-colors',
                   isActive
-                    ? 'bg-aqua-500 text-white px-3.5 py-2.5 font-extrabold text-xs'
-                    : 'text-sky-200/60 px-3 py-2.5 active:bg-white/10'
+                    ? 'bg-royal-500 tg-on-brand shadow-pop'
+                    : 'text-white/55 active:bg-white/10'
                 )}
               >
                 <item.icon className="w-5 h-5 shrink-0" />
-                {isActive && <span className="whitespace-nowrap">{item.name}</span>}
               </Link>
             );
           })}
+          {/* The sidebar's account block is desktop-only, so sign-out needs its
+              own place in the dock or there's no way out on a phone. The rule
+              keeps it from reading as a sixth destination. */}
+          <span aria-hidden="true" className="w-px my-2.5 bg-white/15 shrink-0" />
+          <Link to="/login" onClick={() => localStorage.removeItem('user')}
+            aria-label="Sign out"
+            className="flex-1 min-w-0 grid place-items-center rounded-2xl min-h-12 text-white/55 active:bg-red-500 active:text-white transition-colors">
+            <LogOut className="w-5 h-5 shrink-0" />
+          </Link>
         </div>
       </nav>
     </div>

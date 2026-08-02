@@ -58,6 +58,15 @@
            active:translate-y-1 active:shadow-none;
   }
 
+  /* Foreground for anything filled with `bg-royal-500`. A school can pick any
+     brand colour from the register/settings picker, including a pale one, so
+     hard-coding white text there can leave it unreadable; applySchoolTheme
+     works out the readable colour and parks it in --tg-brand-on. Defaults to
+     white, which is correct for the stock TulongGuro blue. */
+  .tg-on-brand {
+    color: var(--tg-brand-on, #FFFFFF);
+  }
+
   /* ── Buttons ──
      Tailwind v4 cannot `@apply` another component class, so each variant
      repeats the shared base rather than extending `.tg-btn`. */

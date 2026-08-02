@@ -567,17 +567,32 @@ export default function ActivityBuilder() {
               <label className="block text-sm font-medium text-slate-700 mb-1">
                 Max Submission Attempts
               </label>
-              {/* Keep the raw string while typing. Coercing with `|| 1` on every
-                  keystroke made clearing the field snap back to 1, so the value
-                  could only ever be changed with the arrows. Clamped on blur. */}
-              <input type="number" min={1} max={10} value={form.maxAttempts}
-                onChange={e => setForm({ ...form, maxAttempts: e.target.value })}
-                onBlur={e => {
-                  const n = parseInt(e.target.value, 10);
-                  setForm(f => ({ ...f, maxAttempts: Number.isNaN(n) ? 1 : Math.min(10, Math.max(1, n)) }));
-                }}
-                className="w-full px-4 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-brand-navy outline-none" />
-              <p className="text-xs text-slate-400 mt-1">How many times a student can re-submit before the deadline (default: 1).</p>
+              {/* 0 means unlimited. Keep the raw string while typing — coercing
+                  with `|| 1` on every keystroke made clearing the field snap
+                  back to 1, so it could only be changed with the arrows. */}
+              <label className="flex items-center gap-2 mb-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={String(form.maxAttempts) === '0'}
+                  onChange={e => setForm({ ...form, maxAttempts: e.target.checked ? 0 : 1 })}
+                  className="w-4 h-4 accent-royal-500"
+                />
+                <span className="text-sm font-medium text-slate-700">Unlimited attempts</span>
+              </label>
+              {String(form.maxAttempts) !== '0' && (
+                <input type="number" min={1} value={form.maxAttempts}
+                  onChange={e => setForm({ ...form, maxAttempts: e.target.value })}
+                  onBlur={e => {
+                    const n = parseInt(e.target.value, 10);
+                    setForm(f => ({ ...f, maxAttempts: Number.isNaN(n) ? 1 : Math.max(1, n) }));
+                  }}
+                  className="w-full px-4 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-brand-navy outline-none" />
+              )}
+              <p className="text-xs text-slate-400 mt-1">
+                {String(form.maxAttempts) === '0'
+                  ? 'Students can re-submit as many times as they like, up to the deadline.'
+                  : 'How many times a student can re-submit before the deadline (default: 1).'}
+              </p>
             </div>
           )}
 

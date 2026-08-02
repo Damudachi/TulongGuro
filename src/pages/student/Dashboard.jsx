@@ -110,7 +110,7 @@ export default function StudentDashboard() {
               <div className="mt-10 flex flex-col gap-4">
                 <div className="flex justify-center gap-2 mb-2">
                   {WELCOME_STEPS.map((_, step) => (
-                    <div key={step} className={`h-2 rounded-full transition-all ${welcomeStep === step ? 'w-8 bg-aqua-500' : 'w-2 bg-cream-300'}`} />
+                    <div key={step} className={`h-2 rounded-full transition-all ${welcomeStep === step ? 'w-8 bg-royal-500' : 'w-2 bg-cream-300'}`} />
                   ))}
                 </div>
                 <div className="flex gap-3">
@@ -124,8 +124,8 @@ export default function StudentDashboard() {
                       if (welcomeStep < WELCOME_STEPS.length - 1) setWelcomeStep(s => s + 1);
                       else dismissWelcome();
                     }}
-                    className="flex-1 rounded-full py-3.5 font-bold text-sm text-white bg-aqua-600 shadow-pop
-                               hover:bg-aqua-700 active:translate-y-1 active:shadow-none transition-all"
+                    className="flex-1 rounded-full py-3.5 font-bold text-sm text-white bg-royal-600 shadow-pop
+                               hover:bg-royal-700 active:translate-y-1 active:shadow-none transition-all"
                   >
                     {welcomeStep < WELCOME_STEPS.length - 1 ? 'Next' : "Let's Go!"}
                   </button>
@@ -137,10 +137,12 @@ export default function StudentDashboard() {
       )}
 
       {/* ── Greeting ── */}
-      <div className="bg-aqua-600 text-white px-5 py-5 rounded-3xl mb-4">
+      {/* Brand-coloured, like the teacher greeting — it carries the SchoolBadge,
+          so it's the one surface that most needs to match the school's colour. */}
+      <div className="bg-royal-600 text-white px-5 py-5 rounded-3xl mb-4">
         <SchoolBadge tone="onColor" size="sm" className="mb-3.5 pb-3.5 border-b-2 border-white/20" />
         <h1 className="font-display text-2xl font-extrabold">Hello, {firstName}! 👋</h1>
-        <p className="text-aqua-100 text-sm font-semibold">{data?.student?.section?.name || 'Student'}</p>
+        <p className="text-royal-100 text-sm font-semibold">{data?.student?.section?.name || 'Student'}</p>
       </div>
 
       {/* ── Metrics ── */}
@@ -205,7 +207,7 @@ export default function StudentDashboard() {
                     <p className="text-[10px] font-semibold text-navy-400">
                       {dueDate.toLocaleDateString('en-PH', { month: 'short', day: 'numeric' })}
                     </p>
-                    <p className="text-[10px] font-extrabold text-aqua-600 mt-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                    <p className="text-[10px] font-extrabold text-royal-600 mt-1 opacity-0 group-hover:opacity-100 transition-opacity">
                       {item.submissionMode === 'STUDENT_SUBMIT' ? 'Submit Now →' : 'View Details →'}
                     </p>
                   </div>
@@ -273,9 +275,9 @@ export default function StudentDashboard() {
               return (
                 <Link to={`/student/output/${sub.id}`} key={sub.id}
                   className="flex justify-between items-center gap-3 bg-white p-4 rounded-3xl border-2 border-slate-200
-                             hover:border-aqua-400 hover:-translate-y-0.5 hover:shadow-card transition-all group">
+                             hover:border-royal-400 hover:-translate-y-0.5 hover:shadow-card transition-all group">
                   <div className="flex items-center gap-3 min-w-0">
-                    <div className="bg-aqua-100 p-2.5 rounded-2xl text-aqua-700 shrink-0"><BookOpen className="w-5 h-5" /></div>
+                    <div className="bg-royal-100 p-2.5 rounded-2xl text-royal-700 shrink-0"><BookOpen className="w-5 h-5" /></div>
                     <div className="min-w-0">
                       <h3 className="font-bold text-navy-700 text-sm truncate">{sub.activity?.title}</h3>
                       <p className="text-xs text-navy-500 truncate">
@@ -285,13 +287,13 @@ export default function StudentDashboard() {
                   </div>
                   <div className="flex items-center gap-2 shrink-0">
                     <span className={`font-extrabold px-3.5 py-1.5 rounded-full text-sm ${color}`}>{score}/{maxPoints}</span>
-                    <ChevronRight className="w-4 h-4 text-navy-300 group-hover:text-aqua-600" />
+                    <ChevronRight className="w-4 h-4 text-navy-300 group-hover:text-royal-600" />
                   </div>
                 </Link>
               );
             })}
             {submissions.length > 5 && (
-              <Link to="/student/subjects" className="block text-center text-sm font-extrabold text-aqua-600 hover:text-aqua-700 py-3">
+              <Link to="/student/subjects" className="block text-center text-sm font-extrabold text-royal-600 hover:text-royal-700 py-3">
                 View all in Subjects →
               </Link>
             )}
