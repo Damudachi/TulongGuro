@@ -2537,64 +2537,143 @@ app.get('/api/teacher/:teacherId/analytics', async (req, res) => {
 
     const allStudentIds = classes.flatMap(c => c.section?.students || []);
     const uniqueStudents = [...new Map(allStudentIds.map(s => [s.id, s])).values()];
-
-    // Get last 3 graded submissions per student
-    const warnings = [];
-    const studentTrends = [];
+    const classIds = classes.map(c => c.id);
     const SKILLS = ['vocabulary', 'punctuation', 'thematicFlow', 'sentenceStructure'];
 
+    // Every graded submission across these classes, fetched once rather than
+    // per student — the old version issued one query per student.
+    const graded = await prisma.submission.findMany({
+      where: { status: 'GRADED', activity: { classId: { in: classIds } } },
+      orderBy: { createdAt: 'asc' },
+      include: { activity: { select: { id: true, title: true, type: true, points: true, classId: true } } }
+    });
+
+    const byStudent = new Map();
+    for (const s of graded) {
+      if (!byStudent.has(s.studentId)) byStudent.set(s.studentId, []);
+      byStudent.get(s.studentId).push(s);
+    }
+
+    // ── Per-activity breakdown, in the activity's own points ──
+    const activityMap = new Map();
+    for (const s of graded) {
+      const a = s.activity;
+      if (!a) continue;
+      if (!activityMap.has(a.id)) {
+        activityMap.set(a.id, { id: a.id, title: a.title, type: a.type, points: a.points || 100, percents: [] });
+      }
+      activityMap.get(a.id).percents.push(s.hitlScore ?? s.aiScore ?? 0);
+    }
+    const activityBreakdown = [...activityMap.values()].map(a => {
+      const avgPercent = Math.round(a.percents.reduce((x, y) => x + y, 0) / a.percents.length);
+      return {
+        id: a.id, title: a.title, type: a.type,
+        points: a.points,
+        gradedCount: a.percents.length,
+        avgPercent,
+        // The number a teacher actually writes in a record book.
+        avgPoints: Math.round((avgPercent / 100) * a.points * 10) / 10,
+        lowest: Math.min(...a.percents),
+        highest: Math.max(...a.percents)
+      };
+    }).sort((a, b) => a.avgPercent - b.avgPercent);
+
+    // ── Per-student summary ──
+    const studentTrends = [];
+    const needsSupport = [];
+
     for (const student of uniqueStudents) {
-      const subs = await prisma.submission.findMany({
-        where: { studentId: student.id, status: 'GRADED', skillScores: { not: null } },
-        orderBy: { createdAt: 'desc' },
-        take: 3,
-        include: { activity: { select: { title: true } } }
+      const subs = byStudent.get(student.id) || [];
+      if (subs.length === 0) {
+        studentTrends.push({ student, gradedCount: 0, avgPercent: null, pointsEarned: 0, pointsPossible: 0, latest: null, skillScores: {}, history: [] });
+        continue;
+      }
+
+      const percents = subs.map(s => s.hitlScore ?? s.aiScore ?? 0);
+      const pointsEarned = subs.reduce((sum, s) => sum + ((s.hitlScore ?? s.aiScore ?? 0) / 100) * (s.activity?.points || 100), 0);
+      const pointsPossible = subs.reduce((sum, s) => sum + (s.activity?.points || 100), 0);
+      const avgPercent = Math.round(percents.reduce((a, b) => a + b, 0) / percents.length);
+
+      const skillHistory = subs
+        .filter(s => s.skillScores)
+        .map(s => { try { return JSON.parse(s.skillScores); } catch { return null; } })
+        .filter(Boolean);
+      const latestSkills = skillHistory[skillHistory.length - 1] || {};
+
+      const last = subs[subs.length - 1];
+      const latestPercent = last.hitlScore ?? last.aiScore ?? 0;
+
+      studentTrends.push({
+        student,
+        gradedCount: subs.length,
+        avgPercent,
+        pointsEarned: Math.round(pointsEarned),
+        pointsPossible,
+        latest: {
+          activityTitle: last.activity?.title || '',
+          percent: latestPercent,
+          points: Math.round((latestPercent / 100) * (last.activity?.points || 100) * 10) / 10,
+          totalPoints: last.activity?.points || 100
+        },
+        skillScores: latestSkills,
+        history: percents.slice(-5)
       });
 
-      if (subs.length < 2) continue;
-
-      const skillHistory = subs.reverse().map(s => {
-        try { return JSON.parse(s.skillScores); } catch { return null; }
-      }).filter(Boolean);
-
-      const studentWarnings = [];
+      // ── Who could use a hand? Stated as encouragement, not alarm. ──
+      const reasons = [];
+      if (avgPercent < 75) {
+        reasons.push({ kind: 'average', label: `Averaging ${avgPercent}% so far`, detail: 'A short check-in could help.' });
+      }
+      if (percents.length >= 3) {
+        const recent = percents.slice(-3);
+        if (recent[2] < recent[1] && recent[1] < recent[0]) {
+          reasons.push({
+            kind: 'trend',
+            label: `Scores easing down (${recent.join('% → ')}%)`,
+            detail: 'Three activities in a row have dipped.'
+          });
+        }
+      }
       for (const skill of SKILLS) {
-        const scores = skillHistory.map(h => h[skill] || 0);
-        // Check for 2 consecutive drops
-        if (scores.length >= 2) {
-          const allDropping = scores.slice(1).every((v, i) => v < scores[i]);
-          if (allDropping) {
-            studentWarnings.push({
-              skill,
-              trend: scores,
-              severity: scores[0] - scores[scores.length - 1] > 5 ? 'HIGH' : 'MEDIUM'
-            });
+        const vals = skillHistory.map(h => h[skill]).filter(v => typeof v === 'number' && v > 0);
+        if (vals.length >= 3) {
+          const recent = vals.slice(-3);
+          if (recent[2] < recent[1] && recent[1] < recent[0]) {
+            reasons.push({ kind: 'skill', skill, label: `${skill} slipping`, trend: recent });
           }
         }
       }
-
-      const latestSub = subs[subs.length - 1];
-      const latestScores = skillHistory[skillHistory.length - 1] || {};
-      studentTrends.push({
-        student,
-        latestScore: latestSub?.hitlScore || latestSub?.aiScore || 0,
-        skillScores: latestScores,
-        history: skillHistory
-      });
-
-      if (studentWarnings.length > 0) {
-        warnings.push({ student, warnings: studentWarnings });
-      }
+      if (reasons.length) needsSupport.push({ student, avgPercent, reasons });
     }
 
-    // Class-wide averages per skill
+    // Lowest averages first — that's who to look at.
+    needsSupport.sort((a, b) => (a.avgPercent ?? 100) - (b.avgPercent ?? 100));
+    studentTrends.sort((a, b) => (b.avgPercent ?? -1) - (a.avgPercent ?? -1));
+
+    // ── Class-level headline numbers ──
+    const scored = studentTrends.filter(s => s.avgPercent !== null);
+    const classAverage = scored.length
+      ? Math.round(scored.reduce((sum, s) => sum + s.avgPercent, 0) / scored.length)
+      : null;
+    const totalEarned = studentTrends.reduce((sum, s) => sum + s.pointsEarned, 0);
+    const totalPossible = studentTrends.reduce((sum, s) => sum + s.pointsPossible, 0);
+
     const classAvgSkills = {};
     SKILLS.forEach(skill => {
       const vals = studentTrends.map(st => st.skillScores?.[skill] || 0).filter(v => v > 0);
       classAvgSkills[skill] = vals.length ? Math.round(vals.reduce((a, b) => a + b, 0) / vals.length) : 0;
     });
 
-    // Get sections for the section picker
+    // How the class is spread, for an at-a-glance bar.
+    const bands = { excellent: 0, good: 0, fair: 0, needsWork: 0, notGraded: 0 };
+    studentTrends.forEach(s => {
+      if (s.avgPercent === null) bands.notGraded++;
+      else if (s.avgPercent >= 90) bands.excellent++;
+      else if (s.avgPercent >= 80) bands.good++;
+      else if (s.avgPercent >= 75) bands.fair++;
+      else bands.needsWork++;
+    });
+
     const allSections = classes.reduce((acc, c) => {
       if (c.section && !acc.find(s => s.id === c.section.id)) {
         acc.push({ id: c.section.id, name: c.section.name, studentCount: c.section.students?.length || 0 });
@@ -2602,7 +2681,22 @@ app.get('/api/teacher/:teacherId/analytics', async (req, res) => {
       return acc;
     }, []);
 
-    res.json({ success: true, warnings, studentTrends, classAvgSkills, warningCount: warnings.length, sections: allSections });
+    res.json({
+      success: true,
+      summary: {
+        studentCount: uniqueStudents.length,
+        gradedCount: graded.length,
+        classAverage,
+        pointsEarned: Math.round(totalEarned),
+        pointsPossible: totalPossible,
+        bands
+      },
+      activityBreakdown,
+      studentTrends,
+      needsSupport,
+      classAvgSkills,
+      sections: allSections
+    });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
   }
@@ -3495,28 +3589,35 @@ app.get('/api/student/:studentId/analytics', async (req, res) => {
       orderBy: { createdAt: 'asc' }
     });
 
-    // Topic mastery: group by activity topic, compute avg percentage
+    // Topic mastery: group by activity topic.
+    //
+    // hitlScore/aiScore are stored as PERCENTAGES (0-100) — the rubric criteria
+    // always sum to 100. Points earned is therefore percent × activity.points.
+    // The old code divided the percentage by the point total, which produced
+    // nonsense like 142% for 85% on a 60-point activity.
     const topicMap = {};
     for (const sub of submissions) {
       const topic = sub.activity?.topic || sub.activity?.title;
       if (!topic) continue;
-      if (!topicMap[topic]) topicMap[topic] = { scores: [], points: [] };
-      topicMap[topic].scores.push(sub.hitlScore ?? sub.aiScore ?? 0);
-      topicMap[topic].points.push(sub.activity?.points || 100);
+      if (!topicMap[topic]) topicMap[topic] = { percents: [], earned: 0, possible: 0 };
+      const percent = sub.hitlScore ?? sub.aiScore ?? 0;
+      const points = sub.activity?.points || 100;
+      topicMap[topic].percents.push(percent);
+      topicMap[topic].earned += (percent / 100) * points;
+      topicMap[topic].possible += points;
     }
 
     const topicMastery = Object.entries(topicMap).map(([topicId, data]) => {
-      const avgScore = data.scores.reduce((a, b) => a + b, 0) / data.scores.length;
-      const avgPoints = data.points.reduce((a, b) => a + b, 0) / data.points.length;
-      const avgPercentage = Math.round((avgScore / avgPoints) * 100);
+      const avgPercentage = Math.round(data.percents.reduce((a, b) => a + b, 0) / data.percents.length);
       const topicInfo = getTopicById(topicId);
       return {
         topicId,
         topicName: topicInfo?.name || topicId,
         term: topicInfo?.term || null,
-        avgScore: Math.round(avgScore),
         avgPercentage,
-        count: data.scores.length
+        pointsEarned: Math.round(data.earned),
+        pointsPossible: data.possible,
+        count: data.percents.length
       };
     }).sort((a, b) => (b.avgPercentage - a.avgPercentage));
 

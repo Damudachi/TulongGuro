@@ -521,8 +521,8 @@ export default function ActivityBuilder() {
           )}
 
           <div>
-            <label className="block text-sm font-medium text-slate-700 mb-1">DepEd Topic (Optional)</label>
-            <select value={form.topic} onChange={e => {
+            <label className="block text-sm font-medium text-slate-700 mb-1">DepEd Topic *</label>
+            <select required value={form.topic} onChange={e => {
                 const topicId = e.target.value;
                 setForm({ ...form, topic: topicId });
                 if (topicId) {
@@ -539,7 +539,7 @@ export default function ActivityBuilder() {
                 }
               }}
               className="w-full px-4 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-brand-navy outline-none">
-              <option value="">— Select a topic (optional) —</option>
+              <option value="">— Select a topic —</option>
               {[1, 2, 3].map(term => {
                 const termTopics = topics.filter(t => t.term === term);
                 return termTopics.length > 0 ? (
@@ -567,7 +567,15 @@ export default function ActivityBuilder() {
               <label className="block text-sm font-medium text-slate-700 mb-1">
                 Max Submission Attempts
               </label>
-              <input type="number" min={1} max={10} value={form.maxAttempts} onChange={e => setForm({ ...form, maxAttempts: parseInt(e.target.value) || 1 })}
+              {/* Keep the raw string while typing. Coercing with `|| 1` on every
+                  keystroke made clearing the field snap back to 1, so the value
+                  could only ever be changed with the arrows. Clamped on blur. */}
+              <input type="number" min={1} max={10} value={form.maxAttempts}
+                onChange={e => setForm({ ...form, maxAttempts: e.target.value })}
+                onBlur={e => {
+                  const n = parseInt(e.target.value, 10);
+                  setForm(f => ({ ...f, maxAttempts: Number.isNaN(n) ? 1 : Math.min(10, Math.max(1, n)) }));
+                }}
                 className="w-full px-4 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-brand-navy outline-none" />
               <p className="text-xs text-slate-400 mt-1">How many times a student can re-submit before the deadline (default: 1).</p>
             </div>

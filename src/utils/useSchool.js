@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { API_URL } from '../config';
+import { applySchoolTheme } from './schoolTheme';
 
 /**
  * Resolves the logged-in user's school. Teachers and admins carry it directly;
@@ -18,6 +19,10 @@ export default function useSchool() {
       return null;
     }
   });
+
+  // Paint the school's brand colour as soon as we know it — on the cached
+  // value first so there's no flash of default blue, then again after refresh.
+  useEffect(() => { applySchoolTheme(school?.brandColor); }, [school?.brandColor]);
 
   useEffect(() => {
     const user = JSON.parse(localStorage.getItem('user') || '{}');

@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { ArrowLeft, Camera, UploadCloud, FileText, CheckCircle2, Clock, Loader2, ChevronRight, AlertTriangle, ShieldCheck, BookOpen, Calendar, Award, RefreshCw, Eye } from 'lucide-react';
 import { API_URL } from '../../config';
+import { resolveUploadUrl } from '../../utils/uploads';
 import ImageRedactor from '../../components/ImageRedactor';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
@@ -364,7 +365,7 @@ export default function SubmitWork() {
               </div>
               {sub.imageUrl && (
                 <div className="rounded-2xl overflow-hidden border-2 border-cream-200 bg-cream-50">
-                  <img src={`${API_URL}${sub.imageUrl}`} alt="Your submitted work" className="w-full object-contain max-h-[600px]" />
+                  <img src={resolveUploadUrl(sub.imageUrl)} alt="Your submitted work" className="w-full object-contain max-h-[600px]" />
                 </div>
               )}
             </div>

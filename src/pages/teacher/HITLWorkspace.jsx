@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useMemo } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { ArrowLeft, Check, Edit2, Info, Sparkles, X, Send, Bot, Loader2, CheckCircle2, ChevronDown, Plus, Trash2, AlertTriangle } from 'lucide-react';
 import { API_URL } from '../../config';
+import { resolveUploadUrl } from '../../utils/uploads';
 import { ONBOARDING, hasSeenOnboarding, markOnboardingSeen } from '../../utils/onboarding';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
@@ -467,7 +468,7 @@ export default function HITLWorkspace() {
         </button>
         <div className="flex-1 bg-slate-200 rounded-xl border border-slate-300 overflow-hidden relative min-h-[300px]">
           {submission?.imageUrl ? (
-            <img src={submission.imageUrl?.startsWith('http') ? submission.imageUrl : `${API_URL}${submission.imageUrl}`} alt="Essay" className="w-full h-full object-contain" />
+            <img src={resolveUploadUrl(submission.imageUrl)} alt="Essay" className="w-full h-full object-contain" />
           ) : (
             <div className="absolute inset-0 flex flex-col items-center justify-center text-slate-400 gap-2">
               <div className="w-16 h-20 border-2 border-dashed border-slate-300 rounded-lg flex items-center justify-center">

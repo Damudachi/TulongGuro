@@ -7,9 +7,23 @@
 // same name — that re-themes the raw `bg-blue-50`/`text-slate-400` utilities
 // already spread across the pages without touching each file.
 
-const royal = {  // Base — primary brand blue
-  50: '#EEF3FC', 100: '#D9E4F7', 200: '#B7CCEF', 300: '#8DADE4', 400: '#5C88D6',
-  500: '#2B59C3', 600: '#2449A6', 700: '#1E3F91', 800: '#173272', 900: '#0A2463',
+// Base — primary brand blue.
+//
+// Each step reads a CSS variable with the default TulongGuro blue as fallback,
+// so a school that picks a brand colour at registration re-themes every
+// `royal-*` utility at runtime (see applySchoolTheme in utils/schoolTheme.js)
+// without a rebuild. Schools that skip branding get these defaults.
+const royal = {
+  50:  'var(--tg-brand-50, #EEF3FC)',
+  100: 'var(--tg-brand-100, #D9E4F7)',
+  200: 'var(--tg-brand-200, #B7CCEF)',
+  300: 'var(--tg-brand-300, #8DADE4)',
+  400: 'var(--tg-brand-400, #5C88D6)',
+  500: 'var(--tg-brand-500, #2B59C3)',
+  600: 'var(--tg-brand-600, #2449A6)',
+  700: 'var(--tg-brand-700, #1E3F91)',
+  800: 'var(--tg-brand-800, #173272)',
+  900: 'var(--tg-brand-900, #0A2463)',
 };
 
 const navy = {   // Base — deep navy for headings and admin chrome

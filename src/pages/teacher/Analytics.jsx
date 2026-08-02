@@ -1,63 +1,118 @@
 import { useState, useEffect } from 'react';
-import { AlertTriangle, TrendingDown, BarChart2, Users, ChevronDown, ChevronUp, Loader2, ShieldAlert, ArrowLeft, FileText, ChevronRight } from 'lucide-react';
+import {
+  BarChart2, Users, Loader2, ArrowLeft, FileText, ChevronRight, Sparkles,
+  LifeBuoy, Trophy, Target, TrendingUp, TrendingDown, Minus, ClipboardList,
+} from 'lucide-react';
 import { API_URL } from '../../config';
 import SkillProgressChart from '../../components/SkillProgressChart';
 
-const SKILL_LABELS = { vocabulary: 'Vocabulary', punctuation: 'Punctuation', thematicFlow: 'Thematic Flow', sentenceStructure: 'Sentence Structure' };
-const SEVERITY_CONFIG = {
-  HIGH: { bg: 'bg-red-50', border: 'border-red-300', text: 'text-red-700', badge: 'bg-red-100 text-red-700', icon: '🔴' },
-  MEDIUM: { bg: 'bg-amber-50', border: 'border-amber-300', text: 'text-amber-700', badge: 'bg-amber-100 text-amber-700', icon: '🟡' }
+function cn(...cls) { return cls.filter(Boolean).join(' '); }
+
+const SKILL_LABELS = {
+  vocabulary: 'Vocabulary',
+  punctuation: 'Punctuation',
+  thematicFlow: 'Ideas & Flow',
+  sentenceStructure: 'Sentence Structure',
 };
 
-function SparkTrend({ values }) {
+/**
+ * Plain-language bands. Scores are percentages throughout — an activity's
+ * rubric criteria always total 100 — and points are derived per activity.
+ */
+const BANDS = [
+  { min: 90, label: 'Excellent', chip: 'bg-lime-100 text-lime-800', dot: 'bg-lime-500', emoji: '🌟' },
+  { min: 80, label: 'Doing well', chip: 'bg-aqua-100 text-aqua-800', dot: 'bg-aqua-500', emoji: '👍' },
+  { min: 75, label: 'Getting there', chip: 'bg-sun-100 text-sun-800', dot: 'bg-sun-500', emoji: '🌱' },
+  { min: 0, label: 'Needs a boost', chip: 'bg-magenta-100 text-magenta-800', dot: 'bg-magenta-500', emoji: '💪' },
+];
+
+const bandFor = (pct) => (pct === null || pct === undefined ? null : BANDS.find(b => pct >= b.min));
+
+/** Points a score is worth on a given activity. Scores are stored as percentages. */
+const toPoints = (percent, totalPoints) =>
+  Math.round((percent / 100) * (totalPoints || 100) * 10) / 10;
+
+function TrendArrow({ history }) {
+  if (!history || history.length < 2) return <Minus className="w-4 h-4 text-slate-300" />;
+  const delta = history[history.length - 1] - history[history.length - 2];
+  if (delta > 2) return <TrendingUp className="w-4 h-4 text-lime-600" />;
+  if (delta < -2) return <TrendingDown className="w-4 h-4 text-magenta-500" />;
+  return <Minus className="w-4 h-4 text-slate-300" />;
+}
+
+function Spark({ values }) {
   if (!values || values.length < 2) return null;
-  const max = Math.max(...values, 1);
-  const w = 60; const h = 28;
-  const pts = values.map((v, i) => `${(i / (values.length - 1)) * w},${h - (v / max) * h}`).join(' ');
-  const dropping = values[values.length - 1] < values[0];
+  const w = 64, h = 24;
+  const min = Math.min(...values, 0), max = Math.max(...values, 100);
+  const y = (v) => h - ((v - min) / (max - min || 1)) * h;
+  const pts = values.map((v, i) => `${(i / (values.length - 1)) * w},${y(v)}`).join(' ');
+  const rising = values[values.length - 1] >= values[0];
+  const stroke = rising ? '#AAC029' : '#EE2F80';
   return (
-    <svg width={w} height={h} className="inline-block">
-      <polyline points={pts} fill="none" stroke={dropping ? '#ef4444' : '#22c55e'} strokeWidth="2" strokeLinejoin="round" />
-      {values.map((v, i) => (
-        <circle key={i} cx={(i / (values.length - 1)) * w} cy={h - (v / max) * h} r="2.5"
-          fill={dropping ? '#ef4444' : '#22c55e'} />
-      ))}
+    <svg width={w} height={h} className="shrink-0 hidden sm:block" aria-hidden="true">
+      <polyline points={pts} fill="none" stroke={stroke} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+      <circle cx={w} cy={y(values[values.length - 1])} r="2.5" fill={stroke} />
     </svg>
   );
 }
 
+/** Horizontal bar showing how the class is spread across the bands. */
+function ClassSpread({ bands, total }) {
+  const segs = [
+    { n: bands.excellent, ...BANDS[0] },
+    { n: bands.good, ...BANDS[1] },
+    { n: bands.fair, ...BANDS[2] },
+    { n: bands.needsWork, ...BANDS[3] },
+  ].filter(s => s.n > 0);
+  if (!segs.length) return <p className="text-sm text-slate-400">No graded work yet.</p>;
+  const scored = segs.reduce((n, s) => n + s.n, 0);
+  return (
+    <div>
+      <div className="flex h-3 rounded-full overflow-hidden bg-slate-100">
+        {segs.map(s => (
+          <div key={s.label} className={s.dot} style={{ width: `${(s.n / scored) * 100}%` }}
+            title={`${s.label}: ${s.n} student(s)`} />
+        ))}
+      </div>
+      <div className="flex flex-wrap gap-x-4 gap-y-1 mt-2">
+        {segs.map(s => (
+          <span key={s.label} className="text-[11px] font-semibold text-slate-500 flex items-center gap-1.5">
+            <span className={cn('w-2 h-2 rounded-full', s.dot)} /> {s.label} · {s.n}
+          </span>
+        ))}
+        {bands.notGraded > 0 && (
+          <span className="text-[11px] font-semibold text-slate-400 flex items-center gap-1.5">
+            <span className="w-2 h-2 rounded-full bg-slate-200" /> Nothing graded yet · {bands.notGraded}
+          </span>
+        )}
+      </div>
+      <p className="sr-only">{scored} of {total} students have graded work.</p>
+    </div>
+  );
+}
+
 export default function Analytics() {
-  const user = JSON.parse(localStorage.getItem('user') || '{}');
   const [data, setData] = useState(null);
   const [sectionsList, setSectionsList] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
-  const [expanded, setExpanded] = useState({});
   const [selectedSectionId, setSelectedSectionId] = useState(null);
   const [showSelector, setShowSelector] = useState(true);
   const [selectedStudent, setSelectedStudent] = useState(null);
   const [studentData, setStudentData] = useState(null);
   const [loadingStudent, setLoadingStudent] = useState(false);
 
-  // Load sections list on mount and initial analytics only after a selection
   useEffect(() => {
     const user = JSON.parse(localStorage.getItem('user') || '{}');
     if (!user.id) return setIsLoading(false);
-
-    // fetch available sections for the teacher
     fetch(`${API_URL}/api/teacher/${user.id}/sections`)
       .then(r => r.json())
-      .then(d => {
-        if (d.success) setSectionsList(d.sections || []);
-      })
+      .then(d => { if (d.success) setSectionsList(d.sections || []); })
       .catch(() => {})
-      .finally(() => {
-        // keep loading false here; analytics fetch will show its own loader
-        setIsLoading(false);
-      });
+      .finally(() => setIsLoading(false));
   }, []);
 
-  // Fetch analytics whenever a section is selected (or All). Always load overall metrics
   useEffect(() => {
+    if (showSelector) return;
     const user = JSON.parse(localStorage.getItem('user') || '{}');
     if (!user.id) return;
     setIsLoading(true);
@@ -65,9 +120,9 @@ export default function Analytics() {
       ? `${API_URL}/api/teacher/${user.id}/analytics?sectionId=${selectedSectionId}`
       : `${API_URL}/api/teacher/${user.id}/analytics`;
     fetch(url).then(r => r.json())
-      .then(d => { if (d.success) setData(d); else setData(null); })
+      .then(d => setData(d.success ? d : null))
       .finally(() => setIsLoading(false));
-  }, [selectedSectionId]);
+  }, [selectedSectionId, showSelector]);
 
   const loadStudentDetail = (student) => {
     setSelectedStudent(student);
@@ -78,99 +133,109 @@ export default function Analytics() {
       .finally(() => setLoadingStudent(false));
   };
 
-  const toggleExpand = (id) => setExpanded(prev => ({ ...prev, [id]: !prev[id] }));
-
   if (isLoading) return (
     <div className="flex items-center justify-center h-64 text-slate-400">
-      <Loader2 className="w-6 h-6 animate-spin mr-2" /> Loading analytics...
+      <Loader2 className="w-6 h-6 animate-spin mr-2" /> Loading class insights...
     </div>
   );
 
-  // If there's no analytics data yet, show the section selector first (if enabled).
-  if (!data && !showSelector) return (
-    <div className="p-8 text-center text-slate-500">
-      <BarChart2 className="w-10 h-10 mx-auto mb-3 text-slate-300" />
-      <p>No analytics data available yet. Grade more submissions to see trends.</p>
-    </div>
-  );
+  const {
+    summary = {}, activityBreakdown = [], studentTrends = [],
+    needsSupport = [], classAvgSkills = {}, sections = [],
+  } = data || {};
 
-  const { warnings = [], studentTrends = [], warningCount = 0, sections = [] } = data || {};
-
-  // Student Detail View
+  // ── One student's detail ──
   if (selectedStudent) {
     return (
-      <div className="p-4 md:p-8 max-w-5xl mx-auto space-y-6">
+      <div className="p-4 md:p-8 max-w-5xl mx-auto space-y-6 pb-24">
         <button onClick={() => { setSelectedStudent(null); setStudentData(null); }}
-          className="flex items-center gap-2 text-sm font-medium text-brand-navy hover:text-blue-900">
-          <ArrowLeft className="w-4 h-4" /> Back to Analytics
+          className="flex items-center gap-2 text-sm font-bold text-royal-600 hover:text-royal-700">
+          <ArrowLeft className="w-4 h-4" /> Back to class insights
         </button>
 
-        <div className="bg-white border border-slate-200 rounded-xl p-6">
-          <div className="flex items-center gap-4 mb-4">
-            <div className="w-14 h-14 rounded-full bg-brand-navy/10 text-brand-navy flex items-center justify-center font-bold text-xl">
+        <div className="bg-white border-2 border-navy-700/10 rounded-3xl p-6 shadow-pop">
+          <div className="flex items-center gap-4 mb-5">
+            <div className="w-14 h-14 rounded-2xl bg-royal-100 text-royal-700 grid place-items-center font-extrabold text-xl shrink-0">
               {selectedStudent.name.charAt(0)}
             </div>
-            <div>
-              <h1 className="text-xl font-bold text-brand-slate">{selectedStudent.name}</h1>
+            <div className="min-w-0">
+              <h1 className="text-xl font-extrabold text-navy-800 truncate">{selectedStudent.name}</h1>
               <p className="text-sm text-slate-500">{selectedStudent.username}</p>
             </div>
           </div>
 
           {loadingStudent ? (
             <div className="flex items-center justify-center py-12 text-slate-400">
-              <Loader2 className="w-5 h-5 animate-spin mr-2" /> Loading student data...
+              <Loader2 className="w-5 h-5 animate-spin mr-2" /> Loading...
             </div>
           ) : studentData ? (
             <div className="space-y-6">
-              {/* Summary */}
-              <div className="grid grid-cols-3 gap-4">
-                <div className="bg-blue-50 rounded-xl p-4 text-center">
-                  <p className="text-2xl font-extrabold text-brand-navy">{studentData.avgScore}</p>
-                  <p className="text-xs text-slate-500">Avg Score</p>
-                </div>
-                <div className="bg-slate-50 rounded-xl p-4 text-center">
-                  <p className="text-2xl font-extrabold text-brand-slate">{studentData.totalSubmissions}</p>
-                  <p className="text-xs text-slate-500">Submissions</p>
-                </div>
-                <div className="bg-green-50 rounded-xl p-4 text-center">
-                  <p className="text-2xl font-extrabold text-green-600">
-                    {studentData.submissions.filter(s => s.status === 'GRADED').length}
-                  </p>
-                  <p className="text-xs text-slate-500">Graded</p>
-                </div>
-              </div>
+              {(() => {
+                const graded = studentData.submissions.filter(s => s.status === 'GRADED');
+                const earned = graded.reduce((sum, s) => sum + toPoints(s.hitlScore ?? s.aiScore ?? 0, s.points), 0);
+                const possible = graded.reduce((sum, s) => sum + (s.points || 100), 0);
+                const band = bandFor(studentData.avgScore);
+                return (
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    <div className="bg-royal-50 rounded-2xl p-4">
+                      <p className="text-[11px] font-bold uppercase tracking-wider text-royal-600 mb-1">Average</p>
+                      <p className="text-3xl font-extrabold text-royal-700">{studentData.avgScore}%</p>
+                      {band && <span className={cn('inline-block mt-1.5 text-[11px] font-bold px-2 py-0.5 rounded-full', band.chip)}>{band.emoji} {band.label}</span>}
+                    </div>
+                    <div className="bg-aqua-50 rounded-2xl p-4">
+                      <p className="text-[11px] font-bold uppercase tracking-wider text-aqua-700 mb-1">Points earned</p>
+                      <p className="text-3xl font-extrabold text-aqua-700">{Math.round(earned)}<span className="text-lg text-aqua-400">/{possible}</span></p>
+                      <p className="text-[11px] text-slate-500 mt-1.5">Across all graded work</p>
+                    </div>
+                    <div className="bg-sun-50 rounded-2xl p-4">
+                      <p className="text-[11px] font-bold uppercase tracking-wider text-sun-700 mb-1">Graded</p>
+                      <p className="text-3xl font-extrabold text-sun-700">{graded.length}<span className="text-lg text-sun-400">/{studentData.totalSubmissions}</span></p>
+                      <p className="text-[11px] text-slate-500 mt-1.5">Activities returned</p>
+                    </div>
+                  </div>
+                );
+              })()}
 
-              {/* Skill Progress */}
               <SkillProgressChart
                 studentId={selectedStudent.id}
-                title="Skill Progress"
-                emptyMessage="This student needs more graded activities before a skill progress trend can be shown."
+                title="How their writing skills are growing"
+                emptyMessage="A couple more graded activities and a skills trend will appear here."
               />
 
-              {/* Paper Works */}
               <div>
-                <h3 className="text-sm font-bold text-brand-slate mb-3">Paper Works</h3>
+                <h3 className="text-sm font-extrabold text-navy-700 mb-3 flex items-center gap-2">
+                  <ClipboardList className="w-4 h-4 text-slate-400" /> Every activity
+                </h3>
                 <div className="space-y-2">
                   {studentData.submissions.length === 0 ? (
-                    <p className="text-sm text-slate-400 py-4 text-center">No submissions yet.</p>
+                    <p className="text-sm text-slate-400 py-4 text-center">Nothing submitted yet.</p>
                   ) : studentData.submissions.map(sub => {
-                    const score = sub.hitlScore ?? sub.aiScore;
-                    const pct = score !== null && sub.points ? (score / sub.points) * 100 : null;
-                    const scoreColor = pct === null ? 'text-slate-400' : pct >= 80 ? 'text-green-600' : pct >= 65 ? 'text-amber-600' : 'text-red-600';
+                    const percent = sub.hitlScore ?? sub.aiScore;
+                    const isGraded = sub.status === 'GRADED' && percent !== null;
+                    const band = isGraded ? bandFor(percent) : null;
                     return (
-                      <div key={sub.id} className="flex items-center gap-3 p-3 bg-slate-50 rounded-lg">
-                        <div className="w-10 h-10 bg-white border border-slate-200 rounded-lg flex items-center justify-center shrink-0">
+                      <div key={sub.id} className="flex items-center gap-3 p-3 bg-slate-50 rounded-2xl">
+                        <div className="w-10 h-10 bg-white border border-slate-200 rounded-xl grid place-items-center shrink-0">
                           <FileText className="w-5 h-5 text-slate-400" />
                         </div>
                         <div className="flex-1 min-w-0">
-                          <p className="text-sm font-medium text-brand-slate truncate">{sub.activityTitle}</p>
-                          <p className="text-[11px] text-slate-400">{sub.className} • {sub.activityType} • {new Date(sub.createdAt).toLocaleDateString()}</p>
+                          <p className="text-sm font-bold text-navy-800 truncate">{sub.activityTitle}</p>
+                          <p className="text-[11px] text-slate-400">
+                            {sub.className} · {sub.activityType} · {new Date(sub.createdAt).toLocaleDateString('en-PH', { month: 'short', day: 'numeric' })}
+                          </p>
                         </div>
                         <div className="text-right shrink-0">
-                          <p className={`text-sm font-bold ${scoreColor}`}>
-                            {score !== null ? `${score}/${sub.points}` : '—'}
-                          </p>
-                          <p className="text-[10px] text-slate-400">{sub.status}</p>
+                          {isGraded ? (
+                            <>
+                              {/* Points first — that's what goes in the record book */}
+                              <p className="text-sm font-extrabold text-navy-800">
+                                {toPoints(percent, sub.points)}<span className="text-slate-400">/{sub.points}</span>
+                              </p>
+                              <span className={cn('text-[10px] font-bold px-1.5 py-0.5 rounded-full', band.chip)}>{percent}%</span>
+                            </>
+                          ) : (
+                            <p className="text-[11px] font-semibold text-sun-700 bg-sun-100 px-2 py-1 rounded-full">Not graded yet</p>
+                          )}
                         </div>
                       </div>
                     );
@@ -184,181 +249,248 @@ export default function Analytics() {
     );
   }
 
+  // ── Section chooser ──
+  if (showSelector) {
+    const list = sectionsList.length ? sectionsList : sections;
+    return (
+      <div className="p-4 md:p-8 max-w-4xl mx-auto pb-24">
+        <div className="mb-6">
+          <h1 className="text-2xl font-extrabold text-navy-800 flex items-center gap-2">
+            <BarChart2 className="w-6 h-6 text-royal-500" /> Class Insights
+          </h1>
+          <p className="text-slate-500 text-sm mt-1">See how each section is doing and who could use a hand.</p>
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <button onClick={() => { setSelectedSectionId(null); setShowSelector(false); }}
+            className="bg-white border-2 border-navy-700/10 rounded-3xl p-5 text-left hover:border-royal-400 shadow-pop transition-colors">
+            <Users className="w-6 h-6 text-royal-500 mb-2" />
+            <p className="font-extrabold text-navy-800">All my sections</p>
+            <p className="text-xs text-slate-500 mt-0.5">Everything at once</p>
+          </button>
+          {list.map(s => (
+            <button key={s.id} onClick={() => { setSelectedSectionId(s.id); setShowSelector(false); }}
+              className="bg-white border-2 border-navy-700/10 rounded-3xl p-5 text-left hover:border-royal-400 shadow-pop transition-colors">
+              <Users className="w-6 h-6 text-aqua-500 mb-2" />
+              <p className="font-extrabold text-navy-800">{s.name}</p>
+              <p className="text-xs text-slate-500 mt-0.5">
+                {s._count?.students ?? s.studentCount ?? 0} students
+              </p>
+            </button>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  const hasData = summary.gradedCount > 0;
+  const classBand = bandFor(summary.classAverage);
+
   return (
-    <div className="p-4 md:p-8 max-w-6xl mx-auto space-y-8">
-      <div className="flex items-start justify-between">
-        <div className="flex items-center gap-4">
-          {!showSelector && (
-            <button aria-label="Back to section chooser" onClick={() => { setShowSelector(true); setSelectedSectionId(null); }}
-              className="w-10 h-10 rounded-full bg-white border border-slate-200 text-brand-navy flex items-center justify-center shadow-sm hover:bg-brand-navy/5">
-              <ArrowLeft className="w-4 h-4" />
-            </button>
-          )}
-          <div>
-            <h1 className="text-2xl font-bold text-brand-slate">Predictive Analytics</h1>
-            <p className="text-slate-500 text-sm mt-1">Early warning system — tracks skill trends across submissions</p>
-          </div>
-        </div>
-      </div>
-
-      {/* Initial Section Choices Panel */}
-      {showSelector && (
-        <div className="bg-white border border-slate-200 rounded-xl p-6">
-          <h2 className="text-lg font-bold text-brand-slate mb-2">Choose a Section</h2>
-          <p className="text-sm text-slate-500 mb-4">Select which section's analytics you want to view.</p>
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-            <button onClick={() => { setSelectedSectionId(null); setShowSelector(false); }}
-              className="text-left p-4 rounded-lg border border-slate-200 hover:border-brand-navy transition-colors bg-white">
-              <div className="font-bold">All Sections</div>
-              <div className="text-xs text-slate-400">View analytics across all sections</div>
-            </button>
-            {sectionsList.map(sec => (
-              <button key={sec.id} onClick={() => { setSelectedSectionId(sec.id); setShowSelector(false); }}
-                className="text-left p-4 rounded-lg border border-slate-200 hover:border-brand-navy transition-colors bg-white">
-                <div className="font-bold">{sec.name}</div>
-                <div className="text-xs text-slate-400">{sec._count?.students ?? sec.studentCount ?? 0} students</div>
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Section filtering removed — section choices handled by the chooser above */}
-
-      {/* Summary Cards */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        {[
-          { label: 'Students Tracked', value: studentTrends.length, icon: Users, color: 'text-brand-navy bg-blue-50' },
-          { label: 'Active Warnings', value: warningCount, icon: AlertTriangle, color: warningCount > 0 ? 'text-red-600 bg-red-50' : 'text-green-600 bg-green-50' },
-          { label: 'High Severity', value: warnings.filter(w => w.warnings.some(x => x.severity === 'HIGH')).length, icon: ShieldAlert, color: 'text-red-700 bg-red-50' },
-          { label: 'Skills Monitored', value: 4, icon: BarChart2, color: 'text-purple-600 bg-purple-50' },
-        ].map(card => (
-          <div key={card.label} className="bg-white border border-slate-200 rounded-xl p-4 flex flex-col gap-2">
-            <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${card.color}`}>
-              <card.icon className="w-5 h-5" />
-            </div>
-            <div>
-              <p className="text-2xl font-extrabold text-brand-slate">{card.value}</p>
-              <p className="text-xs text-slate-500">{card.label}</p>
-            </div>
-          </div>
-        ))}
-      </div>
-
-      {/* Warning Cards (only for a specific section) */}
-      {selectedSectionId && warnings.length > 0 && (
+    <div className="p-4 md:p-8 max-w-6xl mx-auto space-y-6 pb-24">
+      <div className="flex items-start gap-4">
+        <button aria-label="Back to section chooser"
+          onClick={() => { setShowSelector(true); setSelectedSectionId(null); }}
+          className="w-10 h-10 rounded-2xl bg-white border-2 border-navy-700/10 text-royal-600 grid place-items-center shadow-pop shrink-0">
+          <ArrowLeft className="w-4 h-4" />
+        </button>
         <div>
-          <h2 className="text-base font-bold text-brand-slate mb-3 flex items-center gap-2">
-            <AlertTriangle className="w-5 h-5 text-red-500" /> Students Needing Intervention
-          </h2>
-          <div className="space-y-3">
-            {warnings.map(({ student, warnings: studentWarns }) => {
-              const topSeverity = studentWarns.some(w => w.severity === 'HIGH') ? 'HIGH' : 'MEDIUM';
-              const cfg = SEVERITY_CONFIG[topSeverity];
-              const isOpen = expanded[student.id];
-              return (
-                <div key={student.id} className={`rounded-xl border-2 ${cfg.border} ${cfg.bg} overflow-hidden`}>
-                  <button className="w-full p-4 flex items-center justify-between text-left" onClick={() => toggleExpand(student.id)}>
-                    <div className="flex items-center gap-3">
-                      <div className="w-10 h-10 rounded-full bg-white border-2 border-slate-200 flex items-center justify-center font-bold text-brand-slate text-sm">
-                        {student.name.charAt(0)}
-                      </div>
-                      <div>
-                        <p className="font-bold text-brand-slate">{student.name}</p>
-                        <p className="text-xs text-slate-500">{student.username} • {studentWarns.length} skill{studentWarns.length > 1 ? 's' : ''} dropping</p>
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <span className={`text-xs font-bold px-2 py-1 rounded-full ${cfg.badge}`}>{cfg.icon} {topSeverity}</span>
-                      {isOpen ? <ChevronUp className="w-4 h-4 text-slate-500" /> : <ChevronDown className="w-4 h-4 text-slate-500" />}
-                    </div>
-                  </button>
-                  {isOpen && (
-                    <div className="px-4 pb-4 space-y-3 border-t border-slate-200 pt-3">
-                      {studentWarns.map(warn => (
-                        <div key={warn.skill} className={`p-3 rounded-lg border ${SEVERITY_CONFIG[warn.severity].border} bg-white`}>
-                          <div className="flex items-center justify-between mb-2">
-                            <div className="flex items-center gap-2">
-                              <TrendingDown className="w-4 h-4 text-red-500" />
-                              <span className="font-bold text-sm text-brand-slate">{SKILL_LABELS[warn.skill]}</span>
-                            </div>
-                            <SparkTrend values={warn.trend} />
-                          </div>
-                          <div className="flex items-center gap-2 text-xs text-slate-600">
-                            Scores: {warn.trend.join(' → ')} out of 25
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
+          <h1 className="text-2xl font-extrabold text-navy-800">Class Insights</h1>
+          <p className="text-slate-500 text-sm mt-1">
+            How your students are doing, and where a little help would go furthest.
+          </p>
         </div>
-      )}
+      </div>
 
-      {/* Section Skill Progress (line graph) — only for a specific section */}
-      {selectedSectionId && (
-        <SkillProgressChart
-          dataUrl={`${API_URL}/api/teacher/${user.id}/section/${selectedSectionId}/skill-progress`}
-          title="Section Skill Progress"
-          emptyMessage="This section needs more graded activities before a skill progress trend can be shown."
-        />
-      )}
+      {!hasData ? (
+        <div className="text-center py-16 border-2 border-dashed border-slate-200 rounded-3xl text-slate-400">
+          <Sparkles className="w-12 h-12 mx-auto mb-3 opacity-40" />
+          <p className="font-bold text-slate-500">Nothing to show just yet</p>
+          <p className="text-sm mt-1">Grade a few activities and this page will fill up with insights.</p>
+        </div>
+      ) : (
+        <>
+          {/* ── Headline numbers ── */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div className="bg-white border-2 border-navy-700/10 rounded-3xl p-5 shadow-pop">
+              <p className="text-[11px] font-bold uppercase tracking-wider text-slate-400 mb-1">Class average</p>
+              <div className="flex items-baseline gap-2 flex-wrap">
+                <p className="text-4xl font-extrabold text-navy-800">{summary.classAverage}%</p>
+                {classBand && (
+                  <span className={cn('text-[11px] font-bold px-2 py-0.5 rounded-full', classBand.chip)}>
+                    {classBand.emoji} {classBand.label}
+                  </span>
+                )}
+              </div>
+              <p className="text-xs text-slate-500 mt-2">
+                {summary.pointsEarned} of {summary.pointsPossible} points earned overall
+              </p>
+            </div>
 
-      {/* Student List — Clickable (only for a specific section) */}
-      {selectedSectionId && studentTrends.length > 0 && (
-        <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
-          <div className="p-4 border-b border-slate-100">
-            <h2 className="text-base font-bold text-brand-slate">Students</h2>
-            <p className="text-xs text-slate-500">Click a student to view their detailed analytics and paper works</p>
+            <div className="bg-white border-2 border-navy-700/10 rounded-3xl p-5 shadow-pop">
+              <p className="text-[11px] font-bold uppercase tracking-wider text-slate-400 mb-1">Work graded</p>
+              <p className="text-4xl font-extrabold text-navy-800">{summary.gradedCount}</p>
+              <p className="text-xs text-slate-500 mt-2">across {summary.studentCount} student{summary.studentCount === 1 ? '' : 's'}</p>
+            </div>
+
+            <div className="bg-white border-2 border-navy-700/10 rounded-3xl p-5 shadow-pop">
+              <p className="text-[11px] font-bold uppercase tracking-wider text-slate-400 mb-2">How the class is spread</p>
+              <ClassSpread bands={summary.bands || {}} total={summary.studentCount} />
+            </div>
           </div>
-          <div className="divide-y divide-slate-100">
-            {studentTrends.map(({ student, skillScores, latestScore }) => {
-              const hasWarning = warnings.some(w => w.student.id === student.id);
-              return (
-                <button key={student.id} onClick={() => loadStudentDetail(student)}
-                  className={`w-full p-4 flex items-center justify-between text-left hover:bg-blue-50/50 transition-colors ${hasWarning ? 'bg-red-50/30' : ''}`}>
-                  <div className="flex items-center gap-3">
-                    {hasWarning && <AlertTriangle className="w-4 h-4 text-red-500 shrink-0" />}
-                    <div className="w-9 h-9 rounded-full bg-blue-100 text-brand-navy flex items-center justify-center font-bold text-sm shrink-0">
+
+          {/* ── Who could use a hand ── */}
+          <div className="bg-white border-2 border-navy-700/10 rounded-3xl p-5 shadow-pop">
+            <h2 className="text-sm font-extrabold text-navy-700 flex items-center gap-2 mb-1">
+              <LifeBuoy className="w-4 h-4 text-aqua-600" /> Who could use a hand
+            </h2>
+            <p className="text-xs text-slate-500 mb-4">Suggestions only — you know your class best.</p>
+            {needsSupport.length === 0 ? (
+              <div className="text-center py-8">
+                <Trophy className="w-10 h-10 mx-auto mb-2 text-lime-500" />
+                <p className="font-bold text-navy-700">Everyone&apos;s tracking well 🎉</p>
+                <p className="text-sm text-slate-500 mt-0.5">No one is falling behind right now.</p>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {needsSupport.map(({ student, reasons }) => (
+                  <button key={student.id} onClick={() => loadStudentDetail(student)}
+                    className="w-full text-left flex items-start gap-3 p-3 rounded-2xl bg-aqua-50/60 border border-aqua-200 hover:border-aqua-400 transition-colors">
+                    <div className="w-9 h-9 rounded-xl bg-white text-aqua-700 grid place-items-center font-extrabold text-sm shrink-0">
                       {student.name.charAt(0)}
                     </div>
-                    <div>
-                      <p className="font-semibold text-brand-slate text-sm">{student.name}</p>
-                      <p className="text-[11px] text-slate-400">{student.username}</p>
+                    <div className="flex-1 min-w-0">
+                      <p className="font-bold text-navy-800 text-sm">{student.name}</p>
+                      <ul className="mt-1 space-y-0.5">
+                        {reasons.map((r, i) => (
+                          <li key={i} className="text-xs text-slate-600 flex items-start gap-1.5">
+                            <Target className="w-3 h-3 text-aqua-600 mt-0.5 shrink-0" />
+                            <span>
+                              {r.kind === 'skill'
+                                ? `${SKILL_LABELS[r.skill] || r.skill} has been easing down`
+                                : r.label}
+                              {r.detail && <span className="text-slate-400"> — {r.detail}</span>}
+                            </span>
+                          </li>
+                        ))}
+                      </ul>
                     </div>
-                  </div>
-                  <div className="flex items-center gap-4">
-                    <div className="hidden sm:flex gap-2">
-                      {Object.keys(SKILL_LABELS).map(skill => {
-                        const val = skillScores?.[skill] || 0;
-                        const pct = (val / 25) * 100;
-                        const cell = pct >= 70 ? 'bg-green-100 text-green-800' : pct >= 50 ? 'bg-amber-100 text-amber-800' : 'bg-red-100 text-red-800';
-                        return (
-                          <span key={skill} className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${cell}`}>{val}</span>
-                        );
-                      })}
-                    </div>
-                    <span className={`text-sm font-bold ${latestScore >= 80 ? 'text-green-600' : latestScore >= 65 ? 'text-amber-600' : 'text-red-600'}`}>
-                      {latestScore}
-                    </span>
-                    <ChevronRight className="w-4 h-4 text-slate-300" />
-                  </div>
-                </button>
-              );
-            })}
+                    <ChevronRight className="w-4 h-4 text-aqua-400 shrink-0 mt-1" />
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
-        </div>
-      )}
 
-      {studentTrends.length === 0 && warnings.length === 0 && (
-        <div className="text-center py-12 text-slate-400">
-          <BarChart2 className="w-12 h-12 mx-auto mb-3 text-slate-200" />
-          <p className="font-medium">Not enough data yet</p>
-          <p className="text-sm">Students need at least 2 graded submissions with skill scores to appear here.</p>
-        </div>
+          {/* ── Per-activity, in that activity's own points ── */}
+          {activityBreakdown.length > 0 && (
+            <div className="bg-white border-2 border-navy-700/10 rounded-3xl p-5 shadow-pop">
+              <h2 className="text-sm font-extrabold text-navy-700 flex items-center gap-2 mb-1">
+                <ClipboardList className="w-4 h-4 text-royal-500" /> How each activity went
+              </h2>
+              <p className="text-xs text-slate-500 mb-4">Hardest first. Points are out of each activity&apos;s own total.</p>
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm min-w-[520px]">
+                  <thead>
+                    <tr className="text-slate-400 border-b border-slate-100">
+                      <th className="text-left font-bold py-2">Activity</th>
+                      <th className="text-center font-bold py-2 w-28">Class average</th>
+                      <th className="text-center font-bold py-2 w-24">Range</th>
+                      <th className="text-center font-bold py-2 w-20">Graded</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {activityBreakdown.map(a => {
+                      const band = bandFor(a.avgPercent);
+                      return (
+                        <tr key={a.id} className="border-b border-slate-50 last:border-0">
+                          <td className="py-3">
+                            <p className="font-bold text-navy-800">{a.title}</p>
+                            <p className="text-[11px] text-slate-400">{a.type} · {a.points} pts</p>
+                          </td>
+                          <td className="py-3 text-center">
+                            <p className="font-extrabold text-navy-800">
+                              {a.avgPoints}<span className="text-slate-400">/{a.points}</span>
+                            </p>
+                            <span className={cn('text-[10px] font-bold px-1.5 py-0.5 rounded-full', band.chip)}>
+                              {a.avgPercent}%
+                            </span>
+                          </td>
+                          <td className="py-3 text-center text-xs text-slate-500">{a.lowest}%–{a.highest}%</td>
+                          <td className="py-3 text-center text-xs font-semibold text-slate-500">{a.gradedCount}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          {/* ── Writing skills across the class ── */}
+          {Object.values(classAvgSkills).some(v => v > 0) && (
+            <div className="bg-white border-2 border-navy-700/10 rounded-3xl p-5 shadow-pop">
+              <h2 className="text-sm font-extrabold text-navy-700 flex items-center gap-2 mb-4">
+                <Sparkles className="w-4 h-4 text-lilac-500" /> Writing skills across the class
+              </h2>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                {Object.entries(SKILL_LABELS).map(([key, label]) => {
+                  const v = classAvgSkills[key] || 0;
+                  return (
+                    <div key={key}>
+                      <div className="flex justify-between items-baseline mb-1">
+                        <span className="text-xs font-bold text-slate-600">{label}</span>
+                        <span className="text-xs font-extrabold text-navy-800">{v}<span className="text-slate-400">/25</span></span>
+                      </div>
+                      <div className="h-2 bg-slate-100 rounded-full overflow-hidden">
+                        <div className="h-full bg-lilac-400 rounded-full transition-all"
+                          style={{ width: `${Math.min(100, (v / 25) * 100)}%` }} />
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+              <p className="text-[11px] text-slate-400 mt-3">Each skill is scored out of 25 by the AI when it reads a submission.</p>
+            </div>
+          )}
+
+          {/* ── Every student ── */}
+          <div className="bg-white border-2 border-navy-700/10 rounded-3xl p-5 shadow-pop">
+            <h2 className="text-sm font-extrabold text-navy-700 flex items-center gap-2 mb-4">
+              <Users className="w-4 h-4 text-slate-400" /> Every student
+            </h2>
+            <div className="space-y-2">
+              {studentTrends.map(st => {
+                const band = bandFor(st.avgPercent);
+                return (
+                  <button key={st.student.id} onClick={() => loadStudentDetail(st.student)}
+                    className="w-full text-left flex items-center gap-3 p-3 rounded-2xl hover:bg-slate-50 transition-colors">
+                    <div className="w-9 h-9 rounded-xl bg-royal-100 text-royal-700 grid place-items-center font-extrabold text-sm shrink-0">
+                      {st.student.name.charAt(0)}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="font-bold text-navy-800 text-sm truncate">{st.student.name}</p>
+                      <p className="text-[11px] text-slate-400 truncate">
+                        {st.gradedCount === 0
+                          ? 'No graded work yet'
+                          : `${st.pointsEarned}/${st.pointsPossible} pts · ${st.gradedCount} activit${st.gradedCount === 1 ? 'y' : 'ies'}`}
+                      </p>
+                    </div>
+                    <Spark values={st.history} />
+                    <TrendArrow history={st.history} />
+                    {st.avgPercent === null ? (
+                      <span className="text-xs font-semibold text-slate-300 w-24 text-center shrink-0">—</span>
+                    ) : (
+                      <span className={cn('text-[11px] font-bold px-2 py-1 rounded-full shrink-0 w-24 text-center', band.chip)}>
+                        {st.avgPercent}% {band.emoji}
+                      </span>
+                    )}
+                    <ChevronRight className="w-4 h-4 text-slate-300 shrink-0" />
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </>
       )}
     </div>
   );

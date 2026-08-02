@@ -2,6 +2,7 @@ import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { Users, BookOpen, ClipboardList, LogOut } from 'lucide-react';
 import { useEffect } from 'react';
 import SchoolBadge from '../components/SchoolBadge';
+import useSchool from '../utils/useSchool';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
 
@@ -12,6 +13,8 @@ const NAV = [
 ];
 
 export default function AdminLayout() {
+  // Paints the school's brand colour across every page in this role.
+  useSchool();
   const location = useLocation();
   const navigate = useNavigate();
   const user = JSON.parse(localStorage.getItem('user') || '{}');
@@ -105,6 +108,13 @@ export default function AdminLayout() {
               </Link>
             );
           })}
+          {/* The sidebar's account block is desktop-only, so sign-out needs its
+              own place in the dock or there's no way out on a phone. */}
+          <Link to="/login" onClick={() => localStorage.removeItem('user')}
+            aria-label="Sign out"
+            className="flex items-center justify-center rounded-2xl min-h-11 px-4 py-2.5 text-sky-200/60 active:bg-red-500 active:text-white transition-colors">
+            <LogOut className="w-5 h-5 shrink-0" />
+          </Link>
         </div>
       </nav>
     </div>

@@ -3,6 +3,7 @@ import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { ArrowLeft, UploadCloud, X, Loader2, Wifi, WifiOff, ShieldCheck, Info, FileText, Camera, Sparkles, Plus } from 'lucide-react';
 import { getQueue, buildJob, enqueue, flushQueue } from '../../utils/offlineQueue';
 import { API_URL } from '../../config';
+import { resolveUploadUrl } from '../../utils/uploads';
 import ImageRedactor from '../../components/ImageRedactor';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
@@ -345,7 +346,7 @@ export default function BatchUpload() {
                       </>
                     ) : sub?.imageUrl ? (
                       <img
-                        src={sub.imageUrl.startsWith('http') ? sub.imageUrl : `${API_URL}${sub.imageUrl}`}
+                        src={resolveUploadUrl(sub.imageUrl)}
                         alt="submission"
                         className="w-full h-full object-cover"
                       />

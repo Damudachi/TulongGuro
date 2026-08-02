@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Link } from 'react-router-dom';
-import { Users, Plus, Loader2, Trash2, KeyRound, X, Copy, Check, GraduationCap, BookOpen, ClipboardList, ChevronRight } from 'lucide-react';
+import { Users, Plus, Loader2, Trash2, KeyRound, X, Copy, Check, GraduationCap, BookOpen, ClipboardList, ChevronRight, Search } from 'lucide-react';
 import { API_URL } from '../../config';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
@@ -22,6 +22,7 @@ export default function AdminTeachers() {
   const [createdCredentials, setCreatedCredentials] = useState(null);
   const [copied, setCopied] = useState(false);
   const [busyTeacherId, setBusyTeacherId] = useState(null);
+  const [teacherQuery, setTeacherQuery] = useState('');
 
   const load = useCallback(() => {
     if (!admin.id) return setIsLoading(false);
@@ -106,8 +107,15 @@ export default function AdminTeachers() {
     return <div className="flex items-center justify-center h-64 text-slate-400"><Loader2 className="w-6 h-6 animate-spin mr-2" />Loading school...</div>;
   }
 
-  const teachers = data?.teachers || [];
+  const allTeachers = data?.teachers || [];
   const sections = data?.sections || [];
+
+  // Name/email search — a school with many staff is unusable without it.
+  const q = teacherQuery.trim().toLowerCase();
+  const teachers = q
+    ? allTeachers.filter(t =>
+        t.name.toLowerCase().includes(q) || (t.email || '').toLowerCase().includes(q))
+    : allTeachers;
 
   // Sections are segmented by grade level across the whole school.
   const sectionsByGrade = sections.reduce((acc, s) => {
@@ -133,7 +141,7 @@ export default function AdminTeachers() {
       {/* Summary tiles */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
         {[
-          { label: 'Teachers', value: teachers.length, icon: Users },
+          { label: 'Teachers', value: allTeachers.length, icon: Users },
           { label: 'Sections', value: sections.length, icon: GraduationCap },
           { label: 'Curriculums', value: (data?.curriculums || []).length, icon: BookOpen },
           { label: 'School Rubrics', value: data?.rubricCount || 0, icon: ClipboardList },
@@ -173,12 +181,39 @@ export default function AdminTeachers() {
       )}
 
       {/* Teacher list */}
-      <h2 className="text-sm font-bold text-slate-400 uppercase tracking-wider mb-3">Teachers</h2>
-      {teachers.length === 0 ? (
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-3">
+        <h2 className="text-sm font-bold text-slate-400 uppercase tracking-wider">Teachers</h2>
+        {allTeachers.length > 0 && (
+          <div className="relative sm:w-72">
+            <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+            <input
+              type="search"
+              value={teacherQuery}
+              onChange={e => setTeacherQuery(e.target.value)}
+              placeholder="Search by name or email..."
+              aria-label="Search teachers"
+              className="w-full pl-9 pr-9 py-2 border border-slate-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-brand-navy bg-white"
+            />
+            {teacherQuery && (
+              <button type="button" onClick={() => setTeacherQuery('')} aria-label="Clear search"
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600">
+                <X className="w-4 h-4" />
+              </button>
+            )}
+          </div>
+        )}
+      </div>
+      {allTeachers.length === 0 ? (
         <div className="text-center py-14 border-2 border-dashed border-slate-200 rounded-2xl text-slate-400 mb-8">
           <Users className="w-10 h-10 mx-auto mb-2 opacity-30" />
           <p className="font-medium">No teacher accounts yet</p>
           <p className="text-sm mt-1">Add one to get your school started.</p>
+        </div>
+      ) : teachers.length === 0 ? (
+        <div className="text-center py-14 border-2 border-dashed border-slate-200 rounded-2xl text-slate-400 mb-8">
+          <Search className="w-10 h-10 mx-auto mb-2 opacity-30" />
+          <p className="font-medium">No teacher matches &ldquo;{teacherQuery}&rdquo;</p>
+          <p className="text-sm mt-1">Try a different name or email.</p>
         </div>
       ) : (
         <div className="space-y-3 mb-8">

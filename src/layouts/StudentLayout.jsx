@@ -1,4 +1,5 @@
 import { Link, Outlet, useLocation } from 'react-router-dom';
+import useSchool from '../utils/useSchool';
 import { Home, Star, User, LogOut, Settings, Book, ChevronDown, BookOpen } from 'lucide-react';
 import { clsx } from 'clsx';
 import { twMerge } from 'tailwind-merge';
@@ -9,6 +10,8 @@ function cn(...inputs) {
 }
 
 export default function StudentLayout() {
+  // Paints the school's brand colour across every page in this role.
+  useSchool();
   const location = useLocation();
   const [expandedSubjects, setExpandedSubjects] = useState(location.pathname.startsWith('/student/subjects'));
   const user = JSON.parse(localStorage.getItem('user') || '{}');
@@ -33,9 +36,36 @@ export default function StudentLayout() {
 
   const subjectsActive = location.pathname.startsWith('/student/subjects');
 
+  const renderNavLink = (item) => {
+    const isActive = location.pathname.startsWith(item.path);
+    return (
+      <Link
+        key={item.name}
+        to={item.path}
+        className={cn(
+          'flex items-center gap-3 px-3 py-3 rounded-2xl text-sm font-bold transition-all',
+          isActive
+            ? 'bg-aqua-500 text-white shadow-pop'
+            : 'text-sky-200/70 hover:bg-white/10 hover:text-white'
+        )}
+      >
+        <span className={cn('w-8 h-8 rounded-xl grid place-items-center shrink-0',
+          isActive ? 'bg-white/20' : 'bg-white/5')}>
+          <item.icon className="w-4 h-4" />
+        </span>
+        {item.name}
+      </Link>
+    );
+  };
+
   // Mobile dock: the active item expands to show its label, the rest stay as
   // icons. Keeps five destinations on a narrow phone without crowding.
-  const dockItems = [...navItems, { name: 'Subjects', path: '/student/subjects', icon: Book }];
+  // Subjects sits second — it's the day-to-day destination after Home.
+  const dockItems = [
+    navItems[0],
+    { name: 'Subjects', path: '/student/subjects', icon: Book },
+    ...navItems.slice(1),
+  ];
 
   return (
     <div className="min-h-screen bg-cream-100 flex flex-col pb-24 md:pb-0 md:flex-row">
@@ -52,29 +82,9 @@ export default function StudentLayout() {
         </Link>
 
         <div className="flex-1 px-3 space-y-1 overflow-y-auto">
-          {navItems.map((item) => {
-            const isActive = location.pathname.startsWith(item.path);
-            return (
-              <Link
-                key={item.name}
-                to={item.path}
-                className={cn(
-                  'flex items-center gap-3 px-3 py-3 rounded-2xl text-sm font-bold transition-all',
-                  isActive
-                    ? 'bg-aqua-500 text-white shadow-pop'
-                    : 'text-sky-200/70 hover:bg-white/10 hover:text-white'
-                )}
-              >
-                <span className={cn('w-8 h-8 rounded-xl grid place-items-center shrink-0',
-                  isActive ? 'bg-white/20' : 'bg-white/5')}>
-                  <item.icon className="w-4 h-4" />
-                </span>
-                {item.name}
-              </Link>
-            );
-          })}
+          {renderNavLink(navItems[0])}
 
-          {/* Subjects with nested items */}
+          {/* Subjects sits second — it's where students spend most of their time */}
           <div>
             <button
               onClick={() => setExpandedSubjects(!expandedSubjects)}
@@ -114,6 +124,8 @@ export default function StudentLayout() {
               </div>
             )}
           </div>
+
+          {navItems.slice(1).map(renderNavLink)}
         </div>
 
         {/* Account block */}

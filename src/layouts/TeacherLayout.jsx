@@ -1,4 +1,5 @@
 import { Link, Outlet, useLocation } from 'react-router-dom';
+import useSchool from '../utils/useSchool';
 import { Home, Users, Settings, LogOut, BarChart2, TrendingUp, AlertTriangle, ClipboardList, BookOpen } from 'lucide-react';
 import { clsx } from 'clsx';
 import { twMerge } from 'tailwind-merge';
@@ -11,6 +12,8 @@ function cn(...inputs) {
 }
 
 export default function TeacherLayout() {
+  // Paints the school's brand colour across every page in this role.
+  useSchool();
   const location = useLocation();
   const [warningCount, setWarningCount] = useState(0);
   const [queueCount, setQueueCount] = useState(0);
