@@ -1,9 +1,8 @@
 import { useState, useEffect } from 'react';
-import { useParams, Link, useNavigate } from 'react-router-dom';
-import { Users, Download } from 'lucide-react';
+import { useParams, useNavigate } from 'react-router-dom';
+import { Users, Download, Loader2, BookOpen } from 'lucide-react';
 import { API_URL } from '../../config';
-
-function cn(...cls) { return cls.filter(Boolean).join(' '); }
+import PageHeader from '../../components/PageHeader';
 
 export default function GradebookSection() {
   const { sectionId } = useParams();
@@ -19,6 +18,7 @@ export default function GradebookSection() {
   }, [sectionId]);
 
   const classes = (teacherClasses || []).filter(c => c.sectionId === sectionId);
+  const sectionName = classes[0]?.section?.name;
 
   const handleExport = async (classId, e) => {
     e.stopPropagation();
@@ -45,49 +45,66 @@ export default function GradebookSection() {
     }
   };
 
-  return (
-    <div className="p-6 max-w-6xl mx-auto">
-      <div className="mb-4 flex items-center justify-between">
-        <button onClick={() => navigate('/teacher/gradebook')} className="text-sm text-slate-600 hover:underline">← Back to Sections</button>
-        <h2 className="text-lg font-bold">Subject Classes</h2>
-      </div>
-
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-        {classes.length === 0 && (
-          <div className="text-center text-slate-400 py-6">No classes found for this section.</div>
-        )}
-
-        {classes.map(cls => (
-          <div key={cls.id} className="block bg-white border border-slate-200 rounded-xl p-6 hover:shadow-md transition-shadow relative overflow-hidden">
-            <h3 className="font-bold text-lg text-brand-slate mb-2">{cls.name}</h3>
-            <p className="text-xs text-slate-500 mb-4">{cls.schoolYear} • {cls.section?.name}</p>
-            <div className="flex items-center justify-between">
-              <div className="text-sm text-slate-600 flex items-center gap-1">
-                <Users className="w-4 h-4 text-slate-400" />
-                <span className="font-semibold text-brand-slate">
-                  {cls.section?._count?.students ?? (cls.section?.students || []).length ?? 0}
-                </span>
-                Students
-              </div>
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={(e) => handleExport(cls.id, e)}
-                  disabled={exportingClassId === cls.id}
-                  className="text-xs bg-brand-green hover:bg-emerald-600 text-white px-3 py-2 rounded-lg flex items-center gap-1 disabled:opacity-50 font-medium transition-colors"
-                >
-                  {exportingClassId === cls.id ? (
-                    <span className="animate-spin w-3 h-3 border-2 border-white border-t-transparent rounded-full" />
-                  ) : (
-                    <Download className="w-3.5 h-3.5" />
-                  )}
-                  Excel
-                </button>
-                <button onClick={() => navigate(`/teacher/gradebook/class/${cls.id}`)} className="text-sm bg-brand-navy text-white px-3 py-2 rounded-lg">View Grades</button>
-              </div>
-            </div>
-          </div>
-        ))}
-      </div>
+  if (isLoading) return (
+    <div className="flex items-center justify-center h-64 text-navy-400 font-bold">
+      <Loader2 className="w-6 h-6 animate-spin mr-2" /> Loading...
     </div>
+  );
+
+  return (
+    <>
+      <PageHeader
+        title="Subject Classes"
+        subtitle={sectionName ? `Section ${sectionName}` : undefined}
+        back="/teacher/gradebook"
+      />
+
+      <div className="tg-page pt-4 md:pt-0">
+        {classes.length === 0 ? (
+          <div className="text-center py-16 border-2 border-dashed border-cream-300 rounded-3xl">
+            <BookOpen className="w-10 h-10 mx-auto mb-3 text-navy-300" />
+            <p className="font-bold text-navy-600">No classes found for this section</p>
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+            {classes.map(cls => (
+              <div key={cls.id} className="tg-card p-5 flex flex-col">
+                <h3 className="font-display font-extrabold text-lg text-navy-700 truncate">{cls.name}</h3>
+                <p className="text-xs text-navy-500 font-semibold mt-0.5 mb-4">
+                  {cls.schoolYear} • {cls.section?.name}
+                </p>
+
+                <div className="flex items-center gap-1.5 text-sm text-navy-600 mb-4">
+                  <Users className="w-4 h-4 text-navy-400" />
+                  <span className="font-extrabold text-navy-700">
+                    {cls.section?._count?.students ?? (cls.section?.students || []).length ?? 0}
+                  </span>
+                  Students
+                </div>
+
+                <div className="flex items-center gap-2 mt-auto">
+                  <button
+                    onClick={() => navigate(`/teacher/gradebook/class/${cls.id}`)}
+                    className="tg-btn-primary !py-2.5 !px-4 text-xs flex-1"
+                  >
+                    View Grades
+                  </button>
+                  <button
+                    onClick={(e) => handleExport(cls.id, e)}
+                    disabled={exportingClassId === cls.id}
+                    className="tg-btn-ghost !py-2.5 !px-4 text-xs"
+                  >
+                    {exportingClassId === cls.id
+                      ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      : <Download className="w-3.5 h-3.5" />}
+                    Excel
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </>
   );
 }

@@ -5,6 +5,8 @@ import { API_URL } from '../../config';
 import { ONBOARDING, hasSeenOnboarding, markOnboardingSeen, markAllOnboardingSeen } from '../../utils/onboarding';
 import { GRADE_LEVELS, SUBJECTS, SCHOOL_YEARS, DEFAULT_SCHOOL_YEAR } from '../../constants/school';
 import SchoolBadge from '../../components/SchoolBadge';
+import FolderCard from '../../components/FolderCard';
+import { tintFor } from '../../constants/folderTints';
 
 const WIZARD_STEPS = ['Class', 'Section', 'Curriculum', 'Confirm'];
 
@@ -658,50 +660,87 @@ export default function TeacherDashboard() {
       {classes.length === 0 && !isLoading ? (
         <WizardEmptyState onComplete={() => window.location.reload()} sections={sections} />
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-          {filteredClasses.map((cls) => {
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
+          {filteredClasses.map((cls, idx) => {
             const isDemo = cls.name.includes('[DEMO]');
+            // Demo classes keep a fixed sun tint so they stay recognisable
+            // wherever they land in the stack.
+            const tint = isDemo ? { fill: 'bg-sun-200', chip: 'bg-sun-100/70' } : tintFor(idx);
+            const activityCount = cls._count?.activities || 0;
+
             return (
-            <Link key={cls.id} to={`/teacher/class/${cls.id}`}
-              className={`block rounded-xl p-6 hover:shadow-md transition-shadow relative overflow-hidden group ${isDemo ? 'bg-amber-50 border-2 border-amber-300 ring-2 ring-amber-200/50' : 'bg-white border border-slate-200'}`}>
-              <div className={`absolute top-0 left-0 w-1 h-full ${isDemo ? 'bg-amber-500 group-hover:w-2' : 'bg-brand-navy group-hover:w-2'} transition-all`} />
-              {isDemo && (
-                <span className="absolute top-3 right-3 bg-amber-500 text-white text-[10px] font-extrabold px-2.5 py-1 rounded-full animate-pulse">🧪 Try Me!</span>
-              )}
-              <div className="mb-2">
+              <FolderCard
+                key={cls.id}
+                as={Link}
+                to={`/teacher/class/${cls.id}`}
+                fill={tint.fill}
+                bodyClassName={`flex flex-col ${isDemo ? 'ring-2 ring-sun-500' : ''}`}
+              >
+                {/* Meta row — counts up top, mirroring the folder-tab reference */}
+                <div className="flex items-start justify-between gap-3 mb-4">
+                  <span className="text-[11px] font-extrabold text-navy-700/60">
+                    {activityCount > 0 ? `${activityCount} activities` : 'No activities'}
+                  </span>
+                  {isDemo && (
+                    <span className="bg-sun-600 text-white text-[10px] font-extrabold px-2.5 py-1 rounded-full shrink-0">
+                      🧪 Try Me!
+                    </span>
+                  )}
+                </div>
+
+                <div className="flex items-end justify-between gap-4">
+                  <div className="min-w-0">
+                    <h3 className="font-display text-xl font-extrabold text-navy-800 leading-tight">
+                      {cls.name}
+                    </h3>
+                    <p className="text-xs font-semibold text-navy-700/60 mt-1 truncate">
+                      {cls.schoolYear} • {cls.section?.name}
+                    </p>
+                  </div>
+
+                  <div className="text-center shrink-0">
+                    <p className="font-display text-2xl font-extrabold text-navy-800 leading-none">
+                      {String(cls.section?._count?.students || 0).padStart(2, '0')}
+                    </p>
+                    <p className="text-[10px] font-extrabold text-navy-700/60 mt-1">Students</p>
+                  </div>
+                </div>
+
                 {(cls.gradeLevel || cls.subject) && (
-                  <div className="flex gap-2 mb-2 flex-wrap">
-                    {cls.gradeLevel && <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-blue-50 text-blue-600 border border-blue-100">{cls.gradeLevel}</span>}
-                    {cls.subject && <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-50 text-amber-600 border border-amber-100">{cls.subject}</span>}
+                  <div className="flex gap-1.5 mt-4 flex-wrap">
+                    {cls.gradeLevel && (
+                      <span className={`text-[10px] font-extrabold px-2.5 py-1 rounded-full text-navy-700 ${tint.chip}`}>
+                        {cls.gradeLevel}
+                      </span>
+                    )}
+                    {cls.subject && (
+                      <span className={`text-[10px] font-extrabold px-2.5 py-1 rounded-full text-navy-700 ${tint.chip}`}>
+                        {cls.subject}
+                      </span>
+                    )}
                   </div>
                 )}
-                <h3 className="font-bold text-lg text-brand-slate">{cls.name}</h3>
-                <span className="text-xs text-slate-500">{cls.schoolYear} • {cls.section?.name}</span>
-              </div>
-              <div className="flex items-center justify-between mt-4 pt-4 border-t border-slate-100">
-                <div className="text-sm text-slate-600 flex items-center gap-1">
-                  <Users className="w-4 h-4 text-slate-400" />
-                  <span className="font-semibold text-brand-slate">{cls.section?._count?.students || 0}</span> Students
-                </div>
-                {cls._count?.activities > 0 ? (
-                  <span className="bg-amber-100 text-brand-amber text-xs font-bold px-2 py-1 rounded-full">
-                    {cls._count.activities} activities
-                  </span>
-                ) : (
-                  <span className="bg-slate-100 text-slate-500 text-xs font-bold px-2 py-1 rounded-full">No activities</span>
-                )}
-              </div>
-              <div className="flex items-center justify-between mt-6 pt-4 border-t border-slate-100">
-                <span className="text-xs font-bold text-brand-navy group-hover:text-blue-700">Open Class Hub →</span>
-              </div>
-            </Link>
-          )})}
 
-          <button onClick={() => setIsModalOpen(true)}
-            className="border-2 border-dashed border-slate-300 rounded-xl p-6 flex flex-col items-center justify-center text-slate-500 hover:text-brand-navy hover:border-brand-navy hover:bg-blue-50 transition-colors min-h-[160px]">
+                <span className="flex items-center gap-1 text-xs font-extrabold text-navy-800 mt-auto pt-4 border-t-2 border-navy-700/10">
+                  Open Class Hub <ChevronRight className="w-3.5 h-3.5" />
+                </span>
+              </FolderCard>
+            );
+          })}
+
+          {/* Matching dashed folder for the add action */}
+          <FolderCard
+            as="button"
+            type="button"
+            onClick={() => setIsModalOpen(true)}
+            fill="bg-transparent"
+            showTab={false}
+            bodyClassName="border-2 border-dashed border-cream-400 min-h-[190px] flex flex-col items-center justify-center text-navy-500 hover:border-royal-400 hover:text-royal-600 hover:bg-royal-50/50"
+            className="w-full"
+          >
             <Plus className="w-8 h-8 mb-2" />
-            <span className="font-medium">Add Subject Class</span>
-          </button>
+            <span className="font-bold">Add Subject Class</span>
+          </FolderCard>
         </div>
       )}
 

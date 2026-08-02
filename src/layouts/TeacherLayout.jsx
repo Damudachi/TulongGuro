@@ -1,5 +1,5 @@
 import { Link, Outlet, useLocation } from 'react-router-dom';
-import { Home, Users, Settings, LogOut, BarChart2, TrendingUp, AlertTriangle, ClipboardList } from 'lucide-react';
+import { Home, Users, Settings, LogOut, BarChart2, TrendingUp, AlertTriangle, ClipboardList, BookOpen } from 'lucide-react';
 import { clsx } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 import { useState, useEffect } from 'react';
@@ -13,21 +13,18 @@ function cn(...inputs) {
 export default function TeacherLayout() {
   const location = useLocation();
   const [warningCount, setWarningCount] = useState(0);
-  const [totalGraded, setTotalGraded] = useState(0);
   const [queueCount, setQueueCount] = useState(0);
   const [onlineStatus, setOnlineStatus] = useState(navigator.onLine);
+  const user = JSON.parse(localStorage.getItem('user') || '{}');
 
   useEffect(() => {
-    // Fetch warning count for badge & total graded for progressive disclosure
-    const user = JSON.parse(localStorage.getItem('user') || '{}');
-    if (user.id) {
-      fetch(`${API_URL}/api/teacher/${user.id}/analytics`)
+    // Fetch warning count for the Analytics badge
+    const stored = JSON.parse(localStorage.getItem('user') || '{}');
+    if (stored.id) {
+      fetch(`${API_URL}/api/teacher/${stored.id}/analytics`)
         .then(r => r.json())
-        .then(d => { 
-          if (d.success) {
-            setWarningCount(d.warningCount || 0); 
-            setTotalGraded(d.totalGradedSubmissions || 0);
-          }
+        .then(d => {
+          if (d.success) setWarningCount(d.warningCount || 0);
         })
         .catch(() => {});
     }
@@ -54,11 +51,77 @@ export default function TeacherLayout() {
   ];
 
   return (
-    <div className="min-h-screen bg-brand-bg flex flex-col pb-16 md:pb-0 md:flex-row">
-      <main className="flex-1 overflow-y-auto">
+    <div className="min-h-screen bg-cream-100 flex flex-col pb-24 md:pb-0 md:flex-row">
+      {/* ── Desktop sidebar ── */}
+      <nav className="hidden md:flex flex-col w-64 bg-navy-700 shrink-0 order-first rounded-r-[2rem] overflow-hidden">
+        <Link to="/teacher/dashboard" className="flex items-center gap-3 px-5 py-6">
+          <span className="w-11 h-11 rounded-2xl bg-royal-500 text-white grid place-items-center shadow-pop shrink-0">
+            <BookOpen className="w-5 h-5" />
+          </span>
+          <span className="flex flex-col leading-none min-w-0">
+            <span className="font-display text-lg font-extrabold text-white truncate">TulongGuro</span>
+            <span className="text-[10px] font-extrabold uppercase tracking-wider text-royal-300 mt-1">Teacher</span>
+          </span>
+        </Link>
+
+        <div className="flex-1 px-3 space-y-1 overflow-y-auto">
+          {navItems.map((item) => {
+            const isActive = location.pathname.startsWith(item.path);
+            const badge = item.name === 'Analytics' ? warningCount : 0;
+            return (
+              <Link key={item.name} to={item.path}
+                className={cn(
+                  'flex items-center gap-3 px-3 py-3 rounded-2xl text-sm font-bold transition-all',
+                  isActive
+                    ? 'bg-royal-500 text-white shadow-pop'
+                    : 'text-sky-200/70 hover:bg-white/10 hover:text-white'
+                )}>
+                <span className={cn('w-8 h-8 rounded-xl grid place-items-center shrink-0',
+                  isActive ? 'bg-white/20' : 'bg-white/5')}>
+                  <item.icon className="w-4 h-4" />
+                </span>
+                {item.name}
+                {badge > 0 && (
+                  <span className={cn(
+                    'ml-auto text-[10px] font-extrabold px-2 py-0.5 rounded-full flex items-center gap-1',
+                    isActive ? 'bg-white/25 text-white' : 'bg-red-500 text-white'
+                  )}>
+                    <AlertTriangle className="w-2.5 h-2.5" /> {badge}
+                  </span>
+                )}
+              </Link>
+            );
+          })}
+        </div>
+
+        {/* Account block */}
+        <div className="p-3 mt-2 border-t border-white/10">
+          <div className="flex items-center gap-3 px-2 py-2.5 mb-1">
+            <span className="w-9 h-9 rounded-xl bg-royal-500 text-white grid place-items-center font-extrabold text-sm shrink-0">
+              {(user.name || 'T').charAt(0)}
+            </span>
+            <div className="min-w-0">
+              <p className="text-sm font-bold text-white truncate">{user.name || 'Teacher'}</p>
+              <p className="text-[11px] font-semibold text-sky-200/60 truncate">{user.email || user.username || 'Teacher'}</p>
+            </div>
+          </div>
+          <Link
+            to="/login"
+            onClick={() => localStorage.removeItem('user')}
+            className="flex items-center gap-3 px-3 py-2.5 rounded-2xl text-sm font-bold text-sky-200/70 hover:bg-red-500 hover:text-white transition-colors"
+          >
+            <LogOut className="w-4 h-4" /> Sign Out
+          </Link>
+        </div>
+      </nav>
+
+      <main className="flex-1 min-w-0 overflow-y-auto">
         {/* Offline / Queue Banner */}
         {(!onlineStatus || queueCount > 0) && (
-          <div className={`px-4 py-2 text-xs font-bold flex items-center gap-2 ${!onlineStatus ? 'bg-amber-500 text-white' : 'bg-blue-600 text-white'}`}>
+          <div className={cn(
+            'px-5 py-2.5 text-xs font-bold flex items-center gap-2 text-white',
+            !onlineStatus ? 'bg-sun-600' : 'bg-royal-500'
+          )}>
             {!onlineStatus
               ? '📵 You are offline. Uploads will be queued automatically.'
               : `☁️ Back online! ${queueCount} upload${queueCount > 1 ? 's' : ''} pending in queue...`}
@@ -67,61 +130,33 @@ export default function TeacherLayout() {
         <Outlet />
       </main>
 
-      {/* Mobile Bottom Nav */}
-      <nav className="fixed bottom-0 left-0 right-0 bg-white border-t border-slate-200 flex justify-around p-2 md:hidden z-40">
-        {navItems.map((item) => {
-          const isLocked = item.requiresData && totalGraded === 0;
-          if (isLocked) return null; // Hide on mobile to save space
-          
-          const isActive = location.pathname.startsWith(item.path);
-          return (
-            <Link key={item.name} to={item.path}
-              className={cn("flex flex-col items-center p-2 text-xs font-medium rounded-lg relative",
-                isActive ? "text-brand-navy" : "text-slate-400 hover:text-brand-slate")}>
-              <item.icon className="w-6 h-6 mb-1" />
-              {item.name}
-              {item.badge > 0 && (
-                <span className="absolute -top-1 -right-1 w-4 h-4 bg-red-500 text-white text-[9px] font-extrabold rounded-full flex items-center justify-center">
-                  {item.badge > 9 ? '9+' : item.badge}
-                </span>
-              )}
-            </Link>
-          );
-        })}
-      </nav>
-
-      {/* Desktop Side Nav */}
-      <nav className="hidden md:flex flex-col w-64 bg-white border-r border-slate-200 order-first">
-        <div className="p-4 font-bold text-xl text-brand-navy border-b border-slate-200 flex items-center gap-2">
-          TulongGuro
-          <span className="text-xs font-medium bg-blue-100 text-brand-navy px-2 py-0.5 rounded-full">Teacher</span>
-        </div>
-        <div className="flex-1 py-4">
+      {/* ── Mobile floating dock ──
+          Six destinations is too many for icon+label on a phone, so only the
+          active item shows its label. */}
+      <nav className="tg-bottom-nav fixed bottom-0 left-0 right-0 px-3 pt-2 md:hidden z-40 pointer-events-none">
+        <div className="pointer-events-auto flex items-center justify-between gap-0.5 bg-navy-700 rounded-[1.5rem] p-2 shadow-card-lg">
           {navItems.map((item) => {
-            const isLocked = item.requiresData && totalGraded === 0;
-            const isActive = location.pathname.startsWith(item.path) && !isLocked;
+            const isActive = location.pathname.startsWith(item.path);
+            const badge = item.name === 'Analytics' ? warningCount : 0;
             return (
-              <Link key={item.name} to={isLocked ? '#' : item.path}
-                title={isLocked ? "Unlocks after grading your first activity" : ""}
-                className={cn("flex items-center px-4 py-3 text-sm font-medium relative transition-colors",
-                  isLocked ? "text-slate-300 cursor-not-allowed opacity-50" : 
-                  isActive ? "bg-blue-50 text-brand-navy border-r-4 border-brand-navy" : "text-slate-600 hover:bg-slate-50")}>
-                <item.icon className="w-5 h-5 mr-3" />
-                {item.name}
-                {isLocked && <span className="ml-auto text-[10px] bg-slate-100 text-slate-400 px-2 py-1 rounded">Locked</span>}
-                {item.badge > 0 && !isLocked && (
-                  <span className="ml-auto bg-red-500 text-white text-[10px] font-extrabold px-1.5 py-0.5 rounded-full flex items-center gap-0.5">
-                    <AlertTriangle className="w-2.5 h-2.5" /> {item.badge}
+              <Link key={item.name} to={item.path}
+                aria-label={item.name}
+                className={cn(
+                  'relative flex items-center justify-center gap-1.5 rounded-2xl transition-all min-h-11',
+                  isActive
+                    ? 'bg-royal-500 text-white px-3 py-2.5 font-extrabold text-xs'
+                    : 'text-sky-200/60 px-2.5 py-2.5 active:bg-white/10'
+                )}>
+                <item.icon className="w-5 h-5 shrink-0" />
+                {isActive && <span className="whitespace-nowrap">{item.name}</span>}
+                {badge > 0 && (
+                  <span className="absolute top-1 right-1 w-4 h-4 bg-red-500 text-white text-[9px] font-extrabold rounded-full flex items-center justify-center">
+                    {badge > 9 ? '9+' : badge}
                   </span>
                 )}
               </Link>
             );
           })}
-        </div>
-        <div className="p-4 border-t border-slate-200">
-          <Link to="/" className="flex items-center text-sm font-medium text-slate-600 hover:text-red-600">
-            <LogOut className="w-5 h-5 mr-3" /> Sign Out
-          </Link>
         </div>
       </nav>
     </div>

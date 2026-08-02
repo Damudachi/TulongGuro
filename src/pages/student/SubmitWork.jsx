@@ -1,14 +1,14 @@
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { ArrowLeft, Camera, UploadCloud, FileText, CheckCircle2, Clock, Loader2, Sparkles, ChevronRight, AlertTriangle, ShieldCheck, X, BookOpen, Calendar, Award, RefreshCw, Eye } from 'lucide-react';
+import { ArrowLeft, Camera, UploadCloud, FileText, CheckCircle2, Clock, Loader2, ChevronRight, AlertTriangle, ShieldCheck, BookOpen, Calendar, Award, RefreshCw, Eye } from 'lucide-react';
 import { API_URL } from '../../config';
 import ImageRedactor from '../../components/ImageRedactor';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
 
 const STATUS_LABEL = {
-  PENDING: { label: 'Awaiting Teacher Review', color: 'text-amber-600 bg-amber-50', icon: Clock },
-  GRADED:  { label: 'Graded & Released',       color: 'text-green-600 bg-green-50',  icon: CheckCircle2 },
+  PENDING: { label: 'Awaiting Teacher Review', color: 'bg-sun-100 text-sun-800', icon: Clock },
+  GRADED:  { label: 'Graded & Released',       color: 'bg-aqua-100 text-aqua-800', icon: CheckCircle2 },
 };
 
 export default function SubmitWork() {
@@ -165,7 +165,11 @@ export default function SubmitWork() {
     }
   };
 
-  if (isLoading) return <div className="flex items-center justify-center h-64"><Loader2 className="w-6 h-6 animate-spin text-brand-green" /></div>;
+  if (isLoading) return (
+    <div className="flex items-center justify-center h-64">
+      <Loader2 className="w-6 h-6 animate-spin text-aqua-600" />
+    </div>
+  );
 
   // PII Redaction overlay — appears when files are queued for redaction
   if (redactingFile) {
@@ -178,7 +182,7 @@ export default function SubmitWork() {
           perspective="student"
         />
         {pendingFiles.length > 1 && (
-          <div className="fixed top-14 left-1/2 -translate-x-1/2 z-[120] bg-black/80 text-white text-xs font-bold px-4 py-2 rounded-full">
+          <div className="fixed top-14 left-1/2 -translate-x-1/2 z-[120] bg-navy-900/85 text-white text-xs font-bold px-4 py-2 rounded-full">
             Image {redactingFile.index + 1} of {pendingFiles.length}
           </div>
         )}
@@ -186,40 +190,41 @@ export default function SubmitWork() {
     );
   }
 
-  const pending = activities.filter(a => !a.mySubmission || a.mySubmission.status === 'PENDING');
-
   // ─── DATA PRIVACY MODAL ────────────────────────────────────────────
-  const PrivacyModal = () => (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm">
-      <div className="bg-white rounded-3xl w-full max-w-md overflow-hidden shadow-2xl animate-fade-in-up">
-        {/* Header */}
-        <div className="bg-gradient-to-br from-blue-600 to-indigo-700 p-6 text-center relative">
-          <div className="w-16 h-16 bg-white/20 rounded-full flex items-center justify-center mx-auto mb-4 backdrop-blur-sm">
-            <ShieldCheck className="w-8 h-8 text-white" />
+  // Inline JSX rather than a nested component so it isn't remounted on
+  // every parent render.
+  const privacyModal = (
+    <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-navy-900/50 backdrop-blur-sm">
+      <div className="bg-white rounded-[2rem] w-full max-w-md overflow-hidden shadow-card-lg animate-pop-in">
+        <div className="bg-royal-500 p-7 text-center relative overflow-hidden">
+          <div className="absolute -top-10 -right-8 w-36 h-36 rounded-full bg-white/10" aria-hidden="true" />
+          <div className="relative">
+            <div className="w-16 h-16 bg-white/20 rounded-3xl flex items-center justify-center mx-auto mb-4">
+              <ShieldCheck className="w-8 h-8 text-white" />
+            </div>
+            <h2 className="font-display text-xl font-extrabold text-white">Data Privacy Notice</h2>
+            <p className="text-royal-100 text-sm mt-1">Please read before proceeding</p>
           </div>
-          <h2 className="text-xl font-bold text-white">Data Privacy Notice</h2>
-          <p className="text-blue-100 text-sm mt-1">Please read before proceeding</p>
         </div>
 
-        {/* Body */}
-        <div className="p-6 space-y-4">
-          <div className="bg-blue-50 border border-blue-200 rounded-xl p-4">
-            <p className="text-sm text-blue-900 font-medium leading-relaxed">
+        <div className="p-6 space-y-3">
+          <div className="bg-royal-50 border-2 border-royal-100 rounded-2xl p-4">
+            <p className="text-sm text-navy-700 font-semibold leading-relaxed">
               🤖 <strong>AI Processing:</strong> Your submitted work will be analyzed by an AI system (Google Gemini) to assist your teacher in grading. Your teacher will always review and finalize your grade.
             </p>
           </div>
 
-          <div className="bg-amber-50 border border-amber-200 rounded-xl p-4">
-            <p className="text-sm text-amber-900 font-medium leading-relaxed">
+          <div className="bg-sun-100 border-2 border-sun-200 rounded-2xl p-4">
+            <p className="text-sm text-navy-700 font-semibold leading-relaxed">
               🔒 <strong>Privacy Reminder:</strong> Please ensure that your <strong>name and any personally identifiable information (PII) are NOT visible</strong> in the photo of your work. This helps protect your privacy during AI processing.
             </p>
           </div>
 
-          <div className="bg-slate-50 border border-slate-200 rounded-xl p-4">
-            <p className="text-xs text-slate-600 leading-relaxed">
-              By clicking "I Understand & Confirm", you acknowledge that:
+          <div className="bg-cream-100 border-2 border-cream-200 rounded-2xl p-4">
+            <p className="text-xs text-navy-600 leading-relaxed font-semibold">
+              By clicking "I Understand &amp; Confirm", you acknowledge that:
             </p>
-            <ul className="text-xs text-slate-600 mt-2 space-y-1 ml-1">
+            <ul className="text-xs text-navy-600 mt-2 space-y-1 ml-1">
               <li>• Your work will be processed by AI for grading assistance</li>
               <li>• Your teacher makes the final grading decision</li>
               <li>• No personal information is visible in your submission photos</li>
@@ -227,19 +232,17 @@ export default function SubmitWork() {
           </div>
         </div>
 
-        {/* Footer */}
         <div className="px-6 pb-6 flex gap-3">
-          <button
-            onClick={handlePrivacyCancel}
-            className="flex-1 py-3 border-2 border-slate-200 rounded-xl font-bold text-slate-600 hover:bg-slate-50 transition-colors"
-          >
+          <button onClick={handlePrivacyCancel} className="tg-btn-ghost flex-1">
             Cancel
           </button>
           <button
             onClick={handlePrivacyConfirm}
-            className="flex-1 py-3 bg-brand-green text-white rounded-xl font-bold hover:bg-emerald-600 transition-colors shadow-lg shadow-emerald-500/20 flex items-center justify-center gap-2"
+            className="flex-1 inline-flex items-center justify-center gap-2 rounded-full py-3 px-4 font-bold text-sm
+                       text-white bg-aqua-600 shadow-pop hover:bg-aqua-700
+                       active:translate-y-1 active:shadow-none transition-all"
           >
-            <ShieldCheck className="w-4 h-4" /> I Understand & Confirm
+            <ShieldCheck className="w-4 h-4" /> I Understand &amp; Confirm
           </button>
         </div>
       </div>
@@ -251,19 +254,21 @@ export default function SubmitWork() {
     return (
       <div className="p-4 md:p-8 max-w-3xl mx-auto pb-24">
         <div className="space-y-4">
-          <div className="bg-gradient-to-br from-brand-green to-emerald-600 text-white p-8 rounded-2xl text-center shadow-lg">
-            <CheckCircle2 className="w-16 h-16 mx-auto mb-4 opacity-90" />
-            <h2 className="text-2xl font-extrabold mb-2">Output Submitted!</h2>
-            <p className="text-green-100 text-sm">Your essay has been received and is now awaiting teacher review.</p>
+          <div className="bg-aqua-600 text-white px-6 py-8 rounded-3xl text-center">
+            <CheckCircle2 className="w-14 h-14 mx-auto mb-3" />
+            <h2 className="font-display text-2xl font-extrabold mb-1.5">Output Submitted!</h2>
+            <p className="text-aqua-100 text-sm">Your essay has been received and is now awaiting teacher review.</p>
           </div>
 
-          <div className="flex gap-3">
+          <div className="flex flex-col sm:flex-row gap-3">
             <button onClick={() => { setSelected(null); setFiles([]); setPreviews([]); setResult(null); setPrivacyConfirmed(false); }}
-              className="flex-1 py-3 border border-slate-200 rounded-xl font-medium text-slate-600 hover:bg-slate-50">
+              className="tg-btn-ghost flex-1">
               Submit Another
             </button>
             <button onClick={() => navigate('/student/dashboard')}
-              className="flex-1 py-3 bg-brand-green text-white rounded-xl font-medium hover:bg-emerald-600 flex items-center justify-center gap-2">
+              className="flex-1 inline-flex items-center justify-center gap-2 rounded-full py-3 px-6 font-bold text-sm
+                         text-white bg-aqua-600 shadow-pop hover:bg-aqua-700
+                         active:translate-y-1 active:shadow-none transition-all">
               Go to Dashboard <ChevronRight className="w-4 h-4" />
             </button>
           </div>
@@ -280,92 +285,85 @@ export default function SubmitWork() {
 
     return (
       <div className="p-4 md:p-8 max-w-3xl mx-auto pb-24">
-        {/* Back Button */}
-        <button onClick={handleBack} className="flex items-center text-sm text-slate-500 hover:text-brand-slate mb-6">
-          <ArrowLeft className="w-4 h-4 mr-1" /> Back
+        <button onClick={handleBack} className="inline-flex items-center gap-1.5 text-sm font-bold text-navy-500 hover:text-navy-700 mb-5">
+          <ArrowLeft className="w-4 h-4" /> Back
         </button>
 
-        {/* Assignment Details Header */}
-        <div className="bg-gradient-to-br from-brand-navy to-blue-800 text-white p-6 rounded-2xl mb-6 shadow-lg relative overflow-hidden">
-          <div className="absolute top-0 right-0 p-4 opacity-5"><BookOpen className="w-40 h-40" /></div>
-          <div className="relative z-10">
-            <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-white/20 text-blue-100 uppercase tracking-wider">
-              {selected.type}
-            </span>
-            <h1 className="text-2xl font-bold mt-3 mb-1">{selected.title}</h1>
-            <p className="text-blue-200 text-sm">{selected.className}</p>
+        {/* ── Assignment header ── */}
+        <div className="bg-royal-500 text-white px-5 py-5 rounded-3xl mb-5">
+          <span className="tg-pill bg-white/20 text-white uppercase tracking-wider">{selected.type}</span>
+          <h1 className="font-display text-xl font-extrabold mt-2.5 mb-0.5">{selected.title}</h1>
+          <p className="text-royal-100 text-sm font-semibold">{selected.className}</p>
 
-            <div className="flex gap-3 mt-5 flex-wrap">
-              <div className="bg-white/15 px-4 py-2.5 rounded-xl backdrop-blur-sm">
-                <span className="block text-[10px] uppercase tracking-wider font-bold mb-1 text-blue-200">Points</span>
-                <span className="text-lg font-bold flex items-center"><Award className="w-4 h-4 mr-1.5" /> {selected.points}</span>
-              </div>
-              {dueDate && (
-                <div className={cn("px-4 py-2.5 rounded-xl backdrop-blur-sm", isPastDeadline ? "bg-red-500/30" : "bg-white/15")}>
-                  <span className="block text-[10px] uppercase tracking-wider font-bold mb-1 text-blue-200">Due Date</span>
-                  <span className="text-lg font-bold flex items-center">
-                    <Calendar className="w-4 h-4 mr-1.5" />
-                    {dueDate.toLocaleDateString('en-PH', { month: 'short', day: 'numeric', year: 'numeric' })}
-                  </span>
-                </div>
-              )}
-              {sub && (
-                <div className="bg-white/15 px-4 py-2.5 rounded-xl backdrop-blur-sm">
-                  <span className="block text-[10px] uppercase tracking-wider font-bold mb-1 text-blue-200">Status</span>
-                  <span className="text-sm font-bold flex items-center gap-1">
-                    {sub.status === 'GRADED' ? <CheckCircle2 className="w-4 h-4" /> : <Clock className="w-4 h-4" />}
-                    {STATUS_LABEL[sub.status]?.label || sub.status}
-                  </span>
-                </div>
-              )}
-              {selected.maxAttempts > 1 && (
-                <div className="bg-white/15 px-4 py-2.5 rounded-xl backdrop-blur-sm">
-                  <span className="block text-[10px] uppercase tracking-wider font-bold mb-1 text-blue-200">Attempts</span>
-                  <span className="text-lg font-bold flex items-center">
-                    <RefreshCw className="w-4 h-4 mr-1.5" /> {sub ? sub.attemptCount || 1 : 0}/{selected.maxAttempts}
-                  </span>
-                </div>
-              )}
+          <div className="flex gap-2.5 mt-4 flex-wrap">
+            <div className="bg-white/15 px-3.5 py-2 rounded-xl">
+              <span className="block text-[10px] uppercase tracking-wider font-extrabold mb-0.5 text-royal-100">Points</span>
+              <span className="font-extrabold flex items-center"><Award className="w-4 h-4 mr-1.5" /> {selected.points}</span>
             </div>
+            {dueDate && (
+              <div className={cn('px-3.5 py-2 rounded-xl', isPastDeadline ? 'bg-red-500/40' : 'bg-white/15')}>
+                <span className="block text-[10px] uppercase tracking-wider font-extrabold mb-0.5 text-royal-100">Due Date</span>
+                <span className="font-extrabold flex items-center">
+                  <Calendar className="w-4 h-4 mr-1.5" />
+                  {dueDate.toLocaleDateString('en-PH', { month: 'short', day: 'numeric', year: 'numeric' })}
+                </span>
+              </div>
+            )}
+            {sub && (
+              <div className="bg-white/15 px-3.5 py-2 rounded-xl">
+                <span className="block text-[10px] uppercase tracking-wider font-extrabold mb-0.5 text-royal-100">Status</span>
+                <span className="text-sm font-extrabold flex items-center gap-1">
+                  {sub.status === 'GRADED' ? <CheckCircle2 className="w-4 h-4" /> : <Clock className="w-4 h-4" />}
+                  {STATUS_LABEL[sub.status]?.label || sub.status}
+                </span>
+              </div>
+            )}
+            {selected.maxAttempts > 1 && (
+              <div className="bg-white/15 px-3.5 py-2 rounded-xl">
+                <span className="block text-[10px] uppercase tracking-wider font-extrabold mb-0.5 text-royal-100">Attempts</span>
+                <span className="font-extrabold flex items-center">
+                  <RefreshCw className="w-4 h-4 mr-1.5" /> {sub ? sub.attemptCount || 1 : 0}/{selected.maxAttempts}
+                </span>
+              </div>
+            )}
           </div>
         </div>
 
-        {/* Instructions */}
+        {/* ── Instructions ── */}
         {selected.instructions && (
-          <div className="bg-white border border-slate-200 rounded-2xl p-5 mb-6 shadow-sm">
-            <h2 className="text-sm font-bold text-brand-slate mb-3 flex items-center gap-2">
-              <FileText className="w-4 h-4 text-brand-navy" /> Instructions
+          <div className="tg-card p-6 mb-5">
+            <h2 className="font-display font-extrabold text-navy-700 mb-3 flex items-center gap-2">
+              <FileText className="w-4 h-4 text-royal-500" /> Instructions
             </h2>
-            <p className="text-sm text-slate-600 leading-relaxed whitespace-pre-wrap">{selected.instructions}</p>
+            <p className="text-sm text-navy-600 leading-relaxed whitespace-pre-wrap">{selected.instructions}</p>
           </div>
         )}
 
-        {/* Privacy confirmed badge */}
-        <div className="mb-4 p-3 rounded-xl bg-green-50 border border-green-200 flex items-center gap-3">
-          <ShieldCheck className="w-5 h-5 text-green-600 shrink-0" />
-          <p className="text-sm text-green-800 font-medium">
-            ✅ Data Privacy acknowledged — AI will assist your teacher in grading.
+        {/* ── Privacy confirmed badge ── */}
+        <div className="mb-5 p-4 rounded-2xl bg-aqua-100 border-2 border-aqua-200 flex items-center gap-3">
+          <ShieldCheck className="w-5 h-5 text-aqua-700 shrink-0" />
+          <p className="text-sm text-navy-700 font-bold">
+            Data Privacy acknowledged — AI will assist your teacher in grading.
           </p>
         </div>
 
-        {/* Show existing submission OR upload form */}
         {sub && sub.status === 'PENDING' && !resubmitMode ? (
           /* ── EXISTING SUBMISSION VIEW ── */
           <div className="space-y-4">
-            <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm">
-              <h2 className="text-sm font-bold text-brand-slate mb-4 flex items-center gap-2">
-                <Eye className="w-4 h-4 text-brand-navy" /> Your Submitted Output
+            <div className="tg-card p-6">
+              <h2 className="font-display font-extrabold text-navy-700 mb-4 flex items-center gap-2">
+                <Eye className="w-4 h-4 text-royal-500" /> Your Submitted Output
               </h2>
-              <div className="flex items-center gap-2 mb-4">
-                <span className="text-xs font-bold px-3 py-1.5 rounded-full text-amber-600 bg-amber-50 flex items-center gap-1">
+              <div className="flex items-center gap-2 mb-4 flex-wrap">
+                <span className="tg-pill bg-sun-100 text-sun-800">
                   <Clock className="w-3 h-3" /> Awaiting Teacher Review
                 </span>
-                <span className="text-xs text-slate-400">
+                <span className="text-xs font-semibold text-navy-400">
                   Submitted {new Date(sub.updatedAt || Date.now()).toLocaleDateString('en-PH', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}
                 </span>
               </div>
               {sub.imageUrl && (
-                <div className="rounded-xl overflow-hidden border border-slate-200 bg-slate-50">
+                <div className="rounded-2xl overflow-hidden border-2 border-cream-200 bg-cream-50">
                   <img src={`${API_URL}${sub.imageUrl}`} alt="Your submitted work" className="w-full object-contain max-h-[600px]" />
                 </div>
               )}
@@ -375,16 +373,18 @@ export default function SubmitWork() {
               <>
                 <button
                   onClick={() => setResubmitMode(true)}
-                  className="w-full py-4 bg-amber-500 text-white rounded-2xl font-bold text-lg hover:bg-amber-600 transition-all shadow-lg shadow-amber-500/20 flex items-center justify-center gap-3"
+                  className="w-full py-4 bg-sun-400 text-navy-700 rounded-3xl font-extrabold text-lg shadow-pop
+                             hover:bg-sun-300 active:translate-y-1 active:shadow-none transition-all
+                             flex items-center justify-center gap-3"
                 >
                   <RefreshCw className="w-5 h-5" /> Re-submit Work
                 </button>
-                <p className="text-[11px] text-slate-400 text-center">
+                <p className="text-[11px] font-semibold text-navy-400 text-center">
                   Attempt {sub.attemptCount || 1} of {selected.maxAttempts || 1}. Re-submitting will replace your current submission.
                 </p>
               </>
             ) : (
-              <div className="w-full py-4 bg-slate-100 text-slate-400 rounded-2xl font-bold text-lg text-center">
+              <div className="w-full py-4 bg-cream-200 text-navy-400 rounded-3xl font-extrabold text-lg text-center">
                 All {selected.maxAttempts || 1} attempt(s) used
               </div>
             )}
@@ -393,15 +393,15 @@ export default function SubmitWork() {
           /* ── UPLOAD FORM ── */
           <>
             {/* Handwriting tip */}
-            <div className="mb-4 bg-amber-500/10 border border-amber-500/30 rounded-xl p-4">
+            <div className="mb-5 bg-sun-100 border-2 border-sun-200 rounded-3xl p-5">
               <div className="flex items-start gap-3">
-                <AlertTriangle className="w-5 h-5 text-amber-500 shrink-0 mt-0.5" />
+                <AlertTriangle className="w-5 h-5 text-sun-700 shrink-0 mt-0.5" />
                 <div>
-                  <p className="text-sm font-semibold text-amber-400 leading-relaxed">
-                    ⚠️ Important: Please ensure your handwritten essay is written clearly and legibly using dark ink on clean paper. Messy or unclear handwriting may result in inaccurate AI grading.
+                  <p className="text-sm font-bold text-navy-700 leading-relaxed">
+                    Important: Please ensure your handwritten essay is written clearly and legibly using dark ink on clean paper. Messy or unclear handwriting may result in inaccurate AI grading.
                   </p>
-                  <p className="text-sm text-amber-400/80 mt-2 font-medium">For best results:</p>
-                  <ul className="text-sm text-amber-400/80 mt-1 space-y-0.5 ml-1">
+                  <p className="text-sm text-navy-600 mt-2 font-bold">For best results:</p>
+                  <ul className="text-sm text-navy-600 mt-1 space-y-0.5 ml-1">
                     <li>• Use a ballpoint pen with dark ink</li>
                     <li>• Write on clean, unlined or lightly-lined paper</li>
                     <li>• Avoid smudges and crossing out</li>
@@ -412,59 +412,66 @@ export default function SubmitWork() {
             </div>
 
             {resubmitMode && (
-              <div className="mb-4 p-3 rounded-xl bg-amber-50 border border-amber-200 flex items-center gap-3">
-                <RefreshCw className="w-5 h-5 text-amber-600 shrink-0" />
+              <div className="mb-5 p-4 rounded-2xl bg-sun-100 border-2 border-sun-200 flex items-center gap-3">
+                <RefreshCw className="w-5 h-5 text-sun-700 shrink-0" />
                 <div>
-                  <p className="text-sm text-amber-800 font-medium">Re-submitting will replace your previous submission.</p>
-                  <button onClick={() => setResubmitMode(false)} className="text-xs text-amber-600 underline hover:text-amber-800 mt-0.5">Cancel re-submit</button>
+                  <p className="text-sm text-navy-700 font-bold">Re-submitting will replace your previous submission.</p>
+                  <button onClick={() => setResubmitMode(false)} className="text-xs font-bold text-sun-800 underline hover:text-navy-700 mt-0.5">
+                    Cancel re-submit
+                  </button>
                 </div>
               </div>
             )}
 
-            {/* Upload Area */}
+            {/* Upload area */}
             <div className="mb-6">
-              <h2 className="text-sm font-bold text-slate-400 uppercase tracking-wider mb-3">{resubmitMode ? 'Upload New Essay' : 'Upload Your Essay'}</h2>
+              <h2 className="text-xs font-extrabold text-navy-400 uppercase tracking-wider mb-3">
+                {resubmitMode ? 'Upload New Essay' : 'Upload Your Essay'}
+              </h2>
               <div
                 onClick={() => files.length === 0 && fileRef.current?.click()}
                 onDrop={(e) => { e.preventDefault(); handleFile(e); }}
                 onDragOver={e => e.preventDefault()}
-                className={cn('border-2 border-dashed rounded-2xl transition-all',
-                  previews.length > 0 ? 'border-slate-200 p-4' : 'border-slate-300 hover:border-brand-green/60 hover:bg-green-50/30 cursor-pointer')}
+                className={cn('border-2 border-dashed rounded-3xl transition-all',
+                  previews.length > 0
+                    ? 'border-cream-300 p-4 bg-white'
+                    : 'border-cream-300 hover:border-aqua-400 hover:bg-aqua-50 cursor-pointer bg-white')}
               >
                 {previews.length > 0 ? (
                   <div className="space-y-4">
                     <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
                       {previews.map((prev, idx) => (
-                        <div key={idx} className="relative group rounded-xl overflow-hidden border border-slate-200 aspect-[3/4]">
+                        <div key={idx} className="relative group rounded-2xl overflow-hidden border-2 border-cream-200 aspect-[3/4]">
                           <img src={prev} alt={`page ${idx+1}`} className="w-full h-full object-cover" />
-                          <div className="absolute top-2 left-2 bg-black/60 text-white text-[10px] px-2 py-1 rounded-md font-bold">
+                          <div className="absolute top-2 left-2 bg-navy-900/70 text-white text-[10px] px-2 py-1 rounded-lg font-bold">
                             Page {idx + 1}
                           </div>
                           <button onClick={(e) => { e.stopPropagation(); removeFile(idx); }}
-                            className="absolute top-2 right-2 bg-red-500 text-white w-6 h-6 flex items-center justify-center rounded-full opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-600 shadow-md">
-                            <span className="text-xs font-bold font-sans">✕</span>
-                            <span className="sr-only">Remove</span>
+                            className="absolute top-2 right-2 bg-red-500 text-white w-7 h-7 flex items-center justify-center rounded-full opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity hover:bg-red-600 shadow-pop">
+                            <span className="text-xs font-bold">✕</span>
+                            <span className="sr-only">Remove page {idx + 1}</span>
                           </button>
                         </div>
                       ))}
                       {files.length < 20 && (
-                        <div onClick={() => fileRef.current?.click()} className="rounded-xl border-2 border-dashed border-slate-300 flex flex-col items-center justify-center text-slate-400 hover:border-brand-green/60 hover:bg-green-50/30 cursor-pointer aspect-[3/4] transition-all">
-                          <Camera className="w-6 h-6 mb-2 text-slate-300" />
-                          <span className="text-xs font-bold text-slate-400">Add Page</span>
-                        </div>
+                        <button type="button" onClick={() => fileRef.current?.click()}
+                          className="rounded-2xl border-2 border-dashed border-cream-300 flex flex-col items-center justify-center text-navy-400 hover:border-aqua-400 hover:bg-aqua-50 cursor-pointer aspect-[3/4] transition-all">
+                          <Camera className="w-6 h-6 mb-2 text-navy-300" />
+                          <span className="text-xs font-extrabold">Add Page</span>
+                        </button>
                       )}
                     </div>
-                    <div className="flex items-center justify-between bg-green-50 px-4 py-3 rounded-xl border border-green-200">
-                      <span className="text-sm font-bold text-green-800">{files.length} page(s) attached</span>
+                    <div className="flex items-center justify-between bg-aqua-100 px-4 py-3 rounded-2xl border-2 border-aqua-200">
+                      <span className="text-sm font-extrabold text-aqua-800">{files.length} page(s) attached</span>
                     </div>
                   </div>
                 ) : (
-                  <div className="p-10 flex flex-col items-center justify-center text-slate-400">
-                    <div className="bg-green-50 p-4 rounded-full mb-4"><Camera className="w-8 h-8 text-brand-green" /></div>
-                    <p className="font-bold text-slate-600 mb-1">Take a photo of your essay</p>
-                    <p className="text-sm">or drag & drop an image file</p>
-                    <div className="mt-4 flex items-center text-brand-green font-medium text-sm">
-                      <UploadCloud className="w-4 h-4 mr-1" /> Browse Files
+                  <div className="p-12 flex flex-col items-center justify-center text-navy-400">
+                    <div className="bg-aqua-100 p-5 rounded-3xl mb-4"><Camera className="w-8 h-8 text-aqua-600" /></div>
+                    <p className="font-display font-extrabold text-navy-700 mb-1">Take a photo of your essay</p>
+                    <p className="text-sm font-semibold">or drag &amp; drop an image file</p>
+                    <div className="mt-4 flex items-center text-aqua-700 font-extrabold text-sm">
+                      <UploadCloud className="w-4 h-4 mr-1.5" /> Browse Files
                     </div>
                   </div>
                 )}
@@ -472,18 +479,22 @@ export default function SubmitWork() {
               </div>
             </div>
 
-            {/* Submit Button */}
+            {/* Submit */}
             {files.length > 0 && (
               <>
                 <button onClick={handleSubmit} disabled={isSubmitting}
-                  className="w-full py-4 bg-brand-green text-white rounded-2xl font-bold text-lg hover:bg-emerald-600 transition-all shadow-lg shadow-emerald-500/20 disabled:opacity-60 flex items-center justify-center gap-3">
+                  className="w-full py-4 bg-aqua-600 text-white rounded-3xl font-extrabold text-lg shadow-pop
+                             hover:bg-aqua-700 active:translate-y-1 active:shadow-none transition-all
+                             disabled:opacity-60 disabled:pointer-events-none flex items-center justify-center gap-3">
                   {isSubmitting ? (
                     <><Loader2 className="w-5 h-5 animate-spin" /> Submitting...</>
                   ) : (
                     <><UploadCloud className="w-5 h-5" /> {resubmitMode ? 'Re-submit Work' : 'Submit Work'}</>
                   )}
                 </button>
-                <p className="text-[11px] text-slate-400 text-center mt-2">⚠️ AI feedback uses daily processing tokens. Submitting many outputs in a day may result in delayed feedback.</p>
+                <p className="text-[11px] font-semibold text-navy-400 text-center mt-3">
+                  ⚠️ AI feedback uses daily processing tokens. Submitting many outputs in a day may result in delayed feedback.
+                </p>
               </>
             )}
           </>
@@ -495,22 +506,21 @@ export default function SubmitWork() {
   // ─── SCREEN 1: ACTIVITY LIST ───────────────────────────────────────
   return (
     <div className="p-4 md:p-8 max-w-3xl mx-auto pb-24">
-      {/* Privacy Modal */}
-      {showPrivacyModal && <PrivacyModal />}
+      {showPrivacyModal && privacyModal}
 
-      <button onClick={() => navigate(-1)} className="flex items-center text-sm text-slate-500 hover:text-brand-slate mb-6">
-        <ArrowLeft className="w-4 h-4 mr-1" /> Back
+      <button onClick={() => navigate(-1)} className="inline-flex items-center gap-1.5 text-sm font-bold text-navy-500 hover:text-navy-700 mb-5">
+        <ArrowLeft className="w-4 h-4" /> Back
       </button>
 
       <div className="mb-6">
-        <h1 className="text-2xl font-bold text-brand-slate">Submit Your Work</h1>
-        <p className="text-slate-500 text-sm">Choose an activity to view details and upload your work</p>
+        <h1 className="font-display text-3xl font-extrabold text-navy-700">Submit Your Work</h1>
+        <p className="text-navy-500 text-sm font-semibold mt-1">Choose an activity to view details and upload your work</p>
       </div>
 
       {activities.length === 0 ? (
-        <div className="text-center py-10 border-2 border-dashed border-slate-200 rounded-2xl text-slate-400">
-          <FileText className="w-10 h-10 mx-auto mb-2 opacity-30" />
-          <p className="text-sm font-medium">No activities assigned yet</p>
+        <div className="text-center py-12 border-2 border-dashed border-cream-300 rounded-[2rem]">
+          <FileText className="w-10 h-10 mx-auto mb-3 text-navy-300" />
+          <p className="text-sm font-bold text-navy-500">No activities assigned yet</p>
         </div>
       ) : (
         <div className="space-y-3">
@@ -518,36 +528,38 @@ export default function SubmitWork() {
             const sub = activity.mySubmission;
             const StatusIcon = sub ? (STATUS_LABEL[sub.status]?.icon || Clock) : null;
             const isPastDeadline = activity.deadline && new Date(activity.deadline) < new Date();
+
             return (
               <button key={activity.id} onClick={() => handleSelectActivity(activity)}
-                className="w-full text-left p-4 rounded-xl border-2 border-slate-200 bg-white hover:border-brand-green/50 hover:shadow-md transition-all group">
-                <div className="flex items-start justify-between">
-                  <div className="flex items-start gap-3">
-                    <div className="p-2 rounded-lg mt-0.5 bg-green-50 text-brand-green group-hover:bg-brand-green group-hover:text-white transition-colors">
+                className="w-full text-left p-5 rounded-3xl border-2 border-slate-200 bg-white
+                           hover:border-aqua-400 hover:-translate-y-0.5 hover:shadow-card transition-all group">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="flex items-start gap-3 min-w-0">
+                    <div className="p-2.5 rounded-2xl bg-aqua-100 text-aqua-700 shrink-0 group-hover:bg-aqua-500 group-hover:text-white transition-colors">
                       <FileText className="w-4 h-4" />
                     </div>
-                    <div>
-                      <p className="font-bold text-brand-slate group-hover:text-brand-green transition-colors">{activity.title}</p>
-                      <p className="text-xs text-slate-500">{activity.className} • {activity.type} • {activity.points} pts</p>
+                    <div className="min-w-0">
+                      <p className="font-bold text-navy-700 truncate">{activity.title}</p>
+                      <p className="text-xs text-navy-500 truncate">{activity.className} • {activity.type} • {activity.points} pts</p>
                       {activity.deadline && (
-                        <p className={cn("text-xs mt-0.5", isPastDeadline ? "text-red-500 font-semibold" : "text-slate-400")}>
+                        <p className={cn('text-xs mt-0.5 font-semibold', isPastDeadline ? 'text-red-500' : 'text-navy-400')}>
                           {isPastDeadline ? '⏰ Deadline passed' : `Due: ${new Date(activity.deadline).toLocaleDateString('en-PH', { month: 'short', day: 'numeric' })}`}
                         </p>
                       )}
                       {activity.maxAttempts > 1 && (
-                        <p className="text-xs text-slate-400 mt-0.5">
+                        <p className="text-xs text-navy-400 mt-0.5 font-semibold">
                           {sub ? `Attempt ${sub.attemptCount || 1}/${activity.maxAttempts}` : `${activity.maxAttempts} attempts allowed`}
                         </p>
                       )}
                     </div>
                   </div>
-                  <div className="flex flex-col items-end gap-1">
+                  <div className="flex flex-col items-end gap-1.5 shrink-0">
                     {sub && StatusIcon && (
-                      <span className={cn('text-xs font-bold px-2 py-0.5 rounded-full flex items-center gap-1', STATUS_LABEL[sub.status]?.color)}>
+                      <span className={cn('tg-pill whitespace-nowrap', STATUS_LABEL[sub.status]?.color)}>
                         <StatusIcon className="w-3 h-3" /> {STATUS_LABEL[sub.status]?.label}
                       </span>
                     )}
-                    <ChevronRight className="w-4 h-4 text-slate-300 group-hover:text-brand-green transition-colors mt-1" />
+                    <ChevronRight className="w-4 h-4 text-navy-300 group-hover:text-aqua-600 transition-colors" />
                   </div>
                 </div>
               </button>

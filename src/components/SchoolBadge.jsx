@@ -5,9 +5,9 @@ import { API_URL } from '../config';
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
 
 const SIZES = {
-  sm: { box: 'w-8 h-8 text-[11px] rounded-lg', icon: 'w-4 h-4' },
-  md: { box: 'w-11 h-11 text-sm rounded-xl', icon: 'w-5 h-5' },
-  lg: { box: 'w-14 h-14 text-base rounded-2xl', icon: 'w-6 h-6' },
+  sm: { box: 'w-9 h-9 text-[11px] rounded-xl', icon: 'w-4 h-4' },
+  md: { box: 'w-11 h-11 text-sm rounded-2xl', icon: 'w-5 h-5' },
+  lg: { box: 'w-14 h-14 text-base rounded-3xl', icon: 'w-6 h-6' },
 };
 
 /** Uploads are stored as a relative /uploads path in dev, absolute in the cloud. */
@@ -57,7 +57,7 @@ export function SchoolLogo({ name, logoUrl, brandColor, size = 'md', tone = 'lig
       className={cn('flex items-center justify-center font-extrabold shrink-0 tracking-tight border', box,
         !useBrand && (tone === 'onColor'
           ? 'bg-white/20 text-white border-white/30 backdrop-blur-sm'
-          : 'bg-blue-50 text-brand-navy border-blue-100'),
+          : 'bg-royal-50 text-royal-600 border-royal-100'),
         className)}
       style={style}
       title={name || 'School'}

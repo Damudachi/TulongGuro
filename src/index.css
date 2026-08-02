@@ -2,7 +2,149 @@
 @config "../tailwind.config.js";
 
 @layer base {
+  /* This is an installed-feeling application, not a page. These four rules are
+     what stop it reading as a website on a phone: no blue tap flash, no 300ms
+     tap delay, no rubber-band overscroll past the app chrome, and no accidental
+     text selection when a tap lands on a label. */
+  html {
+    -webkit-tap-highlight-color: transparent;
+    touch-action: manipulation;
+    overscroll-behavior-y: none;
+  }
+
   body {
-    @apply bg-brand-bg text-brand-slate;
+    @apply bg-brand-bg text-brand-slate font-sans antialiased;
+    overscroll-behavior-y: none;
+  }
+
+  /* Content is selectable; chrome and controls are not. */
+  nav, button, label, [role="tab"] {
+    -webkit-user-select: none;
+    user-select: none;
+  }
+
+  /* Headings carry the rounded display face — the friendly, chunky voice of
+     the reference art. */
+  h1, h2, h3 {
+    @apply font-display tracking-tight;
+  }
+
+  /* Focus ring in brand blue rather than the browser default. */
+  :focus-visible {
+    @apply outline-none ring-2 ring-royal-500 ring-offset-2 ring-offset-cream-100;
+  }
+
+  ::selection {
+    @apply bg-sun-300 text-navy-700;
+  }
+}
+
+@layer components {
+  /* ── Surfaces ──
+     Soft, generously rounded cards. `tg-card-pop` adds the flat offset shadow
+     and hard border for the sticker-like tiles in the reference screens. */
+  .tg-card {
+    @apply bg-white rounded-3xl border border-slate-200 shadow-card;
+  }
+
+  .tg-card-pop {
+    @apply bg-white rounded-3xl border-2 border-navy-700/10 shadow-pop;
+  }
+
+  /* Interactive tile — presses down into its own shadow on click. */
+  .tg-tile {
+    @apply rounded-3xl border-2 border-transparent shadow-pop transition-all duration-150
+           hover:-translate-y-0.5 hover:shadow-pop-lg
+           active:translate-y-1 active:shadow-none;
+  }
+
+  /* ── Buttons ──
+     Tailwind v4 cannot `@apply` another component class, so each variant
+     repeats the shared base rather than extending `.tg-btn`. */
+  .tg-btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-full px-6 py-3
+           font-bold text-sm transition-all duration-150
+           disabled:opacity-50 disabled:pointer-events-none;
+  }
+
+  .tg-btn-primary {
+    @apply inline-flex items-center justify-center gap-2 rounded-full px-6 py-3
+           font-bold text-sm transition-all duration-150
+           disabled:opacity-50 disabled:pointer-events-none
+           bg-royal-500 text-white shadow-pop
+           hover:bg-royal-600 active:translate-y-1 active:shadow-none;
+  }
+
+  .tg-btn-accent {
+    @apply inline-flex items-center justify-center gap-2 rounded-full px-6 py-3
+           font-bold text-sm transition-all duration-150
+           disabled:opacity-50 disabled:pointer-events-none
+           bg-sun-400 text-navy-700 shadow-pop
+           hover:bg-sun-300 active:translate-y-1 active:shadow-none;
+  }
+
+  .tg-btn-ghost {
+    @apply inline-flex items-center justify-center gap-2 rounded-full px-6 py-3
+           font-bold text-sm transition-all duration-150
+           disabled:opacity-50 disabled:pointer-events-none
+           bg-white text-navy-700 border-2 border-slate-200
+           hover:border-royal-300 hover:bg-royal-50;
+  }
+
+  /* ── Form controls ── */
+  .tg-input {
+    @apply w-full px-5 py-3.5 rounded-2xl bg-white border-2 border-slate-200
+           text-navy-800 placeholder:text-slate-400
+           focus:border-royal-400 focus:ring-4 focus:ring-royal-100
+           outline-none transition-all;
+  }
+
+  .tg-label {
+    @apply block text-sm font-bold text-navy-700 mb-2;
+  }
+
+  /* ── Bits ── */
+  .tg-pill {
+    @apply inline-flex items-center gap-1.5 rounded-full px-3 py-1
+           text-xs font-bold;
+  }
+
+  .tg-section-title {
+    @apply font-display text-2xl font-extrabold text-navy-700;
+  }
+
+  /* Dotted-grid backdrop from the palette/inspiration boards.
+     Used on the public pages only — in-app screens stay flat. */
+  .tg-dotgrid {
+    background-image: radial-gradient(circle, rgba(10, 36, 99, 0.10) 1.2px, transparent 1.2px);
+    background-size: 22px 22px;
+  }
+
+  /* ── App chrome ── */
+
+  /* The mobile nav is a floating dock, so it needs its own gutter plus the
+     iOS home-indicator inset. Content clears it via `tg-page`'s pb-28. */
+  .tg-bottom-nav {
+    padding-bottom: calc(0.75rem + env(safe-area-inset-bottom));
+  }
+
+  /* Clearance for the floating dock lives on the layout wrapper (pb-24) so it
+     applies to every page, converted or not — this only adds page gutters. */
+  .tg-page {
+    @apply px-4 pb-6 md:px-8 md:pb-12;
+  }
+
+  /* Row of metric tiles under a page header. Scrolls sideways on a phone
+     instead of squashing to unreadable widths. */
+  .tg-stat-row {
+    @apply flex gap-3 overflow-x-auto -mx-4 px-4 pb-1
+           md:mx-0 md:px-0 md:overflow-visible md:grid;
+    scrollbar-width: none;
+  }
+  .tg-stat-row::-webkit-scrollbar { display: none; }
+
+  /* Comfortable touch target — 44px minimum on the phone. */
+  .tg-tap {
+    @apply min-h-11 min-w-11 md:min-h-0 md:min-w-0;
   }
 }

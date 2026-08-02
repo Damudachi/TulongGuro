@@ -2,6 +2,12 @@ import { useState, useEffect } from 'react';
 import { User, School, IdCard, BookOpen, Star } from 'lucide-react';
 import { API_URL } from '../../config';
 
+const INFO_TILES = [
+  { key: 'username', label: 'Student ID', icon: IdCard, tile: 'bg-royal-500' },
+  { key: 'name',     label: 'Full Name',  icon: User,   tile: 'bg-aqua-500' },
+  { key: 'section',  label: 'Section',    icon: School, tile: 'bg-sun-400' },
+];
+
 export default function StudentProfile() {
   const [data, setData] = useState(null);
 
@@ -21,74 +27,69 @@ export default function StudentProfile() {
   const stars = data?.stars || 0;
   const avgGrade = data?.avgGrade || 0;
 
+  const valueFor = (key) =>
+    key === 'section' ? (student.section?.name || '—') : (student[key] || '—');
+
   return (
     <div className="p-4 md:p-8 max-w-2xl mx-auto pb-24">
-      <div className="mb-6">
-        <h1 className="text-2xl font-bold text-brand-slate">My Profile</h1>
-        <p className="text-slate-500 text-sm">Your account details</p>
+      <div className="mb-7">
+        <h1 className="font-display text-3xl font-extrabold text-navy-700">My Profile</h1>
+        <p className="text-navy-500 text-sm font-semibold mt-1">Your account details</p>
       </div>
 
-      {/* Avatar Card */}
-      <div className="bg-gradient-to-br from-brand-green to-emerald-600 rounded-2xl p-6 text-white mb-6 flex items-center gap-5 shadow-lg">
-        <div className="w-20 h-20 rounded-2xl bg-white/20 flex items-center justify-center text-4xl font-extrabold shadow-inner">
+      {/* ── Avatar card ── */}
+      <div className="bg-aqua-600 rounded-3xl px-5 py-5 text-white mb-5 flex items-center gap-4">
+        <div className="w-16 h-16 rounded-2xl bg-white text-aqua-700 flex items-center justify-center text-3xl font-extrabold shrink-0">
           {(student.name || 'S').charAt(0)}
         </div>
-        <div>
-          <h2 className="text-2xl font-bold">{student.name || 'Student'}</h2>
-          <p className="text-green-100 text-sm">{student.section?.name || '—'}</p>
-          <div className="flex items-center gap-1 mt-2 text-yellow-300 text-sm font-bold">
-            <Star className="w-4 h-4 fill-yellow-300" /> {stars} Stars
+        <div className="min-w-0">
+          <h2 className="font-display text-2xl font-extrabold truncate">{student.name || 'Student'}</h2>
+          <p className="text-aqua-100 text-sm font-semibold truncate">{student.section?.name || '—'}</p>
+          <div className="inline-flex items-center gap-1.5 mt-2.5 bg-white/15 px-3 py-1 rounded-full text-sm font-extrabold">
+            <Star className="w-4 h-4 fill-sun-400 text-sun-400" /> {stars} Stars
           </div>
         </div>
       </div>
 
-      {/* Info Cards */}
-      <div className="space-y-4 mb-6">
-        <div className="bg-white rounded-xl border border-slate-200 p-4 flex items-center gap-4">
-          <div className="bg-blue-50 p-3 rounded-xl"><IdCard className="w-5 h-5 text-brand-navy" /></div>
-          <div>
-            <p className="text-xs text-slate-400 font-medium uppercase tracking-wider">Student ID</p>
-            <p className="font-bold text-brand-slate">{student.username || '—'}</p>
+      {/* ── Info tiles ── */}
+      <div className="space-y-3 mb-6">
+        {INFO_TILES.map(({ key, label, icon: Icon, tile }) => (
+          <div key={key} className="tg-card p-4 flex items-center gap-4">
+            <div className={`${tile} p-3 rounded-2xl text-white shrink-0`}>
+              <Icon className="w-5 h-5" />
+            </div>
+            <div className="min-w-0">
+              <p className="text-[10px] text-navy-400 font-extrabold uppercase tracking-wider">{label}</p>
+              <p className="font-bold text-navy-700 truncate">{valueFor(key)}</p>
+            </div>
           </div>
-        </div>
-        <div className="bg-white rounded-xl border border-slate-200 p-4 flex items-center gap-4">
-          <div className="bg-green-50 p-3 rounded-xl"><User className="w-5 h-5 text-brand-green" /></div>
-          <div>
-            <p className="text-xs text-slate-400 font-medium uppercase tracking-wider">Full Name</p>
-            <p className="font-bold text-brand-slate">{student.name || '—'}</p>
-          </div>
-        </div>
-        <div className="bg-white rounded-xl border border-slate-200 p-4 flex items-center gap-4">
-          <div className="bg-amber-50 p-3 rounded-xl"><School className="w-5 h-5 text-brand-amber" /></div>
-          <div>
-            <p className="text-xs text-slate-400 font-medium uppercase tracking-wider">Section</p>
-            <p className="font-bold text-brand-slate">{student.section?.name || '—'}</p>
-          </div>
+        ))}
+      </div>
+
+      {/* ── Academic summary ── */}
+      <div className="tg-card p-6">
+        <h3 className="font-display font-extrabold text-navy-700 mb-5 flex items-center gap-2">
+          <BookOpen className="w-4 h-4 text-navy-400" /> Academic Summary
+        </h3>
+        <div className="grid grid-cols-3 gap-3 text-center">
+          {[
+            { value: submissions.length, label: 'Outputs', tone: 'text-royal-600' },
+            { value: avgGrade > 0 ? `${avgGrade}%` : '—', label: 'Average', tone: 'text-aqua-700' },
+            { value: stars, label: 'Stars', tone: 'text-sun-700' },
+          ].map(stat => (
+            <div key={stat.label} className="bg-cream-100 rounded-2xl py-4">
+              <p className={`font-display text-3xl font-extrabold ${stat.tone}`}>{stat.value}</p>
+              <p className="text-xs font-bold text-navy-500 mt-1">{stat.label}</p>
+            </div>
+          ))}
         </div>
       </div>
 
-      {/* Stats */}
-      <div className="bg-white rounded-xl border border-slate-200 p-5">
-        <h3 className="font-bold text-slate-700 mb-4 flex items-center gap-2"><BookOpen className="w-4 h-4" /> Academic Summary</h3>
-        <div className="grid grid-cols-3 gap-4 text-center">
-          <div>
-            <p className="text-2xl font-extrabold text-brand-navy">{submissions.length}</p>
-            <p className="text-xs text-slate-500 mt-1">Outputs</p>
-          </div>
-          <div>
-            <p className="text-2xl font-extrabold text-brand-green">{avgGrade > 0 ? `${avgGrade}%` : '—'}</p>
-            <p className="text-xs text-slate-500 mt-1">Average</p>
-          </div>
-          <div>
-            <p className="text-2xl font-extrabold text-yellow-500">{stars}</p>
-            <p className="text-xs text-slate-500 mt-1">Stars</p>
-          </div>
-        </div>
-      </div>
-
-      {/* Default Password Notice */}
-      <div className="mt-4 p-4 bg-amber-50 border border-amber-200 rounded-xl text-xs text-amber-700">
-        <strong>Note:</strong> Default password is <code className="bg-amber-100 px-1 rounded">password123</code>. Ask your teacher for help if you need to change it.
+      {/* ── Default password notice ── */}
+      <div className="mt-4 p-4 bg-sun-100 border-2 border-sun-200 rounded-2xl text-xs text-navy-700 font-semibold">
+        <strong>Note:</strong> Default password is{' '}
+        <code className="bg-sun-200 px-1.5 py-0.5 rounded font-mono font-bold">password123</code>.
+        Ask your teacher for help if you need to change it.
       </div>
     </div>
   );

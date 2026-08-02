@@ -1,13 +1,37 @@
 import { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
-import { BookOpen, UserCircle, GraduationCap, Eye, EyeOff, Building2 } from 'lucide-react';
+import { BookOpen, UserCircle, GraduationCap, Eye, EyeOff, Building2, ArrowLeft, ArrowRight } from 'lucide-react';
 import { API_URL } from '../config';
 
 const ROLES = {
-  teacher: { label: 'Teacher', icon: UserCircle, accent: 'text-brand-navy', header: 'bg-brand-navy', button: 'bg-brand-navy hover:bg-blue-900', idLabel: 'Email Address', idPlaceholder: 'teacher@deped.gov.ph', idType: 'email', home: '/teacher/dashboard' },
-  student: { label: 'Student', icon: GraduationCap, accent: 'text-brand-green', header: 'bg-brand-green', button: 'bg-brand-green hover:bg-emerald-600', idLabel: 'Student ID', idPlaceholder: 'Enter your ID (e.g. RIZAL-001)', idType: 'text', home: '/student/dashboard' },
-  admin: { label: 'Admin', icon: Building2, accent: 'text-slate-700', header: 'bg-slate-800', button: 'bg-slate-800 hover:bg-slate-900', idLabel: 'Email Address', idPlaceholder: 'admin@school.edu.ph', idType: 'email', home: '/admin/teachers' },
+  teacher: {
+    label: 'Teacher', icon: UserCircle,
+    accent: 'text-royal-600', chip: 'bg-royal-500', panel: 'bg-royal-500',
+    button: 'bg-royal-500 hover:bg-royal-600 text-white',
+    idLabel: 'Email Address', idPlaceholder: 'teacher@deped.gov.ph', idType: 'email',
+    home: '/teacher/dashboard',
+    blurb: 'Your review queue, sections, and rubrics are waiting.',
+  },
+  student: {
+    label: 'Student', icon: GraduationCap,
+    accent: 'text-aqua-700', chip: 'bg-aqua-500', panel: 'bg-aqua-600',
+    button: 'bg-aqua-600 hover:bg-aqua-700 text-white',
+    idLabel: 'Student ID', idPlaceholder: 'Enter your ID (e.g. RIZAL-001)', idType: 'text',
+    home: '/student/dashboard',
+    blurb: 'Check your feedback, awards, and what’s due next.',
+  },
+  admin: {
+    label: 'Admin', icon: Building2,
+    accent: 'text-navy-700', chip: 'bg-navy-700', panel: 'bg-navy-700',
+    button: 'bg-navy-700 hover:bg-navy-800 text-white',
+    idLabel: 'Email Address', idPlaceholder: 'admin@school.edu.ph', idType: 'email',
+    home: '/admin/teachers',
+    blurb: 'Manage teachers, sections, curricula, and rubrics.',
+  },
 };
+
+// Decorative blob cast, echoing the landing page.
+const BLOBS = ['bg-sun-400', 'bg-magenta-500', 'bg-lilac-300', 'bg-lime-400'];
 
 export default function Login() {
   const [role, setRole] = useState('teacher'); // 'teacher' | 'student' | 'admin'
@@ -17,6 +41,8 @@ export default function Login() {
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
+
+  const cfg = ROLES[role];
 
   const handleLogin = async (e) => {
     e.preventDefault();
@@ -28,10 +54,10 @@ export default function Login() {
         body: JSON.stringify({ username: identifier, password, role: role.toUpperCase() })
       });
       const data = await response.json();
-      
+
       if (data.success) {
         localStorage.setItem('user', JSON.stringify(data.user));
-        navigate(ROLES[role].home);
+        navigate(cfg.home);
       } else {
         setErrorMsg('Invalid credentials. Please check your details and try again.');
       }
@@ -41,60 +67,107 @@ export default function Login() {
   };
 
   return (
-    <div className="min-h-screen bg-brand-bg flex items-center justify-center p-4">
-      <div className="max-w-md w-full bg-white rounded-2xl shadow-xl overflow-hidden">
-        <div className={`p-8 text-white text-center transition-colors duration-300 ${ROLES[role].header}`}>
-          <BookOpen className="w-12 h-12 mx-auto mb-4" />
-          <h1 className="text-3xl font-bold mb-2">TulongGuro</h1>
-          <p className="text-white/80">AI-Assisted Grading for Philippine Schools</p>
+    <div className="min-h-screen bg-cream-100 tg-dotgrid flex items-center justify-center p-4 sm:p-6">
+      <div className="w-full max-w-5xl grid lg:grid-cols-2 bg-white rounded-[2rem] shadow-card-lg overflow-hidden border-2 border-navy-700/5">
+
+        {/* ── Brand panel ── */}
+        <div className={`${cfg.panel} hidden lg:flex flex-col justify-between p-10 text-white transition-colors duration-500 relative overflow-hidden`}>
+          <div className="absolute -top-16 -right-12 w-56 h-56 rounded-full bg-white/10" aria-hidden="true" />
+          <div className="absolute -bottom-20 -left-16 w-64 h-64 rounded-full bg-white/5" aria-hidden="true" />
+
+          <div className="relative">
+            <Link to="/" className="inline-flex items-center gap-2.5 font-display text-2xl font-extrabold">
+              <span className="w-11 h-11 rounded-2xl bg-white/15 grid place-items-center">
+                <BookOpen className="w-5 h-5" />
+              </span>
+              TulongGuro
+            </Link>
+          </div>
+
+          <div className="relative">
+            <h2 className="font-display text-4xl font-extrabold leading-tight">
+              Welcome back.
+            </h2>
+            <p className="mt-4 text-white/80 leading-relaxed max-w-xs">{cfg.blurb}</p>
+
+            <div className="flex items-end gap-2.5 mt-12" aria-hidden="true">
+              {BLOBS.map((b, i) => (
+                <div
+                  key={b}
+                  className={`${b} w-12 rounded-full flex items-start justify-center pt-4 animate-float`}
+                  style={{ height: `${68 + i * 14}px`, animationDelay: `${i * 0.5}s` }}
+                >
+                  <div className="flex gap-1.5">
+                    <span className="w-1.5 h-1.5 rounded-full bg-navy-800" />
+                    <span className="w-1.5 h-1.5 rounded-full bg-navy-800" />
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <p className="relative text-xs font-semibold text-white/60">
+            AI-assisted grading for Philippine schools.
+          </p>
         </div>
 
-        <div className="p-8">
-          <div className="flex bg-slate-100 p-1 rounded-lg mb-8">
-            {Object.entries(ROLES).map(([key, cfg]) => (
+        {/* ── Form ── */}
+        <div className="p-7 sm:p-10">
+          <Link to="/" className="lg:hidden inline-flex items-center gap-1.5 text-sm font-bold text-navy-500 hover:text-royal-500 mb-6">
+            <ArrowLeft className="w-4 h-4" /> Back
+          </Link>
+
+          <h1 className="font-display text-3xl font-extrabold text-navy-700 mb-1.5">Log in</h1>
+          <p className="text-sm text-navy-500 mb-7">Choose your role to continue.</p>
+
+          {/* Role switcher */}
+          <div className="flex bg-cream-100 p-1.5 rounded-2xl mb-7 gap-1">
+            {Object.entries(ROLES).map(([key, r]) => (
               <button
                 key={key}
-                onClick={() => setRole(key)}
-                className={`flex-1 flex items-center justify-center py-2 px-2 rounded-md text-sm font-medium transition-all ${
-                  role === key ? `bg-white shadow ${cfg.accent}` : 'text-slate-500 hover:text-slate-700'
+                type="button"
+                onClick={() => { setRole(key); setErrorMsg(''); }}
+                className={`flex-1 flex items-center justify-center gap-1.5 py-2.5 px-2 rounded-xl text-sm font-bold transition-all ${
+                  role === key
+                    ? `bg-white shadow-pop ${r.accent}`
+                    : 'text-navy-400 hover:text-navy-600'
                 }`}
               >
-                <cfg.icon className="w-4 h-4 mr-1.5" />
-                {cfg.label}
+                <r.icon className="w-4 h-4" />
+                {r.label}
               </button>
             ))}
           </div>
 
           {/* autoComplete="off" throughout: shared classroom devices should not
               offer the previous user's credentials to the next one. */}
-          <form onSubmit={handleLogin} className="space-y-6" autoComplete="off">
+          <form onSubmit={handleLogin} className="space-y-5" autoComplete="off">
             <div>
-              <label className="block text-sm font-medium text-slate-700 mb-2">
-                {ROLES[role].idLabel}
-              </label>
+              <label className="tg-label">{cfg.idLabel}</label>
               <input
-                type={ROLES[role].idType}
+                type={cfg.idType}
                 required
                 name="tg-identifier"
                 autoComplete="off"
                 autoCorrect="off"
                 autoCapitalize="none"
                 spellCheck={false}
-                className="w-full px-4 py-3 rounded-lg border border-slate-200 focus:ring-2 focus:ring-brand-navy focus:border-transparent outline-none transition-all"
-                placeholder={ROLES[role].idPlaceholder}
+                className="tg-input"
+                placeholder={cfg.idPlaceholder}
                 value={identifier}
                 onChange={(e) => setIdentifier(e.target.value)}
               />
             </div>
+
             <div>
-              <label className="block text-sm font-medium text-slate-700 mb-2">Password</label>
+              <label className="tg-label">Password</label>
               <div className="relative">
                 <input
-                  type={showPassword ? "text" : "password"}
+                  type={showPassword ? 'text' : 'password'}
                   required
                   name="tg-password"
                   autoComplete="new-password"
-                  className="w-full px-4 py-3 rounded-lg border border-slate-200 focus:ring-2 focus:ring-brand-navy focus:border-transparent outline-none transition-all pr-12"
+                  className="tg-input pr-12"
                   placeholder="••••••••"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
@@ -102,21 +175,27 @@ export default function Login() {
                 <button
                   type="button"
                   onClick={() => setShowPassword(!showPassword)}
-                  className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 focus:outline-none"
+                  className="absolute right-4 top-1/2 -translate-y-1/2 text-navy-300 hover:text-navy-600"
+                  aria-label={showPassword ? 'Hide password' : 'Show password'}
                 >
                   {showPassword ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
                 </button>
               </div>
             </div>
-            
+
             <button
               type="submit"
-              className={`w-full py-3 rounded-lg text-white font-medium transition-all ${ROLES[role].button}`}
+              className={`w-full rounded-full py-4 font-bold text-sm shadow-pop transition-all
+                          active:translate-y-1 active:shadow-none ${cfg.button}`}
             >
-              Log In as {ROLES[role].label}
+              Log in as {cfg.label}
             </button>
+
             {errorMsg && (
-              <div className="mt-4 p-3 bg-red-50 border border-red-200 text-red-600 text-sm rounded-lg text-center font-medium">
+              <div
+                role="alert"
+                className="p-3.5 bg-red-50 border-2 border-red-200 text-red-600 text-sm rounded-2xl text-center font-bold"
+              >
                 {errorMsg}
               </div>
             )}
@@ -124,20 +203,22 @@ export default function Login() {
 
           {/* Teacher and student accounts are created for you — only a school
               registers itself, which creates its first admin. */}
-          {role === 'admin' ? (
-            <p className="text-center mt-6 text-sm text-slate-600">
-              School not registered yet?{' '}
-              <Link to="/register" className="text-slate-800 font-semibold hover:underline">
-                Register your school
-              </Link>
-            </p>
-          ) : (
-            <p className="text-center mt-6 text-xs text-slate-400 leading-relaxed">
-              {role === 'teacher'
-                ? 'Teacher accounts are created by your school admin. Ask them for your login details.'
-                : 'Student accounts are created by your teacher. Ask them for your Student ID.'}
-            </p>
-          )}
+          <div className="mt-7 pt-6 border-t-2 border-cream-200">
+            {role === 'admin' ? (
+              <p className="text-center text-sm text-navy-500">
+                School not registered yet?{' '}
+                <Link to="/register" className="font-extrabold text-royal-500 hover:text-royal-600 inline-flex items-center gap-1">
+                  Register your school <ArrowRight className="w-3.5 h-3.5" />
+                </Link>
+              </p>
+            ) : (
+              <p className="text-center text-xs text-navy-400 leading-relaxed font-semibold">
+                {role === 'teacher'
+                  ? 'Teacher accounts are created by your school admin. Ask them for your login details.'
+                  : 'Student accounts are created by your teacher. Ask them for your Student ID.'}
+              </p>
+            )}
+          </div>
         </div>
       </div>
     </div>

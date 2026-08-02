@@ -18,58 +18,94 @@ export default function AdminLayout() {
 
   // Keep non-admins out of the console entirely.
   useEffect(() => {
-    if (user.role !== 'ADMIN') navigate('/', { replace: true });
+    if (user.role !== 'ADMIN') navigate('/login', { replace: true });
   }, [user.role, navigate]);
 
   if (user.role !== 'ADMIN') return null;
 
   return (
-    <div className="min-h-screen bg-brand-bg flex flex-col pb-16 md:pb-0 md:flex-row">
-      <nav className="hidden md:flex flex-col w-64 bg-white border-r border-slate-200">
-        <div className="p-4 border-b border-slate-200">
-          <p className="font-bold text-xl text-brand-navy">TulongGuro</p>
-          <p className="text-[11px] font-bold uppercase tracking-wider text-slate-400 mt-0.5">School Admin</p>
+    <div className="min-h-screen bg-cream-100 flex flex-col pb-24 md:pb-0 md:flex-row">
+      {/* ── Desktop sidebar ──
+          Admin takes gold accents on the shared navy panel, so the console is
+          distinguishable at a glance from the teacher and student apps. */}
+      <nav className="hidden md:flex flex-col w-64 bg-navy-700 shrink-0 rounded-r-[2rem] overflow-hidden">
+        <Link to="/admin/teachers" className="flex items-center gap-3 px-5 py-6">
+          <span className="w-11 h-11 rounded-2xl bg-sun-400 text-navy-800 grid place-items-center shadow-pop shrink-0">
+            <BookOpen className="w-5 h-5" />
+          </span>
+          <span className="flex flex-col leading-none min-w-0">
+            <span className="font-display text-lg font-extrabold text-white truncate">TulongGuro</span>
+            <span className="text-[10px] font-extrabold uppercase tracking-wider text-sun-300 mt-1">School Admin</span>
+          </span>
+        </Link>
+
+        <div className="px-4 pb-4">
+          <div className="bg-white/5 rounded-2xl p-3">
+            <SchoolBadge size="sm" tone="onColor" />
+          </div>
         </div>
-        <div className="px-4 py-3 border-b border-slate-100">
-          <SchoolBadge size="sm" />
-        </div>
-        <div className="flex-1 py-4">
+
+        <div className="flex-1 px-3 space-y-1 overflow-y-auto">
           {NAV.map(item => {
             const isActive = location.pathname.startsWith(item.path);
             return (
               <Link key={item.name} to={item.path}
-                className={cn('flex items-center px-4 py-3 text-sm font-medium',
-                  isActive ? 'bg-blue-50 text-brand-navy border-l-4 border-brand-navy' : 'text-slate-600 hover:bg-slate-50')}>
-                <item.icon className="w-5 h-5 mr-3" />
+                className={cn(
+                  'flex items-center gap-3 px-3 py-3 rounded-2xl text-sm font-bold transition-all',
+                  isActive
+                    ? 'bg-sun-400 text-navy-800 shadow-pop'
+                    : 'text-sky-200/70 hover:bg-white/10 hover:text-white'
+                )}>
+                <span className={cn('w-8 h-8 rounded-xl grid place-items-center shrink-0',
+                  isActive ? 'bg-navy-800/15' : 'bg-white/5')}>
+                  <item.icon className="w-4 h-4" />
+                </span>
                 {item.name}
               </Link>
             );
           })}
         </div>
-        <div className="p-4 border-t border-slate-200">
-          <p className="text-xs text-slate-400 mb-2 truncate">{user.name}</p>
-          <Link to="/" onClick={() => localStorage.removeItem('user')}
-            className="flex items-center text-sm font-medium text-slate-600 hover:text-red-600">
-            <LogOut className="w-5 h-5 mr-3" /> Sign Out
+
+        {/* Account block */}
+        <div className="p-3 mt-2 border-t border-white/10">
+          <div className="flex items-center gap-3 px-2 py-2.5 mb-1">
+            <span className="w-9 h-9 rounded-xl bg-sun-400 text-navy-800 grid place-items-center font-extrabold text-sm shrink-0">
+              {(user.name || 'A').charAt(0)}
+            </span>
+            <div className="min-w-0">
+              <p className="text-sm font-bold text-white truncate">{user.name || 'Admin'}</p>
+              <p className="text-[11px] font-semibold text-sky-200/60 truncate">{user.email || 'Administrator'}</p>
+            </div>
+          </div>
+          <Link to="/login" onClick={() => localStorage.removeItem('user')}
+            className="flex items-center gap-3 px-3 py-2.5 rounded-2xl text-sm font-bold text-sky-200/70 hover:bg-red-500 hover:text-white transition-colors">
+            <LogOut className="w-4 h-4" /> Sign Out
           </Link>
         </div>
       </nav>
 
-      <main className="flex-1 overflow-y-auto"><Outlet /></main>
+      <main className="flex-1 min-w-0 overflow-y-auto"><Outlet /></main>
 
-      {/* Mobile bottom nav */}
-      <nav className="fixed bottom-0 left-0 right-0 bg-white border-t border-slate-200 flex justify-around p-2 md:hidden z-50">
-        {NAV.map(item => {
-          const isActive = location.pathname.startsWith(item.path);
-          return (
-            <Link key={item.name} to={item.path}
-              className={cn('flex flex-col items-center p-2 text-xs font-medium rounded-lg transition-colors',
-                isActive ? 'text-brand-navy' : 'text-slate-400 hover:text-brand-slate')}>
-              <item.icon className="w-6 h-6 mb-1" />
-              {item.name}
-            </Link>
-          );
-        })}
+      {/* ── Mobile floating dock ── */}
+      <nav className="tg-bottom-nav fixed bottom-0 left-0 right-0 px-3 pt-2 md:hidden z-50 pointer-events-none">
+        <div className="pointer-events-auto flex items-center justify-around gap-1 bg-navy-700 rounded-[1.5rem] p-2 shadow-card-lg">
+          {NAV.map(item => {
+            const isActive = location.pathname.startsWith(item.path);
+            return (
+              <Link key={item.name} to={item.path}
+                aria-label={item.name}
+                className={cn(
+                  'flex items-center justify-center gap-1.5 rounded-2xl transition-all min-h-11',
+                  isActive
+                    ? 'bg-sun-400 text-navy-800 px-4 py-2.5 font-extrabold text-xs'
+                    : 'text-sky-200/60 px-4 py-2.5 active:bg-white/10'
+                )}>
+                <item.icon className="w-5 h-5 shrink-0" />
+                {isActive && <span className="whitespace-nowrap">{item.name}</span>}
+              </Link>
+            );
+          })}
+        </div>
       </nav>
     </div>
   );

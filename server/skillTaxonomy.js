@@ -5,11 +5,16 @@
  * chart works regardless of which rubric a teacher actually used.
  */
 
+// Series colours are a validated categorical set drawn from the TulongGuro
+// palette: they clear the lightness band, chroma floor, colour-vision-deficiency
+// separation, and 3:1 contrast against a light chart surface. Re-validate before
+// changing any of them — adjacent-pair separation is what makes the four lines
+// distinguishable to a colourblind reader.
 const SKILLS = [
-  { id: 'reading', label: 'Reading Comprehension', color: '#3b82f6' },
-  { id: 'critical-media', label: 'Critical & Media Literacy', color: '#a855f7' },
-  { id: 'writing', label: 'Writing & Composition', color: '#22c55e' },
-  { id: 'language', label: 'Grammar & Vocabulary', color: '#f59e0b' }
+  { id: 'reading', label: 'Reading Comprehension', color: '#2B59C3' },
+  { id: 'critical-media', label: 'Critical & Media Literacy', color: '#D5176A' },
+  { id: 'writing', label: 'Writing & Composition', color: '#00A39E' },
+  { id: 'language', label: 'Grammar & Vocabulary', color: '#9C7F12' }
 ];
 
 // Keyword/phrase lists seeded from the 8 built-in rubric templates' own
