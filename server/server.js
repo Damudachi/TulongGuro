@@ -34,6 +34,7 @@ app.use(cors());
 app.use(express.json());
 
 // File storage: Supabase Storage in production, local disk in development
+const STORAGE_BUCKET = process.env.SUPABASE_BUCKET || 'uploads';
 const useSupabase = !!(process.env.SUPABASE_URL && process.env.SUPABASE_KEY);
 let supabase = null;
 if (useSupabase) {
@@ -51,6 +52,26 @@ if (useSupabase) {
     '   which makes previously uploaded work show as a broken image.\n' +
     '   Fix: set SUPABASE_URL and SUPABASE_KEY, and create a PUBLIC storage\n' +
     '   bucket named "uploads" in your Supabase project.\n'
+  );
+}
+
+/**
+ * Confirm at boot that the bucket is actually usable, rather than finding out
+ * one upload at a time. A wrong key or a missing bucket is a deploy-time
+ * mistake, and it should read like one in the logs.
+ */
+async function verifyStorage() {
+  if (!useSupabase) return;
+  const { error } = await supabase.storage.from(STORAGE_BUCKET).list('', { limit: 1 });
+  if (!error) {
+    console.log(`☁ Storage bucket "${STORAGE_BUCKET}" is reachable`);
+    return;
+  }
+  console.error(
+    `\n⚠  STORAGE BUCKET "${STORAGE_BUCKET}" IS NOT USABLE — ${error.message}\n` +
+    '   Uploads will fail until this is fixed. Check that:\n' +
+    `   • a PUBLIC bucket named "${STORAGE_BUCKET}" exists in this project, and\n` +
+    '   • SUPABASE_KEY is the service_role key (the anon key cannot write).\n'
   );
 }
 
@@ -80,22 +101,30 @@ const storage = multer.diskStorage({
 });
 const upload = multer({ storage });
 
-// Helper: upload a local file to Supabase Storage and return public URL.
-// Falls back to a local /uploads/ path when Supabase Storage isn't configured
-// (or the upload fails), so every persisted file reference — submissions,
-// curriculum files, activity attachments — goes through one consistent path.
+/**
+ * Persist a local file and return the URL to store in the database. Every
+ * persisted file reference — submissions, school logos, curriculum files,
+ * activity attachments — goes through here.
+ *
+ * With Supabase configured this throws rather than falling back to local disk
+ * when the upload fails. The fallback used to look like resilience, but the
+ * local path it returned was written to the database and the file behind it
+ * vanished on the next redeploy — so a storage misconfiguration surfaced days
+ * later as an unexplained broken image instead of at the moment of upload.
+ * Failing here means the student sees "upload failed" and can retry.
+ */
 async function uploadToCloud(localPath, filename, { folder = 'submissions', contentType = 'image/jpeg' } = {}) {
   if (!useSupabase) return `/uploads/${filename}`;
   const buffer = fs.readFileSync(localPath);
   const remotePath = `${folder}/${filename}`;
-  const { data, error } = await supabase.storage
-    .from('uploads')
+  const { error } = await supabase.storage
+    .from(STORAGE_BUCKET)
     .upload(remotePath, buffer, { contentType, upsert: true });
   if (error) {
-    console.log('⚠ Supabase upload failed, using local:', error.message);
-    return `/uploads/${filename}`;
+    console.error(`⚠ Supabase upload failed for ${remotePath}:`, error.message);
+    throw new Error(`Could not save the file to storage: ${error.message}`);
   }
-  const { data: urlData } = supabase.storage.from('uploads').getPublicUrl(remotePath);
+  const { data: urlData } = supabase.storage.from(STORAGE_BUCKET).getPublicUrl(remotePath);
   // Clean up local temp file in production
   if (process.env.NODE_ENV === 'production') {
     try { fs.unlinkSync(localPath); } catch {}
@@ -382,10 +411,19 @@ app.get('/api/health/storage', async (req, res) => {
       else { missing++; if (missingSamples.length < 5) missingSamples.push(url); }
     }
 
+    // Prove the bucket is actually writable-adjacent (reachable + named right),
+    // so this endpoint distinguishes "not configured" from "configured wrong".
+    let bucket = null;
+    if (useSupabase) {
+      const { error } = await supabase.storage.from(STORAGE_BUCKET).list('', { limit: 1 });
+      bucket = { name: STORAGE_BUCKET, reachable: !error, error: error?.message || null };
+    }
+
     res.json({
       success: true,
       driver: useSupabase ? 'supabase-storage' : 'local-disk',
       durable: useSupabase,
+      bucket,
       totalWithImage: subs.length,
       remote,
       onDisk,
@@ -2458,9 +2496,27 @@ app.post('/api/teacher/submissions/:id/analyze', async (req, res) => {
     if (!sub) return res.status(404).json({ error: 'Submission not found' });
     if (sub.aiScore !== null) return res.status(400).json({ error: 'Already analyzed by AI' });
 
-    // imageUrl is either a local /uploads/... path or a Supabase Storage URL
-    const { path: imagePath, isTemp } = await resolveLocalImagePath(sub.imageUrl);
-    if (!fs.existsSync(imagePath)) return res.status(404).json({ error: 'Image file not found on server' });
+    // imageUrl is either a local /uploads/... path or a Supabase Storage URL.
+    // Submissions uploaded before storage moved to Supabase point at a disk that
+    // no longer exists, so say what actually has to happen rather than leaving
+    // the teacher on a spinner — the file is unrecoverable and needs re-uploading.
+    const missingImage = () => res.status(409).json({
+      success: false,
+      error: 'The photo for this submission is no longer stored on the server, so it cannot be checked. Ask the student to submit again, or upload a replacement photo yourself.',
+      code: 'IMAGE_UNAVAILABLE'
+    });
+
+    if (!sub.imageUrl) return missingImage();
+    let imagePath, isTemp;
+    try {
+      ({ path: imagePath, isTemp } = await resolveLocalImagePath(sub.imageUrl));
+    } catch {
+      return missingImage();
+    }
+    if (!fs.existsSync(imagePath)) {
+      if (isTemp) { try { fs.unlinkSync(imagePath); } catch {} }
+      return missingImage();
+    }
 
     let aiData;
     try {
@@ -4030,4 +4086,7 @@ app.delete('/api/admin/purge-grades', async (req, res) => {
   }
 });
 
-app.listen(port, () => console.log(`TulongGuro API running on port ${port}`));
+app.listen(port, () => {
+  console.log(`TulongGuro API running on port ${port}`);
+  verifyStorage();
+});
