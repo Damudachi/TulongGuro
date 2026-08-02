@@ -415,6 +415,21 @@ app.post('/api/auth/login', async (req, res) => {
 });
 
 /**
+ * Root. This service is API-only — the front end is deployed separately — so
+ * hitting the bare host used to return Express's "Cannot GET /", which reads
+ * like a broken deploy when it is in fact a healthy one. Say so explicitly,
+ * and point at the health endpoint. No config or secrets here: it is public.
+ */
+app.get('/', (req, res) => {
+  res.json({
+    service: 'TulongGuro API',
+    status: 'ok',
+    message: 'This is the API server. The web app is deployed separately.',
+    health: '/api/health/storage'
+  });
+});
+
+/**
  * Storage health — answers "why are images broken?" without shell access.
  * Reports where uploads go and how many stored images are actually reachable.
  */
