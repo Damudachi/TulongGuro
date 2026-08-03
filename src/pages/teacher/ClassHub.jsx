@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
-import { Plus, Search, FileText, User, ArrowLeft, Clock, CheckCircle2, AlertCircle, UploadCloud, Trash2, Eye, X } from 'lucide-react';
+import { Plus, Search, FileText, User, ArrowLeft, Clock, CheckCircle2, AlertCircle, UploadCloud, Trash2, Eye, X, PenLine } from 'lucide-react';
 import { API_URL } from '../../config';
 import { ACTIVITY_TYPES } from '../../constants/activityTypes';
 
@@ -269,7 +269,14 @@ export default function ClassHub() {
                     </div>
                   </div>
                 </div>
-                {isStudentSubmit ? (
+                {activity.submissionMode === 'MANUAL_SCORE' ? (
+                  // No papers to scan — this one goes straight to the score sheet.
+                  <Link to={`/teacher/scores?activityId=${activity.id}&classId=${classId}`}
+                    onClick={(e) => e.stopPropagation()}
+                    className="shrink-0 text-sm bg-lilac-500 text-white px-3 py-1.5 rounded-md font-medium hover:bg-lilac-600 transition-colors flex items-center gap-1">
+                    <PenLine className="w-4 h-4" /> Enter Scores
+                  </Link>
+                ) : isStudentSubmit ? (
                   <div className="flex flex-col gap-1 shrink-0">
                     <Link to={`/teacher/batch-upload?activityId=${activity.id}&classId=${classId}`}
                       onClick={(e) => e.stopPropagation()}

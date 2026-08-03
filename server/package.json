@@ -6,6 +6,8 @@
   "scripts": {
     "dev": "nodemon server.js",
     "start": "node server.js",
+    "verify:grading": "node scripts/verify-grading.js",
+    "report:grades": "node scripts/grade-migration-report.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],

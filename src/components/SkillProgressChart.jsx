@@ -5,12 +5,29 @@ import { API_URL } from '../config';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
 
+const fmtDate = (d) =>
+  d ? new Date(d).toLocaleDateString('en-PH', { month: 'short', day: 'numeric', year: 'numeric' }) : '';
+
+/** Axis labels are activity titles, which run long — trim for the tick only. */
+const shortLabel = (s) => (s && s.length > 14 ? `${s.slice(0, 13)}…` : s || '');
+
 function CustomTooltip({ active, payload, label }) {
   if (!active || !payload?.length) return null;
+  // Every series carries the same point payload, so the first one has the row.
+  const row = payload[0]?.payload || {};
+  const acts = row.activities || [];
   return (
     // Text stays in ink tokens; the swatch beside it carries series identity.
-    <div className="bg-white border-2 border-cream-200 rounded-2xl shadow-card px-3.5 py-2.5 text-xs">
-      <p className="font-extrabold text-navy-700 mb-1.5">{label}</p>
+    <div className="bg-white border-2 border-cream-200 rounded-2xl shadow-card px-3.5 py-2.5 text-xs max-w-[16rem]">
+      <p className="font-extrabold text-navy-700">{label}</p>
+      {/* The date moved here when the axis switched to activities — it is still
+          useful context, just not what identifies the point. */}
+      {acts.length === 1 && acts[0].date && (
+        <p className="text-navy-400 font-semibold mb-1.5">{fmtDate(acts[0].date)}</p>
+      )}
+      {acts.length > 1 && (
+        <p className="text-navy-400 font-semibold mb-1.5">{acts.length} activities</p>
+      )}
       {payload.filter(p => p.value !== null && p.value !== undefined).map(p => (
         <p key={p.dataKey} className="flex items-center gap-1.5 text-navy-600">
           <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: p.color }} />
@@ -44,7 +61,7 @@ export default function SkillProgressChart({
   const chartData = useMemo(() => {
     if (!data?.hasData) return [];
     return data.weeks.map((w, i) => {
-      const row = { week: w.week, label: w.label };
+      const row = { week: w.week, label: w.label, activities: w.activities || [] };
       data.skills.forEach(s => { row[s.id] = data.series[s.id]?.[i]?.pct ?? null; });
       return row;
     });
@@ -97,7 +114,7 @@ export default function SkillProgressChart({
         <TrendingUp className="w-4 h-4 text-aqua-600" /> {title}
       </h2>
       {data.mode === 'activity' && (
-        <p className="text-xs text-navy-400 mb-3 font-semibold">Showing progress per graded activity — switches to a weekly view once there's a few more weeks of history.</p>
+        <p className="text-xs text-navy-400 mb-3 font-semibold">One point per graded activity — switches to a weekly view once there's a few more weeks of history.</p>
       )}
 
       {/* Tabs */}
@@ -132,7 +149,8 @@ export default function SkillProgressChart({
         <ResponsiveContainer width="100%" height="100%">
           <LineChart data={visibleChartData} margin={{ top: 5, right: 12, left: -12, bottom: 0 }}>
             <CartesianGrid strokeDasharray="3 3" stroke="#EDEFF6" />
-            <XAxis dataKey="label" interval={tickInterval} tick={{ fontSize: 11, fill: '#5F6B8F' }} axisLine={{ stroke: '#DDE1EE' }} tickLine={false} />
+            <XAxis dataKey="label" interval={tickInterval} tickFormatter={shortLabel}
+              tick={{ fontSize: 11, fill: '#5F6B8F' }} axisLine={{ stroke: '#DDE1EE' }} tickLine={false} />
             <YAxis domain={[0, 100]} unit="%" tick={{ fontSize: 11, fill: '#5F6B8F' }} axisLine={{ stroke: '#DDE1EE' }} tickLine={false} width={40} />
             <Tooltip content={<CustomTooltip />} />
             {activeTab === 'summary' ? (
@@ -150,6 +168,49 @@ export default function SkillProgressChart({
           </LineChart>
         </ResponsiveContainer>
       </div>
+
+      {/* ── What's actually in this line ──
+          A skill chart is hard to act on without knowing which outputs produced
+          it. On a skill tab this lists only the activities that were scored for
+          that skill — an activity whose rubric never touched Punctuation does
+          not belong under the Punctuation chart, even though it is in the
+          student's history. */}
+      {(() => {
+        const rows = visibleChartData
+          .flatMap(p => p.activities || [])
+          .filter(a => !activeSkill || (a.skills || []).includes(activeSkill.id));
+        if (rows.length === 0) {
+          return activeSkill ? (
+            <p className="mt-4 pt-4 border-t-2 border-cream-200 text-xs text-navy-400">
+              No graded activity has scored {activeSkill.label} yet.
+            </p>
+          ) : null;
+        }
+        return (
+          <div className="mt-4 pt-4 border-t-2 border-cream-200">
+            <p className="text-[10px] font-extrabold uppercase tracking-wider text-navy-400 mb-2.5">
+              {activeSkill
+                ? `${rows.length} activit${rows.length === 1 ? 'y' : 'ies'} scored for ${activeSkill.label}`
+                : `${rows.length} graded activit${rows.length === 1 ? 'y' : 'ies'} in this chart`}
+            </p>
+            <ul className="space-y-1.5">
+              {rows.map((a, i) => (
+                <li key={`${a.submissionId || a.activityId}-${i}`}
+                  className="flex items-center gap-2.5 text-xs">
+                  <span className="w-5 h-5 rounded-lg bg-cream-200 text-navy-500 grid place-items-center font-extrabold text-[10px] shrink-0">
+                    {i + 1}
+                  </span>
+                  <span className="font-bold text-navy-700 truncate flex-1 min-w-0">{a.title}</span>
+                  {a.date && <span className="text-navy-400 font-semibold shrink-0">{fmtDate(a.date)}</span>}
+                  {typeof a.percent === 'number' && (
+                    <span className="font-extrabold text-navy-600 shrink-0 w-10 text-right">{a.percent}%</span>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </div>
+        );
+      })()}
     </div>
   );
 }

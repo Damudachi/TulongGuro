@@ -16,11 +16,50 @@ model School {
   /// initials placeholder and the default TulongGuro palette.
   logoUrl         String?
   brandColor      String?
+  /// Grade at or above which a student is considered passing. DepEd uses 75.
+  /// School-wide on purpose: "who needs help" has to mean the same thing in
+  /// every class, or the analytics can't be compared across sections.
+  passingGrade    Int              @default(75)
+  /// Whether report-card grades run through the DepEd transmutation table.
+  /// Ships OFF. Transmutation has a floor of 60 and never lowers a grade, so
+  /// switching it on moves every grade upward — on the current data by up to
+  /// 11 points, enough to flip a failing student to passing. That belongs to a
+  /// deliberate decision by the school, not to whenever this code deploys.
+  /// Analytics and at-risk detection always use the untransmuted grade.
+  useTransmutation Boolean         @default(false)
   createdAt       DateTime         @default(now())
   curriculums     Curriculum[]
+  gradingPolicies GradingPolicy[]
   rubricTemplates RubricTemplate[]
   sections        Section[]
   users           User[]
+}
+
+/// Component weights for one subject, e.g. Written Work 30 / Performance Task
+/// 50 / Quarterly Assessment 20.
+///
+/// Keyed the same way as Curriculum — (school, gradeLevel, subject) — because
+/// that is exactly the scope DepEd weights vary by, so a school that has set up
+/// its curriculum already has the right buckets to hang these off.
+///
+/// Admin-owned. Deliberately no teacher-level override: a private rubric only
+/// affects one activity, but a private weighting would mean two students in the
+/// same subject get different quarter grades from identical scores.
+model GradingPolicy {
+  id         String   @id @default(uuid())
+  schoolId   String
+  gradeLevel String
+  subject    String
+  /// Percentages; stored as given and renormalised at read time so a policy
+  /// that doesn't total 100 degrades sensibly instead of corrupting grades.
+  wwWeight   Int      @default(30)
+  ptWeight   Int      @default(50)
+  qaWeight   Int      @default(20)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  school     School   @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+
+  @@unique([schoolId, gradeLevel, subject])
 }
 
 model User {
@@ -133,6 +172,11 @@ model Activity {
   rubric          String?
   classLessonId   String?
   maxAttempts     Int          @default(1)
+  /// Which grading component this counts toward: WW, PT or QA. Null means the
+  /// activity predates components and is treated as Written Work, so existing
+  /// grades keep working untouched. Distinct from `type`, which is the
+  /// pedagogical kind ("Essay") — a school needs both.
+  component       String?
   createdAt       DateTime     @default(now())
   class           Class        @relation(fields: [classId], references: [id])
   classLesson     ClassLesson? @relation(fields: [classLessonId], references: [id])

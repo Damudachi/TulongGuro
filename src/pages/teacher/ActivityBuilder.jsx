@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 import { useNavigate, useSearchParams, useParams } from 'react-router-dom';
-import { ArrowLeft, CheckCircle2, Plus, Camera, Users, Upload, FileText, X, Trash2, Loader2, Save } from 'lucide-react';
+import { ArrowLeft, CheckCircle2, Plus, Camera, Users, Upload, FileText, X, Trash2, Loader2, Save, PenLine } from 'lucide-react';
 import { API_URL } from '../../config';
 import { ACTIVITY_TYPES } from '../../constants/activityTypes';
 
@@ -118,6 +118,7 @@ export default function ActivityBuilder() {
     instructions: '',
     submissionMode: 'TEACHER_UPLOAD',
     maxAttempts: 1,
+    component: 'WW',
   });
 
   // ── Fetch topics on mount ──
@@ -166,6 +167,7 @@ export default function ActivityBuilder() {
               instructions: activity.instructions || '',
               submissionMode: activity.submissionMode || 'TEACHER_UPLOAD',
               maxAttempts: activity.maxAttempts || 1,
+              component: activity.component || 'WW',
             });
             // Pre-fill rubric if it exists
             if (activity.rubric) {
@@ -418,8 +420,8 @@ export default function ActivityBuilder() {
         {/* ── SUBMISSION MODE ── */}
         <div className="bg-white p-6 rounded-xl border-2 border-brand-navy/10 shadow-sm">
           <h2 className="text-base font-bold text-brand-slate mb-1">How will students submit?</h2>
-          <p className="text-xs text-slate-500 mb-4">Choose who uploads the photo of the student output.</p>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <p className="text-xs text-slate-500 mb-4">Choose who uploads the photo of the student output — or skip photos entirely and just record scores.</p>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             <button type="button" onClick={() => setForm({ ...form, submissionMode: 'TEACHER_UPLOAD' })}
               className={cn('p-4 rounded-xl border-2 text-left flex flex-col gap-2 transition-all',
                 form.submissionMode === 'TEACHER_UPLOAD' ? 'border-brand-navy bg-blue-50 shadow' : 'border-slate-200 hover:border-brand-navy/40')}>
@@ -444,6 +446,44 @@ export default function ActivityBuilder() {
               </div>
               {form.submissionMode === 'STUDENT_SUBMIT' && <span className="text-xs font-bold text-brand-green flex items-center gap-1"><CheckCircle2 className="w-3.5 h-3.5" /> Selected</span>}
             </button>
+            {/* No photo, no AI — for work that was marked in the room: recitation,
+                an oral quiz, a board exercise. The score still counts toward the
+                student's average like any other activity. */}
+            <button type="button" onClick={() => setForm({ ...form, submissionMode: 'MANUAL_SCORE' })}
+              className={cn('p-4 rounded-xl border-2 text-left flex flex-col gap-2 transition-all',
+                form.submissionMode === 'MANUAL_SCORE' ? 'border-lilac-500 bg-lilac-50 shadow' : 'border-slate-200 hover:border-lilac-400')}>
+              <div className={cn('p-2 rounded-lg w-fit', form.submissionMode === 'MANUAL_SCORE' ? 'bg-lilac-500 text-white' : 'bg-slate-100 text-slate-500')}>
+                <PenLine className="w-5 h-5" />
+              </div>
+              <div>
+                <p className="font-bold text-brand-slate text-sm">✍️ Scores Only</p>
+                <p className="text-xs text-slate-500 mt-0.5">No photo or AI. Type each student's points straight into the class list — for recitation, oral quizzes, or seatwork marked on the spot.</p>
+              </div>
+              {form.submissionMode === 'MANUAL_SCORE' && <span className="text-xs font-bold text-lilac-700 flex items-center gap-1"><CheckCircle2 className="w-3.5 h-3.5" /> Selected</span>}
+            </button>
+          </div>
+        </div>
+
+        {/* ── GRADING COMPONENT ── */}
+        <div className="bg-white p-6 rounded-xl border border-slate-200">
+          <h2 className="text-base font-bold text-brand-slate mb-1">What does this count as?</h2>
+          <p className="text-xs text-slate-500 mb-4">
+            Your school sets what each component is worth. Within a component, scores are
+            weighted by points — a 50-point activity counts half as much as a 100-point one.
+          </p>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            {[
+              { key: 'WW', label: 'Written Work', hint: 'Quizzes, seatwork, written exercises' },
+              { key: 'PT', label: 'Performance Task', hint: 'Essays, projects, demonstrations' },
+              { key: 'QA', label: 'Quarterly Assessment', hint: 'The quarterly exam' },
+            ].map(c => (
+              <button key={c.key} type="button" onClick={() => setForm({ ...form, component: c.key })}
+                className={cn('p-3 rounded-xl border-2 text-left transition-all',
+                  form.component === c.key ? 'border-brand-navy bg-blue-50 shadow' : 'border-slate-200 hover:border-brand-navy/40')}>
+                <p className="font-bold text-brand-slate text-sm">{c.label}</p>
+                <p className="text-[11px] text-slate-500 mt-0.5">{c.hint}</p>
+              </button>
+            ))}
           </div>
         </div>
 

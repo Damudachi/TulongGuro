@@ -18,6 +18,7 @@ const sharp = require('sharp');
 const { getAllTopics, getTopicById, getTopicAIGuidance } = require('./depedTopics');
 const { getAllRubricTemplates, getRubricTemplateById } = require('./rubricTemplates');
 const { SKILLS, classifyCriterion } = require('./skillTaxonomy');
+const grading = require('./grading');
 
 require('dotenv').config({ path: path.join(__dirname, '.env') });
 
@@ -26,6 +27,70 @@ const prisma = new PrismaClient();
 const port = process.env.PORT || 3000;
 
 const BCRYPT_SALT_ROUNDS = 10;
+
+// ─────────────────────────────────────────
+// GRADING
+//
+// One implementation of "what is this student's average", shared by the
+// dashboard, analytics, gradebook and exports. Each of those used to compute
+// it inline as a mean of activity percentages, which quietly made a 50-point
+// activity count as much as a 100-point one; grading.js sums raw points
+// instead. See scripts/grade-migration-report.js for the effect on real data.
+// ─────────────────────────────────────────
+
+/** School-wide grading settings, with DepEd defaults for schools that predate them. */
+async function gradingSettingsFor(schoolId) {
+  if (!schoolId) return { passingGrade: grading.PASSING_GRADE, useTransmutation: false };
+  const school = await prisma.school.findUnique({
+    where: { id: schoolId },
+    select: { passingGrade: true, useTransmutation: true }
+  });
+  return {
+    passingGrade: school?.passingGrade ?? grading.PASSING_GRADE,
+    useTransmutation: school?.useTransmutation ?? false,
+  };
+}
+
+/**
+ * Component weights for a subject, falling back to the DepEd defaults when the
+ * school has not set an explicit policy — so grading works on day one and the
+ * admin screen only has to handle the exceptions.
+ */
+async function gradingPolicyFor(schoolId, gradeLevel, subject) {
+  if (schoolId && gradeLevel && subject) {
+    const p = await prisma.gradingPolicy.findUnique({
+      where: { schoolId_gradeLevel_subject: { schoolId, gradeLevel, subject } },
+      select: { wwWeight: true, ptWeight: true, qaWeight: true }
+    });
+    if (p) return { WW: p.wwWeight, PT: p.ptWeight, QA: p.qaWeight };
+  }
+  return grading.defaultPolicyFor(subject);
+}
+
+/** Submission rows -> the shape grading.js expects. */
+function toGradeEntries(subs) {
+  return (subs || [])
+    .map(s => ({
+      percent: s.hitlScore ?? s.aiScore ?? null,
+      points: s.activity?.points || 100,
+      component: s.activity?.component || 'WW',
+    }))
+    .filter(e => typeof e.percent === 'number');
+}
+
+/**
+ * The number analytics and at-risk checks must use: points-weighted, and
+ * never transmuted. The transmutation table has a floor of 60 and only ever
+ * raises a grade, so transmuting first hides the students who need help —
+ * on the current data it moves a 69 to an 80. Report cards transmute;
+ * intervention does not.
+ */
+function workingAverage(subs, policy) {
+  const entries = toGradeEntries(subs);
+  if (entries.length === 0) return null;
+  const { initialGrade } = grading.computeGrade(entries, policy, { transmute: false });
+  return initialGrade === null ? null : Math.round(initialGrade);
+}
 
 const aiApiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || '';
 const aiConfigured = Boolean(aiApiKey && aiApiKey !== 'mock' && aiApiKey !== 'YOUR_API_KEY');
@@ -411,6 +476,262 @@ app.post('/api/auth/login', async (req, res) => {
     res.json({ success: true, user: safeUser });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// ─────────────────────────────────────────
+// GRADING POLICY (admin / subject coordinator)
+//
+// Weights and thresholds are school policy, not per-teacher preference: if two
+// teachers of the same subject weight differently, their students' grades stop
+// being comparable and the analytics stop meaning anything. Teachers classify
+// each activity into a component; admins decide what the components are worth.
+// ─────────────────────────────────────────
+
+/** Current grading setup for a school: thresholds plus every explicit policy. */
+app.get('/api/admin/:adminId/grading', async (req, res) => {
+  try {
+    const admin = await requireAdminSchool(req.params.adminId);
+    const schoolId = admin.schoolId;
+    const school = await prisma.school.findUnique({
+      where: { id: schoolId },
+      select: { id: true, name: true, passingGrade: true, useTransmutation: true }
+    });
+    if (!school) return res.status(404).json({ success: false, error: 'School not found' });
+
+    const policies = await prisma.gradingPolicy.findMany({
+      where: { schoolId }, orderBy: [{ gradeLevel: 'asc' }, { subject: 'asc' }]
+    });
+
+    // Subjects that have no explicit policy still get graded, using the DepEd
+    // defaults — surface them so the admin can see what is actually in force
+    // rather than only what has been overridden.
+    const curriculums = await prisma.curriculum.findMany({
+      where: { schoolId }, select: { gradeLevel: true, subject: true }
+    });
+    const explicit = new Set(policies.map(p => `${p.gradeLevel}|${p.subject}`));
+    const usingDefaults = curriculums
+      .filter(c => !explicit.has(`${c.gradeLevel}|${c.subject}`))
+      .map(c => ({ ...c, weights: grading.defaultPolicyFor(c.subject), isDefault: true }));
+
+    res.json({
+      success: true,
+      school,
+      policies: policies.map(p => ({
+        id: p.id, gradeLevel: p.gradeLevel, subject: p.subject,
+        weights: { WW: p.wwWeight, PT: p.ptWeight, QA: p.qaWeight }, isDefault: false
+      })),
+      usingDefaults,
+      componentLabels: {
+        WW: 'Written Work', PT: 'Performance Task', QA: 'Quarterly Assessment'
+      }
+    });
+  } catch (e) {
+    sendAdminError(res, e);
+  }
+});
+
+/**
+ * School-wide analytics for the admin acting as subject coordinator.
+ *
+ * Deliberately a summary. A coordinator needs to know which sections and
+ * subjects are struggling and roughly who needs support — not to read any
+ * child's essay or the AI's feedback on it. So this returns averages, band
+ * counts and at-risk names, and never submission text, rubric detail or
+ * images. Teachers keep the per-student detail.
+ *
+ * Averages are the untransmuted points-weighted grade, matching what the
+ * teacher's analytics show, so the two views cannot disagree.
+ */
+app.get('/api/admin/:adminId/analytics', async (req, res) => {
+  try {
+    const admin = await requireAdminSchool(req.params.adminId);
+    const { passingGrade } = await gradingSettingsFor(admin.schoolId);
+
+    const classes = await prisma.class.findMany({
+      where: { section: { schoolId: admin.schoolId } },
+      include: {
+        teacher: { select: { id: true, name: true } },
+        section: { select: { id: true, name: true, gradeLevel: true, students: { select: { id: true, name: true } } } }
+      }
+    });
+
+    const graded = await prisma.submission.findMany({
+      where: { status: 'GRADED', activity: { class: { section: { schoolId: admin.schoolId } } } },
+      select: {
+        studentId: true, hitlScore: true, aiScore: true,
+        activity: { select: { points: true, component: true, classId: true } }
+      }
+    });
+
+    const byClass = new Map();
+    for (const s of graded) {
+      const cid = s.activity?.classId;
+      if (!cid) continue;
+      if (!byClass.has(cid)) byClass.set(cid, []);
+      byClass.get(cid).push(s);
+    }
+
+    const bandOf = (avg) =>
+      avg === null ? 'notGraded'
+        : avg >= 90 ? 'excellent'
+          : avg >= 80 ? 'good'
+            : avg >= passingGrade ? 'fair' : 'needsWork';
+
+    const classSummaries = [];
+    const subjectTotals = new Map();
+    const atRisk = [];
+    const schoolBands = { excellent: 0, good: 0, fair: 0, needsWork: 0, notGraded: 0 };
+
+    for (const cls of classes) {
+      const policy = await gradingPolicyFor(admin.schoolId, cls.gradeLevel, cls.subject);
+      const subs = byClass.get(cls.id) || [];
+      const byStudent = new Map();
+      for (const s of subs) {
+        if (!byStudent.has(s.studentId)) byStudent.set(s.studentId, []);
+        byStudent.get(s.studentId).push(s);
+      }
+
+      const students = cls.section?.students || [];
+      const averages = [];
+      for (const st of students) {
+        const avg = workingAverage(byStudent.get(st.id) || [], policy);
+        const band = bandOf(avg);
+        schoolBands[band]++;
+        if (avg !== null) {
+          averages.push(avg);
+          // Names only, with the average. Enough to coordinate an
+          // intervention; nothing about the work itself.
+          if (avg < passingGrade) {
+            atRisk.push({
+              studentId: st.id, name: st.name, average: avg,
+              className: cls.name, sectionName: cls.section?.name || '',
+              teacherName: cls.teacher?.name || '',
+            });
+          }
+        }
+      }
+
+      const classAverage = averages.length
+        ? Math.round(averages.reduce((a, b) => a + b, 0) / averages.length) : null;
+
+      classSummaries.push({
+        classId: cls.id, className: cls.name,
+        subject: cls.subject || '—', gradeLevel: cls.gradeLevel || '—',
+        sectionName: cls.section?.name || '',
+        teacherName: cls.teacher?.name || '',
+        studentCount: students.length,
+        gradedStudents: averages.length,
+        classAverage,
+        atRiskCount: averages.filter(a => a < passingGrade).length,
+        weights: policy,
+      });
+
+      if (cls.subject) {
+        if (!subjectTotals.has(cls.subject)) subjectTotals.set(cls.subject, []);
+        if (classAverage !== null) subjectTotals.get(cls.subject).push(...averages);
+      }
+    }
+
+    const bySubject = [...subjectTotals.entries()].map(([subject, avgs]) => ({
+      subject,
+      studentCount: avgs.length,
+      average: avgs.length ? Math.round(avgs.reduce((a, b) => a + b, 0) / avgs.length) : null,
+      atRiskCount: avgs.filter(a => a < passingGrade).length,
+    })).sort((a, b) => (a.average ?? 101) - (b.average ?? 101));
+
+    const allAverages = classSummaries.filter(c => c.classAverage !== null).map(c => c.classAverage);
+    atRisk.sort((a, b) => a.average - b.average);
+
+    res.json({
+      success: true,
+      passingGrade,
+      summary: {
+        classCount: classes.length,
+        studentCount: [...new Set(classes.flatMap(c => (c.section?.students || []).map(s => s.id)))].length,
+        schoolAverage: allAverages.length
+          ? Math.round(allAverages.reduce((a, b) => a + b, 0) / allAverages.length) : null,
+        atRiskCount: atRisk.length,
+        bands: schoolBands,
+      },
+      bySubject,
+      classes: classSummaries.sort((a, b) => (a.classAverage ?? 101) - (b.classAverage ?? 101)),
+      atRisk: atRisk.slice(0, 50),
+    });
+  } catch (e) {
+    sendAdminError(res, e);
+  }
+});
+
+/** School-wide thresholds. */
+app.put('/api/admin/:adminId/grading/settings', async (req, res) => {
+  try {
+    const admin = await requireAdminSchool(req.params.adminId);
+    const { passingGrade, useTransmutation } = req.body;
+    const data = {};
+    if (passingGrade !== undefined) {
+      const n = parseInt(passingGrade, 10);
+      if (Number.isNaN(n) || n < 1 || n > 100) {
+        return res.status(400).json({ success: false, error: 'Passing grade must be between 1 and 100.' });
+      }
+      data.passingGrade = n;
+    }
+    if (useTransmutation !== undefined) data.useTransmutation = !!useTransmutation;
+
+    const school = await prisma.school.update({
+      where: { id: admin.schoolId }, data,
+      select: { id: true, passingGrade: true, useTransmutation: true }
+    });
+    res.json({ success: true, school });
+  } catch (e) {
+    sendAdminError(res, e);
+  }
+});
+
+/** Create or update the weights for one subject. */
+app.put('/api/admin/:adminId/grading/policy', async (req, res) => {
+  try {
+    const admin = await requireAdminSchool(req.params.adminId);
+    const schoolId = admin.schoolId;
+    const { gradeLevel, subject, WW, PT, QA } = req.body;
+    if (!gradeLevel || !subject) {
+      return res.status(400).json({ success: false, error: 'gradeLevel and subject are required.' });
+    }
+    const weights = [WW, PT, QA].map(v => parseInt(v, 10));
+    if (weights.some(v => Number.isNaN(v) || v < 0 || v > 100)) {
+      return res.status(400).json({ success: false, error: 'Each weight must be between 0 and 100.' });
+    }
+    const total = weights.reduce((a, b) => a + b, 0);
+    // Reject rather than silently renormalise: a teacher reading "30/50/30" on
+    // screen must be able to trust it is what the grade actually used.
+    if (total !== 100) {
+      return res.status(400).json({ success: false, error: `Weights must total 100% (currently ${total}%).` });
+    }
+
+    const [wwWeight, ptWeight, qaWeight] = weights;
+    const policy = await prisma.gradingPolicy.upsert({
+      where: { schoolId_gradeLevel_subject: { schoolId, gradeLevel, subject } },
+      update: { wwWeight, ptWeight, qaWeight },
+      create: { schoolId, gradeLevel, subject, wwWeight, ptWeight, qaWeight }
+    });
+    res.json({ success: true, policy });
+  } catch (e) {
+    sendAdminError(res, e);
+  }
+});
+
+/** Drop an override and fall back to the DepEd default for that subject. */
+app.delete('/api/admin/:adminId/grading/policy/:policyId', async (req, res) => {
+  try {
+    const admin = await requireAdminSchool(req.params.adminId);
+    // Scoped by school so an admin cannot delete another school's policy by id.
+    const result = await prisma.gradingPolicy.deleteMany({
+      where: { id: req.params.policyId, schoolId: admin.schoolId }
+    });
+    if (result.count === 0) return res.status(404).json({ success: false, error: 'Policy not found' });
+    res.json({ success: true });
+  } catch (e) {
+    sendAdminError(res, e);
   }
 });
 
@@ -1824,6 +2145,84 @@ app.get('/api/classes/:classId', async (req, res) => {
  * Attempts allowed on a student-submit activity. `0` means unlimited — stored
  * as 0 rather than null so the existing Int column needs no migration.
  */
+/**
+ * Record raw points for a whole class at once, for work that was marked in the
+ * room — recitation, an oral quiz, a board exercise. No photo, no AI.
+ *
+ * Scores arrive as raw points out of the activity's total and are stored as a
+ * percentage in hitlScore, the same field a teacher's HITL review writes, so
+ * every average, gradebook column and export already understands them.
+ *
+ * Marked GRADED immediately: there is nothing left to review. They carry no
+ * skillScores, which is correct — a recitation mark says nothing about
+ * punctuation — and the skill charts already skip submissions without them.
+ */
+app.post('/api/teacher/activities/:activityId/scores', async (req, res) => {
+  try {
+    const { activityId } = req.params;
+    const { scores } = req.body;   // [{ studentId, points }]
+    if (!Array.isArray(scores)) {
+      return res.status(400).json({ success: false, error: 'scores must be an array.' });
+    }
+
+    const activity = await prisma.activity.findUnique({
+      where: { id: activityId },
+      select: { id: true, points: true, submissionMode: true }
+    });
+    if (!activity) return res.status(404).json({ success: false, error: 'Activity not found' });
+    if (activity.submissionMode !== 'MANUAL_SCORE') {
+      return res.status(400).json({
+        success: false,
+        error: 'This activity collects student work. Scores are entered by reviewing each submission.'
+      });
+    }
+
+    const max = activity.points || 100;
+    const results = [];
+    for (const row of scores) {
+      if (!row?.studentId) continue;
+
+      // A blank box means "not marked yet", which is different from a zero —
+      // clear any previous score rather than recording a 0 the student never got.
+      if (row.points === '' || row.points === null || row.points === undefined) {
+        await prisma.submission.deleteMany({ where: { studentId: row.studentId, activityId } });
+        results.push({ studentId: row.studentId, cleared: true });
+        continue;
+      }
+
+      const pts = Number(row.points);
+      if (Number.isNaN(pts) || pts < 0 || pts > max) {
+        return res.status(400).json({
+          success: false,
+          error: `Score for one student is ${row.points}; it must be between 0 and ${max}.`
+        });
+      }
+
+      const percent = Math.round((pts / max) * 100);
+      const existing = await prisma.submission.findFirst({
+        where: { studentId: row.studentId, activityId }, select: { id: true }
+      });
+      const data = { hitlScore: percent, status: 'GRADED', gradedAt: new Date() };
+      const saved = existing
+        ? await prisma.submission.update({ where: { id: existing.id }, data })
+        : await prisma.submission.create({
+            data: { ...data, studentId: row.studentId, activityId, attemptCount: 1 }
+          });
+      results.push({ studentId: row.studentId, points: pts, percent, submissionId: saved.id });
+    }
+
+    res.json({ success: true, maxPoints: max, saved: results.length, results });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+/** WW / PT / QA, defaulting to Written Work for anything unrecognised. */
+function normalizeComponent(value) {
+  const c = String(value || '').toUpperCase();
+  return grading.COMPONENTS.includes(c) ? c : 'WW';
+}
+
 function normalizeMaxAttempts(value) {
   const n = parseInt(value, 10);
   if (Number.isNaN(n) || n < 0) return 1;
@@ -1839,7 +2238,7 @@ app.post('/api/teacher/activities', (req, res, next) => {
   }
 }, async (req, res) => {
   try {
-    const { title, type, points, classId, instructions, deadline, submissionMode, rubric, topic, maxAttempts, classLessonId } = req.body;
+    const { title, type, points, classId, instructions, deadline, submissionMode, rubric, topic, maxAttempts, classLessonId, component } = req.body;
     const filePaths = await Promise.all(
       (req.files || []).map(f => uploadToCloud(f.path, f.filename, { folder: 'activity-files', contentType: f.mimetype }))
     );
@@ -1851,6 +2250,7 @@ app.post('/api/teacher/activities', (req, res, next) => {
         classId, instructions,
         deadline: deadline || null,
         submissionMode: submissionMode || 'TEACHER_UPLOAD',
+        component: normalizeComponent(component),
         maxAttempts: normalizeMaxAttempts(maxAttempts),
         additionalFiles: filePaths.length ? JSON.stringify(filePaths) : null,
         rubric: rubric || null,
@@ -1875,6 +2275,7 @@ app.put('/api/teacher/activities/:activityId', async (req, res) => {
     if (deadline !== undefined) updateData.deadline = deadline ? String(deadline) : null;
     if (instructions !== undefined) updateData.instructions = instructions ? String(instructions) : null;
     if (submissionMode !== undefined) updateData.submissionMode = String(submissionMode);
+    if (req.body.component !== undefined) updateData.component = normalizeComponent(req.body.component);
     if (maxAttempts !== undefined) updateData.maxAttempts = normalizeMaxAttempts(maxAttempts);
     if (rubric !== undefined) updateData.rubric = rubric || null;
     if (req.body.classLessonId !== undefined) updateData.classLessonId = req.body.classLessonId || null;
@@ -2718,8 +3119,19 @@ app.get('/api/teacher/:teacherId/analytics', async (req, res) => {
     const graded = await prisma.submission.findMany({
       where: { status: 'GRADED', activity: { classId: { in: classIds } } },
       orderBy: { createdAt: 'asc' },
-      include: { activity: { select: { id: true, title: true, type: true, points: true, classId: true } } }
+      include: { activity: { select: { id: true, title: true, type: true, points: true, classId: true, component: true } } }
     });
+
+    // One policy per teacher view. Classes here share a subject in practice;
+    // where they don't, the DepEd defaults for each subject are close enough
+    // for a cross-class overview, and per-class grades use the real policy.
+    const teacherRecord = await prisma.user.findUnique({
+      where: { id: req.params.teacherId }, select: { schoolId: true }
+    });
+    const analyticsPolicy = await gradingPolicyFor(
+      teacherRecord?.schoolId, classes[0]?.gradeLevel, classes[0]?.subject
+    );
+    const { passingGrade } = await gradingSettingsFor(teacherRecord?.schoolId);
 
     const byStudent = new Map();
     for (const s of graded) {
@@ -2765,7 +3177,10 @@ app.get('/api/teacher/:teacherId/analytics', async (req, res) => {
       const percents = subs.map(s => s.hitlScore ?? s.aiScore ?? 0);
       const pointsEarned = subs.reduce((sum, s) => sum + ((s.hitlScore ?? s.aiScore ?? 0) / 100) * (s.activity?.points || 100), 0);
       const pointsPossible = subs.reduce((sum, s) => sum + (s.activity?.points || 100), 0);
-      const avgPercent = Math.round(percents.reduce((a, b) => a + b, 0) / percents.length);
+      // Points-weighted, so a 50-point activity no longer counts as much as a
+      // 100-point one. `percents` is kept for the sparkline, which is a history
+      // of individual scores rather than an average.
+      const avgPercent = workingAverage(subs, analyticsPolicy);
 
       const skillHistory = subs
         .filter(s => s.skillScores)
@@ -2794,7 +3209,7 @@ app.get('/api/teacher/:teacherId/analytics', async (req, res) => {
 
       // ── Who could use a hand? Stated as encouragement, not alarm. ──
       const reasons = [];
-      if (avgPercent < 75) {
+      if (avgPercent !== null && avgPercent < passingGrade) {
         reasons.push({ kind: 'average', label: `Averaging ${avgPercent}% so far`, detail: 'A short check-in could help.' });
       }
       if (percents.length >= 3) {
@@ -2843,7 +3258,7 @@ app.get('/api/teacher/:teacherId/analytics', async (req, res) => {
       if (s.avgPercent === null) bands.notGraded++;
       else if (s.avgPercent >= 90) bands.excellent++;
       else if (s.avgPercent >= 80) bands.good++;
-      else if (s.avgPercent >= 75) bands.fair++;
+      else if (s.avgPercent >= passingGrade) bands.fair++;
       else bands.needsWork++;
     });
 
@@ -2862,7 +3277,11 @@ app.get('/api/teacher/:teacherId/analytics', async (req, res) => {
         classAverage,
         pointsEarned: Math.round(totalEarned),
         pointsPossible: totalPossible,
-        bands
+        bands,
+        // So the UI labels bands and at-risk copy with the school's own
+        // threshold instead of a hard-coded 75.
+        passingGrade,
+        gradingWeights: analyticsPolicy
       },
       activityBreakdown,
       studentTrends,
@@ -2887,7 +3306,7 @@ app.get('/api/teacher/student/:studentId/analytics', async (req, res) => {
     const submissions = await prisma.submission.findMany({
       where: { studentId: student.id },
       orderBy: { createdAt: 'asc' },
-      include: { activity: { select: { title: true, type: true, points: true, classId: true, class: { select: { name: true } } } } }
+      include: { activity: { select: { title: true, type: true, points: true, classId: true, component: true, class: { select: { name: true } } } } }
     });
 
     const SKILLS = ['vocabulary', 'punctuation', 'thematicFlow', 'sentenceStructure'];
@@ -2898,10 +3317,14 @@ app.get('/api/teacher/student/:studentId/analytics', async (req, res) => {
         catch { return null; }
       }).filter(Boolean);
 
-    // Calculate averages
-    const avgScore = submissions.length
-      ? Math.round(submissions.reduce((sum, s) => sum + (s.hitlScore ?? s.aiScore ?? 0), 0) / submissions.length)
-      : 0;
+    // Graded work only. This used to average every submission and coerce
+    // ungraded ones to 0, so a student with one 90 and one pending upload was
+    // reported as averaging 45 — the pending item was counted as a zero rather
+    // than as not yet scored.
+    const gradedSubs = submissions.filter(
+      s => s.status === 'GRADED' && (s.hitlScore ?? s.aiScore) !== null
+    );
+    const avgScore = workingAverage(gradedSubs, grading.DEPED_DEFAULT_WEIGHTS.LANGUAGES_AP_ESP) ?? 0;
 
     const avgSkills = {};
     SKILLS.forEach(skill => {
@@ -2938,9 +3361,9 @@ app.get('/api/student/:studentId/dashboard', async (req, res) => {
       include: { activity: { include: { class: true } } },
       orderBy: { updatedAt: 'desc' }
     });
-    const avgGrade = submissions.length
-      ? Math.round(submissions.reduce((s, sub) => s + (sub.hitlScore || sub.aiScore || 0), 0) / submissions.length)
-      : 0;
+    // Points-weighted across every class the student is in. Untransmuted:
+    // this is the student's own progress view, not a report card.
+    const avgGrade = workingAverage(submissions, grading.DEPED_DEFAULT_WEIGHTS.LANGUAGES_AP_ESP) ?? 0;
     const stars = submissions.filter(s => (s.hitlScore || s.aiScore || 0) >= 90).length * 3
       + submissions.filter(s => { const sc = s.hitlScore || s.aiScore || 0; return sc >= 75 && sc < 90; }).length;
 
@@ -3070,6 +3493,12 @@ function computeSkillProgress(submissions) {
   skillIds.forEach(id => { series[id] = []; });
   const points = [];
 
+  /**
+   * Fold one submission into the running totals, and report which skills it
+   * actually contributed to. The caller uses that to tell the reader which
+   * activities are behind the line they're looking at — a point on the
+   * Punctuation chart is meaningless if you can't see which output produced it.
+   */
   function accumulate(sub) {
     const criteriaMap = sub.activity ? getCriteriaMap(sub.activity) : {};
     let rubricScores = [];
@@ -3077,17 +3506,36 @@ function computeSkillProgress(submissions) {
       const parsed = JSON.parse(sub.rubricData);
       if (Array.isArray(parsed)) rubricScores = parsed;
     } catch { }
+    const touched = new Set();
     for (const entry of rubricScores) {
       if (!entry || typeof entry.score !== 'number' || !entry.maxPoints) continue;
       const description = criteriaMap[entry.criterionName] || '';
       const skillId = classifyCriterion(entry.criterionName, description);
       running[skillId].sum += entry.score;
       running[skillId].max += entry.maxPoints;
+      touched.add(skillId);
     }
+    return [...touched];
+  }
+
+  /** Activities folded in since the last snapshot — one in activity mode, possibly several in a week. */
+  let pending = [];
+  function record(sub, ts) {
+    const skills = accumulate(sub);
+    pending.push({
+      submissionId: sub.id,
+      activityId: sub.activityId,
+      title: sub.activity?.title || 'Untitled activity',
+      date: ts,
+      percent: sub.hitlScore ?? sub.aiScore ?? null,
+      skills,
+    });
+    return pending[pending.length - 1];
   }
 
   function snapshot(pointIdx, label) {
-    points.push({ week: pointIdx, label });
+    points.push({ week: pointIdx, label, activities: pending });
+    pending = [];
     skillIds.forEach(id => {
       const { sum, max } = running[id];
       series[id].push({ week: pointIdx, pct: max > 0 ? Math.round((sum / max) * 100) : null });
@@ -3103,14 +3551,17 @@ function computeSkillProgress(submissions) {
         snapshot(currentWeekIdx, `Week ${currentWeekIdx}`);
       }
       currentWeekIdx = weekIdx;
-      accumulate(sub);
+      record(sub, ts);
     }
     if (currentWeekIdx !== null) snapshot(currentWeekIdx, `Week ${currentWeekIdx}`);
   } else {
+    // One point per activity, labelled with the activity — not the date it was
+    // graded. The point *is* the activity, and two outputs marked on the same
+    // day used to produce two points with the same label and no way to tell
+    // them apart. The date moves into the tooltip, where it still reads.
     withTimestamp.forEach(({ sub, ts }, i) => {
-      accumulate(sub);
-      const label = new Date(ts).toLocaleDateString('en-PH', { month: 'short', day: 'numeric' });
-      snapshot(i + 1, label);
+      record(sub, ts);
+      snapshot(i + 1, sub.activity?.title || `Activity ${i + 1}`);
     });
   }
 
@@ -3118,6 +3569,10 @@ function computeSkillProgress(submissions) {
 }
 
 const SKILL_PROGRESS_ACTIVITY_SELECT = {
+  // title drives the x-axis in per-activity mode and the breakdown list below
+  // the chart, so it is not optional.
+  title: true,
+  points: true,
   rubric: true,
   classLessonId: true,
   classLesson: { select: { defaultRubric: true } }

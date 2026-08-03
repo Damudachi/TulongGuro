@@ -12,6 +12,8 @@ import AdminTeacherDetail from './pages/admin/TeacherDetail';
 import AdminSectionDetail from './pages/admin/SectionDetail';
 import AdminCurriculum from './pages/admin/Curriculum';
 import AdminRubrics from './pages/admin/Rubrics';
+import AdminGrading from './pages/admin/Grading';
+import AdminAnalytics from './pages/admin/Analytics';
 
 // Teacher Pages
 import TeacherDashboard from './pages/teacher/Dashboard';
@@ -27,6 +29,7 @@ import GradebookClass from './pages/teacher/GradebookClass';
 import GradebookStudent from './pages/teacher/GradebookStudent';
 import Analytics from './pages/teacher/Analytics';
 import RubricManager from './pages/teacher/RubricManager';
+import ScoreEntry from './pages/teacher/ScoreEntry';
 
 // Student Pages
 import StudentDashboard from './pages/student/Dashboard';
@@ -56,6 +59,8 @@ function App() {
           <Route path="sections/:sectionId" element={<AdminSectionDetail />} />
           <Route path="curriculum" element={<AdminCurriculum />} />
           <Route path="rubrics" element={<AdminRubrics />} />
+          <Route path="grading" element={<AdminGrading />} />
+          <Route path="analytics" element={<AdminAnalytics />} />
         </Route>
 
         {/* Teacher Routes */}
@@ -66,6 +71,7 @@ function App() {
           <Route path="activity/new" element={<ActivityBuilder />} />
           <Route path="activity/edit/:activityId" element={<ActivityBuilder />} />
           <Route path="batch-upload" element={<BatchUpload />} />
+          <Route path="scores" element={<ScoreEntry />} />
           <Route path="review/:submissionId" element={<HITLWorkspace />} />
           <Route path="sections" element={<ManageSections />} />
           <Route path="gradebook" >

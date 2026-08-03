@@ -1,5 +1,5 @@
 import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom';
-import { Users, BookOpen, ClipboardList, LogOut } from 'lucide-react';
+import { Users, BookOpen, ClipboardList, Scale, TrendingUp, LogOut } from 'lucide-react';
 import { useEffect } from 'react';
 import SchoolBadge from '../components/SchoolBadge';
 import { useSchoolTheme } from '../utils/useSchool';
@@ -10,6 +10,8 @@ const NAV = [
   { name: 'Teachers', path: '/admin/teachers', icon: Users },
   { name: 'Curriculum', path: '/admin/curriculum', icon: BookOpen },
   { name: 'Rubrics', path: '/admin/rubrics', icon: ClipboardList },
+  { name: 'Grading', path: '/admin/grading', icon: Scale },
+  { name: 'Analytics', path: '/admin/analytics', icon: TrendingUp },
 ];
 
 export default function AdminLayout() {
