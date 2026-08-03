@@ -7,6 +7,8 @@
     "dev": "nodemon server.js",
     "start": "node server.js",
     "verify:grading": "node scripts/verify-grading.js",
+    "verify:dashboard": "node scripts/verify-dashboard.js",
+    "verify": "npm run verify:grading && npm run verify:dashboard",
     "report:grades": "node scripts/grade-migration-report.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },

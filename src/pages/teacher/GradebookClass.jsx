@@ -3,16 +3,16 @@ import { useParams, Link } from 'react-router-dom';
 import { Download, ChevronDown, Loader2 } from 'lucide-react';
 import { API_URL } from '../../config';
 import PageHeader from '../../components/PageHeader';
+import { gradeChip } from '../../utils/grading';
+import { usePassingGrade } from '../../utils/useSchool';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
 
-const scoreTone = (v) =>
-  v === null || v === undefined ? 'text-navy-300'
-    : v >= 90 ? 'text-aqua-800 bg-aqua-100'
-    : v >= 75 ? 'text-sun-800 bg-sun-100'
-    : 'text-red-700 bg-red-50';
+// Score colouring lives in utils/grading and follows the school's passing grade.
 
 export default function GradebookClass() {
+  const passingGrade = usePassingGrade();
+  const scoreTone = (v) => gradeChip(v, passingGrade, 'text-navy-300');
   const { classId } = useParams();
   const [data, setData] = useState(null);
   const [isLoading, setIsLoading] = useState(true);

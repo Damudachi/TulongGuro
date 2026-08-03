@@ -2,6 +2,8 @@ import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { Award, CheckCircle2, Star, Loader2, Lightbulb, ChevronRight, Clock, BookOpen, Send } from 'lucide-react';
 import { API_URL } from '../../config';
+import { gradeChip } from '../../utils/grading';
+import { usePassingGrade } from '../../utils/useSchool';
 import SkillProgressChart from '../../components/SkillProgressChart';
 import { ONBOARDING, hasSeenOnboarding, markOnboardingSeen } from '../../utils/onboarding';
 import SchoolBadge from '../../components/SchoolBadge';
@@ -40,6 +42,7 @@ function EmptyState({ icon: Icon, title, hint }) {
 }
 
 export default function StudentDashboard() {
+  const passingGrade = usePassingGrade();
   const [data, setData] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
   const [showWelcome, setShowWelcome] = useState(false);
@@ -268,9 +271,7 @@ export default function StudentDashboard() {
               const percentageScore = sub.hitlScore ?? sub.aiScore ?? 0;
               const maxPoints = sub.activity?.points || 100;
               const score = ((percentageScore / 100) * maxPoints).toFixed(1).replace(/\.0$/, '');
-              const color = percentageScore >= 90
-                ? 'text-aqua-800 bg-aqua-100'
-                : percentageScore >= 75 ? 'text-sun-800 bg-sun-100' : 'text-red-600 bg-red-50';
+              const color = gradeChip(percentageScore, passingGrade);
 
               return (
                 <Link to={`/student/output/${sub.id}`} key={sub.id}

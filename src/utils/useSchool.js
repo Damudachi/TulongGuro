@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { API_URL } from '../config';
 import { applySchoolTheme } from './schoolTheme';
+import { DEFAULT_PASSING_GRADE } from './grading';
 
 /**
  * Resolves the logged-in user's school. Teachers and admins carry it directly;
@@ -41,6 +42,20 @@ export default function useSchool() {
   }, []);
 
   return school;
+}
+
+/**
+ * The school's passing grade, for screens that only need the threshold.
+ *
+ * Falls back to DepEd's 75 only while the school is still loading or on an
+ * account with no school attached. Every screen that colours or labels a score
+ * should take the number from here rather than writing 75 into a comparison —
+ * that is what let a school raise its threshold and still see the old line
+ * drawn on the student-facing pages.
+ */
+export function usePassingGrade() {
+  const school = useSchool();
+  return school?.passingGrade ?? DEFAULT_PASSING_GRADE;
 }
 
 /**

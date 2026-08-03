@@ -6,6 +6,7 @@ import { ONBOARDING, hasSeenOnboarding, markOnboardingSeen, markAllOnboardingSee
 import { GRADE_LEVELS, SUBJECTS, SCHOOL_YEARS, DEFAULT_SCHOOL_YEAR } from '../../constants/school';
 import SchoolBadge from '../../components/SchoolBadge';
 import FolderCard from '../../components/FolderCard';
+import EarlyWarningPanel from '../../components/EarlyWarningPanel';
 import { tintFor } from '../../constants/folderTints';
 
 const WIZARD_STEPS = ['Class', 'Section', 'Curriculum', 'Confirm'];
@@ -580,6 +581,10 @@ export default function TeacherDashboard() {
           Manage Block Sections
         </Link>
       </div>
+
+      {/* Students at risk, surfaced before the class list rather than waiting
+          to be found on the Analytics page. */}
+      <EarlyWarningPanel />
 
       {/* Interactive Walkthrough Banner — only after the welcome modal is
           dismissed, so the teacher never faces two onboarding flows at once. */}

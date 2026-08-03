@@ -17,7 +17,20 @@ const fs = require('fs');
 const sharp = require('sharp');
 const { getAllTopics, getTopicById, getTopicAIGuidance } = require('./depedTopics');
 const { getAllRubricTemplates, getRubricTemplateById } = require('./rubricTemplates');
-const { SKILLS, classifyCriterion } = require('./skillTaxonomy');
+// Two distinct taxonomies coexist and are easy to confuse, so name them apart:
+//
+//   CURRICULUM_SKILLS — the four DepEd-aligned domains (reading, critical-media,
+//     writing, language) that rubric criteria are classified into. These are what
+//     an *activity* teaches, and what the skill filter and mastery timeline use.
+//
+//   AI_SKILLS — the four mechanics the grading prompt scores out of 25
+//     (vocabulary, punctuation, thematicFlow, sentenceStructure). These are what
+//     a *submission* demonstrates, and what the skill bars on the dashboards show.
+//
+// The old code imported the first as `SKILLS` and then shadowed it with the
+// second inside three separate handlers.
+const { SKILLS: CURRICULUM_SKILLS, classifyCriterion } = require('./skillTaxonomy');
+const AI_SKILLS = ['vocabulary', 'punctuation', 'thematicFlow', 'sentenceStructure'];
 const grading = require('./grading');
 
 require('dotenv').config({ path: path.join(__dirname, '.env') });
@@ -65,6 +78,52 @@ async function gradingPolicyFor(schoolId, gradeLevel, subject) {
     if (p) return { WW: p.wwWeight, PT: p.ptWeight, QA: p.qaWeight };
   }
   return grading.defaultPolicyFor(subject);
+}
+
+/**
+ * Which of the four curriculum skills an activity assesses.
+ *
+ * Prefers the activity's own rubric, because that is what the activity was
+ * *designed* to measure and it works before anything has been graded. Falls
+ * back to the criterion names the AI actually returned on its submissions, so
+ * activities whose rubric lives on the class lesson (or was typed ad hoc during
+ * review) still get classified instead of showing up as untagged.
+ *
+ * Returns [] when nothing can be classified — the UI treats that as "no skill
+ * recorded" rather than silently filing it under Writing, which is
+ * classifyCriterion's own catch-all and would be a guess presented as fact.
+ */
+function skillsForActivity(activity, gradedSubmissions = []) {
+  const found = new Set();
+
+  const addFromCriteria = (criteria) => {
+    for (const c of criteria || []) {
+      if (c?.name) found.add(classifyCriterion(c.name, c.description || ''));
+    }
+  };
+
+  const source = activity?.rubric || activity?.classLesson?.defaultRubric;
+  if (source) {
+    try {
+      const parsed = JSON.parse(source);
+      addFromCriteria(Array.isArray(parsed) ? parsed : parsed.criteria);
+    } catch { /* fall through to the submission-derived path */ }
+  }
+
+  if (found.size === 0) {
+    for (const s of gradedSubmissions) {
+      if (s.activityId !== activity?.id || !s.rubricData) continue;
+      try {
+        const scores = JSON.parse(s.rubricData);
+        if (Array.isArray(scores)) {
+          addFromCriteria(scores.map(r => ({ name: r.criterionName, description: r.bandDescription })));
+        }
+      } catch { /* ignore an unparseable row */ }
+      if (found.size > 0) break;
+    }
+  }
+
+  return [...found];
 }
 
 /** Submission rows -> the shape grading.js expects. */
@@ -730,11 +789,9 @@ app.get('/api/admin/:adminId/analytics', async (req, res) => {
       byClass.get(cid).push(s);
     }
 
-    const bandOf = (avg) =>
-      avg === null ? 'notGraded'
-        : avg >= 90 ? 'excellent'
-          : avg >= 80 ? 'good'
-            : avg >= passingGrade ? 'fair' : 'needsWork';
+    // Same descriptor ladder as everywhere else, so a school passing above 80
+    // can't end up with a band that sits below its own passing line.
+    const bandOf = (avg) => (avg === null ? 'notGraded' : grading.bandKeyFor(avg, passingGrade));
 
     const classSummaries = [];
     const subjectTotals = new Map();
@@ -743,7 +800,9 @@ app.get('/api/admin/:adminId/analytics', async (req, res) => {
     // to be able to say "Juan is struggling in English, not in Math", and to
     // name the teacher to raise it with.
     const studentRows = [];
-    const schoolBands = { excellent: 0, good: 0, fair: 0, needsWork: 0, notGraded: 0 };
+    // Keyed by the descriptor ladder for this school's passing grade, so the
+    // buckets that exist here are exactly the ones the UI will render.
+    const schoolBands = grading.bandCounts([], passingGrade);
 
     /** Direction of the last three scores, for spotting a slide before it becomes a failure. */
     const trendOf = (subs) => {
@@ -846,6 +905,9 @@ app.get('/api/admin/:adminId/analytics', async (req, res) => {
           ? Math.round(allAverages.reduce((a, b) => a + b, 0) / allAverages.length) : null,
         atRiskCount: atRisk.length,
         bands: schoolBands,
+        // The rungs that exist at this passing grade, so the admin spread bar
+        // renders the real ladder rather than a fixed four.
+        bandDefs: grading.descriptorBands(passingGrade),
       },
       bySubject,
       classes: classSummaries.sort((a, b) => (a.classAverage ?? 101) - (b.classAverage ?? 101)),
@@ -2395,7 +2457,11 @@ app.post('/api/teacher/activities/:activityId/scores', async (req, res) => {
         });
       }
 
-      const percent = Math.round((pts / max) * 100);
+      // Stored unrounded. Rounding here is what used to lose the mark: 7 out of
+      // 30 became 23%, which displays back as 6.9 points. The teacher's entry is
+      // the source of truth, so the conversion to a percentage has to be exact
+      // and any rounding has to happen at the point of display instead.
+      const percent = (pts / max) * 100;
       const existing = await prisma.submission.findFirst({
         where: { studentId: row.studentId, activityId }, select: { id: true }
       });
@@ -3317,13 +3383,16 @@ app.put('/api/teacher/submissions/:id/grade', async (req, res) => {
 
     const updated = await prisma.submission.update({
       where: { id: req.params.id },
-      data: { hitlScore: parseInt(hitlScore), hitlFeedback, readingStrategy, rubricData: JSON.stringify(rubricData), status: 'GRADED', gradedAt: new Date() },
+      // Number, not parseInt: the teacher's approved score is the grade of
+      // record, and truncating it would quietly cost the student the fraction
+      // now that scores keep their precision.
+      data: { hitlScore: Number(hitlScore), hitlFeedback, readingStrategy, rubricData: JSON.stringify(rubricData), status: 'GRADED', gradedAt: new Date() },
       include: { student: true, activity: { include: { class: true } } }
     });
 
     // FEATURE 5: Mini-RAG capture — save as grading example if teacher meaningfully changed the AI result
     if (sub && teacherId) {
-      const scoreDelta = Math.abs(parseInt(hitlScore) - (sub.aiScore || 0));
+      const scoreDelta = Math.abs(Number(hitlScore) - (sub.aiScore ?? 0));
       const feedbackChanged = hitlFeedback && hitlFeedback !== sub.aiFeedback;
       if (scoreDelta >= 5 || feedbackChanged) {
         const activityType = sub.activity?.type || 'Essay';
@@ -3335,8 +3404,12 @@ app.put('/api/teacher/submissions/:id/grade', async (req, res) => {
             gradeLevel,
             aiFeedback: sub.aiFeedback || '',
             teacherFeedback: hitlFeedback || sub.aiFeedback || '',
-            aiScore: sub.aiScore || 0,
-            teacherScore: parseInt(hitlScore)
+            // GradingExample keeps whole-number scores — it is few-shot prompt
+            // material ("AI said 78, teacher gave 85"), not a grade of record,
+            // and decimals there would be noise. Submission scores are floats
+            // now, so round rather than handing Prisma a decimal for an Int.
+            aiScore: Math.round(sub.aiScore ?? 0),
+            teacherScore: Math.round(Number(hitlScore))
           }
         });
         console.log(`📚 Mini-RAG: Saved grading example (Δ${scoreDelta}pts, feedbackChanged=${feedbackChanged})`);
@@ -3368,14 +3441,23 @@ app.get('/api/teacher/:teacherId/analytics', async (req, res) => {
     const allStudentIds = classes.flatMap(c => c.section?.students || []);
     const uniqueStudents = [...new Map(allStudentIds.map(s => [s.id, s])).values()];
     const classIds = classes.map(c => c.id);
-    const SKILLS = ['vocabulary', 'punctuation', 'thematicFlow', 'sentenceStructure'];
 
     // Every graded submission across these classes, fetched once rather than
     // per student — the old version issued one query per student.
     const graded = await prisma.submission.findMany({
       where: { status: 'GRADED', activity: { classId: { in: classIds } } },
       orderBy: { createdAt: 'asc' },
-      include: { activity: { select: { id: true, title: true, type: true, points: true, classId: true, component: true } } }
+      include: {
+        activity: {
+          select: {
+            id: true, title: true, type: true, points: true, classId: true, component: true,
+            // Needed to classify each activity into curriculum skills for the
+            // skill filter — the rubric is what says what an activity measures.
+            rubric: true,
+            classLesson: { select: { defaultRubric: true } },
+          }
+        }
+      }
     });
 
     // One policy per teacher view. Classes here share a subject in practice;
@@ -3401,7 +3483,13 @@ app.get('/api/teacher/:teacherId/analytics', async (req, res) => {
       const a = s.activity;
       if (!a) continue;
       if (!activityMap.has(a.id)) {
-        activityMap.set(a.id, { id: a.id, title: a.title, type: a.type, points: a.points || 100, percents: [] });
+        activityMap.set(a.id, {
+          id: a.id, title: a.title, type: a.type, points: a.points || 100,
+          percents: [],
+          // Which of the four curriculum skills this activity actually assesses,
+          // so the breakdown can be filtered down to "just the writing tasks".
+          skills: skillsForActivity(a, graded),
+        });
       }
       activityMap.get(a.id).percents.push(s.hitlScore ?? s.aiScore ?? 0);
     }
@@ -3410,6 +3498,7 @@ app.get('/api/teacher/:teacherId/analytics', async (req, res) => {
       return {
         id: a.id, title: a.title, type: a.type,
         points: a.points,
+        skills: a.skills,
         gradedCount: a.percents.length,
         avgPercent,
         // The number a teacher actually writes in a record book.
@@ -3478,7 +3567,7 @@ app.get('/api/teacher/:teacherId/analytics', async (req, res) => {
           });
         }
       }
-      for (const skill of SKILLS) {
+      for (const skill of AI_SKILLS) {
         const vals = skillHistory.map(h => h[skill]).filter(v => typeof v === 'number' && v > 0);
         if (vals.length >= 3) {
           const recent = vals.slice(-3);
@@ -3492,6 +3581,14 @@ app.get('/api/teacher/:teacherId/analytics', async (req, res) => {
 
     // Lowest averages first — that's who to look at.
     needsSupport.sort((a, b) => (a.avgPercent ?? 100) - (b.avgPercent ?? 100));
+
+    // Severity, so the alert surfaces can lead with the students who are
+    // actually below the line rather than treating "one dipping skill" and
+    // "failing the quarter" as the same red badge.
+    for (const entry of needsSupport) {
+      entry.severity = entry.reasons.some(r => r.kind === 'average') ? 'failing' : 'watch';
+    }
+    const failingCount = needsSupport.filter(e => e.severity === 'failing').length;
     studentTrends.sort((a, b) => (b.avgPercent ?? -1) - (a.avgPercent ?? -1));
 
     // ── Class-level headline numbers ──
@@ -3503,20 +3600,15 @@ app.get('/api/teacher/:teacherId/analytics', async (req, res) => {
     const totalPossible = studentTrends.reduce((sum, s) => sum + s.pointsPossible, 0);
 
     const classAvgSkills = {};
-    SKILLS.forEach(skill => {
+    AI_SKILLS.forEach(skill => {
       const vals = studentTrends.map(st => st.skillScores?.[skill] || 0).filter(v => v > 0);
       classAvgSkills[skill] = vals.length ? Math.round(vals.reduce((a, b) => a + b, 0) / vals.length) : 0;
     });
 
-    // How the class is spread, for an at-a-glance bar.
-    const bands = { excellent: 0, good: 0, fair: 0, needsWork: 0, notGraded: 0 };
-    studentTrends.forEach(s => {
-      if (s.avgPercent === null) bands.notGraded++;
-      else if (s.avgPercent >= 90) bands.excellent++;
-      else if (s.avgPercent >= 80) bands.good++;
-      else if (s.avgPercent >= passingGrade) bands.fair++;
-      else bands.needsWork++;
-    });
+    // How the class is spread, for an at-a-glance bar. Bucketed by the shared
+    // descriptor ladder so the rungs can never sit below the passing line.
+    const bands = grading.bandCounts(studentTrends.map(s => s.avgPercent), passingGrade);
+    const bandDefs = grading.descriptorBands(passingGrade);
 
     const allSections = classes.reduce((acc, c) => {
       if (c.section && !acc.find(s => s.id === c.section.id)) {
@@ -3534,15 +3626,27 @@ app.get('/api/teacher/:teacherId/analytics', async (req, res) => {
         pointsEarned: Math.round(totalEarned),
         pointsPossible: totalPossible,
         bands,
+        // The rungs that exist at this passing grade, in order, so the UI
+        // renders the real ladder instead of assuming a fixed four.
+        bandDefs,
         // So the UI labels bands and at-risk copy with the school's own
         // threshold instead of a hard-coded 75.
         passingGrade,
         gradingWeights: analyticsPolicy
       },
+      // The sidebar badge reads this. It was never emitted, so the teacher's
+      // early-warning count silently sat at zero however many students were
+      // failing — the whole warning system existed but never announced itself.
+      warningCount: failingCount,
+      failingCount,
+      watchCount: needsSupport.length - failingCount,
       activityBreakdown,
       studentTrends,
       needsSupport,
       classAvgSkills,
+      // The four curriculum domains, so the UI can offer a skill filter without
+      // hardcoding a taxonomy that lives in skillTaxonomy.js.
+      curriculumSkills: CURRICULUM_SKILLS,
       sections: allSections
     });
   } catch (e) {
@@ -3565,7 +3669,6 @@ app.get('/api/teacher/student/:studentId/analytics', async (req, res) => {
       include: { activity: { select: { title: true, type: true, points: true, classId: true, component: true, class: { select: { name: true } } } } }
     });
 
-    const SKILLS = ['vocabulary', 'punctuation', 'thematicFlow', 'sentenceStructure'];
     const skillHistory = submissions
       .filter(s => s.skillScores)
       .map(s => {
@@ -3583,7 +3686,7 @@ app.get('/api/teacher/student/:studentId/analytics', async (req, res) => {
     const avgScore = workingAverage(gradedSubs, grading.DEPED_DEFAULT_WEIGHTS.LANGUAGES_AP_ESP) ?? 0;
 
     const avgSkills = {};
-    SKILLS.forEach(skill => {
+    AI_SKILLS.forEach(skill => {
       const vals = skillHistory.map(h => h[skill] || 0).filter(v => v > 0);
       avgSkills[skill] = vals.length ? Math.round(vals.reduce((a, b) => a + b, 0) / vals.length) : 0;
     });
@@ -3603,6 +3706,71 @@ app.get('/api/teacher/student/:studentId/analytics', async (req, res) => {
   }
 });
 
+/**
+ * GAMIFICATION — BADGES
+ *
+ * Badges are one-off achievements, each with its own condition. Stars are the
+ * separate per-activity currency (see grading.js).
+ *
+ * They used to be the same thing wearing two labels: every badge unlocked purely
+ * on a star count, so "Read and applied 3 reading strategies" unlocked at 3
+ * stars — which a single 90+ essay grants — and "Perfect grammar score" never
+ * looked at grammar at all. A pupil could be shown an award describing something
+ * they had not done. Each badge now evaluates the condition its own description
+ * promises, and reports progress toward it so the locked state can say how far
+ * off it is.
+ *
+ * `progress`/`target` are counts in the badge's own unit, so the UI renders
+ * "2 of 3" without knowing what any badge measures.
+ */
+function computeBadges(submissions, passingGrade) {
+  const graded = (submissions || []).filter(s => (s.hitlScore ?? s.aiScore ?? null) !== null);
+  const percentOf = (s) => s.hitlScore ?? s.aiScore ?? 0;
+
+  const outstanding = graded.filter(s => percentOf(s) >= 90).length;
+  const withStrategy = graded.filter(s => s.readingStrategy && s.readingStrategy.trim()
+    && !/^n\/?a$/i.test(s.readingStrategy.trim())).length;
+
+  // "Perfect grammar" means full marks on the AI's language-mechanics skills.
+  // Both are scored out of 25 by the grading prompt.
+  const perfectGrammar = graded.filter(s => {
+    if (!s.skillScores) return false;
+    try {
+      const sk = JSON.parse(s.skillScores);
+      return sk.punctuation >= 25 || sk.sentenceStructure >= 25;
+    } catch { return false; }
+  }).length;
+
+  const essays = graded.filter(s => (s.activity?.type || '').toLowerCase().includes('essay')).length;
+
+  // Honour roll is a *sustained* average, so it needs both the volume and the
+  // mean — five 90s, not one lucky 98.
+  const honourEligible = graded.length >= 5;
+  const overallAvg = graded.length
+    ? graded.reduce((sum, s) => sum + percentOf(s), 0) / graded.length
+    : 0;
+
+  const defs = [
+    { id: 'first-star', title: 'First Star', icon: 'star',
+      desc: 'Scored 90 or above on a graded activity',
+      progress: Math.min(outstanding, 1), target: 1 },
+    { id: 'bookworm', title: 'Bookworm', icon: 'book',
+      desc: 'Received 3 personalised reading strategies',
+      progress: Math.min(withStrategy, 3), target: 3 },
+    { id: 'grammar-master', title: 'Grammar Master', icon: 'zap',
+      desc: 'Perfect punctuation or sentence-structure score on any activity',
+      progress: Math.min(perfectGrammar, 1), target: 1 },
+    { id: 'honor-student', title: 'Honor Student', icon: 'trophy',
+      desc: 'Averaged 90 or above across at least 5 graded activities',
+      progress: honourEligible && overallAvg >= 90 ? 5 : Math.min(graded.length, 4), target: 5 },
+    { id: 'essay-champion', title: 'Essay Champion', icon: 'award',
+      desc: 'Completed 10 graded essay submissions',
+      progress: Math.min(essays, 10), target: 10 },
+  ];
+
+  return defs.map(b => ({ ...b, earned: b.progress >= b.target, passingGrade }));
+}
+
 // ─────────────────────────────────────────
 // STUDENT ROUTES
 // ─────────────────────────────────────────
@@ -3620,16 +3788,19 @@ app.get('/api/student/:studentId/dashboard', async (req, res) => {
     // Points-weighted across every class the student is in. Untransmuted:
     // this is the student's own progress view, not a report card.
     const avgGrade = workingAverage(submissions, grading.DEPED_DEFAULT_WEIGHTS.LANGUAGES_AP_ESP) ?? 0;
-    const stars = submissions.filter(s => (s.hitlScore || s.aiScore || 0) >= 90).length * 3
-      + submissions.filter(s => { const sc = s.hitlScore || s.aiScore || 0; return sc >= 75 && sc < 90; }).length;
+    // Stars and badges both follow the school's own passing grade — see the
+    // GAMIFICATION block in grading.js for the star table.
+    const schoolIdForStudent = student?.section?.schoolId ?? student?.schoolId ?? null;
+    const { passingGrade } = await gradingSettingsFor(schoolIdForStudent);
+    const stars = grading.starsFor(submissions, passingGrade);
+    const badges = computeBadges(submissions, passingGrade);
 
     // Dynamically calculate avgSkills from recent submissions
-    const SKILLS = ['vocabulary', 'punctuation', 'thematicFlow', 'sentenceStructure'];
     const avgSkills = {};
     const skillTrend = submissions.filter(s => s.skillScores).map(s => {
       try { return JSON.parse(s.skillScores); } catch { return null; }
     }).filter(Boolean);
-    SKILLS.forEach(skill => {
+    AI_SKILLS.forEach(skill => {
       const vals = skillTrend.map(h => h[skill] || 0).filter(v => v > 0);
       avgSkills[skill] = vals.length ? Math.round(vals.reduce((a, b) => a + b, 0) / vals.length) : 0;
     });
@@ -3675,7 +3846,7 @@ app.get('/api/student/:studentId/dashboard', async (req, res) => {
       maxAttempts: a.maxAttempts ?? 1
     })).sort((a, b) => new Date(a.deadline) - new Date(b.deadline));
 
-    res.json({ success: true, student, submissions, pendingSubmissions, avgGrade, stars, avgSkills, latestStrategy, upcomingDeadlines });
+    res.json({ success: true, student, submissions, pendingSubmissions, avgGrade, stars, badges, passingGrade, avgSkills, latestStrategy, upcomingDeadlines });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
   }
@@ -3742,7 +3913,7 @@ function computeSkillProgress(submissions) {
   const WEEKLY_MODE_MIN_WEEKS = 4;
   const mode = distinctRawWeeks.length >= WEEKLY_MODE_MIN_WEEKS ? 'week' : 'activity';
 
-  const skillIds = SKILLS.map(s => s.id);
+  const skillIds = CURRICULUM_SKILLS.map(s => s.id);
   const running = {};
   skillIds.forEach(id => { running[id] = { sum: 0, max: 0 }; });
   const series = {};
@@ -3847,7 +4018,7 @@ app.get('/api/student/:studentId/skill-progress', async (req, res) => {
       include: { activity: { select: SKILL_PROGRESS_ACTIVITY_SELECT } }
     });
     const result = computeSkillProgress(submissions);
-    res.json({ success: true, skills: SKILLS, ...result });
+    res.json({ success: true, skills: CURRICULUM_SKILLS, ...result });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
   }
@@ -3868,7 +4039,7 @@ app.get('/api/teacher/:teacherId/section/:sectionId/skill-progress', async (req,
       include: { activity: { select: SKILL_PROGRESS_ACTIVITY_SELECT } }
     });
     const result = computeSkillProgress(submissions);
-    res.json({ success: true, skills: SKILLS, ...result });
+    res.json({ success: true, skills: CURRICULUM_SKILLS, ...result });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
   }
@@ -4040,6 +4211,15 @@ app.get('/api/student/:studentId/subjects', async (req, res) => {
     const submissionByActivity = {};
     mySubmissions.forEach(s => { submissionByActivity[s.activityId] = s; });
 
+    // The student's screens colour and label scores, so they need the same
+    // threshold and the same component weights the teacher's gradebook uses.
+    const schoolId = student?.section?.schoolId ?? student?.schoolId ?? null;
+    const { passingGrade } = await gradingSettingsFor(schoolId);
+    const policyByClass = new Map();
+    for (const cls of student?.section?.classes || []) {
+      policyByClass.set(cls.id, await gradingPolicyFor(schoolId, cls.gradeLevel, cls.subject));
+    }
+
     // Feedback is stored as either a JSON blob or plain text — surface a short
     // human-readable line either way.
     const feedbackSummary = (sub) => {
@@ -4082,9 +4262,21 @@ app.get('/api/student/:studentId/subjects', async (req, res) => {
         };
       });
 
-      const gradedPercents = activities
-        .map(a => a.submission?.percent)
-        .filter(p => p !== null && p !== undefined);
+      // The student's own average has to be computed the same way the teacher's
+      // gradebook computes it, or the two screens disagree about the same
+      // quarter. This used to be a plain mean of each activity's percentage,
+      // which silently gave a 20-point quiz the same pull as a 100-point essay —
+      // exactly the unfairness componentPercentage() exists to prevent. Routing
+      // it through the shared engine makes 10/20 and 50/100 scale identically.
+      const gradedEntries = cls.activities
+        .map(a => {
+          const sub = submissionByActivity[a.id];
+          if (!sub || sub.status !== 'GRADED') return null;
+          const percent = sub.hitlScore ?? sub.aiScore ?? null;
+          if (percent === null) return null;
+          return { percent, points: a.points || 100, component: a.component || 'WW' };
+        })
+        .filter(Boolean);
 
       return {
         id: cls.id,
@@ -4094,15 +4286,19 @@ app.get('/api/student/:studentId/subjects', async (req, res) => {
         schoolYear: cls.schoolYear,
         teacherName: cls.teacher?.name || '',
         activityCount: activities.length,
-        gradedCount: gradedPercents.length,
-        overallGrade: gradedPercents.length
-          ? Math.round(gradedPercents.reduce((a, b) => a + b, 0) / gradedPercents.length)
-          : null,
+        gradedCount: gradedEntries.length,
+        overallGrade: workingAverage(
+          gradedEntries.map(e => ({
+            hitlScore: e.percent,
+            activity: { points: e.points, component: e.component }
+          })),
+          policyByClass.get(cls.id) || grading.defaultPolicyFor(cls.subject)
+        ),
         activities
       };
     });
 
-    res.json({ success: true, subjects });
+    res.json({ success: true, subjects, passingGrade });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
   }
@@ -4541,7 +4737,6 @@ app.get('/api/student/:studentId/analytics', async (req, res) => {
     }).sort((a, b) => (b.avgPercentage - a.avgPercentage));
 
     // Skill trend: last 10 graded submissions with skillScores
-    const SKILLS = ['vocabulary', 'punctuation', 'thematicFlow', 'sentenceStructure'];
     const skillTrend = submissions
       .filter(s => s.skillScores)
       .slice(-10)
@@ -4562,7 +4757,7 @@ app.get('/api/student/:studentId/analytics', async (req, res) => {
 
     // Skill averages
     const avgSkills = {};
-    SKILLS.forEach(skill => {
+    AI_SKILLS.forEach(skill => {
       const vals = skillTrend.map(h => h[skill] || 0).filter(v => v > 0);
       avgSkills[skill] = vals.length ? Math.round(vals.reduce((a, b) => a + b, 0) / vals.length) : 0;
     });
@@ -4624,25 +4819,34 @@ app.get('/api/teacher/:teacherId/gradebook/export', async (req, res) => {
       const students = cls.section?.students || [];
       const activities = cls.activities || [];
 
-      // Build student rows
+      // The export is the official class record, so its average has to be the
+      // same number the gradebook shows. It used to divide a sum of percentages
+      // by a sum of points — two different units — which reads correctly only
+      // while every activity happens to be worth 100. Mix in a 50-point quiz and
+      // it returned over 100%: two scores of 80% and 90% on a 100- and a
+      // 50-point activity came out as 113%.
+      // Class has no schoolId of its own; it inherits the section's.
+      const exportPolicy = await gradingPolicyFor(cls.section?.schoolId ?? null, cls.gradeLevel, cls.subject);
+      const { passingGrade: exportPassing } = await gradingSettingsFor(cls.section?.schoolId ?? null);
       const rows = students.map(student => {
         const row = { name: student.name, username: student.username };
-        let totalScore = 0, totalPoints = 0, gradedCount = 0;
+        const entries = [];
         for (const act of activities) {
           const sub = act.submissions.find(s => s.studentId === student.id && !s.archivedAt);
           const score = sub ? (sub.hitlScore ?? sub.aiScore ?? null) : null;
-          row[act.id] = score;
+          row[act.id] = score === null ? null : Math.round(score * 10) / 10;
           if (score !== null) {
-            totalScore += score;
-            totalPoints += act.points || 100;
-            gradedCount++;
+            entries.push({ percent: score, points: act.points || 100, component: act.component || 'WW' });
           }
         }
-        row.average = gradedCount > 0 ? Math.round((totalScore / totalPoints) * 100) : null;
+        const { initialGrade } = grading.computeGrade(entries, exportPolicy, { transmute: false });
+        row.average = initialGrade === null ? null : Math.round(initialGrade);
         return row;
       });
 
-      classData.push({ cls, activities, students, rows });
+      // Carried through because the sheet-building loop below is a separate
+      // scope and colours each cell against the school's own passing grade.
+      classData.push({ cls, activities, students, rows, passingGrade: exportPassing });
     }
 
     if (format === 'xlsx') {
@@ -4658,7 +4862,7 @@ app.get('/api/teacher/:teacherId/gradebook/export', async (req, res) => {
       workbook.creator = 'TulongGuro';
       workbook.created = new Date();
 
-      for (const { cls, activities, rows } of classData) {
+      for (const { cls, activities, rows, passingGrade: exportPassing } of classData) {
         const sheetName = (cls.name || 'Grades').substring(0, 31);
         const sheet = workbook.addWorksheet(sheetName);
 
@@ -4689,10 +4893,14 @@ app.get('/api/teacher/:teacherId/gradebook/export', async (req, res) => {
           // Color code scores
           dataRow.eachCell((cell, colNumber) => {
             if (colNumber > 1) {
-              const val = typeof cell.value === 'number' ? cell.value : parseInt(String(cell.value));
+              // parseFloat, not parseInt — scores now carry decimals, and
+              // parseInt("6.9%") truncating to 6 would colour a passing mark red.
+              const val = typeof cell.value === 'number' ? cell.value : parseFloat(String(cell.value));
               if (!isNaN(val)) {
-                if (val >= 85) cell.font = { color: { argb: 'FF16A34A' }, bold: true };
-                else if (val >= 75) cell.font = { color: { argb: 'FFD97706' } };
+                // Green for clearly strong, amber for passing, red for below the
+                // school's own line — not a hardcoded 75.
+                if (val >= Math.max(85, exportPassing)) cell.font = { color: { argb: 'FF16A34A' }, bold: true };
+                else if (val >= exportPassing) cell.font = { color: { argb: 'FFD97706' } };
                 else cell.font = { color: { argb: 'FFDC2626' } };
               }
               cell.alignment = { horizontal: 'center' };

@@ -164,6 +164,98 @@ function computeGrade(graded, policy, opts = {}) {
   };
 }
 
+/**
+ * DepEd DO 8 s.2015 descriptor bands, anchored to a school's passing grade.
+ *
+ * The dashboards used a fixed ladder — 90 Excellent, 80 Doing well, then
+ * "passing" — which inverted for any school that set its passing grade above
+ * 80: a student on 82 in a school that passes at 85 was counted as "Doing well"
+ * while actually failing, and appeared in the healthy part of the class-spread
+ * bar. Dropping every rung at or below the passing grade keeps the ladder
+ * strictly descending for any threshold, and guarantees the lowest passing band
+ * starts exactly where the school says passing starts.
+ *
+ * Must stay in step with bandsFor() in src/utils/grading.js, which adds the
+ * presentation colours for the same keys.
+ */
+function descriptorBands(passing = PASSING_GRADE) {
+  const p = Number(passing) || PASSING_GRADE;
+  return [
+    { key: 'outstanding', min: 90, label: 'Outstanding' },
+    { key: 'verySatisfactory', min: 85, label: 'Very Satisfactory' },
+    { key: 'satisfactory', min: 80, label: 'Satisfactory' },
+  ].filter(b => b.min > p).concat([
+    { key: 'passing', min: p, label: 'Fairly Satisfactory' },
+    { key: 'failing', min: 0, label: 'Did Not Meet Expectations' },
+  ]);
+}
+
+/** Which descriptor band a percentage falls into. Null for ungraded. */
+function bandKeyFor(value, passing = PASSING_GRADE) {
+  if (value === null || value === undefined) return null;
+  const band = descriptorBands(passing).find(b => value >= b.min);
+  return band ? band.key : null;
+}
+
+/**
+ * Count percentages into descriptor bands. Returns every band key present at
+ * this passing grade (zeroed), plus `notGraded`, so the UI can render the whole
+ * ladder without guessing which rungs exist.
+ */
+function bandCounts(values, passing = PASSING_GRADE) {
+  const counts = { notGraded: 0 };
+  for (const b of descriptorBands(passing)) counts[b.key] = 0;
+  for (const v of values || []) {
+    if (v === null || v === undefined) { counts.notGraded++; continue; }
+    const key = bandKeyFor(v, passing);
+    if (key) counts[key]++;
+  }
+  return counts;
+}
+
+/**
+ * GAMIFICATION — STARS
+ *
+ * Stars are the app's single earned currency, awarded per graded activity and
+ * never spent. Badges are separate: they are one-off achievements with their own
+ * conditions (see computeBadges in server.js), not a star tally under a
+ * different name.
+ *
+ * The rule, stated once here so it can be documented and tested rather than
+ * inferred from a filter expression:
+ *
+ *   Outstanding        90 and above          3 stars
+ *   Very Satisfactory  85 to 89              2 stars
+ *   Passing            passingGrade to 84    1 star
+ *   Below passing      under passingGrade    0 stars
+ *
+ * Anchored to the school's passing grade, so a school that passes at 80 does not
+ * hand out stars for a 76. The upper rungs collapse into the passing rung when
+ * the threshold is set above them, which is why this walks the same descriptor
+ * ladder as the dashboards instead of hardcoding 90/85/75.
+ */
+const STAR_AWARDS = { outstanding: 3, verySatisfactory: 2, satisfactory: 1, passing: 1, failing: 0 };
+
+/** Stars earned by one graded percentage. */
+function starsForScore(percent, passing = PASSING_GRADE) {
+  const key = bandKeyFor(percent, passing);
+  return key ? (STAR_AWARDS[key] ?? 0) : 0;
+}
+
+/**
+ * Total stars across a student's graded submissions.
+ *
+ * Uses `??`, not `||`. With `||` a teacher-assigned score of 0 was falsy and
+ * fell through to the AI's score, so a pupil the teacher had marked zero could
+ * still collect 3 stars off the AI's original 95.
+ */
+function starsFor(submissions, passing = PASSING_GRADE) {
+  return (submissions || []).reduce((total, s) => {
+    const percent = s.hitlScore ?? s.aiScore ?? null;
+    return total + (percent === null ? 0 : starsForScore(percent, passing));
+  }, 0);
+}
+
 /** The average the app shows today: a plain mean of each activity's percent. */
 function legacyAverage(graded) {
   const valid = (graded || []).filter(g => typeof g.percent === 'number');
@@ -181,5 +273,11 @@ module.exports = {
   initialGrade,
   transmute,
   computeGrade,
+  descriptorBands,
+  bandKeyFor,
+  bandCounts,
+  STAR_AWARDS,
+  starsForScore,
+  starsFor,
   legacyAverage,
 };

@@ -188,8 +188,18 @@ model Submission {
   activityId       String
   studentId        String
   imageUrl         String?
-  aiScore          Int?
-  hitlScore        Int?
+  /// Percentage scores, 0–100.
+  ///
+  /// Float rather than Int because these are stored as a percentage but entered
+  /// as raw points, and an integer percentage cannot represent most marks. A 7
+  /// out of a 30-point activity is 23.33%, which rounded to 23 and displayed
+  /// back as 6.9 points — so 135 of the 246 whole-point marks a teacher can
+  /// enter on common activity sizes came back wrong somewhere in the gradebook,
+  /// analytics or export. Widening the column is what makes points -> percent
+  /// -> points lossless. Everything downstream still reads a percentage, and
+  /// display sites round; only the stored value gained precision.
+  aiScore          Float?
+  hitlScore        Float?
   aiFeedback       String?
   hitlFeedback     String?
   readingStrategy  String?

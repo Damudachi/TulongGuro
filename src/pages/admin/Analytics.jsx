@@ -1,14 +1,12 @@
 import { useState, useEffect, useMemo } from 'react';
 import { TrendingUp, TrendingDown, Loader2, AlertTriangle, Users, BookOpen } from 'lucide-react';
 import { API_URL } from '../../config';
+import { bandsFor, gradeTone } from '../../utils/grading';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
 
-const toneFor = (avg, passing) =>
-  avg === null ? 'text-navy-300'
-    : avg >= 90 ? 'text-aqua-700'
-      : avg >= 80 ? 'text-royal-600'
-        : avg >= passing ? 'text-sun-700' : 'text-red-600';
+// Tone comes from the shared ladder in utils/grading.
+const toneFor = (avg, passing) => gradeTone(avg, passing);
 
 function Stat({ label, value, hint, tone = 'text-navy-700' }) {
   return (
@@ -67,11 +65,20 @@ export default function AdminAnalytics() {
 
   const { summary, bySubject, classes, students, passingGrade } = data;
   const bandTotal = Object.values(summary.bands).reduce((a, b) => a + b, 0) || 1;
+  // Built from the school's own passing grade rather than a fixed 90/80/75
+  // ladder, which mislabelled its bands for any school passing above 80.
+  // Ranges are derived from the neighbouring rung so the labels stay truthful.
+  const ladder = bandsFor(passingGrade);
   const BANDS = [
-    { key: 'excellent', label: '90+', cls: 'bg-aqua-500' },
-    { key: 'good', label: '80–89', cls: 'bg-royal-500' },
-    { key: 'fair', label: `${passingGrade}–79`, cls: 'bg-sun-400' },
-    { key: 'needsWork', label: `Below ${passingGrade}`, cls: 'bg-red-500' },
+    ...ladder.map((b, i) => ({
+      key: b.key,
+      label: i === 0
+        ? `${b.min}+`
+        : b.key === 'failing'
+          ? `Below ${passingGrade}`
+          : `${b.min}–${ladder[i - 1].min - 1}`,
+      cls: b.bar,
+    })),
     { key: 'notGraded', label: 'Not graded', cls: 'bg-cream-300' },
   ];
 

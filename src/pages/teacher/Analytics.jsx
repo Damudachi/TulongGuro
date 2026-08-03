@@ -4,6 +4,7 @@ import {
   LifeBuoy, Trophy, Target, TrendingUp, TrendingDown, Minus, ClipboardList,
 } from 'lucide-react';
 import { API_URL } from '../../config';
+import { bandsFor, bandFor, toPoints, pct, DEFAULT_PASSING_GRADE } from '../../utils/grading';
 import SkillProgressChart from '../../components/SkillProgressChart';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
@@ -15,22 +16,9 @@ const SKILL_LABELS = {
   sentenceStructure: 'Sentence Structure',
 };
 
-/**
- * Plain-language bands. Scores are percentages throughout — an activity's
- * rubric criteria always total 100 — and points are derived per activity.
- */
-const BANDS = [
-  { min: 90, label: 'Excellent', chip: 'bg-lime-100 text-lime-800', dot: 'bg-lime-500', emoji: '🌟' },
-  { min: 80, label: 'Doing well', chip: 'bg-aqua-100 text-aqua-800', dot: 'bg-aqua-500', emoji: '👍' },
-  { min: 75, label: 'Getting there', chip: 'bg-sun-100 text-sun-800', dot: 'bg-sun-500', emoji: '🌱' },
-  { min: 0, label: 'Needs a boost', chip: 'bg-magenta-100 text-magenta-800', dot: 'bg-magenta-500', emoji: '💪' },
-];
-
-const bandFor = (pct) => (pct === null || pct === undefined ? null : BANDS.find(b => pct >= b.min));
-
-/** Points a score is worth on a given activity. Scores are stored as percentages. */
-const toPoints = (percent, totalPoints) =>
-  Math.round((percent / 100) * (totalPoints || 100) * 10) / 10;
+// Bands, colours and points now come from utils/grading, which builds the
+// ladder from the school's own passing grade. The fixed 90/80/75 ladder that
+// lived here inverted for any school passing above 80.
 
 function TrendArrow({ history }) {
   if (!history || history.length < 2) return <Minus className="w-4 h-4 text-slate-300" />;
@@ -57,13 +45,12 @@ function Spark({ values }) {
 }
 
 /** Horizontal bar showing how the class is spread across the bands. */
-function ClassSpread({ bands, total }) {
-  const segs = [
-    { n: bands.excellent, ...BANDS[0] },
-    { n: bands.good, ...BANDS[1] },
-    { n: bands.fair, ...BANDS[2] },
-    { n: bands.needsWork, ...BANDS[3] },
-  ].filter(s => s.n > 0);
+function ClassSpread({ bands, total, passingGrade }) {
+  // Driven by whichever rungs exist at this passing grade rather than a fixed
+  // four, so a school passing at 85 sees three bands and not two empty ones.
+  const segs = bandsFor(passingGrade)
+    .map(b => ({ ...b, n: bands[b.key] || 0, label: b.short }))
+    .filter(s => s.n > 0);
   if (!segs.length) return <p className="text-sm text-slate-400">No graded work yet.</p>;
   const scored = segs.reduce((n, s) => n + s.n, 0);
   return (
@@ -100,6 +87,9 @@ export default function Analytics() {
   const [selectedStudent, setSelectedStudent] = useState(null);
   const [studentData, setStudentData] = useState(null);
   const [loadingStudent, setLoadingStudent] = useState(false);
+  // Null means "all skills". Reset whenever the section changes, since the
+  // skills available differ between classes.
+  const [skillFilter, setSkillFilter] = useState(null);
 
   useEffect(() => {
     const user = JSON.parse(localStorage.getItem('user') || '{}');
@@ -122,6 +112,7 @@ export default function Analytics() {
     fetch(url).then(r => r.json())
       .then(d => setData(d.success ? d : null))
       .finally(() => setIsLoading(false));
+    setSkillFilter(null);
   }, [selectedSectionId, showSelector]);
 
   const loadStudentDetail = (student) => {
@@ -143,6 +134,23 @@ export default function Analytics() {
     summary = {}, activityBreakdown = [], studentTrends = [],
     needsSupport = [], classAvgSkills = {}, sections = [],
   } = data || {};
+
+  // The school's threshold drives every band, colour and label below. Falls
+  // back to DepEd's 75 only until the analytics payload lands.
+  const passingGrade = summary.passingGrade ?? DEFAULT_PASSING_GRADE;
+
+  const curriculumSkills = data?.curriculumSkills || [];
+  const skillById = Object.fromEntries(curriculumSkills.map(s => [s.id, s]));
+
+  // Only offer skills this class actually has activities for, with the count,
+  // so the filter never leads to an empty table.
+  const skillFilterOptions = curriculumSkills
+    .map(s => ({ ...s, count: activityBreakdown.filter(a => a.skills?.includes(s.id)).length }))
+    .filter(s => s.count > 0);
+
+  const visibleActivities = skillFilter
+    ? activityBreakdown.filter(a => a.skills?.includes(skillFilter))
+    : activityBreakdown;
 
   // ── One student's detail ──
   if (selectedStudent) {
@@ -174,13 +182,13 @@ export default function Analytics() {
                 const graded = studentData.submissions.filter(s => s.status === 'GRADED');
                 const earned = graded.reduce((sum, s) => sum + toPoints(s.hitlScore ?? s.aiScore ?? 0, s.points), 0);
                 const possible = graded.reduce((sum, s) => sum + (s.points || 100), 0);
-                const band = bandFor(studentData.avgScore);
+                const band = bandFor(studentData.avgScore, passingGrade);
                 return (
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                     <div className="bg-royal-50 rounded-2xl p-4">
                       <p className="text-[11px] font-bold uppercase tracking-wider text-royal-600 mb-1">Average</p>
-                      <p className="text-3xl font-extrabold text-royal-700">{studentData.avgScore}%</p>
-                      {band && <span className={cn('inline-block mt-1.5 text-[11px] font-bold px-2 py-0.5 rounded-full', band.chip)}>{band.emoji} {band.label}</span>}
+                      <p className="text-3xl font-extrabold text-royal-700">{pct(studentData.avgScore)}%</p>
+                      {band && <span className={cn('inline-block mt-1.5 text-[11px] font-bold px-2 py-0.5 rounded-full', band.chip)}>{band.emoji} {band.short}</span>}
                     </div>
                     <div className="bg-aqua-50 rounded-2xl p-4">
                       <p className="text-[11px] font-bold uppercase tracking-wider text-aqua-700 mb-1">Points earned</p>
@@ -212,7 +220,7 @@ export default function Analytics() {
                   ) : studentData.submissions.map(sub => {
                     const percent = sub.hitlScore ?? sub.aiScore;
                     const isGraded = sub.status === 'GRADED' && percent !== null;
-                    const band = isGraded ? bandFor(percent) : null;
+                    const band = isGraded ? bandFor(percent, passingGrade) : null;
                     return (
                       <div key={sub.id} className="flex items-center gap-3 p-3 bg-slate-50 rounded-2xl">
                         <div className="w-10 h-10 bg-white border border-slate-200 rounded-xl grid place-items-center shrink-0">
@@ -231,7 +239,7 @@ export default function Analytics() {
                               <p className="text-sm font-extrabold text-navy-800">
                                 {toPoints(percent, sub.points)}<span className="text-slate-400">/{sub.points}</span>
                               </p>
-                              <span className={cn('text-[10px] font-bold px-1.5 py-0.5 rounded-full', band.chip)}>{percent}%</span>
+                              <span className={cn('text-[10px] font-bold px-1.5 py-0.5 rounded-full', band.chip)}>{pct(percent)}%</span>
                             </>
                           ) : (
                             <p className="text-[11px] font-semibold text-sun-700 bg-sun-100 px-2 py-1 rounded-full">Not graded yet</p>
@@ -283,7 +291,7 @@ export default function Analytics() {
   }
 
   const hasData = summary.gradedCount > 0;
-  const classBand = bandFor(summary.classAverage);
+  const classBand = bandFor(summary.classAverage, passingGrade);
 
   return (
     <div className="p-4 md:p-8 max-w-6xl mx-auto space-y-6 pb-24">
@@ -334,7 +342,7 @@ export default function Analytics() {
 
             <div className="bg-white border-2 border-navy-700/10 rounded-3xl p-5 shadow-pop">
               <p className="text-[11px] font-bold uppercase tracking-wider text-slate-400 mb-2">How the class is spread</p>
-              <ClassSpread bands={summary.bands || {}} total={summary.studentCount} />
+              <ClassSpread bands={summary.bands || {}} total={summary.studentCount} passingGrade={passingGrade} />
             </div>
           </div>
 
@@ -388,6 +396,38 @@ export default function Analytics() {
                 <ClipboardList className="w-4 h-4 text-royal-500" /> How each activity went
               </h2>
               <p className="text-xs text-slate-500 mb-4">Hardest first. Points are out of each activity&apos;s own total.</p>
+
+              {/* ── Skill filter ──
+                  Narrows the list to the activities that assess one curriculum
+                  skill, so "how is their reading comprehension going" is one
+                  click rather than a reading of every row. Only skills actually
+                  present in this class are offered — an empty filter chip is
+                  just a dead end. */}
+              {skillFilterOptions.length > 0 && (
+                <div className="flex flex-wrap items-center gap-2 mb-4">
+                  <span className="text-[11px] font-extrabold uppercase tracking-wider text-slate-400 mr-1">Skill</span>
+                  <button type="button" onClick={() => setSkillFilter(null)}
+                    className={cn('px-3 py-1 rounded-full text-xs font-bold border-2 transition-all',
+                      skillFilter === null
+                        ? 'border-navy-700 bg-navy-700 text-white'
+                        : 'border-slate-200 text-slate-500 hover:border-navy-300')}>
+                    All ({activityBreakdown.length})
+                  </button>
+                  {skillFilterOptions.map(s => (
+                    <button key={s.id} type="button"
+                      onClick={() => setSkillFilter(skillFilter === s.id ? null : s.id)}
+                      className="px-3 py-1 rounded-full text-xs font-bold border-2 transition-all flex items-center gap-1.5"
+                      style={skillFilter === s.id
+                        ? { borderColor: s.color, backgroundColor: s.color, color: 'white' }
+                        : { borderColor: '#E2E8F0', color: '#64748B' }}>
+                      <span className="w-2 h-2 rounded-full"
+                        style={{ background: skillFilter === s.id ? 'white' : s.color }} />
+                      {s.label} ({s.count})
+                    </button>
+                  ))}
+                </div>
+              )}
+
               <div className="overflow-x-auto">
                 <table className="w-full text-sm min-w-[520px]">
                   <thead>
@@ -399,23 +439,37 @@ export default function Analytics() {
                     </tr>
                   </thead>
                   <tbody>
-                    {activityBreakdown.map(a => {
-                      const band = bandFor(a.avgPercent);
+                    {visibleActivities.map(a => {
+                      const band = bandFor(a.avgPercent, passingGrade);
                       return (
                         <tr key={a.id} className="border-b border-slate-50 last:border-0">
                           <td className="py-3">
                             <p className="font-bold text-navy-800">{a.title}</p>
                             <p className="text-[11px] text-slate-400">{a.type} · {a.points} pts</p>
+                            {a.skills?.length > 0 && (
+                              <div className="flex flex-wrap gap-1 mt-1">
+                                {a.skills.map(id => {
+                                  const s = skillById[id];
+                                  if (!s) return null;
+                                  return (
+                                    <span key={id} className="text-[10px] font-bold px-1.5 py-0.5 rounded-full"
+                                      style={{ backgroundColor: `${s.color}1A`, color: s.color }}>
+                                      {s.label}
+                                    </span>
+                                  );
+                                })}
+                              </div>
+                            )}
                           </td>
                           <td className="py-3 text-center">
                             <p className="font-extrabold text-navy-800">
                               {a.avgPoints}<span className="text-slate-400">/{a.points}</span>
                             </p>
                             <span className={cn('text-[10px] font-bold px-1.5 py-0.5 rounded-full', band.chip)}>
-                              {a.avgPercent}%
+                              {pct(a.avgPercent)}%
                             </span>
                           </td>
-                          <td className="py-3 text-center text-xs text-slate-500">{a.lowest}%–{a.highest}%</td>
+                          <td className="py-3 text-center text-xs text-slate-500">{pct(a.lowest)}%–{pct(a.highest)}%</td>
                           <td className="py-3 text-center text-xs font-semibold text-slate-500">{a.gradedCount}</td>
                         </tr>
                       );
@@ -460,7 +514,7 @@ export default function Analytics() {
             </h2>
             <div className="space-y-2">
               {studentTrends.map(st => {
-                const band = bandFor(st.avgPercent);
+                const band = bandFor(st.avgPercent, passingGrade);
                 return (
                   <button key={st.student.id} onClick={() => loadStudentDetail(st.student)}
                     className="w-full text-left flex items-center gap-3 p-3 rounded-2xl hover:bg-slate-50 transition-colors">
@@ -481,7 +535,7 @@ export default function Analytics() {
                       <span className="text-xs font-semibold text-slate-300 w-24 text-center shrink-0">—</span>
                     ) : (
                       <span className={cn('text-[11px] font-bold px-2 py-1 rounded-full shrink-0 w-24 text-center', band.chip)}>
-                        {st.avgPercent}% {band.emoji}
+                        {pct(st.avgPercent)}% {band.emoji}
                       </span>
                     )}
                     <ChevronRight className="w-4 h-4 text-slate-300 shrink-0" />

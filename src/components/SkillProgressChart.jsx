@@ -226,7 +226,7 @@ export default function SkillProgressChart({
                   <span className="font-bold text-navy-700 truncate flex-1 min-w-0">{a.title}</span>
                   {a.date && <span className="text-navy-400 font-semibold shrink-0">{fmtDate(a.date)}</span>}
                   {typeof a.percent === 'number' && (
-                    <span className="font-extrabold text-navy-600 shrink-0 w-10 text-right">{a.percent}%</span>
+                    <span className="font-extrabold text-navy-600 shrink-0 w-10 text-right">{Math.round(a.percent)}%</span>
                   )}
                 </li>
               ))}

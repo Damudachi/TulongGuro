@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { BookOpen, ChevronRight, ArrowLeft, Loader2, FileText, CheckCircle2, Clock, AlertCircle, MessageSquare } from 'lucide-react';
 import { API_URL } from '../../config';
+import { gradeTone, gradeChip, DEFAULT_PASSING_GRADE } from '../../utils/grading';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
 
@@ -24,25 +25,27 @@ const SUBJECT_THEMES = [
 
 const themeFor = (index) => SUBJECT_THEMES[index % SUBJECT_THEMES.length];
 
-/** Grade colour ramp shared by the list, header, and gradebook. */
-const gradeTone = (grade) =>
-  grade === null || grade === undefined ? 'text-navy-300'
-    : grade >= 90 ? 'text-aqua-700'
-    : grade >= 75 ? 'text-sun-700'
-    : 'text-red-600';
+// Grade colouring now comes from utils/grading so it tracks the school's own
+// passing grade instead of a hardcoded 75.
 
 export default function Subjects() {
   const [subjects, setSubjects] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
   const [selected, setSelected] = useState(null); // { subject, themeIndex }
   const [activeTab, setActiveTab] = useState('activities');
+  // The school's own threshold, so colours match what the school counts as passing.
+  const [passingGrade, setPassingGrade] = useState(DEFAULT_PASSING_GRADE);
 
   useEffect(() => {
     const user = JSON.parse(localStorage.getItem('user') || '{}');
     if (!user.id) return setIsLoading(false);
     fetch(`${API_URL}/api/student/${user.id}/subjects`)
       .then(r => r.json())
-      .then(d => { if (d.success) setSubjects(d.subjects); })
+      .then(d => {
+        if (!d.success) return;
+        setSubjects(d.subjects);
+        if (typeof d.passingGrade === 'number') setPassingGrade(d.passingGrade);
+      })
       .finally(() => setIsLoading(false));
   }, []);
 
@@ -108,6 +111,10 @@ export default function Subjects() {
               const status = STATUS_STYLES[statusKey] || STATUS_STYLES.NONE;
               const StatusIcon = status.icon;
               const score = activity.submission?.score;
+              // Colour by the percentage, never by the raw points. Comparing
+              // points against 75/90 meant every mark on an activity worth less
+              // than 75 points rendered red — a perfect 30/30 read as failing.
+              const percent = activity.submission?.percent;
               const hasFeedback = !!activity.submission?.feedback;
               const isPastDeadline = activity.deadline && new Date(activity.deadline) < new Date();
 
@@ -134,10 +141,7 @@ export default function Subjects() {
                             <StatusIcon className="w-3 h-3" /> {status.label}
                           </span>
                           {score !== null && score !== undefined && (
-                            <span className={cn('tg-pill',
-                              score >= 90 ? 'bg-aqua-100 text-aqua-800'
-                                : score >= 75 ? 'bg-sun-100 text-sun-800'
-                                : 'bg-red-100 text-red-700')}>
+                            <span className={cn('tg-pill', gradeChip(percent, passingGrade))}>
                               {score}/{activity.points}
                             </span>
                           )}
@@ -172,7 +176,7 @@ export default function Subjects() {
           <div>
             <div className="tg-card p-8 mb-6 text-center">
               <p className="text-sm font-bold text-navy-500 mb-2">Overall Grade for {sub.subject || sub.name}</p>
-              <p className={cn('font-display text-6xl font-extrabold', gradeTone(sub.overallGrade))}>
+              <p className={cn('font-display text-6xl font-extrabold', gradeTone(sub.overallGrade, passingGrade))}>
                 {sub.overallGrade !== null ? `${sub.overallGrade}%` : '—'}
               </p>
               <p className="text-xs font-semibold text-navy-400 mt-3">
@@ -199,6 +203,7 @@ export default function Subjects() {
                       const statusKey = activity.submission?.status || 'NONE';
                       const status = STATUS_STYLES[statusKey] || STATUS_STYLES.NONE;
                       const score = activity.submission?.score;
+                      const percent = activity.submission?.percent;
 
                       return (
                         <tr key={activity.id} className="border-b border-cream-200 last:border-0 hover:bg-cream-50">
@@ -213,7 +218,7 @@ export default function Subjects() {
                           <td className="px-4 py-3.5 text-center">
                             <span className="text-xs bg-cream-200 text-navy-600 px-2.5 py-1 rounded-full font-bold">{activity.type}</span>
                           </td>
-                          <td className={cn('px-4 py-3.5 text-center font-extrabold', gradeTone(score))}>
+                          <td className={cn('px-4 py-3.5 text-center font-extrabold', gradeTone(percent, passingGrade))}>
                             {score !== null && score !== undefined ? `${score}/${activity.points}` : '—'}
                           </td>
                           <td className="px-4 py-3.5 text-center">
@@ -286,7 +291,7 @@ export default function Subjects() {
                   </div>
                   <div className="text-right">
                     <p className="text-[10px] uppercase text-navy-400 font-extrabold tracking-wider">Grade</p>
-                    <p className={cn('font-display text-3xl font-extrabold', gradeTone(subject.overallGrade))}>
+                    <p className={cn('font-display text-3xl font-extrabold', gradeTone(subject.overallGrade, passingGrade))}>
                       {subject.overallGrade !== null ? `${subject.overallGrade}%` : '—'}
                     </p>
                   </div>

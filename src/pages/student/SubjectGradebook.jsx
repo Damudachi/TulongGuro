@@ -2,20 +2,19 @@ import { useState, useEffect } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { Loader2, BarChart2, ChevronRight, TrendingUp } from 'lucide-react';
 import { API_URL } from '../../config';
+import { gradeTone } from '../../utils/grading';
+import { usePassingGrade } from '../../utils/useSchool';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
 
-const gradeColor = (pct) =>
-  pct === null || pct === undefined ? 'text-slate-300'
-    : pct >= 90 ? 'text-green-600'
-      : pct >= 75 ? 'text-amber-600'
-        : 'text-red-600';
+// Grade colouring lives in utils/grading and follows the school's passing grade.
 
 /**
  * The student's own gradebook: an overall average per subject plus a
  * per-activity breakdown. Only teacher-released (GRADED) scores appear.
  */
 export default function SubjectGradebook() {
+  const passingGrade = usePassingGrade();
   const [searchParams, setSearchParams] = useSearchParams();
   const subjectFilter = searchParams.get('subject') || '';
   const [subjects, setSubjects] = useState([]);
@@ -139,7 +138,7 @@ export default function SubjectGradebook() {
                               <td className="px-4 py-3 text-center">
                                 <span className="text-xs bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full font-medium">{activity.type}</span>
                               </td>
-                              <td className={cn('px-4 py-3 text-center font-bold', gradeColor(sub?.percent))}>
+                              <td className={cn('px-4 py-3 text-center font-bold', gradeTone(sub?.percent, passingGrade, 'text-slate-300'))}>
                                 {isGraded ? `${sub.score}/${activity.points}` : '—'}
                               </td>
                               <td className="px-4 py-3 text-right">
