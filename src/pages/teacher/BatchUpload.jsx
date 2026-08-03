@@ -37,6 +37,7 @@ export default function BatchUpload() {
   const [uploadingStudentId, setUploadingStudentId] = useState(null);
   const [redacting, setRedacting] = useState(null);   // { studentId, pageIndex }
   const [confirmingStudent, setConfirmingStudent] = useState(null); // student pending the "start AI checking?" prompt
+  const [privacyBlocked, setPrivacyBlocked] = useState(null); // { studentId, message } when the server refused a scan for PII
   const fileInputRef = useRef(null);
   const cameraInputRef = useRef(null);
   const pendingUploadStudentId = useRef(null);
@@ -144,13 +145,23 @@ export default function BatchUpload() {
     const pages = stagedByStudentId[studentId]?.pages || [];
     if (pages.length === 0 || !piiConfirmed) return;
     setConfirmingStudent(null);
+    setPrivacyBlocked(prev => (prev?.studentId === studentId ? null : prev));
     setUploadingStudentId(studentId);
 
-    const queueOffline = () => {
+    const queueOffline = async () => {
       // The offline queue carries one image per job, so multi-page outputs are
       // queued as separate pages and re-stitched server-side on flush.
-      pages.forEach(p => enqueue(buildJob(`${API_URL}/api/teacher/upload`, { studentId, activityId, skipGrading: 'true' }, p.file)));
+      // Sequential because enqueue() encodes each photo and checks the shared
+      // storage budget — running them together can overshoot it.
+      let queued = 0;
+      for (const p of pages) {
+        const job = await enqueue(buildJob(`${API_URL}/api/teacher/upload`, { studentId, activityId, skipGrading: 'true' }, p.file));
+        if (job) queued++;
+      }
       setQueuedCount(getQueue().length);
+      if (queued < pages.length) {
+        alert(`Only ${queued} of ${pages.length} page(s) could be saved for later — this device has run out of offline storage. Please reconnect and upload the rest.`);
+      }
       cancelStaged(studentId);
       setUploadingStudentId(null);
     };
@@ -173,12 +184,23 @@ export default function BatchUpload() {
         } else {
           setUploadingStudentId(null);
         }
+      } else if (data.code === 'PRIVACY_VIOLATION') {
+        // The server refused the scan and discarded it, so the staged pages are
+        // deliberately kept: the teacher needs them to redact and retry, and
+        // clearing them here would lose the only copy on this device.
+        setPrivacyBlocked({ studentId, message: data.error });
+        setUploadingStudentId(null);
       } else {
         alert(data.error || 'Upload failed. Please try again.');
         setUploadingStudentId(null);
       }
     } catch {
-      queueOffline();
+      // Only a genuine network failure should fall back to the offline queue —
+      // a server that answered and said no must not be retried behind the
+      // teacher's back.
+      if (!navigator.onLine) return queueOffline();
+      alert('Upload failed. Please check your connection and try again.');
+      setUploadingStudentId(null);
     }
   };
 
@@ -360,6 +382,22 @@ export default function BatchUpload() {
                   <div className="flex-1 min-w-0">
                     <p className="font-semibold text-brand-slate truncate">{student.name}</p>
                     <p className="text-xs text-slate-500">{student.username}</p>
+                    {privacyBlocked?.studentId === student.id && (
+                      <div className="mt-2 flex items-start gap-2 p-2.5 rounded-lg bg-orange-50 border border-orange-300">
+                        <ShieldCheck className="w-4 h-4 shrink-0 text-orange-600 mt-0.5" />
+                        <div className="min-w-0">
+                          <p className="text-[11px] font-bold text-orange-800">Not uploaded — name detected on the paper</p>
+                          <p className="text-[11px] text-orange-700 mt-0.5">{privacyBlocked.message}</p>
+                          <p className="text-[11px] text-orange-600 mt-1">
+                            Tap a page below and use the shield button to black out the name, then upload again.
+                          </p>
+                        </div>
+                        <button type="button" onClick={() => setPrivacyBlocked(null)}
+                          title="Dismiss" className="ml-auto shrink-0 text-orange-400 hover:text-orange-700">
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    )}
                     {staged ? (
                       <>
                         <span className="inline-flex mt-2 text-[11px] font-bold px-2 py-0.5 rounded-full bg-blue-100 text-blue-700">

@@ -222,6 +222,32 @@ async function uploadToCloud(localPath, filename, { folder = 'submissions', cont
   return urlData.publicUrl;
 }
 
+/**
+ * Remove a file previously written by uploadToCloud, given the URL it returned.
+ * Best-effort: used on the privacy-rejection path, where the scan has already
+ * been persisted by the time the AI tells us it has a name on it. Leaving it in
+ * the bucket would defeat the point of refusing the submission.
+ */
+async function deleteFromCloud(storedUrl) {
+  if (!storedUrl) return;
+  try {
+    if (!/^https?:\/\//i.test(storedUrl)) {
+      const local = path.join(__dirname, storedUrl);
+      try { fs.unlinkSync(local); } catch {}
+      return;
+    }
+    if (!useSupabase) return;
+    // Public URLs look like .../object/public/<bucket>/<folder>/<file>
+    const marker = `/object/public/${STORAGE_BUCKET}/`;
+    const idx = storedUrl.indexOf(marker);
+    if (idx === -1) return;
+    const remotePath = decodeURIComponent(storedUrl.slice(idx + marker.length).split('?')[0]);
+    await supabase.storage.from(STORAGE_BUCKET).remove([remotePath]);
+  } catch (err) {
+    console.error('⚠ Could not delete stored file:', err.message);
+  }
+}
+
 // Helper: resolve a stored imageUrl (either a local /uploads/... path or a
 // Supabase Storage public URL) to a local file path readable by fs/sharp —
 // needed because AI grading always reads the image off disk. Remote images
@@ -239,25 +265,149 @@ async function resolveLocalImagePath(imageUrl) {
   return { path: path.join(__dirname, imageUrl), isTemp: false };
 }
 
+// Model IDs are env-overridable so a rate-limited or deprecated model can be
+// swapped without a redeploy of this file.
+//
+// Primary is Gemini 3.6 Flash: the vision quality is what actually decides
+// whether a Grade 6 pupil's handwriting is transcribed correctly, and it emits
+// ~17% fewer output tokens than 3.5 Flash for the same reasoning, so it is both
+// better and cheaper on output ($7.50 vs $9.00 per 1M) at identical input cost.
+//
+// Fallback is 3.5 Flash-Lite — deliberately a *different model*, not a smaller
+// copy of the same one. Gemini quota is metered per model, so when the primary
+// returns 429/503 the Lite tier still has its own budget. It is also ~5x cheaper
+// on input, which is what makes retrying a whole essay image affordable.
+const PRIMARY_MODEL_ID = process.env.GEMINI_MODEL || 'gemini-3.6-flash';
+const LITE_MODEL_ID = process.env.GEMINI_LITE_MODEL || 'gemini-3.5-flash-lite';
+
 const genAI = aiConfigured ? new GoogleGenerativeAI(aiApiKey) : null;
 const model = genAI ? genAI.getGenerativeModel({
-  model: 'gemini-3.5-flash',
+  model: PRIMARY_MODEL_ID,
   generationConfig: { responseMimeType: 'application/json' }
 }) : null;
-// A separate, smaller model in the same family — used as a fallback when the
-// primary model above is persistently unavailable (e.g. "high demand" 503s),
-// since it runs on different capacity and is far less likely to be saturated
-// at the same time.
 const modelLite = genAI ? genAI.getGenerativeModel({
-  model: 'gemini-3.5-flash-lite',
+  model: LITE_MODEL_ID,
   generationConfig: { responseMimeType: 'application/json' }
 }) : null;
-const chatModel = genAI ? genAI.getGenerativeModel({ model: 'gemini-3.5-flash' }) : null;
+// The Study Buddy chatbot is short conversational turns, not vision grading, and
+// it is the highest-volume AI surface in the app. Running it on Flash-Lite keeps
+// it off the primary model's rate limit so a class of students chatting can
+// never starve the teacher's grading queue.
+const chatModel = genAI ? genAI.getGenerativeModel({ model: LITE_MODEL_ID }) : null;
 
 if (aiConfigured) {
-  console.log('🤖 Gemini AI enabled');
+  console.log(`🤖 Gemini AI enabled (primary: ${PRIMARY_MODEL_ID}, fallback: ${LITE_MODEL_ID})`);
 } else {
   console.log('⚠ Gemini AI disabled: set GEMINI_API_KEY or GOOGLE_API_KEY in server/.env to enable AI features');
+}
+
+/**
+ * Raised when the AI reports identifying information on a scanned paper.
+ * Carried as a distinct type so every caller can map it to 400 + cleanup rather
+ * than letting it fall into the generic 500 path and read as an outage.
+ */
+class PrivacyViolationError extends Error {
+  constructor(violationType) {
+    super('A student name or other identifying information was detected on this paper.');
+    this.name = 'PrivacyViolationError';
+    this.violationType = violationType || 'name';
+  }
+}
+
+/** Short-circuit as soon as the privacy gate fires, before any rubric parsing. */
+function assertNoPrivacyViolation(aiResult) {
+  if (aiResult?.privacyViolationDetected === true) {
+    throw new PrivacyViolationError(aiResult.privacyViolationType);
+  }
+}
+
+/**
+ * Retention deadline for a submission: exactly one calendar year past the end of
+ * the school year the work belongs to.
+ *
+ * School years are stored as free text ("2024-2025"), so the end year is the
+ * second number when there is one and the only number otherwise. Philippine
+ * school years end in the calendar year named second — 2024-2025 ends mid-2025 —
+ * and DepEd treats 31 March as the close of the year, so retention runs to
+ * 31 March of the following year.
+ *
+ * Returns null for an unparseable school year rather than guessing: a wrong
+ * retainUntil either deletes records early or keeps them past what the Data
+ * Privacy Act allows, and both are worse than leaving it for an admin to set.
+ */
+function computeRetainUntil(schoolYear) {
+  const years = String(schoolYear || '').match(/\d{4}/g);
+  if (!years || years.length === 0) return null;
+  const endYear = Number(years[years.length - 1]);
+  if (!Number.isFinite(endYear)) return null;
+  // Month is 0-indexed: 2 = March. Day 31, one year past the school year's end.
+  return new Date(Date.UTC(endYear + 1, 2, 31, 23, 59, 59));
+}
+
+/** Look up a submission's retention deadline from its activity's class. */
+async function retainUntilForActivity(activityId) {
+  if (!activityId || activityId === 'mock-activity-id') return null;
+  try {
+    const activity = await prisma.activity.findUnique({
+      where: { id: activityId },
+      select: { class: { select: { schoolYear: true } } }
+    });
+    return computeRetainUntil(activity?.class?.schoolYear);
+  } catch {
+    return null;
+  }
+}
+
+// ─────────────────────────────────────────
+// GEMINI RATE GATE
+// ─────────────────────────────────────────
+// Every Gemini call in this process funnels through one gate that enforces two
+// things: at most GEMINI_MAX_CONCURRENCY calls in flight, and at least
+// GEMINI_MIN_SPACING_MS between the *starts* of any two calls.
+//
+// This exists because the free tier is metered in requests per minute, and the
+// paths that reach Gemini are ones a teacher can trigger in bursts — clicking
+// "Check with AI" down a class list, or an offline queue flushing thirty photos
+// the moment the wifi comes back. Without the gate those all leave at once, the
+// whole burst 429s together, and every retry lands inside the same exhausted
+// minute. Spacing them means the same thirty photos take longer but all succeed.
+//
+// The default of 4.5s spacing is 13 requests/minute, just under the free tier's
+// 15 RPM with headroom for the retry traffic. Paid tiers should raise it.
+const GEMINI_MAX_CONCURRENCY = Number(process.env.GEMINI_MAX_CONCURRENCY || 2);
+const GEMINI_MIN_SPACING_MS = Number(process.env.GEMINI_MIN_SPACING_MS || 4500);
+
+const geminiGate = { active: 0, lastStart: 0, waiting: [] };
+
+function releaseGeminiSlot() {
+  geminiGate.active--;
+  const next = geminiGate.waiting.shift();
+  if (next) next();
+}
+
+/** Resolves once it is this caller's turn to hit Gemini. FIFO, so a burst is
+ *  served in arrival order rather than starving whoever queued first. */
+async function acquireGeminiSlot() {
+  if (geminiGate.active >= GEMINI_MAX_CONCURRENCY) {
+    await new Promise(resolve => geminiGate.waiting.push(resolve));
+  }
+  geminiGate.active++;
+  // Claim the next departure slot synchronously, before any await. Measuring
+  // "time since the last start" and only then sleeping looks equivalent but is
+  // not: two callers released in the same tick both read the same lastStart,
+  // both sleep the same amount and both leave together, so the real rate came
+  // out at CONCURRENCY requests per spacing interval instead of one. Advancing
+  // lastStart up front makes each caller reserve a distinct slot.
+  const now = Date.now();
+  const startAt = Math.max(now, geminiGate.lastStart + GEMINI_MIN_SPACING_MS);
+  geminiGate.lastStart = startAt;
+  if (startAt > now) await new Promise(r => setTimeout(r, startAt - now));
+}
+
+/** How many calls are queued behind the gate — surfaced to the UI so a teacher
+ *  waiting on a batch sees "3 ahead of you" instead of an unexplained spinner. */
+function geminiQueueDepth() {
+  return geminiGate.waiting.length + geminiGate.active;
 }
 
 // Wraps a Gemini generateContent() call with retry + backoff for transient
@@ -267,7 +417,12 @@ async function generateContentWithRetry(genModel, parts, { retries = 2, baseDela
   let lastErr;
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
-      return await genModel.generateContent(parts);
+      await acquireGeminiSlot();
+      try {
+        return await genModel.generateContent(parts);
+      } finally {
+        releaseGeminiSlot();
+      }
     } catch (err) {
       lastErr = err;
       const retryable = /503|overloaded|high demand|unavailable|429|rate limit|resource.?exhausted/i.test(err.message || '');
@@ -552,12 +707,15 @@ app.get('/api/admin/:adminId/analytics', async (req, res) => {
       where: { section: { schoolId: admin.schoolId } },
       include: {
         teacher: { select: { id: true, name: true } },
-        section: { select: { id: true, name: true, gradeLevel: true, students: { select: { id: true, name: true } } } }
+        section: { select: { id: true, name: true, gradeLevel: true, students: { select: { id: true, name: true, username: true } } } }
       }
     });
 
     const graded = await prisma.submission.findMany({
       where: { status: 'GRADED', activity: { class: { section: { schoolId: admin.schoolId } } } },
+      // Oldest first, so the last few entries per student are their most recent
+      // work and a trend can be read off them.
+      orderBy: [{ gradedAt: 'asc' }, { updatedAt: 'asc' }],
       select: {
         studentId: true, hitlScore: true, aiScore: true,
         activity: { select: { points: true, component: true, classId: true } }
@@ -581,7 +739,21 @@ app.get('/api/admin/:adminId/analytics', async (req, res) => {
     const classSummaries = [];
     const subjectTotals = new Map();
     const atRisk = [];
+    // Every student, one row per class they're enrolled in — a coordinator has
+    // to be able to say "Juan is struggling in English, not in Math", and to
+    // name the teacher to raise it with.
+    const studentRows = [];
     const schoolBands = { excellent: 0, good: 0, fair: 0, needsWork: 0, notGraded: 0 };
+
+    /** Direction of the last three scores, for spotting a slide before it becomes a failure. */
+    const trendOf = (subs) => {
+      const pcts = subs.map(s => s.hitlScore ?? s.aiScore).filter(v => typeof v === 'number');
+      if (pcts.length < 3) return null;
+      const [a, b, c] = pcts.slice(-3);
+      if (c < b && b < a) return 'down';
+      if (c > b && b > a) return 'up';
+      return null;
+    };
 
     for (const cls of classes) {
       const policy = await gradingPolicyFor(admin.schoolId, cls.gradeLevel, cls.subject);
@@ -595,13 +767,34 @@ app.get('/api/admin/:adminId/analytics', async (req, res) => {
       const students = cls.section?.students || [];
       const averages = [];
       for (const st of students) {
-        const avg = workingAverage(byStudent.get(st.id) || [], policy);
+        const mine = byStudent.get(st.id) || [];
+        const avg = workingAverage(mine, policy);
         const band = bandOf(avg);
         schoolBands[band]++;
+
+        // Names, averages and how many pieces of work — enough to coordinate an
+        // intervention. No feedback, no rubric detail, no images: the
+        // coordinator needs to know who to ask about, not to read the child's
+        // essay themselves.
+        studentRows.push({
+          studentId: st.id,
+          name: st.name,
+          username: st.username || '',
+          classId: cls.id,
+          className: cls.name,
+          subject: cls.subject || '—',
+          sectionName: cls.section?.name || '',
+          teacherId: cls.teacher?.id || null,
+          teacherName: cls.teacher?.name || '',
+          gradedCount: mine.length,
+          average: avg,
+          band,
+          trend: trendOf(mine),
+          needsSupport: avg !== null && avg < passingGrade,
+        });
+
         if (avg !== null) {
           averages.push(avg);
-          // Names only, with the average. Enough to coordinate an
-          // intervention; nothing about the work itself.
           if (avg < passingGrade) {
             atRisk.push({
               studentId: st.id, name: st.name, average: avg,
@@ -657,6 +850,8 @@ app.get('/api/admin/:adminId/analytics', async (req, res) => {
       bySubject,
       classes: classSummaries.sort((a, b) => (a.classAverage ?? 101) - (b.classAverage ?? 101)),
       atRisk: atRisk.slice(0, 50),
+      // Lowest average first, ungraded last — the order a coordinator reads in.
+      students: studentRows.sort((a, b) => (a.average ?? 101) - (b.average ?? 101)),
     });
   } catch (e) {
     sendAdminError(res, e);
@@ -2178,6 +2373,8 @@ app.post('/api/teacher/activities/:activityId/scores', async (req, res) => {
     }
 
     const max = activity.points || 100;
+    // Resolved once for the whole batch — every row is in the same class.
+    const retainUntil = await retainUntilForActivity(activityId);
     const results = [];
     for (const row of scores) {
       if (!row?.studentId) continue;
@@ -2206,7 +2403,7 @@ app.post('/api/teacher/activities/:activityId/scores', async (req, res) => {
       const saved = existing
         ? await prisma.submission.update({ where: { id: existing.id }, data })
         : await prisma.submission.create({
-            data: { ...data, studentId: row.studentId, activityId, attemptCount: 1 }
+            data: { ...data, studentId: row.studentId, activityId, attemptCount: 1, retainUntil }
           });
       results.push({ studentId: row.studentId, points: pts, percent, submissionId: saved.id });
     }
@@ -2749,8 +2946,21 @@ ${activityContext}
 ${topicGuidance ? `\nTOPIC FOCUS RULE:\nThis activity is mapped to the topic/lesson: ${topicGuidance}\nYou MUST focus your feedback STRICTLY on this topic. Do NOT introduce or critique concepts outside of this topic. Evaluate only how well the student demonstrates mastery of this specific skill or lesson.\n` : ''}
 ${rubricContext}${fewShotExamples}${sectionContext}
 
+STEP 0 — DATA PRIVACY GATE (do this FIRST, before reading or grading anything):
+- Scan the paper for personally identifying information written on it: a student's
+  full name, a signature, an LRN / student number, an address, or a contact number.
+  These commonly appear on a name line, in a header, or in a corner of the page.
+- If you find ANY of these, you MUST STOP IMMEDIATELY. Return ONLY this object and
+  nothing else — do NOT transcribe the essay, do NOT score it, do NOT fill in any
+  other field:
+  { "privacyViolationDetected": true, "privacyViolationType": "<name | signature | lrn | address | contact>" }
+- A first name alone inside the body of the essay (e.g. a story character) is NOT a
+  violation. This gate is about identifying the *author* on the page.
+- Only if the paper is clean of the above, set "privacyViolationDetected": false and
+  continue to the rules below.
+
 IMPORTANT RULES:
-- First, check if the image contains readable handwritten or printed text.
+- Next, check if the image contains readable handwritten or printed text.
 - If the image is BLANK, contains only drawings/art with no text, is too blurry to read, or has NO readable written content, you MUST set score to 0, set noTextDetected to true, provide a short explanation in strengths, and leave areasForGrowth and actionableSteps as empty arrays.
 - If you CAN read text, grade it normally against the rubric using the structured feedback format below.
 - DATA PRIVACY RULE: Do NOT mention or include the student's name anywhere in your feedback.
@@ -2764,6 +2974,7 @@ TASK: In ONE step:
 
 You MUST respond with valid JSON matching this exact schema:
 {
+  "privacyViolationDetected": <true if STEP 0 found identifying information; when true return ONLY this field and privacyViolationType>,
   "score": <total 0-100, use 0 if no readable text>,
   "rubricScores": [
     { "criterionName": "<string>", "score": <number>, "maxPoints": <number>, "bandDescription": "<the FULL descriptive text of the scoring band the student achieved>" }
@@ -2817,11 +3028,18 @@ RULES FOR skillExplanations:
 
     let aiResult = null;
 
-    // Robust JSON parsing with retry logic
-    async function callGemini(m, parts, retries = 2) {
+    // Robust JSON parsing with retry logic. Goes through generateContentWithRetry
+    // rather than calling the model directly so these grading calls are subject to
+    // the same rate gate as everything else — this is the highest-volume AI path
+    // in the app and the one most likely to burst.
+    // This loop's job is now only malformed JSON — transport failures (503/429)
+    // are already retried with backoff one level down, so keeping the old
+    // retries=2 here would have multiplied out to nine calls for a single essay
+    // and burned a minute of rate-limit budget getting nowhere.
+    async function callGemini(m, parts, retries = 1) {
       for (let attempt = 0; attempt <= retries; attempt++) {
         try {
-          const result = await m.generateContent(parts);
+          const result = await generateContentWithRetry(m, parts, { retries: 1 });
           const text = result.response.text();
           // Clean up common Gemini output artifacts
           let cleaned = text
@@ -2850,16 +3068,23 @@ RULES FOR skillExplanations:
     try {
       aiResult = await callGemini(model, [prompt, ...imageParts]);
       aiSource = 'gemini';
+      assertNoPrivacyViolation(aiResult);
       console.log('✅ Gemini graded:', aiResult.score, '/ 100', aiResult.noTextDetected ? '(NO TEXT DETECTED)' : '');
     } catch (e) {
+      // A privacy hit is a definitive answer, not a failure — the paper really
+      // does have a name on it. Re-running it on the Lite model would only spend
+      // more tokens to reach the same conclusion.
+      if (e instanceof PrivacyViolationError) throw e;
       const errMsg = e.message || String(e);
       console.log('⚠ Primary model failed:', errMsg.slice(0, 200));
       // Try lite model
       try {
         aiResult = await callGemini(modelLite, [prompt, ...imageParts]);
         aiSource = 'gemini-lite';
+        assertNoPrivacyViolation(aiResult);
         console.log('✅ Gemini-lite graded:', aiResult.score, '/ 100');
       } catch (e2) {
+        if (e2 instanceof PrivacyViolationError) throw e2;
         const errMsg2 = e2.message || String(e2);
         console.log('⚠ Lite model also failed:', errMsg2.slice(0, 200));
         aiError = `AI grading failed. Primary: ${errMsg.slice(0, 100)} | Lite: ${errMsg2.slice(0, 100)}`;
@@ -2981,7 +3206,11 @@ app.post('/api/teacher/submissions/:id/analyze', async (req, res) => {
         rubricData: JSON.stringify(aiData.rubricScores || []),
         skillScores: JSON.stringify(aiData.skillScores),
         status: 'PENDING',
-        gradedAt: new Date()
+        // A clean re-check clears any earlier flag, so a teacher who re-uploads
+        // a cropped copy isn't left with a stale Privacy Act warning.
+        privacyViolation: false,
+        gradedAt: new Date(),
+        retainUntil: sub.retainUntil ?? await retainUntilForActivity(sub.activityId)
       },
       // The HITL workspace re-renders from this payload — without the relations
       // it loses activity.points (score denominator) and activity.classId
@@ -2991,6 +3220,24 @@ app.post('/api/teacher/submissions/:id/analyze', async (req, res) => {
 
     res.json({ success: true, submission: updated });
   } catch (e) {
+    // The paper is already stored and the teacher is looking at it, so here the
+    // gate flags the submission instead of discarding it — that is what makes
+    // the Privacy Act banner in the HITL workspace reachable. The scan is left
+    // ungraded: no rubric tokens were spent on it.
+    if (e instanceof PrivacyViolationError) {
+      const flagged = await prisma.submission.update({
+        where: { id: req.params.id },
+        data: { privacyViolation: true, status: 'PENDING' },
+        include: { student: true, activity: { include: { class: true } } }
+      });
+      return res.status(400).json({
+        success: false,
+        code: 'PRIVACY_VIOLATION',
+        violationType: e.violationType,
+        error: 'A student name or other identifying information was detected on this paper, so it was not sent for grading. Grade it manually, or ask for a copy with the name covered.',
+        submission: flagged
+      });
+    }
     console.error('Analyze error:', e);
     await prisma.submission.update({ where: { id: req.params.id }, data: { status: 'ERROR', aiFeedback: '? AI Error: ' + e.message } });
     res.status(500).json({ success: false, error: e.message });
@@ -3004,7 +3251,15 @@ app.post('/api/teacher/refine', async (req, res) => {
     // Build prompt based on whether the feedback is structured
     let sys;
     if (isStructured) {
-      sys = `You are an expert teaching assistant. Rewrite the following student feedback based on the teacher's instruction. Keep the tone warm and encouraging.
+      // Tone here must match the grading prompt's, not soften it. This endpoint
+      // rewrites feedback the grader produced under an explicitly clinical,
+      // non-sugarcoating rule; telling the rewriter to be "warm and encouraging"
+      // meant a teacher could silently undo that rule just by asking for a
+      // wording tweak, and the same essay would read two different ways
+      // depending on whether it had been refined.
+      sys = `You are an expert teaching assistant. Rewrite the following student feedback based on the teacher's instruction.
+
+TONE RULE: Keep the tone objective, clinical and measured. Do NOT add praise, exclamation marks, or words like "excellent", "amazing", "wonderful", "great job". State facts about the work. Preserve the substance and any exact student quotes — you are rewording, not re-grading, and you must not change any score or invent new evidence.
 
 Original Feedback:
 ${currentFeedback}
@@ -3020,7 +3275,8 @@ Return ONLY a valid JSON object matching this schema exactly:
   "actionableSteps": ["<rewritten step 1>", "<rewritten step 2>"]
 }`;
     } else {
-      sys = `You are an expert teaching assistant. Rewrite the following student feedback based on the teacher's instruction. Keep the tone warm and encouraging.
+      sys = `You are an expert teaching assistant. Rewrite the following student feedback based on the teacher's instruction.
+TONE RULE: Keep the tone objective, clinical and measured. Do NOT add praise, exclamation marks, or words like "excellent", "amazing", "wonderful", "great job". You are rewording, not re-grading.
 Return ONLY the rewritten feedback text — no markdown, no quotes, no conversational filler.
 
 Original Feedback:
@@ -3032,7 +3288,7 @@ Teacher's Instruction: ${teacherPrompt}`;
     let refinedFeedback = currentFeedback; // fallback: return unchanged
     if (chatModel) {
       try {
-        const result = await chatModel.generateContent({
+        const result = await generateContentWithRetry(chatModel, {
           contents: [{ role: 'user', parts: [{ text: sys }] }],
           generationConfig: isStructured ? { responseMimeType: "application/json" } : undefined
         });
@@ -3555,13 +3811,19 @@ function computeSkillProgress(submissions) {
     }
     if (currentWeekIdx !== null) snapshot(currentWeekIdx, `Week ${currentWeekIdx}`);
   } else {
-    // One point per activity, labelled with the activity — not the date it was
-    // graded. The point *is* the activity, and two outputs marked on the same
-    // day used to produce two points with the same label and no way to tell
-    // them apart. The date moves into the tooltip, where it still reads.
+    // One point per activity, numbered in the order they were graded — not
+    // labelled with the date, and not with the activity's own title.
+    //
+    // Dates were wrong because two outputs marked on the same day produced two
+    // points reading "Jul 23" with no way to tell them apart. Titles were wrong
+    // because they are long, so an axis of them truncates to "Story Analysi…"
+    // and a teacher has to stop and decode it. A plain count is readable at a
+    // glance and matches the numbered activity list under the chart, so the eye
+    // goes straight from a dip to the row that caused it. The full title and
+    // date live in the tooltip and that list.
     withTimestamp.forEach(({ sub, ts }, i) => {
       record(sub, ts);
-      snapshot(i + 1, sub.activity?.title || `Activity ${i + 1}`);
+      snapshot(i + 1, `Activity ${i + 1}`);
     });
   }
 
@@ -3904,11 +4166,11 @@ app.post('/api/student/submit', upload.array('images', 20), async (req, res) => 
       }
       submission = await prisma.submission.update({
         where: { id: existing.id },
-        data: { imageUrl: finalImageUrl, status: 'PENDING', aiScore: null, hitlScore: null, aiFeedback: null, hitlFeedback: null, attemptCount: existing.attemptCount + 1 }
+        data: { imageUrl: finalImageUrl, status: 'PENDING', aiScore: null, hitlScore: null, aiFeedback: null, hitlFeedback: null, attemptCount: existing.attemptCount + 1, retainUntil: existing.retainUntil ?? await retainUntilForActivity(activityId) }
       });
     } else {
       submission = await prisma.submission.create({
-        data: { studentId, activityId, imageUrl: finalImageUrl, status: 'PENDING', attemptCount: 1 }
+        data: { studentId, activityId, imageUrl: finalImageUrl, status: 'PENDING', attemptCount: 1, retainUntil: await retainUntilForActivity(activityId) }
       });
     }
     
@@ -3921,6 +4183,8 @@ app.post('/api/student/submit', upload.array('images', 20), async (req, res) => 
 
 // Accepts a single page as `image` (legacy / offline queue) or multiple pages as `images`.
 app.post('/api/teacher/upload', upload.fields([{ name: 'image', maxCount: 1 }, { name: 'images', maxCount: 20 }]), async (req, res) => {
+  // Tracked outside the try so the privacy-rejection path can un-persist it.
+  let storedUrl = null;
   try {
     const { studentId, activityId, skipGrading } = req.body;
     const imageFiles = [...(req.files?.images || []), ...(req.files?.image || [])];
@@ -3936,6 +4200,15 @@ app.post('/api/teacher/upload', upload.fields([{ name: 'image', maxCount: 1 }, {
     const processedFilename = path.basename(processedPath);
     // Upload to Supabase Storage in production, local path in dev
     const processedUrl = await uploadToCloud(processedPath, processedFilename);
+    storedUrl = processedUrl;
+    // preprocessImage writes a *new* -processed.jpg and leaves its input behind.
+    // uploadToCloud only removes the file it was handed, so without this the
+    // pre-processing original accumulates in uploads/ on every single upload.
+    // Guarded on inequality because preprocessImage returns its input unchanged
+    // when sharp fails, and that file is the one we just uploaded.
+    if (processedPath !== combined.path) {
+      try { fs.unlinkSync(combined.path); } catch {}
+    }
 
     let submissionData;
     if (skipGrading === 'true') {
@@ -3976,19 +4249,36 @@ app.post('/api/teacher/upload', upload.fields([{ name: 'image', maxCount: 1 }, {
     const existing = await prisma.submission.findFirst({ where: { studentId, activityId } });
     let submission;
     if (existing) {
-      submission = await prisma.submission.update({ where: { id: existing.id }, data: submissionData });
+      submission = await prisma.submission.update({
+        where: { id: existing.id },
+        data: { ...submissionData, retainUntil: existing.retainUntil ?? await retainUntilForActivity(activityId) }
+      });
     } else {
-      submission = await prisma.submission.create({ data: { studentId, activityId, ...submissionData } });
+      submission = await prisma.submission.create({
+        data: { studentId, activityId, ...submissionData, retainUntil: await retainUntilForActivity(activityId) }
+      });
     }
 
-res.json({ success: true, submission });
+    res.json({ success: true, submission });
   } catch (e) {
-    // Auto-delete uploaded files on failure
+    // Auto-delete uploaded files on failure — including the privacy path, where
+    // deleting the scan is the whole point: a paper with a name on it must not
+    // be left sitting in uploads/ after we refuse it.
     try {
       Object.values(req.files || {}).flat().forEach(f => {
         try { fs.unlinkSync(f.path); } catch {}
       });
     } catch {}
+
+    if (e instanceof PrivacyViolationError) {
+      await deleteFromCloud(storedUrl);
+      return res.status(400).json({
+        success: false,
+        code: 'PRIVACY_VIOLATION',
+        violationType: e.violationType,
+        error: 'This paper has the student\'s identifying information written on it, so it was not graded and the photo was discarded. Cover or crop out the name, then upload it again.'
+      });
+    }
     res.status(500).json({ success: false, error: e.message });
   }
 });
@@ -4091,14 +4381,14 @@ Remember: You are a tutor, not a homework machine. Guide, don't give answers.`;
       reply = "AI tutoring is currently unavailable. Please try again shortly.";
     } else {
       try {
-        const result = await chatModel.generateContent({ contents });
+        const result = await generateContentWithRetry(chatModel, { contents });
         reply = result.response.text().trim();
       } catch (e) {
         console.log('⚠ Student chat AI error:', e.message?.slice(0, 100));
         // Try with a simpler single-turn call
         try {
           const fallbackPrompt = `${systemPrompt}\n\nStudent says: "${message}"\n\nRespond as Study Buddy (2-4 sentences, encouraging, Socratic):`;
-          const result = await chatModel.generateContent(fallbackPrompt);
+          const result = await generateContentWithRetry(chatModel, fallbackPrompt, { retries: 0 });
           reply = result.response.text().trim();
         } catch (e2) {
           console.log('⚠ Student chat fallback also failed:', e2.message?.slice(0, 80));
@@ -4543,6 +4833,56 @@ app.get('/api/admin/retention-report', async (req, res) => {
       },
       bySchoolYear,
       pastRetentionSubmissions: pastRetention.slice(0, 50) // Limit response size
+    });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+/**
+ * Backfill retainUntil for submissions saved before it was computed at write
+ * time. Idempotent and safe to re-run: it only touches rows where the field is
+ * still null, so an admin who has manually set a date keeps it.
+ *
+ * Without this the retention report only ever sees submissions created after
+ * this deploy, which would read as "nothing to retain" on a database full of
+ * real student work.
+ */
+app.post('/api/admin/backfill-retention', async (req, res) => {
+  try {
+    const pending = await prisma.submission.findMany({
+      where: { retainUntil: null },
+      select: { id: true, activity: { select: { class: { select: { schoolYear: true } } } } }
+    });
+
+    // Group by deadline so identical dates go out as one updateMany each,
+    // instead of one round trip per submission.
+    const byDeadline = new Map();
+    let unresolved = 0;
+    for (const sub of pending) {
+      const deadline = computeRetainUntil(sub.activity?.class?.schoolYear);
+      if (!deadline) { unresolved++; continue; }
+      const key = deadline.toISOString();
+      if (!byDeadline.has(key)) byDeadline.set(key, { deadline, ids: [] });
+      byDeadline.get(key).ids.push(sub.id);
+    }
+
+    let updated = 0;
+    for (const { deadline, ids } of byDeadline.values()) {
+      const result = await prisma.submission.updateMany({
+        where: { id: { in: ids } },
+        data: { retainUntil: deadline }
+      });
+      updated += result.count;
+    }
+
+    res.json({
+      success: true,
+      scanned: pending.length,
+      updated,
+      // Rows whose class has an unparseable schoolYear. Reported rather than
+      // guessed at — see computeRetainUntil.
+      unresolved
     });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });

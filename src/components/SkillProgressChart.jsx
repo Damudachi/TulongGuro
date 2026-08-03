@@ -8,8 +8,13 @@ function cn(...cls) { return cls.filter(Boolean).join(' '); }
 const fmtDate = (d) =>
   d ? new Date(d).toLocaleDateString('en-PH', { month: 'short', day: 'numeric', year: 'numeric' }) : '';
 
-/** Axis labels are activity titles, which run long — trim for the tick only. */
-const shortLabel = (s) => (s && s.length > 14 ? `${s.slice(0, 13)}…` : s || '');
+/**
+ * Ticks carry the number only — "Activity 3" becomes "3", "Week 2" becomes "2"
+ * — with the axis captioned underneath. Spelling out every tick crowds a phone
+ * screen and forces the thinning that hides half the labels; a bare count stays
+ * readable at any width and lines up with the numbered list under the chart.
+ */
+const tickNumber = (s) => String(s ?? '').replace(/^(Activity|Week)\s+/i, '');
 
 function CustomTooltip({ active, payload, label }) {
   if (!active || !payload?.length) return null;
@@ -20,10 +25,14 @@ function CustomTooltip({ active, payload, label }) {
     // Text stays in ink tokens; the swatch beside it carries series identity.
     <div className="bg-white border-2 border-cream-200 rounded-2xl shadow-card px-3.5 py-2.5 text-xs max-w-[16rem]">
       <p className="font-extrabold text-navy-700">{label}</p>
-      {/* The date moved here when the axis switched to activities — it is still
-          useful context, just not what identifies the point. */}
-      {acts.length === 1 && acts[0].date && (
-        <p className="text-navy-400 font-semibold mb-1.5">{fmtDate(acts[0].date)}</p>
+      {/* The axis is deliberately just a number, so the tooltip is where the
+          activity gets its name back — hovering a dip should answer "which
+          one?" without scrolling to the list. */}
+      {acts.length === 1 && (
+        <>
+          <p className="font-bold text-navy-600 leading-snug">{acts[0].title}</p>
+          {acts[0].date && <p className="text-navy-400 font-semibold mb-1.5">{fmtDate(acts[0].date)}</p>}
+        </>
       )}
       {acts.length > 1 && (
         <p className="text-navy-400 font-semibold mb-1.5">{acts.length} activities</p>
@@ -114,7 +123,9 @@ export default function SkillProgressChart({
         <TrendingUp className="w-4 h-4 text-aqua-600" /> {title}
       </h2>
       {data.mode === 'activity' && (
-        <p className="text-xs text-navy-400 mb-3 font-semibold">One point per graded activity — switches to a weekly view once there's a few more weeks of history.</p>
+        <p className="text-xs text-navy-400 mb-3 font-semibold">
+          Each point is one graded activity, in order. The numbers match the list below.
+        </p>
       )}
 
       {/* Tabs */}
@@ -147,10 +158,15 @@ export default function SkillProgressChart({
 
       <div className="w-full h-64">
         <ResponsiveContainer width="100%" height="100%">
-          <LineChart data={visibleChartData} margin={{ top: 5, right: 12, left: -12, bottom: 0 }}>
+          <LineChart data={visibleChartData} margin={{ top: 5, right: 12, left: -12, bottom: 14 }}>
             <CartesianGrid strokeDasharray="3 3" stroke="#EDEFF6" />
-            <XAxis dataKey="label" interval={tickInterval} tickFormatter={shortLabel}
-              tick={{ fontSize: 11, fill: '#5F6B8F' }} axisLine={{ stroke: '#DDE1EE' }} tickLine={false} />
+            <XAxis dataKey="label" interval={tickInterval} tickFormatter={tickNumber}
+              tick={{ fontSize: 11, fill: '#5F6B8F' }} axisLine={{ stroke: '#DDE1EE' }} tickLine={false}
+              label={{
+                value: data.mode === 'week' ? 'Week' : 'Activity',
+                position: 'insideBottom', offset: -10,
+                style: { fontSize: 11, fontWeight: 800, fill: '#8B95B5' }
+              }} />
             <YAxis domain={[0, 100]} unit="%" tick={{ fontSize: 11, fill: '#5F6B8F' }} axisLine={{ stroke: '#DDE1EE' }} tickLine={false} width={40} />
             <Tooltip content={<CustomTooltip />} />
             {activeTab === 'summary' ? (
@@ -176,8 +192,13 @@ export default function SkillProgressChart({
           not belong under the Punctuation chart, even though it is in the
           student's history. */}
       {(() => {
-        const rows = visibleChartData
-          .flatMap(p => p.activities || [])
+        // Number every activity across the whole chart first, then filter. If
+        // the filtered rows were numbered 1..n instead, selecting a skill would
+        // renumber them and the list would stop agreeing with the axis — the
+        // one thing these numbers exist to guarantee.
+        let n = 0;
+        const rows = chartData
+          .flatMap(p => (p.activities || []).map(a => ({ ...a, n: ++n })))
           .filter(a => !activeSkill || (a.skills || []).includes(activeSkill.id));
         if (rows.length === 0) {
           return activeSkill ? (
@@ -194,11 +215,13 @@ export default function SkillProgressChart({
                 : `${rows.length} graded activit${rows.length === 1 ? 'y' : 'ies'} in this chart`}
             </p>
             <ul className="space-y-1.5">
-              {rows.map((a, i) => (
-                <li key={`${a.submissionId || a.activityId}-${i}`}
+              {rows.map((a) => (
+                <li key={`${a.submissionId || a.activityId}-${a.n}`}
                   className="flex items-center gap-2.5 text-xs">
-                  <span className="w-5 h-5 rounded-lg bg-cream-200 text-navy-500 grid place-items-center font-extrabold text-[10px] shrink-0">
-                    {i + 1}
+                  {/* Same number as the point on the axis, so a dip at 3 leads
+                      straight to the row marked 3. */}
+                  <span className="w-5 h-5 rounded-lg bg-royal-100 text-royal-700 grid place-items-center font-extrabold text-[10px] shrink-0">
+                    {a.n}
                   </span>
                   <span className="font-bold text-navy-700 truncate flex-1 min-w-0">{a.title}</span>
                   {a.date && <span className="text-navy-400 font-semibold shrink-0">{fmtDate(a.date)}</span>}

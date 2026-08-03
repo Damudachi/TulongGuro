@@ -108,11 +108,15 @@ export default function OutputDetails() {
   const maxPoints = sub?.activity?.points || 100;
   const score = ((percentageScore / 100) * maxPoints).toFixed(1).replace(/\.0$/, '');
   const feedback = parseFeedback(sub.hitlFeedback, sub.aiFeedback);
+  // No invented scores. Every branch below either renders what the teacher/AI
+  // actually recorded or renders nothing — an empty rubricItems list shows the
+  // "not broken down yet" state further down. The old fallbacks here filled the
+  // breakdown with fixed 35/40, 25/30, 28/30 figures whenever rubricData was
+  // missing or unparseable, so a student could be shown a per-criterion score
+  // nobody had ever given them, on a rubric their activity may not even use.
   let rubricItems = [];
   try {
-    const rawRubric = sub.rubricData ? JSON.parse(sub.rubricData) : {
-      content: { score: 35, max: 40 }, organization: { score: 25, max: 30 }, grammar: { score: 28, max: 30 }
-    };
+    const rawRubric = sub.rubricData ? JSON.parse(sub.rubricData) : null;
     if (Array.isArray(rawRubric)) {
       rubricItems = rawRubric.map((r, i) => {
         let fullDesc = r.bandDescription;
@@ -133,19 +137,22 @@ export default function OutputDetails() {
           color: ['bg-brand-green', 'bg-amber-400', 'bg-blue-400', 'bg-purple-400', 'bg-pink-400'][i % 5]
         };
       });
-    } else {
-      rubricItems = [
-        { name: 'Content & Ideas', ...rawRubric.content, color: 'bg-brand-green' },
-        { name: 'Organization', ...rawRubric.organization, color: 'bg-amber-400' },
-        { name: 'Grammar', ...rawRubric.grammar, color: 'bg-blue-400' },
+    } else if (rawRubric && typeof rawRubric === 'object') {
+      // Legacy shape: a fixed {content, organization, grammar} object written
+      // before rubrics became dynamic arrays. Map whichever of those keys are
+      // actually present rather than assuming all three exist.
+      const LEGACY_KEYS = [
+        ['content', 'Content & Ideas', 'bg-brand-green'],
+        ['organization', 'Organization', 'bg-amber-400'],
+        ['grammar', 'Grammar', 'bg-blue-400'],
       ];
+      rubricItems = LEGACY_KEYS
+        .filter(([key]) => rawRubric[key] && typeof rawRubric[key].score === 'number')
+        .map(([key, name, color]) => ({ name, ...rawRubric[key], color }));
     }
-  } catch (e) {
-    rubricItems = [
-      { name: 'Content & Ideas', score: 35, max: 40, color: 'bg-brand-green' },
-      { name: 'Organization', score: 25, max: 30, color: 'bg-amber-400' },
-      { name: 'Grammar', score: 28, max: 30, color: 'bg-blue-400' },
-    ];
+  } catch {
+    // Unparseable rubricData means we don't know the breakdown. Show none.
+    rubricItems = [];
   }
 
   const hasStructuredFeedback = feedback && (feedback.areasForGrowth?.length > 0 || feedback.actionableSteps?.length > 0);
@@ -174,14 +181,24 @@ export default function OutputDetails() {
 
         <div className="p-6">
           <h3 className="text-sm font-bold text-slate-400 uppercase tracking-wider mb-4">Rubric Breakdown</h3>
+          {rubricItems.length === 0 ? (
+            <p className="text-sm text-slate-500">
+              Your teacher hasn't recorded a per-criterion breakdown for this work yet. Your
+              overall score and written feedback are shown above.
+            </p>
+          ) : (
           <div className="space-y-5">
             {rubricItems.map((item, i) => (
               <div key={i} className="relative group">
                 <div className="flex justify-between text-sm mb-1.5">
                   <span className="font-medium text-slate-700">{item.name}</span>
                   <div className="flex items-center gap-2">
-                    <span className="font-bold text-slate-900">{item.score}% / {item.max}%</span>
-                    <span className="text-xs text-brand-navy font-bold">({((item.score / 100) * maxPoints).toFixed(1).replace(/\.0$/, '')} pts)</span>
+                    {/* Criterion scores are raw rubric points (e.g. 38 of 40), not
+                        percentages. They used to be labelled "%" and then re-scaled
+                        as if they were, which showed a pupil "38% / 40%" worth
+                        "38 pts" on a 100-point activity. */}
+                    <span className="font-bold text-slate-900">{item.score} / {item.max}</span>
+                    <span className="text-xs text-brand-navy font-bold">({Math.round((item.score / item.max) * 100)}%)</span>
                   </div>
                 </div>
                 {item.desc && (
@@ -196,6 +213,7 @@ export default function OutputDetails() {
               </div>
             ))}
           </div>
+          )}
         </div>
       </div>
 

@@ -150,7 +150,11 @@ export default function HITLWorkspace() {
                 setScores(initialScores);
                 setDynamicRubric(rd);
               } else {
-                setScores({ content: rd.content?.score ?? 35, organization: rd.organization?.score ?? 25, grammar: rd.grammar?.score ?? 25 });
+                // Absent criteria default to 0, not to invented mid-band scores.
+                // These land straight in the editable score boxes, so a made-up
+                // 35/25/25 is a grade the teacher can approve without ever
+                // realising nothing was actually assessed.
+                setScores({ content: rd.content?.score ?? 0, organization: rd.organization?.score ?? 0, grammar: rd.grammar?.score ?? 0 });
               }
             } catch { }
           } else if (sub.aiScore === null && sub.status === 'PENDING') {
@@ -386,6 +390,11 @@ export default function HITLWorkspace() {
         if (sub.covData) {
           try { setCovData(JSON.parse(sub.covData)); } catch { }
         }
+      } else if (data.code === 'PRIVACY_VIOLATION') {
+        // The scan was refused before any rubric grading ran. Merge the flagged
+        // submission in so the Privacy Act banner renders, and leave the teacher
+        // on the page to grade manually — reloading would just hide why.
+        setSubmission(prev => ({ ...prev, ...(data.submission || {}), privacyViolation: true }));
       } else {
         alert('Analysis failed: ' + (data.error || 'Unknown error'));
         window.location.reload();
