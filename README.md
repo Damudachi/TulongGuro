@@ -1,5 +1,5 @@
 # TulongGuro
-
+# Try it on : http://tulong-guro.vercel.app/
 An AI-assisted grading and classroom management LMS. React + Vite frontend, Express + Prisma backend, Supabase Postgres database.
 
 ## Setup (for collaborators)
