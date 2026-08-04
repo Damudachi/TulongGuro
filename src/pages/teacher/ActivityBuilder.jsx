@@ -637,6 +637,9 @@ export default function ActivityBuilder() {
       {rubricType === 'standard' && (
         <div className={cn('text-sm font-bold mt-2 px-3 py-2 rounded-lg', totalPercentage === 100 ? 'text-green-600 bg-green-50' : 'text-amber-600 bg-amber-50')}>
           Total Weight: {totalPercentage}% {totalPercentage !== 100 && `(${100 - totalPercentage > 0 ? '+' : ''}${100 - totalPercentage}% remaining)`}
+          {totalPercentage === 100 && (
+            <span className="font-medium text-slate-500"> — the full {form.points || 0} points</span>
+          )}
         </div>
       )}
     </div>
@@ -943,8 +946,13 @@ export default function ActivityBuilder() {
                 <p className="font-bold text-brand-slate text-sm truncate">{rubricSummary.name}</p>
                 {rubricSummary.note && <p className="text-xs text-slate-600 mt-0.5">{rubricSummary.note}</p>}
                 {activeCriteria.length > 0 && rubricSummary.tone !== 'warn' && (
+                  /* Says what the weights are worth in *this* activity's points.
+                     "100% total" on a 50-point activity reads like the rubric is
+                     out of 100 and leaves the teacher doing the arithmetic. */
                   <p className="text-xs text-slate-500 mt-1.5">
-                    {activeCriteria.length} criteria · {totalPercentage}{rubricType === 'standard' ? '%' : ' pts'} total
+                    {activeCriteria.length} criteria · {rubricType === 'standard'
+                      ? `${totalPercentage}% of ${form.points || 0} point${form.points === 1 ? '' : 's'}`
+                      : `${totalPercentage} pts total`}
                   </p>
                 )}
               </div>
