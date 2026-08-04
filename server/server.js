@@ -157,6 +157,46 @@ function workingAverage(subs, policy) {
   return initialGrade === null ? null : Math.round(initialGrade);
 }
 
+/**
+ * One average across work from several subjects.
+ *
+ * DepEd weights components differently per subject — Languages is 30/50/20,
+ * Science and Maths 40/40/20, MAPEH 20/60/20 — so there is no single policy
+ * that is correct for a student's whole workload. Applying one anyway (this
+ * used to hardcode the Languages weights) moved the same performance by up to
+ * four points depending on which subjects the student happened to take, which
+ * matters when the at-risk line sits at 75: a Maths student genuinely on 74
+ * could display as 76 and never be flagged.
+ *
+ * So each subject is graded under its own policy first and the results are
+ * averaged, which is how a General Average is defined — per-subject grades
+ * combined, not per-subject *scores* pooled. Subjects count equally regardless
+ * of how much work each carries, which is also what DepEd specifies.
+ *
+ * Still untransmuted, for the reason given on workingAverage.
+ */
+async function workingAverageAcrossSubjects(subs, schoolId) {
+  const bySubject = new Map();
+  for (const s of subs || []) {
+    const cls = s.activity?.class;
+    // Grade level is part of the key because a school may set its own policy
+    // per grade *and* subject, and unknown values must not collide with a real
+    // subject — they group together and take the generic default.
+    const key = `${cls?.subject || ''}|${cls?.gradeLevel || ''}`;
+    if (!bySubject.has(key)) bySubject.set(key, { subject: cls?.subject, gradeLevel: cls?.gradeLevel, items: [] });
+    bySubject.get(key).items.push(s);
+  }
+
+  const perSubject = [];
+  for (const { subject, gradeLevel, items } of bySubject.values()) {
+    const policy = await gradingPolicyFor(schoolId, gradeLevel, subject);
+    const avg = workingAverage(items, policy);
+    if (avg !== null) perSubject.push(avg);
+  }
+  if (perSubject.length === 0) return null;
+  return Math.round(perSubject.reduce((sum, v) => sum + v, 0) / perSubject.length);
+}
+
 const aiApiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || '';
 const aiConfigured = Boolean(aiApiKey && aiApiKey !== 'mock' && aiApiKey !== 'YOUR_API_KEY');
 
@@ -4153,14 +4193,16 @@ app.get('/api/teacher/student/:studentId/analytics', async (req, res) => {
   try {
     const student = await prisma.user.findUnique({
       where: { id: req.params.studentId },
-      select: { id: true, name: true, username: true }
+      // schoolId is needed to look up the school's own grading policy, which
+      // overrides the DepEd defaults when an admin has set one.
+      select: { id: true, name: true, username: true, schoolId: true }
     });
     if (!student) return res.status(404).json({ success: false, error: 'Student not found' });
 
     const submissions = await prisma.submission.findMany({
       where: { studentId: student.id },
       orderBy: { createdAt: 'asc' },
-      include: { activity: { select: { title: true, type: true, points: true, classId: true, component: true, class: { select: { name: true } } } } }
+      include: { activity: { select: { title: true, type: true, points: true, classId: true, component: true, class: { select: { name: true, subject: true, gradeLevel: true } } } } }
     });
 
     const skillHistory = submissions
@@ -4177,7 +4219,12 @@ app.get('/api/teacher/student/:studentId/analytics', async (req, res) => {
     const gradedSubs = submissions.filter(
       s => s.status === 'GRADED' && (s.hitlScore ?? s.aiScore) !== null
     );
-    const avgScore = workingAverage(gradedSubs, grading.DEPED_DEFAULT_WEIGHTS.LANGUAGES_AP_ESP) ?? 0;
+    // Each subject under its own DepEd weights, then averaged — see
+    // workingAverageAcrossSubjects. A student's work spans subjects with
+    // different component weightings, so one hardcoded policy was wrong for
+    // everyone not taking a language.
+    const studentSchoolId = student.schoolId ?? null;
+    const avgScore = (await workingAverageAcrossSubjects(gradedSubs, studentSchoolId)) ?? 0;
 
     const avgSkills = {};
     AI_SKILLS.forEach(skill => {
@@ -4279,12 +4326,12 @@ app.get('/api/student/:studentId/dashboard', async (req, res) => {
       include: { activity: { include: { class: true } } },
       orderBy: { updatedAt: 'desc' }
     });
-    // Points-weighted across every class the student is in. Untransmuted:
-    // this is the student's own progress view, not a report card.
-    const avgGrade = workingAverage(submissions, grading.DEPED_DEFAULT_WEIGHTS.LANGUAGES_AP_ESP) ?? 0;
     // Stars and badges both follow the school's own passing grade — see the
     // GAMIFICATION block in grading.js for the star table.
     const schoolIdForStudent = student?.section?.schoolId ?? student?.schoolId ?? null;
+    // Each subject under its own DepEd weights, then averaged. Untransmuted:
+    // this is the student's own progress view, not a report card.
+    const avgGrade = (await workingAverageAcrossSubjects(submissions, schoolIdForStudent)) ?? 0;
     const { passingGrade } = await gradingSettingsFor(schoolIdForStudent);
     const stars = grading.starsFor(submissions, passingGrade);
     const badges = computeBadges(submissions, passingGrade);
