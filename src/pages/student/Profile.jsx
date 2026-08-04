@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { User, School, IdCard, BookOpen, Star } from 'lucide-react';
-import { API_URL } from '../../config';
+import { API_URL, apiFetch } from '../../config';
 
 const INFO_TILES = [
   { key: 'username', label: 'Student ID', icon: IdCard, tile: 'bg-royal-500' },
@@ -14,7 +14,7 @@ export default function StudentProfile() {
   useEffect(() => {
     const user = JSON.parse(localStorage.getItem('user') || '{}');
     if (user.id) {
-      fetch(`${API_URL}/api/student/${user.id}/dashboard`)
+      apiFetch(`${API_URL}/api/student/${user.id}/dashboard`)
         .then(r => r.json())
         .then(d => { if (d.success) setData(d); })
         .catch(() => {});

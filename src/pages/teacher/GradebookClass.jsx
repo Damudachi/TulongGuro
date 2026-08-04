@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { Download, ChevronDown, Loader2 } from 'lucide-react';
-import { API_URL } from '../../config';
+import { API_URL, apiFetch } from '../../config';
 import PageHeader from '../../components/PageHeader';
 import { gradeChip } from '../../utils/grading';
 import { usePassingGrade } from '../../utils/useSchool';
@@ -36,7 +36,7 @@ export default function GradebookClass() {
     setExporting(true);
     setShowExportMenu(false);
     try {
-      const response = await fetch(`${API_URL}/api/teacher/${user.id}/gradebook/export?classId=${classId}&format=${format}`);
+      const response = await apiFetch(`${API_URL}/api/teacher/${user.id}/gradebook/export?classId=${classId}&format=${format}`);
       if (!response.ok) throw new Error('Export failed');
       const blob = await response.blob();
       const url = window.URL.createObjectURL(blob);
@@ -58,7 +58,7 @@ export default function GradebookClass() {
   useEffect(() => {
     const user = JSON.parse(localStorage.getItem('user') || '{}');
     if (!user.id) return setIsLoading(false);
-    fetch(`${API_URL}/api/teacher/${user.id}/gradebook?classId=${classId}`).then(r => r.json()).then(d => { if (d.success) setData(d); }).finally(() => setIsLoading(false));
+    apiFetch(`${API_URL}/api/teacher/${user.id}/gradebook?classId=${classId}`).then(r => r.json()).then(d => { if (d.success) setData(d); }).finally(() => setIsLoading(false));
   }, [classId]);
 
   if (isLoading) return (

@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { ClipboardList, Plus, Loader2, Trash2, Sparkles, Pencil, Check, X } from 'lucide-react';
-import { API_URL } from '../../config';
+import { API_URL, apiFetch } from '../../config';
 import { GRADE_LEVELS, SUBJECTS } from '../../constants/school';
 import { ACTIVITY_TYPES } from '../../constants/activityTypes';
 
@@ -51,8 +51,8 @@ export default function AdminRubrics() {
   const load = useCallback(() => {
     if (!admin.id) return setIsLoading(false);
     Promise.all([
-      fetch(`${API_URL}/api/admin/${admin.id}/rubrics`).then(r => r.json()),
-      fetch(`${API_URL}/api/rubric-templates/builtin`).then(r => r.json()).catch(() => ({}))
+      apiFetch(`${API_URL}/api/admin/${admin.id}/rubrics`).then(r => r.json()),
+      apiFetch(`${API_URL}/api/rubric-templates/builtin`).then(r => r.json()).catch(() => ({}))
     ]).then(([mine, builtin]) => {
       if (mine.success) setRubrics(mine.rubrics || []);
       setBuiltins(builtin.templates || builtin.rubrics || []);
@@ -78,7 +78,7 @@ export default function AdminRubrics() {
   const saveRetag = async (rubric) => {
     setBusyId(rubric.id);
     try {
-      const res = await fetch(`${API_URL}/api/admin/${admin.id}/rubrics/${rubric.id}`, {
+      const res = await apiFetch(`${API_URL}/api/admin/${admin.id}/rubrics/${rubric.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(retagForm)
@@ -99,7 +99,7 @@ export default function AdminRubrics() {
     setIsSaving(true);
     setError('');
     try {
-      const res = await fetch(`${API_URL}/api/admin/${admin.id}/rubrics`, {
+      const res = await apiFetch(`${API_URL}/api/admin/${admin.id}/rubrics`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -127,7 +127,7 @@ export default function AdminRubrics() {
     if (!confirm(`Delete "${rubric.name}"? Teachers will no longer see it.`)) return;
     setBusyId(rubric.id);
     try {
-      const res = await fetch(`${API_URL}/api/admin/${admin.id}/rubrics/${rubric.id}`, { method: 'DELETE' });
+      const res = await apiFetch(`${API_URL}/api/admin/${admin.id}/rubrics/${rubric.id}`, { method: 'DELETE' });
       const d = await res.json();
       if (d.success) load(); else alert(d.error);
     } finally { setBusyId(null); }

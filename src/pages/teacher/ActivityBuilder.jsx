@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
 import { useNavigate, useSearchParams, useParams } from 'react-router-dom';
 import { ArrowLeft, CheckCircle2, Plus, Camera, Users, Upload, FileText, X, Trash2, Loader2, Save, PenLine } from 'lucide-react';
-import { API_URL } from '../../config';
+import { API_URL, apiFetch } from '../../config';
 import { ACTIVITY_TYPES } from '../../constants/activityTypes';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
@@ -32,6 +32,74 @@ const DEFAULT_RANGE_BANDS = [
   { label: 'Needs Improvement', score: 1, description: 'Does not meet expectations.' },
 ];
 
+/** Criteria out of a rubric that may be a JSON string, an object, or already an array. */
+function readCriteria(source) {
+  if (!source) return null;
+  try {
+    const parsed = typeof source === 'string' ? JSON.parse(source) : source;
+    const criteria = Array.isArray(parsed) ? parsed : parsed?.criteria;
+    return criteria?.length ? criteria : null;
+  } catch { return null; }
+}
+
+/** Rubrics saved before `type` existed are told apart by whether they carry bands. */
+function rubricTypeOf(rubric, criteria) {
+  if (rubric?.type) return rubric.type;
+  return criteria?.[0]?.bands?.length > 0 ? 'range' : 'standard';
+}
+
+/**
+ * Which rubric a new activity should start from, most specific source first.
+ *
+ * The curriculum outranks the built-ins deliberately. A rubric that came from
+ * the school's own curriculum was written for this grade level, this subject
+ * and this kind of output; the built-ins in rubricTemplates.js are Grade 6
+ * English samples and are only ever a last resort. Before this ordering
+ * existed, whichever fetch resolved first won — and the built-in list is served
+ * from memory while the school's rubrics come from Postgres, so the Grade 6
+ * English default beat the curriculum on essentially every activity.
+ *
+ * Returns null when nothing at all has loaded yet, so the caller leaves the
+ * form untouched rather than blanking it.
+ */
+function resolveDefaultRubric({ lesson, schoolRubrics, myRubrics, builtins, topicInfo, outputType }) {
+  const pick = (rubric, option, criteria) =>
+    ({ option, criteria, type: rubricTypeOf(rubric, criteria) });
+
+  // 1) The curriculum lesson this activity is mapped to.
+  const lessonCriteria = readCriteria(lesson?.defaultRubric);
+  if (lessonCriteria) {
+    const parsed = typeof lesson.defaultRubric === 'string' ? JSON.parse(lesson.defaultRubric) : lesson.defaultRubric;
+    return pick(parsed, 'lesson-rubric', lessonCriteria);
+  }
+
+  // 2) A school rubric published for this kind of output. Curriculum uploads
+  //    save their rubrics tagged by outputType, so this is how an "Essay"
+  //    activity finds the curriculum's essay rubric without a lesson mapping.
+  const byOutput = outputType && schoolRubrics.find(r => r.outputType === outputType);
+  if (byOutput?.criteria?.length) return pick(byOutput, `saved:${byOutput.id}`, byOutput.criteria);
+
+  // 3) Any other school rubric. The API already narrowed these to this class's
+  //    grade level and subject, so anything left here applies.
+  const school = schoolRubrics.find(r => r.criteria?.length);
+  if (school) return pick(school, `saved:${school.id}`, school.criteria);
+
+  // 4) The teacher's own most recent template.
+  const mine = myRubrics.find(r => r.criteria?.length);
+  if (mine) return pick(mine, `saved:${mine.id}`, mine.criteria);
+
+  // 5) The built-in the DepEd topic recommends.
+  const recommended = topicInfo?.recommendedRubricId
+    ? builtins.find(b => b.id === topicInfo.recommendedRubricId)
+    : null;
+  if (recommended?.criteria?.length) return pick(recommended, `builtin:${recommended.id}`, recommended.criteria);
+
+  // 6) Failing everything else, the first built-in.
+  if (builtins[0]?.criteria?.length) return pick(builtins[0], `builtin:${builtins[0].id}`, builtins[0].criteria);
+
+  return null;
+}
+
 export default function ActivityBuilder() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
@@ -46,57 +114,134 @@ export default function ActivityBuilder() {
   const [topics, setTopics] = useState([]);
   const [classLessons, setClassLessons] = useState([]);
   const [selectedLessonId, setSelectedLessonId] = useState('');
+  // Declared before the rubric resolver below, which reads form.type and form.topic.
+  const [form, setForm] = useState({
+    title: '',
+    type: 'Essay',
+    topic: '',
+    points: 100,
+    deadline: '',
+    instructions: '',
+    lateUntil: '',
+    submissionMode: 'TEACHER_UPLOAD',
+    maxAttempts: 1,
+    component: 'WW',
+  });
   const [rubricMode, setRubricMode] = useState('template'); // 'template' | 'manual' | 'upload'
   const [rubricType, setRubricType] = useState('standard'); // 'standard' | 'range'
-  const [savedRubrics, setSavedRubrics] = useState([]);
+  const [savedRubrics, setSavedRubrics] = useState([]);     // the teacher's own templates
+  const [schoolRubrics, setSchoolRubrics] = useState([]);   // published by the admin / curriculum
   const [builtinRubrics, setBuiltinRubrics] = useState([]);
+  const [classMeta, setClassMeta] = useState(null);         // { gradeLevel, subject }
+
+  // The class's grade level and subject, used to narrow which school rubrics
+  // apply. Without it a Grade 3 Math teacher was offered Grade 6 English rubrics.
+  useEffect(() => {
+    if (!classId) return;
+    apiFetch(`${API_URL}/api/classes/${classId}`)
+      .then(res => res.json())
+      .then(data => {
+        if (data.success && data.classData) {
+          setClassMeta({ gradeLevel: data.classData.gradeLevel || '', subject: data.classData.subject || '' });
+        } else setClassMeta({ gradeLevel: '', subject: '' });
+      })
+      .catch(() => setClassMeta({ gradeLevel: '', subject: '' }));
+  }, [classId]);
 
   useEffect(() => {
+    // Wait for the class before asking, so the request can be scoped to it.
+    // Rubrics tagged for "any" grade/subject come through either way.
+    if (classId && !classMeta) return;
     const fetchTemplates = async () => {
       try {
         const user = JSON.parse(localStorage.getItem('user') || '{}');
         if (!user.id) return;
-        const res = await fetch(`${API_URL}/api/teacher/rubric-templates/${user.id}`);
+        const qs = new URLSearchParams();
+        if (classMeta?.gradeLevel) qs.set('gradeLevel', classMeta.gradeLevel);
+        if (classMeta?.subject) qs.set('subject', classMeta.subject);
+        const res = await apiFetch(`${API_URL}/api/teacher/rubric-templates/${user.id}?${qs.toString()}`);
         const data = await res.json();
         if (data.success && data.templates) {
           const parsedTemplates = data.templates.map(t => ({
             ...t,
             criteria: typeof t.criteria === 'string' ? JSON.parse(t.criteria) : t.criteria
           }));
-          setSavedRubrics(parsedTemplates);
+          // Split them: a school rubric is the school's policy, a saved one is
+          // this teacher's own note to self. Showing both under "Your Saved
+          // Rubrics" made a curriculum rubric look like something they wrote.
+          setSchoolRubrics(parsedTemplates.filter(t => t.isSchoolWide));
+          setSavedRubrics(parsedTemplates.filter(t => !t.isSchoolWide));
         }
       } catch (err) {
         console.error('Failed to load cloud templates:', err);
       }
     };
     fetchTemplates();
-  }, []);
+  }, [classId, classMeta]);
 
   // ── Fetch built-in curriculum-aligned rubric templates ──
   useEffect(() => {
-    fetch(`${API_URL}/api/rubric-templates/builtin`)
+    apiFetch(`${API_URL}/api/rubric-templates/builtin`)
       .then(res => res.json())
       .then(data => { if (data.success && data.templates) setBuiltinRubrics(data.templates); })
       .catch(() => {});
   }, []);
 
   const [rubricCriteria, setRubricCriteria] = useState([{ name: '', description: '', points: 100 }]);
-  const [selectedOption, setSelectedOption] = useState('builtin:__pending');
+  const [selectedOption, setSelectedOption] = useState('');
+  // Set as soon as the teacher makes a rubric decision of their own. Until then
+  // the resolver below is free to keep improving the default as slower sources
+  // (the school's rubrics, the class lessons) arrive.
+  const [rubricTouched, setRubricTouched] = useState(false);
+  // The picker starts folded; the summary card above it says what is in force.
+  // Opened automatically below if nothing could be resolved.
+  const [showRubricEditor, setShowRubricEditor] = useState(false);
 
-  // Once built-in rubrics load, apply the first one as the default — but only if the
-  // teacher hasn't already picked something else (saved rubric, or a topic-recommended one).
+  const selectedLesson = classLessons.find(l => l.id === selectedLessonId) || null;
+  const selectedTopic = topics.find(t => t.id === form.topic) || null;
+
+  // Apply the best available default, re-running whenever a new source loads or
+  // the teacher maps the activity to a lesson or topic. Stops the moment the
+  // teacher chooses a rubric themselves.
   useEffect(() => {
-    if (builtinRubrics.length && selectedOption === 'builtin:__pending') {
-      if (savedRubrics.length) {
-        setRubricCriteria(savedRubrics[0].criteria);
-        setSelectedOption(`saved:${savedRubrics[0].id}`);
-      } else {
-        setRubricCriteria(builtinRubrics[0].criteria);
-        setRubricType(builtinRubrics[0].type || 'standard');
-        setSelectedOption(`builtin:${builtinRubrics[0].id}`);
-      }
+    if (rubricTouched || isEditMode || rubricMode !== 'template') return;
+    const applied = resolveDefaultRubric({
+      lesson: selectedLesson,
+      schoolRubrics,
+      myRubrics: savedRubrics,
+      builtins: builtinRubrics,
+      topicInfo: selectedTopic,
+      outputType: form.type,
+    });
+    if (!applied) return;
+    setRubricCriteria(applied.criteria);
+    setRubricType(applied.type);
+    setSelectedOption(applied.option);
+  }, [rubricTouched, isEditMode, rubricMode, selectedLesson, schoolRubrics, savedRubrics, builtinRubrics, selectedTopic, form.type]);
+
+  // Nothing could be resolved — no school rubrics, no curriculum, and the
+  // built-ins failed to load. Open the picker rather than leave the teacher
+  // looking at "No rubric selected" with no obvious next step.
+  useEffect(() => {
+    if (!rubricTouched && !isEditMode && rubricMode === 'template' && !selectedOption && builtinRubrics.length === 0) {
+      setShowRubricEditor(true);
     }
-  }, [builtinRubrics, savedRubrics]);
+  }, [rubricTouched, isEditMode, rubricMode, selectedOption, builtinRubrics]);
+
+  /** Load a rubric the teacher picked from the dropdown. */
+  const applyOption = (val) => {
+    const all = val.startsWith('saved:')
+      ? [...schoolRubrics, ...savedRubrics]
+      : builtinRubrics;
+    const id = val.slice(val.indexOf(':') + 1);
+    const found = all.find(r => r.id === id);
+    if (!found) return;
+    const criteria = found.criteria;
+    setRubricCriteria(criteria);
+    setRubricType(rubricTypeOf(found, criteria));
+    setSelectedOption(val);
+    setRubricTouched(true);
+  };
   const [additionalFiles, setAdditionalFiles] = useState([]); // { file, name }[]
   const [rubricFile, setRubricFile] = useState(null);
 
@@ -109,21 +254,9 @@ export default function ActivityBuilder() {
   const [showSaveTemplateModal, setShowSaveTemplateModal] = useState(false);
   const [templateTitle, setTemplateTitle] = useState('');
 
-  const [form, setForm] = useState({
-    title: '',
-    type: 'Essay',
-    topic: '',
-    points: 100,
-    deadline: '',
-    instructions: '',
-    submissionMode: 'TEACHER_UPLOAD',
-    maxAttempts: 1,
-    component: 'WW',
-  });
-
   // ── Fetch topics on mount ──
   useEffect(() => {
-    fetch(`${API_URL}/api/topics`)
+    apiFetch(`${API_URL}/api/topics`)
       .then(res => res.json())
       .then(data => { if (data.success) setTopics(data.topics); })
       .catch(() => {});
@@ -132,7 +265,7 @@ export default function ActivityBuilder() {
   // Fetch class lessons from parsed curriculum
   useEffect(() => {
     if (!classId) return;
-    fetch(`${API_URL}/api/teacher/classes/${classId}/lessons`)
+    apiFetch(`${API_URL}/api/teacher/classes/${classId}/lessons`)
       .then(res => res.json())
       .then(data => { if (data.success) setClassLessons(data.lessons || []); })
       .catch(() => {});
@@ -142,7 +275,7 @@ export default function ActivityBuilder() {
   useEffect(() => {
     if (!isEditMode || !editActivityId) return;
     setIsLoadingEdit(true);
-    fetch(`${API_URL}/api/activities/${editActivityId}/submissions`)
+    apiFetch(`${API_URL}/api/activities/${editActivityId}/submissions`)
       .then(r => r.json())
       .catch(() => null);
     // Fetch the activity from the class activities list
@@ -151,7 +284,7 @@ export default function ActivityBuilder() {
     // For now, we'll fetch from a search across teacher classes.
     const user = JSON.parse(localStorage.getItem('user') || '{}');
     if (!user.id) { setIsLoadingEdit(false); return; }
-    fetch(`${API_URL}/api/teacher/${user.id}/classes`)
+    apiFetch(`${API_URL}/api/teacher/${user.id}/classes`)
       .then(r => r.json())
       .then(data => {
         if (!data.success) return;
@@ -164,20 +297,24 @@ export default function ActivityBuilder() {
               topic: activity.topic || '',
               points: activity.points || 100,
               deadline: activity.deadline ? String(activity.deadline).split('T')[0] : '',
+              lateUntil: activity.lateUntil ? String(activity.lateUntil).split('T')[0] : '',
               instructions: activity.instructions || '',
               submissionMode: activity.submissionMode || 'TEACHER_UPLOAD',
               maxAttempts: activity.maxAttempts || 1,
               component: activity.component || 'WW',
             });
-            // Pre-fill rubric if it exists
+            // Pre-fill rubric if it exists. This is the activity's rubric of
+            // record, so nothing may overwrite it.
+            if (activity.classLessonId) setSelectedLessonId(activity.classLessonId);
             if (activity.rubric) {
               try {
                 const parsed = JSON.parse(activity.rubric);
                 if (parsed.criteria?.length) {
                   setRubricCriteria(parsed.criteria);
-                  if (parsed.type) setRubricType(parsed.type);
+                  setRubricType(rubricTypeOf(parsed, parsed.criteria));
                   if (parsed.source) setRubricMode(parsed.source);
                   setSelectedOption('custom');
+                  setRubricTouched(true);
                 }
               } catch {}
             }
@@ -218,6 +355,64 @@ export default function ActivityBuilder() {
   const activeCriteria = (rubricMode === 'upload' && extractedCriteria) ? extractedCriteria : rubricCriteria;
   const totalPercentage = activeCriteria.reduce((s, c) => s + (c.points || 0), 0);
 
+  /**
+   * One line naming the rubric actually in force and where it came from.
+   *
+   * The rubric section offers three modes, two types and four possible sources,
+   * and used to show none of that — a teacher could not tell a rubric their
+   * school wrote from a generic Grade 6 English sample, or notice that picking
+   * a topic had swapped it. Naming the source is what makes the precedence
+   * rules legible instead of something that just happens to the form.
+   */
+  const rubricSummary = (() => {
+    const scope = [classMeta?.subject, classMeta?.gradeLevel].filter(Boolean).join(' ');
+    if (rubricMode === 'upload') {
+      return extractedCriteria?.length
+        ? { name: rubricFile?.name || 'Uploaded rubric', tone: 'neutral', note: 'Read from the file you uploaded' }
+        : { name: 'No rubric yet', tone: 'warn', note: 'Upload a rubric file to continue' };
+    }
+    if (rubricMode === 'manual') {
+      return { name: 'Custom rubric', tone: 'neutral', note: 'Written by you, for this activity only' };
+    }
+    if (selectedOption === 'lesson-rubric') {
+      return {
+        name: selectedLesson?.title || 'Curriculum lesson rubric',
+        tone: 'good',
+        note: "From your school's curriculum, for this lesson",
+      };
+    }
+    if (selectedOption === 'custom') {
+      return { name: 'Custom rubric', tone: 'neutral', note: 'Saved with this activity' };
+    }
+    const school = schoolRubrics.find(r => `saved:${r.id}` === selectedOption);
+    if (school) {
+      return {
+        name: school.name,
+        tone: 'good',
+        note: school.curriculumId
+          ? "From your school's curriculum"
+          : `Published by your school${scope ? ` for ${scope}` : ''}`,
+      };
+    }
+    const mine = savedRubrics.find(r => `saved:${r.id}` === selectedOption);
+    if (mine) return { name: mine.name, tone: 'neutral', note: 'Your own saved template' };
+    const builtin = builtinRubrics.find(b => `builtin:${b.id}` === selectedOption);
+    if (builtin) {
+      return {
+        name: builtin.name,
+        tone: 'warn',
+        note: "Generic sample — your school hasn't published a rubric for this yet",
+      };
+    }
+    return { name: 'No rubric selected', tone: 'warn', note: '' };
+  })();
+
+  const SUMMARY_TONES = {
+    good: 'border-emerald-200 bg-emerald-50/60',
+    neutral: 'border-slate-200 bg-slate-50',
+    warn: 'border-amber-200 bg-amber-50/60',
+  };
+
   // ── Upload rubric extraction ──
   const handleRubricUpload = async (e) => {
     const file = e.target.files?.[0];
@@ -230,7 +425,7 @@ export default function ActivityBuilder() {
     try {
       const fd = new FormData();
       fd.append('rubricFile', file);
-      const res = await fetch(`${API_URL}/api/teacher/rubric/extract`, { method: 'POST', body: fd });
+      const res = await apiFetch(`${API_URL}/api/teacher/rubric/extract`, { method: 'POST', body: fd });
       const data = await res.json();
       if (data.success && data.criteria) {
         setExtractedCriteria(data.criteria);
@@ -268,7 +463,7 @@ export default function ActivityBuilder() {
     if (!user.id) return alert('User not found. Please log in again.');
 
     try {
-      const res = await fetch(`${API_URL}/api/teacher/rubric-templates`, {
+      const res = await apiFetch(`${API_URL}/api/teacher/rubric-templates`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -302,10 +497,49 @@ export default function ActivityBuilder() {
   };
   const removeAdditionalFile = (idx) => setAdditionalFiles(prev => prev.filter((_, i) => i !== idx));
 
+  /**
+   * A range rubric scores through its bands, so its criteria carry no weight of
+   * their own — the editor doesn't even show the field. Everything downstream
+   * (the AI prompt, the review sliders, the saved percentage) needs a maximum
+   * per criterion, so derive it from the highest band. Without this a range
+   * rubric reached the review screen with a total of 0 and scored every
+   * submission at 0%.
+   */
+  const normalizeCriteria = (criteria) => {
+    if (rubricType !== 'range') return criteria;
+    return criteria.map(c => {
+      const bands = c.bands?.length ? c.bands : DEFAULT_RANGE_BANDS;
+      const top = Math.max(...bands.map(b => Number(b.score) || 0), 0);
+      return { ...c, bands, points: top };
+    });
+  };
+
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (rubricMode !== 'upload' && totalPercentage !== 100) {
+    // Only standard rubrics are weighted in percent; a range rubric's total is
+    // whatever its bands add up to, so holding it to 100 made it unsavable —
+    // the points field it would need to fix is hidden in range mode.
+    if (rubricType === 'standard' && rubricMode !== 'upload' && totalPercentage !== 100) {
       alert(`Rubric weight must total 100%. Currently it is ${totalPercentage}%.`);
+      return;
+    }
+    // These three mirror validateRubric() on the server, which is what actually
+    // enforces them — an uploaded rubric used to skip every check, so an
+    // extraction that came back with unnamed criteria or zero weights was
+    // saved and then scored every submission at 0%.
+    if (!activeCriteria.length) {
+      alert('This activity needs a rubric with at least one criterion.');
+      setShowRubricEditor(true);
+      return;
+    }
+    if (!activeCriteria.every(c => c.name?.trim())) {
+      alert('Every rubric criterion needs a name.');
+      setShowRubricEditor(true);
+      return;
+    }
+    if (totalPercentage <= 0) {
+      alert('The rubric criteria add up to zero, so nothing could be scored against it.');
+      setShowRubricEditor(true);
       return;
     }
     if (!form.points || form.points < 1) {
@@ -316,8 +550,8 @@ export default function ActivityBuilder() {
     try {
       if (isEditMode) {
         // UPDATE existing activity via JSON
-        const criteriaForSubmit = (rubricMode === 'upload' && extractedCriteria) ? extractedCriteria : rubricCriteria;
-        const res = await fetch(`${API_URL}/api/teacher/activities/${editActivityId}`, {
+        const criteriaForSubmit = normalizeCriteria((rubricMode === 'upload' && extractedCriteria) ? extractedCriteria : rubricCriteria);
+        const res = await apiFetch(`${API_URL}/api/teacher/activities/${editActivityId}`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -337,13 +571,13 @@ export default function ActivityBuilder() {
         if (selectedLessonId) fd.append('classLessonId', selectedLessonId);
 
         // Build rubric JSON — include extracted criteria for upload mode
-        const criteriaForSubmit = (rubricMode === 'upload' && extractedCriteria) ? extractedCriteria : rubricCriteria;
+        const criteriaForSubmit = normalizeCriteria((rubricMode === 'upload' && extractedCriteria) ? extractedCriteria : rubricCriteria);
         fd.append('rubric', JSON.stringify({ source: rubricMode, type: rubricType, criteria: criteriaForSubmit }));
 
         additionalFiles.forEach(f => fd.append('additionalFiles', f.file));
         if (rubricFile && rubricMode === 'upload') fd.append('additionalFiles', rubricFile);
 
-        const res = await fetch(`${API_URL}/api/teacher/activities`, { method: 'POST', body: fd });
+        const res = await apiFetch(`${API_URL}/api/teacher/activities`, { method: 'POST', body: fd });
         const data = await res.json();
         if (data.success) navigate(-1);
         else alert('Error: ' + data.error);
@@ -527,25 +761,15 @@ export default function ActivityBuilder() {
           {classLessons.length > 0 && (
             <div>
               <label className="block text-sm font-medium text-slate-700 mb-1">Curriculum Lesson / Topic</label>
+              {/* Picking a lesson only records the mapping. The resolver above
+                  applies its rubric — as the highest-priority source — so a
+                  later edit to the topic can no longer overwrite it. */}
               <select value={selectedLessonId} onChange={e => {
                 const lessonId = e.target.value;
                 setSelectedLessonId(lessonId);
-                if (lessonId) {
-                  const lesson = classLessons.find(l => l.id === lessonId);
-                  if (lesson?.outputType) {
-                    setForm(prev => ({ ...prev, type: lesson.outputType }));
-                  }
-                  // Auto-apply default rubric if lesson has one
-                  if (lesson?.defaultRubric) {
-                    try {
-                      const parsed = typeof lesson.defaultRubric === 'string' ? JSON.parse(lesson.defaultRubric) : lesson.defaultRubric;
-                      if (parsed.criteria?.length) {
-                        setRubricCriteria(parsed.criteria);
-                        setRubricMode('template');
-                        setSelectedOption('lesson-rubric');
-                      }
-                    } catch {}
-                  }
+                const lesson = classLessons.find(l => l.id === lessonId);
+                if (lesson?.outputType) {
+                  setForm(prev => ({ ...prev, type: lesson.outputType }));
                 }
               }}
                 className="w-full px-4 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-brand-navy outline-none">
@@ -562,21 +786,12 @@ export default function ActivityBuilder() {
 
           <div>
             <label className="block text-sm font-medium text-slate-700 mb-1">DepEd Topic *</label>
+            {/* The topic's recommended rubric is only a fallback — see
+                resolveDefaultRubric. This field is required, so applying it
+                here unconditionally wiped out the curriculum rubric of every
+                teacher who mapped a lesson before filling the form in. */}
             <select required value={form.topic} onChange={e => {
-                const topicId = e.target.value;
-                setForm({ ...form, topic: topicId });
-                if (topicId) {
-                  const topicInfo = topics.find(t => t.id === topicId);
-                  const recommended = topicInfo?.recommendedRubricId
-                    ? builtinRubrics.find(t => t.id === topicInfo.recommendedRubricId)
-                    : null;
-                  if (recommended) {
-                    setRubricCriteria(recommended.criteria);
-                    setRubricType(recommended.type || 'standard');
-                    setRubricMode('template');
-                    setSelectedOption(`builtin:${recommended.id}`);
-                  }
-                }
+                setForm({ ...form, topic: e.target.value });
               }}
               className="w-full px-4 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-brand-navy outline-none">
               <option value="">— Select a topic —</option>
@@ -589,18 +804,59 @@ export default function ActivityBuilder() {
                 ) : null;
               })}
             </select>
-            <p className="text-xs text-slate-400 mt-1">Selecting a topic suggests a matching rubric below — you can still change it.</p>
+            <p className="text-xs text-slate-400 mt-1">Used to focus the AI's feedback on this skill. It only suggests a rubric if nothing more specific applies.</p>
           </div>
 
           <div>
             <label className="block text-sm font-medium text-slate-700 mb-1">
               Deadline {form.submissionMode === 'STUDENT_SUBMIT' && <span className="text-red-500">*</span>}
             </label>
-            <input type="date" value={form.deadline} onChange={e => setForm({ ...form, deadline: e.target.value })}
+            <input type="date" value={form.deadline}
+              onChange={e => {
+                const deadline = e.target.value;
+                // A late window that closes before the due date would refuse
+                // work that was never late, so drop it rather than keep a
+                // combination the server will silently discard anyway.
+                setForm(f => ({ ...f, deadline, lateUntil: f.lateUntil && deadline && f.lateUntil < deadline ? '' : f.lateUntil }));
+              }}
               min={form.submissionMode === 'STUDENT_SUBMIT' ? new Date().toISOString().split('T')[0] : undefined}
               required={form.submissionMode === 'STUDENT_SUBMIT'}
               className="w-full px-4 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-brand-navy outline-none" />
+            {form.submissionMode === 'STUDENT_SUBMIT' && (
+              <p className="text-xs text-slate-400 mt-1">Work sent after this date is marked late. Closes here unless you allow late submissions below.</p>
+            )}
           </div>
+
+          {/* ── LATE SUBMISSIONS ── */}
+          {form.submissionMode === 'STUDENT_SUBMIT' && form.deadline && (
+            <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={!!form.lateUntil}
+                  onChange={e => setForm(f => ({ ...f, lateUntil: e.target.checked ? f.deadline : '' }))}
+                  className="w-4 h-4 accent-royal-500"
+                />
+                <span className="text-sm font-medium text-slate-700">Accept late submissions</span>
+              </label>
+              {form.lateUntil ? (
+                <div className="mt-3">
+                  <label className="block text-xs font-medium text-slate-500 mb-1">Accept late work until</label>
+                  <input type="date" value={form.lateUntil}
+                    min={form.deadline}
+                    onChange={e => setForm({ ...form, lateUntil: e.target.value })}
+                    className="w-full px-4 py-2 border border-slate-200 rounded-lg bg-white focus:ring-2 focus:ring-brand-navy outline-none" />
+                  <p className="text-xs text-slate-500 mt-1.5">
+                    Students can still submit until this date. Their work is flagged
+                    <span className="mx-1 text-[10px] font-bold px-1.5 py-0.5 bg-amber-100 text-amber-700 rounded">LATE</span>
+                    for you — no marks are deducted automatically, so you decide what a late piece is worth.
+                  </p>
+                </div>
+              ) : (
+                <p className="text-xs text-slate-400 mt-1.5 ml-6">The activity closes on the due date.</p>
+              )}
+            </div>
+          )}
 
           {form.submissionMode === 'STUDENT_SUBMIT' && (
             <div>
@@ -676,34 +932,75 @@ export default function ActivityBuilder() {
 
         {/* ── RUBRIC ── */}
         <div className="bg-white p-6 rounded-xl border border-slate-200">
-          <h2 className="text-base font-bold text-brand-slate mb-4">Grading Rubric</h2>
+          <h2 className="text-base font-bold text-brand-slate mb-3">Grading Rubric</h2>
 
+          {/* What this activity will actually be graded against. Always shown,
+              whichever mode produced it, so the answer is never a guess. */}
+          <div className={cn('rounded-xl border p-4 mb-4', SUMMARY_TONES[rubricSummary.tone])}>
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-0.5">Using</p>
+                <p className="font-bold text-brand-slate text-sm truncate">{rubricSummary.name}</p>
+                {rubricSummary.note && <p className="text-xs text-slate-600 mt-0.5">{rubricSummary.note}</p>}
+                {activeCriteria.length > 0 && rubricSummary.tone !== 'warn' && (
+                  <p className="text-xs text-slate-500 mt-1.5">
+                    {activeCriteria.length} criteria · {totalPercentage}{rubricType === 'standard' ? '%' : ' pts'} total
+                  </p>
+                )}
+              </div>
+              <button type="button" onClick={() => setShowRubricEditor(v => !v)}
+                className="shrink-0 text-xs font-bold text-brand-navy bg-white border-2 border-brand-navy/20 px-3 py-1.5 rounded-lg hover:bg-blue-50 transition-colors">
+                {showRubricEditor ? 'Done' : 'Change'}
+              </button>
+            </div>
+          </div>
+
+          {/* The full picker stays folded away by default: the resolved rubric
+              is right for most activities, and three modes plus four sources is
+              a lot to meet head-on when you only wanted to set a deadline. */}
+          {!showRubricEditor && activeCriteria.length > 0 && rubricMode === 'template' && (
+            <ul className="space-y-1.5">
+              {activeCriteria.map((c, i) => (
+                <li key={i} className="flex items-baseline justify-between gap-3 text-sm">
+                  <span className="text-slate-700 truncate">{c.name}</span>
+                  <span className="text-slate-400 text-xs shrink-0">
+                    {rubricType === 'standard'
+                      ? `${c.points}% · ${((c.points / 100) * (form.points || 0)).toFixed(1).replace(/\.0$/, '')} pts`
+                      : `${c.points} pts`}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+
+          {showRubricEditor && (
+          <>
           {/* Mode tabs */}
           <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 mb-4">
             {[['template', '📋 Template'], ['manual', '✏️ Create'], ['upload', '📁 Upload']].map(([val, label]) => (
               <button key={val} type="button" onClick={() => {
                 setRubricMode(val);
                 if (val === 'template') {
-                  const defaultCriteria = savedRubrics && savedRubrics.length ? savedRubrics[0].criteria : builtinRubrics[0]?.criteria;
-                  if (defaultCriteria) setRubricCriteria(defaultCriteria);
-                  setSelectedOption(savedRubrics && savedRubrics.length ? `saved:${savedRubrics[0].id}` : (builtinRubrics[0] ? `builtin:${builtinRubrics[0].id}` : 'builtin:__pending'));
-
-                  // Infer type if missing (for older saves)
-                  let loadedType = 'standard';
-                  if (savedRubrics && savedRubrics.length) {
-                    if (savedRubrics[0].type) loadedType = savedRubrics[0].type;
-                    else if (savedRubrics[0].criteria?.[0]?.bands?.length > 0) loadedType = 'range';
-                  } else if (builtinRubrics[0]?.type) {
-                    loadedType = builtinRubrics[0].type;
+                  // Re-apply whichever template the dropdown is pointing at. If
+                  // it isn't pointing at one (the teacher came from Create or
+                  // Upload), hand control back to the resolver so the best
+                  // available default is chosen instead of just the first one.
+                  if (selectedOption.startsWith('saved:') || selectedOption.startsWith('builtin:')) {
+                    applyOption(selectedOption);
+                  } else {
+                    setRubricTouched(false);
                   }
-                  setRubricType(loadedType);
                 } else if (val === 'manual' && rubricMode !== 'manual') {
                   // Start blank in Create mode
+                  setRubricTouched(true);
+                  setSelectedOption('custom');
                   setRubricCriteria([
                     rubricType === 'range'
                       ? { name: '', description: '', points: 0, bands: DEFAULT_RANGE_BANDS.map(b => ({ ...b })) }
                       : { name: '', description: '', points: 0 }
                   ]);
+                } else if (val === 'upload') {
+                  setRubricTouched(true);
                 }
                 if (val !== 'upload') {
                   setRubricFile(null);
@@ -742,35 +1039,39 @@ export default function ActivityBuilder() {
           {/* Template */}
           {rubricMode === 'template' && (
             <div className="space-y-3">
-              <select value={selectedOption} onChange={e => {
-                  const val = e.target.value;
-                  if (val.startsWith('saved:')) {
-                    const id = val.slice(6);
-                    const found = savedRubrics.find(r => r.id === id);
-                    if (found) {
-                      setRubricCriteria(found.criteria);
-                      setSelectedOption(val);
-                      // Infer type if missing
-                      let loadedType = found.type;
-                      if (!loadedType) {
-                        loadedType = found.criteria?.[0]?.bands?.length > 0 ? 'range' : 'standard';
-                      }
-                      setRubricType(loadedType);
-                    }
-                  } else if (val.startsWith('builtin:')) {
-                    const id = val.slice(8);
-                    const builtin = builtinRubrics.find(t => t.id === id);
-                    if (builtin) {
-                      setRubricCriteria(builtin.criteria);
-                      setSelectedOption(val);
-                      setRubricType(builtin.type || 'standard');
-                    }
-                  }
-                }}
-                className="w-full border border-slate-200 p-2 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand-navy mb-3">
-                {builtinRubrics.map(t => <option key={t.id} value={`builtin:${t.id}`}>{t.name}</option>)}
-                {savedRubrics.length > 0 && <optgroup label="Your Saved Rubrics">{savedRubrics.map(r => <option key={r.id} value={`saved:${r.id}`}>{r.name}</option>)}</optgroup>}
+              {/* Ordered to match resolveDefaultRubric: what the school
+                  published for these students first, generic samples last. */}
+              <select value={selectedOption} onChange={e => applyOption(e.target.value)}
+                className="w-full border border-slate-200 p-2 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand-navy mb-2">
+                {/* Real entries for the two states that aren't a template, so the
+                    dropdown never renders blank while criteria are shown below. */}
+                {selectedOption === 'lesson-rubric' && (
+                  <option value="lesson-rubric">
+                    From this curriculum lesson{selectedLesson?.title ? ` — ${selectedLesson.title}` : ''}
+                  </option>
+                )}
+                {selectedOption === 'custom' && <option value="custom">Custom rubric for this activity</option>}
+                {schoolRubrics.length > 0 && (
+                  <optgroup label="Your school's rubrics">
+                    {schoolRubrics.map(r => (
+                      <option key={r.id} value={`saved:${r.id}`}>
+                        {r.name}{r.outputType ? ` (${r.outputType})` : ''}
+                      </option>
+                    ))}
+                  </optgroup>
+                )}
+                {savedRubrics.length > 0 && (
+                  <optgroup label="Your saved rubrics">
+                    {savedRubrics.map(r => <option key={r.id} value={`saved:${r.id}`}>{r.name}</option>)}
+                  </optgroup>
+                )}
+                <optgroup label="Generic DepEd samples (Grade 6 English)">
+                  {builtinRubrics.map(t => <option key={t.id} value={`builtin:${t.id}`}>{t.name}</option>)}
+                </optgroup>
               </select>
+
+              {/* Provenance for the current pick lives in the summary card
+                  above, so it stays visible whichever mode is open. */}
               {rubricCriteria.map((c, i) => (
                 <div key={i} className="p-3 bg-slate-50 rounded-lg border border-slate-100 space-y-2">
                   <div className="flex items-start gap-3">
@@ -880,8 +1181,8 @@ export default function ActivityBuilder() {
               </button>
             </div>
           )}
-
-          {/* Removed AI-generated rubric option by request */}
+          </>
+          )}
         </div>
 
         {/* Save as Template Modal */}

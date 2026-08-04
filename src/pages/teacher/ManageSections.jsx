@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { Users, Plus, ChevronDown, X, Upload, Pencil, UserPlus, Loader2, Search } from 'lucide-react';
-import { API_URL } from '../../config';
+import { API_URL, apiFetch } from '../../config';
 import { GRADE_LEVELS } from '../../constants/school';
 
 export default function ManageSections() {
@@ -26,7 +26,7 @@ export default function ManageSections() {
     try {
       const user = JSON.parse(localStorage.getItem('user'));
       if (!user) return;
-      const res = await fetch(`${API_URL}/api/teacher/${user.id}/sections`);
+      const res = await apiFetch(`${API_URL}/api/teacher/${user.id}/sections`);
       const data = await res.json();
       if (data.success) setSections(data.sections);
     } catch (e) { console.error(e); }
@@ -38,7 +38,7 @@ export default function ManageSections() {
     try {
       const user = JSON.parse(localStorage.getItem('user'));
       const studentNames = studentsText.split('\n').filter(s => s.trim());
-      const res = await fetch(`${API_URL}/api/teacher/sections`, {
+      const res = await apiFetch(`${API_URL}/api/teacher/sections`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name, gradeLevel, teacherId: user.id, studentsList: studentNames })
@@ -65,7 +65,7 @@ export default function ManageSections() {
     formData.append('file', file);
     
     try {
-      const res = await fetch(`${API_URL}/api/teacher/extract-students`, {
+      const res = await apiFetch(`${API_URL}/api/teacher/extract-students`, {
         method: 'POST',
         body: formData
       });
@@ -92,7 +92,7 @@ export default function ManageSections() {
     setIsAddingStudents(true);
     try {
       const user = JSON.parse(localStorage.getItem('user'));
-      const res = await fetch(`${API_URL}/api/teacher/sections`, {
+      const res = await apiFetch(`${API_URL}/api/teacher/sections`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: section.name, teacherId: user.id, studentsList: studentNames })
@@ -118,7 +118,7 @@ export default function ManageSections() {
     const formData = new FormData();
     formData.append('file', file);
     try {
-      const res = await fetch(`${API_URL}/api/teacher/extract-students`, { method: 'POST', body: formData });
+      const res = await apiFetch(`${API_URL}/api/teacher/extract-students`, { method: 'POST', body: formData });
       const data = await res.json();
       if (data.success && data.names) {
         const newNames = data.names.join('\n');

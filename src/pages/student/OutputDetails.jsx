@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { ArrowLeft, Lightbulb, Trophy, Image as ImageIcon, Loader2, ChevronDown, ChevronUp, CheckCircle2, AlertTriangle, Target, MessageCircle, Sparkles } from 'lucide-react';
-import { API_URL } from '../../config';
+import { API_URL, apiFetch } from '../../config';
 import SubmissionImage from '../../components/SubmissionImage';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
@@ -95,7 +95,7 @@ export default function OutputDetails() {
       setIsLoading(false);
       return;
     }
-    fetch(`${API_URL}/api/submissions/${outputId}`)
+    apiFetch(`${API_URL}/api/submissions/${outputId}`)
       .then(r => r.json())
       .then(d => { if (d.success) setSub(d.submission); })
       .finally(() => setIsLoading(false));

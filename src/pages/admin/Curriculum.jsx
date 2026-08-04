@@ -1,10 +1,32 @@
 import { useState, useEffect, useCallback } from 'react';
 import { BookOpen, Plus, Loader2, Trash2, UploadCloud, FileText, X, ChevronDown, Sparkles } from 'lucide-react';
-import { API_URL } from '../../config';
+import { API_URL, apiFetch } from '../../config';
 import { GRADE_LEVELS, SUBJECTS } from '../../constants/school';
 import { ACTIVITY_TYPES } from '../../constants/activityTypes';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
+
+/**
+ * Plain-English account of what happened to a curriculum's rubrics.
+ *
+ * "Saved 3 rubrics" out of twenty lessons reads like a failure unless you also
+ * say that most lessons shared a rubric and which ones were unusable. The
+ * extractor is an AI reading a school's own document, so some lessons do come
+ * back malformed — that is worth naming rather than hiding.
+ */
+function describeRubricReport(report, { alreadySaved } = {}) {
+  if (!report) return '';
+  const parts = [];
+  if (report.saved) parts.push(`Saved ${report.saved} reusable rubric(s) to your School Rubrics.`);
+  else if (alreadySaved) parts.push('Every rubric from this curriculum is already saved.');
+  if (report.merged) parts.push(`${report.merged} lesson(s) shared a rubric with another, so they were saved once.`);
+  if (report.skipped?.length) {
+    const detail = report.skipped.slice(0, 3).map(s => `${s.lesson} (${s.reason})`).join('; ');
+    parts.push(`${report.skipped.length} lesson rubric(s) could not be saved — ${detail}${report.skipped.length > 3 ? '; …' : ''}. You can add these by hand.`);
+  }
+  return parts.join(' ');
+}
+
 
 /**
  * School curriculum library. One curriculum per grade level + subject; teachers
@@ -26,7 +48,7 @@ export default function AdminCurriculum() {
 
   const load = useCallback(() => {
     if (!admin.id) return setIsLoading(false);
-    fetch(`${API_URL}/api/admin/${admin.id}/curriculums`)
+    apiFetch(`${API_URL}/api/admin/${admin.id}/curriculums`)
       .then(r => r.json())
       .then(d => { if (d.success) setCurriculums(d.curriculums || []); })
       .finally(() => setIsLoading(false));
@@ -44,18 +66,17 @@ export default function AdminCurriculum() {
       const fd = new FormData();
       Object.entries(form).forEach(([k, v]) => fd.append(k, v));
       if (file) fd.append('curriculumFile', file);
-      const res = await fetch(`${API_URL}/api/admin/${admin.id}/curriculums`, { method: 'POST', body: fd });
+      const res = await apiFetch(`${API_URL}/api/admin/${admin.id}/curriculums`, { method: 'POST', body: fd });
       const d = await res.json();
       if (d.success) {
         setShowForm(false);
         setForm({ gradeLevel: '', subject: '', title: '', description: '' });
         setFile(null);
         const lessons = d.curriculum.lessons?.length || 0;
-        const rubrics = d.savedRubrics || 0;
         setNotice(d.warning || (
-          `Published "${d.curriculum.title}" with ${lessons} lesson(s)` +
-          (rubrics ? ` and saved ${rubrics} reusable rubric(s) to your School Rubrics.` : '.')
-        ));
+          `Published "${d.curriculum.title}" with ${lessons} lesson(s). ` +
+          describeRubricReport(d.rubricReport)
+        ).trim());
         load();
       } else {
         setError(d.error || 'Could not publish this curriculum.');
@@ -71,7 +92,7 @@ export default function AdminCurriculum() {
     if (!confirm(`Delete the ${curriculum.subject} curriculum for ${curriculum.gradeLevel}? Classes already created keep their copied lessons.`)) return;
     setBusy(true);
     try {
-      const res = await fetch(`${API_URL}/api/admin/${admin.id}/curriculums/${curriculum.id}`, { method: 'DELETE' });
+      const res = await apiFetch(`${API_URL}/api/admin/${admin.id}/curriculums/${curriculum.id}`, { method: 'DELETE' });
       const d = await res.json();
       if (d.success) load(); else alert(d.error);
     } finally { setBusy(false); }
@@ -81,14 +102,15 @@ export default function AdminCurriculum() {
     setBusy(true);
     setNotice('');
     try {
-      const res = await fetch(`${API_URL}/api/admin/${admin.id}/curriculums/${curriculum.id}/promote-rubrics`, {
+      const res = await apiFetch(`${API_URL}/api/admin/${admin.id}/curriculums/${curriculum.id}/promote-rubrics`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}'
       });
       const d = await res.json();
       if (d.success) {
-        setNotice(d.savedRubrics
-          ? `Saved ${d.savedRubrics} rubric(s) to School Rubrics, tagged ${curriculum.gradeLevel} · ${curriculum.subject}.`
-          : 'Every rubric from this curriculum is already saved.');
+        setNotice(
+          describeRubricReport(d.rubricReport, { alreadySaved: true }) +
+          (d.savedRubrics ? ` Tagged ${curriculum.gradeLevel} · ${curriculum.subject}.` : '')
+        );
       } else setError(d.error);
     } catch {
       setError('Network error. Please try again.');
@@ -99,7 +121,7 @@ export default function AdminCurriculum() {
     if (!lessonDraft.title.trim()) return;
     setBusy(true);
     try {
-      const res = await fetch(`${API_URL}/api/admin/${admin.id}/curriculums/${curriculumId}/lessons`, {
+      const res = await apiFetch(`${API_URL}/api/admin/${admin.id}/curriculums/${curriculumId}/lessons`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(lessonDraft)
@@ -115,7 +137,7 @@ export default function AdminCurriculum() {
   const handleDeleteLesson = async (curriculumId, lessonId) => {
     setBusy(true);
     try {
-      const res = await fetch(`${API_URL}/api/admin/${admin.id}/curriculums/${curriculumId}/lessons/${lessonId}`, { method: 'DELETE' });
+      const res = await apiFetch(`${API_URL}/api/admin/${admin.id}/curriculums/${curriculumId}/lessons/${lessonId}`, { method: 'DELETE' });
       const d = await res.json();
       if (d.success) load(); else alert(d.error);
     } finally { setBusy(false); }

@@ -1,3 +1,4 @@
+import { apiFetch } from '../config';
 /**
  * offlineQueue.js — localStorage-based offline upload queue
  * Queues failed uploads when offline, auto-flushes on reconnect.
@@ -173,7 +174,9 @@ export async function flushQueue(onProgress) {
       }
       Object.entries(job.fields || {}).forEach(([k, v]) => fd.append(k, v));
 
-      const res = await fetch(job.url, { method: 'POST', body: fd });
+      // Replayed long after the original attempt, so it re-reads the token
+      // rather than capturing one that may since have expired.
+      const res = await apiFetch(job.url, { method: 'POST', body: fd });
 
       // A 4xx means the server rejected this upload on its merits — a privacy
       // violation, a past deadline, an exhausted attempt count. Retrying cannot

@@ -5,7 +5,7 @@ import { clsx } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 import { useState, useEffect } from 'react';
 import { initOfflineQueueListener, getQueue } from '../utils/offlineQueue';
-import { API_URL } from '../config';
+import { API_URL, apiFetch, logout } from '../config';
 
 function cn(...inputs) {
   return twMerge(clsx(inputs));
@@ -24,7 +24,7 @@ export default function TeacherLayout() {
     // Fetch warning count for the Analytics badge
     const stored = JSON.parse(localStorage.getItem('user') || '{}');
     if (stored.id) {
-      fetch(`${API_URL}/api/teacher/${stored.id}/analytics`)
+      apiFetch(`${API_URL}/api/teacher/${stored.id}/analytics`)
         .then(r => r.json())
         .then(d => {
           if (d.success) setWarningCount(d.warningCount || 0);
@@ -110,7 +110,7 @@ export default function TeacherLayout() {
           </div>
           <Link
             to="/login"
-            onClick={() => localStorage.removeItem('user')}
+            onClick={() => logout()}
             className="flex items-center gap-3 px-3 py-2.5 rounded-2xl text-sm font-bold text-white/60 hover:bg-red-500 hover:text-white transition-colors"
           >
             <LogOut className="w-4 h-4" /> Sign Out
@@ -167,7 +167,7 @@ export default function TeacherLayout() {
               own place in the dock or there's no way out on a phone. The rule
               keeps it from reading as a seventh destination. */}
           <span aria-hidden="true" className="w-px my-2.5 bg-white/15 shrink-0" />
-          <Link to="/login" onClick={() => localStorage.removeItem('user')}
+          <Link to="/login" onClick={() => logout()}
             aria-label="Sign out"
             className="flex-1 min-w-0 grid place-items-center rounded-2xl min-h-12 text-white/55 active:bg-red-500 active:text-white transition-colors">
             <LogOut className="w-5 h-5 shrink-0" />

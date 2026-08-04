@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { ClipboardList, Check, ChevronDown, ChevronRight, Edit2, Trash2, Plus, X } from 'lucide-react';
-import { API_URL } from '../../config';
+import { API_URL, apiFetch } from '../../config';
 
 // Helper for dynamic band colors based on label
 const getBandColor = (label, index, totalBands) => {
@@ -52,6 +52,11 @@ const DEFAULT_RANGE_BANDS = [
 export default function RubricManager() {
   const [expandedId, setExpandedId] = useState(null);
   const [savedRubrics, setSavedRubrics] = useState([]);
+  // School-wide and curriculum-derived rubrics. Kept apart from the teacher's
+  // own because they are read-only here — they belong to the school, and
+  // listing them as "Your Saved Rubrics" invited a teacher to edit a rubric
+  // every other class in the school is graded against.
+  const [schoolRubrics, setSchoolRubrics] = useState([]);
   const [prebuiltRubrics, setPrebuiltRubrics] = useState([]);
   const [teacherId, setTeacherId] = useState(null);
 
@@ -67,7 +72,7 @@ export default function RubricManager() {
   }, []);
 
   useEffect(() => {
-    fetch(`${API_URL}/api/rubric-templates/builtin`)
+    apiFetch(`${API_URL}/api/rubric-templates/builtin`)
       .then(res => res.json())
       .then(data => { if (data.success && data.templates) setPrebuiltRubrics(data.templates); })
       .catch(() => {});
@@ -75,7 +80,7 @@ export default function RubricManager() {
 
   const fetchSavedRubrics = async (tId) => {
     try {
-      const res = await fetch(`${API_URL}/api/teacher/rubric-templates/${tId}`);
+      const res = await apiFetch(`${API_URL}/api/teacher/rubric-templates/${tId}`);
       if (res.ok) {
         const data = await res.json();
         const templates = data.templates || data || [];
@@ -83,11 +88,13 @@ export default function RubricManager() {
           ...r,
           criteria: typeof r.criteria === 'string' ? JSON.parse(r.criteria) : r.criteria
         })).filter(r => r.criteria && Array.isArray(r.criteria));
-        setSavedRubrics(parsed);
+        setSavedRubrics(parsed.filter(r => !r.isSchoolWide));
+        setSchoolRubrics(parsed.filter(r => r.isSchoolWide));
       }
     } catch (e) {
       console.error('Failed to fetch rubrics:', e);
       setSavedRubrics([]);
+      setSchoolRubrics([]);
     }
   };
 
@@ -96,11 +103,16 @@ export default function RubricManager() {
   const isAlreadySaved = (name) => savedRubrics.some(r => r.name === name);
 
   const deleteRubric = async (id) => {
+    if (!id) return;
     if(!window.confirm("Are you sure you want to delete this custom rubric?")) return;
     try {
-      const res = await fetch(`${API_URL}/api/teacher/rubric-templates/${id}`, { method: 'DELETE' });
-      if(res.ok) fetchSavedRubrics(teacherId);
-    } catch(e) {}
+      const res = await apiFetch(`${API_URL}/api/teacher/rubric-templates/${id}`, { method: 'DELETE' });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.success) fetchSavedRubrics(teacherId);
+      else alert(data.error || 'Could not delete this rubric.');
+    } catch(e) {
+      alert('Network error while deleting the rubric.');
+    }
   };
 
   const startEditing = (rubric) => {
@@ -118,12 +130,15 @@ export default function RubricManager() {
       }
     }
 
-    const isPrebuilt = prebuiltRubrics.some(r => r.id === editingRubric.id);
-    
+    // Built-ins and the school's own rubrics aren't the teacher's to change, so
+    // editing one saves a private copy instead of rewriting the original.
+    const isBorrowed = prebuiltRubrics.some(r => r.id === editingRubric.id)
+      || schoolRubrics.some(r => r.id === editingRubric.id);
+
     try {
-      if (isPrebuilt) {
+      if (isBorrowed) {
         // Create new
-        const res = await fetch(`${API_URL}/api/teacher/rubric-templates`, {
+        const res = await apiFetch(`${API_URL}/api/teacher/rubric-templates`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -141,14 +156,17 @@ export default function RubricManager() {
         }
       } else {
         // Update existing
-        const res = await fetch(`${API_URL}/api/teacher/rubric-templates/${editingRubric._id || editingRubric.id}`, {
+        const res = await apiFetch(`${API_URL}/api/teacher/rubric-templates/${editingRubric._id || editingRubric.id}`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(editingRubric)
+          body: JSON.stringify({ ...editingRubric, teacherId })
         });
-        if (res.ok) {
+        const data = await res.json().catch(() => ({}));
+        if (res.ok && data.success) {
           setEditingRubric(null);
           fetchSavedRubrics(teacherId);
+        } else {
+          alert(data.error || 'Could not save this rubric.');
         }
       }
     } catch (e) {
@@ -157,9 +175,12 @@ export default function RubricManager() {
     }
   };
 
-  const renderRubricCard = (rubric, isCustom) => {
+  /** variant: 'mine' (editable) | 'school' (read-only, copy to edit) | 'builtin' */
+  const renderRubricCard = (rubric, variant) => {
     if (!rubric || !rubric.criteria) return null;
-    const isOpen = expandedId === (rubric._id || rubric.id);
+    const rubricId = rubric._id || rubric.id;
+    const isCustom = variant === 'mine';
+    const isOpen = expandedId === rubricId;
     const saved = isCustom ? false : isAlreadySaved(rubric.name);
     const totalPoints = rubric.criteria.reduce((sum, c) => sum + (parseInt(c.points)||0), 0);
     const type = detectRubricType(rubric);
@@ -176,6 +197,11 @@ export default function RubricManager() {
                 : <span className="text-[10px] font-bold px-2 py-0.5 bg-purple-100 text-purple-700 rounded-full">RANGE</span>
               }
               {saved && <span className="text-[10px] font-bold px-2 py-0.5 bg-blue-100 text-blue-700 rounded-full">SAVED</span>}
+              {variant === 'school' && (
+                <span className="text-[10px] font-bold px-2 py-0.5 bg-emerald-100 text-emerald-700 rounded-full">
+                  {rubric.curriculumId ? 'FROM CURRICULUM' : 'SCHOOL-WIDE'}
+                </span>
+              )}
             </div>
             <p className="text-sm text-slate-500">{rubric.description}</p>
             <div className="flex gap-3 mt-2">
@@ -224,16 +250,22 @@ export default function RubricManager() {
                 </div>
               ))}
             </div>
-            <div className="flex gap-3">
+            <div className="flex gap-3 items-center">
               <button onClick={() => startEditing(rubric)}
                 className="px-4 py-2 bg-slate-100 text-slate-700 rounded-lg text-sm font-medium hover:bg-slate-200 transition-colors flex items-center gap-2">
-                <Edit2 className="w-4 h-4" /> Edit Rubric
+                <Edit2 className="w-4 h-4" /> {isCustom ? 'Edit Rubric' : 'Copy & Edit'}
               </button>
               {isCustom && (
-                <button onClick={() => deleteRubric(rubric._id)}
+                /* rubric.id, not rubric._id — these rows come from Postgres and
+                   have never had a Mongo-style _id, so every delete request was
+                   going to .../rubric-templates/undefined. */
+                <button onClick={() => deleteRubric(rubricId)}
                   className="px-4 py-2 border border-red-200 text-red-600 rounded-lg text-sm font-medium hover:bg-red-50 transition-colors flex items-center gap-2">
                   <Trash2 className="w-4 h-4" /> Delete
                 </button>
+              )}
+              {variant === 'school' && (
+                <span className="text-xs text-slate-400">Published by your school — editing saves your own copy.</span>
               )}
             </div>
           </div>
@@ -251,19 +283,32 @@ export default function RubricManager() {
         <p className="text-slate-500 text-sm mt-1">Manage standard and custom grading rubrics for your activities</p>
       </div>
 
+      {/* Ordered by authority: what the school published, then the teacher's
+          own, then generic samples. */}
+      {schoolRubrics.length > 0 && (
+        <div className="mb-8">
+          <h2 className="text-sm font-bold text-slate-500 uppercase tracking-wider mb-1">Your School's Rubrics</h2>
+          <p className="text-xs text-slate-400 mb-3">Published by your admin or generated from an uploaded curriculum. These are applied to your activities first.</p>
+          <div className="space-y-4">
+            {schoolRubrics.map(r => renderRubricCard(r, 'school'))}
+          </div>
+        </div>
+      )}
+
       {savedRubrics.length > 0 && (
         <div className="mb-8">
           <h2 className="text-sm font-bold text-slate-500 uppercase tracking-wider mb-3">Your Saved Rubrics</h2>
           <div className="space-y-4">
-            {savedRubrics.map(r => renderRubricCard(r, true))}
+            {savedRubrics.map(r => renderRubricCard(r, 'mine'))}
           </div>
         </div>
       )}
 
       <div className="mb-8">
-        <h2 className="text-sm font-bold text-slate-500 uppercase tracking-wider mb-3">Pre-Built Rubrics</h2>
+        <h2 className="text-sm font-bold text-slate-500 uppercase tracking-wider mb-1">Generic DepEd Samples</h2>
+        <p className="text-xs text-slate-400 mb-3">Grade 6 English starting points, used only when nothing above applies.</p>
         <div className="space-y-4">
-          {prebuiltRubrics.map(r => renderRubricCard(r, false))}
+          {prebuiltRubrics.map(r => renderRubricCard(r, 'builtin'))}
         </div>
       </div>
 
@@ -276,7 +321,7 @@ export default function RubricManager() {
               <div className="sticky top-0 bg-white border-b border-slate-200 p-4 flex items-center justify-between z-10">
                 <h2 className="font-bold text-lg text-brand-slate flex items-center gap-2">
                   <Edit2 className="w-5 h-5 text-brand-navy" />
-                  Edit Rubric {prebuiltRubrics.some(r => r.id === editingRubric.id) && <span className="text-xs font-normal text-slate-500">(Will save as custom)</span>}
+                  Edit Rubric {(prebuiltRubrics.some(r => r.id === editingRubric.id) || schoolRubrics.some(r => r.id === editingRubric.id)) && <span className="text-xs font-normal text-slate-500">(Will save as your own copy)</span>}
                 </h2>
                 <button onClick={() => setEditingRubric(null)} className="p-2 hover:bg-slate-100 rounded-full text-slate-500">
                   <X className="w-5 h-5" />

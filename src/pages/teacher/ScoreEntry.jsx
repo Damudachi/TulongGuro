@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { ArrowLeft, PenLine, Loader2, Check, AlertTriangle, Info } from 'lucide-react';
-import { API_URL } from '../../config';
+import { API_URL, apiFetch } from '../../config';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
 
@@ -30,8 +30,8 @@ export default function ScoreEntry() {
   const load = useCallback(() => {
     if (!classId || !activityId) { setIsLoading(false); return; }
     Promise.all([
-      fetch(`${API_URL}/api/classes/${classId}`).then(r => r.json()),
-      fetch(`${API_URL}/api/activities/${activityId}/submissions`).then(r => r.json()),
+      apiFetch(`${API_URL}/api/classes/${classId}`).then(r => r.json()),
+      apiFetch(`${API_URL}/api/activities/${activityId}/submissions`).then(r => r.json()),
     ]).then(([cls, subs]) => {
       if (cls.success) {
         setStudents(cls.classData?.section?.students || []);
@@ -71,7 +71,7 @@ export default function ScoreEntry() {
         studentId: s.id,
         points: scores[s.id] === undefined ? '' : scores[s.id],
       }));
-      const res = await fetch(`${API_URL}/api/teacher/activities/${activityId}/scores`, {
+      const res = await apiFetch(`${API_URL}/api/teacher/activities/${activityId}/scores`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ scores: payload }),
       });

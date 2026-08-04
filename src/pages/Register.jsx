@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
-import { useNavigate, Link } from 'react-router-dom';
-import { BookOpen, Eye, EyeOff, UploadCloud, X, Image as ImageIcon, ArrowLeft } from 'lucide-react';
-import { API_URL } from '../config';
+import { Link } from 'react-router-dom';
+import { BookOpen, Eye, EyeOff, UploadCloud, X, Image as ImageIcon, ArrowLeft, Clock } from 'lucide-react';
+import { API_URL, apiFetch } from '../config';
 
 /** Suggested school colours — the admin can still pick any hex. */
 const COLOR_PRESETS = ['#2B59C3', '#0A2463', '#2A9D9A', '#EE2F80', '#8E5CAF', '#C9A417', '#7E9410', '#4A9BC9'];
@@ -10,7 +10,6 @@ const COLOR_PRESETS = ['#2B59C3', '#0A2463', '#2A9D9A', '#EE2F80', '#8E5CAF', '#
 const DEFAULT_BRAND = '#2B59C3';
 
 export default function Register() {
-  const navigate = useNavigate();
   const [formData, setFormData] = useState({
     name: '',
     email: '',
@@ -25,6 +24,8 @@ export default function Register() {
   const [error, setError] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
+  // Set once the school is registered and awaiting operator approval.
+  const [submitted, setSubmitted] = useState(null);
 
   useEffect(() => () => { if (logoPreview) URL.revokeObjectURL(logoPreview); }, [logoPreview]);
 
@@ -57,11 +58,13 @@ export default function Register() {
       if (brandColor) body.append('brandColor', brandColor);
       if (logo) body.append('logo', logo);
 
-      const response = await fetch(`${API_URL}/api/auth/register`, { method: 'POST', body });
+      const response = await apiFetch(`${API_URL}/api/auth/register`, { method: 'POST', body });
       const data = await response.json();
       if(data.success) {
-        localStorage.setItem('user', JSON.stringify({ ...data.user, school: data.school }));
-        navigate('/admin/teachers');
+        // No session is stored: the account exists but cannot sign in until a
+        // TulongGuro operator approves the school, so sending them to the admin
+        // area would only bounce them straight back out at the login gate.
+        setSubmitted({ school: data.school?.name || formData.schoolName, email: formData.email });
       } else {
         setError(data.error || 'Registration failed. Please try again.');
       }
@@ -71,6 +74,47 @@ export default function Register() {
       setIsSubmitting(false);
     }
   };
+
+  // ── Registered, awaiting approval ──
+  // A dead end on purpose: there is nothing they can do in the app until a
+  // TulongGuro operator approves the school, and a "Go to dashboard" button
+  // would only send them to a login that refuses them.
+  if (submitted) {
+    return (
+      <div className="min-h-screen bg-cream-100 tg-dotgrid flex items-center justify-center p-4 sm:p-6">
+        <div className="w-full max-w-lg bg-white rounded-[2rem] shadow-card-lg border-2 border-navy-700/5 overflow-hidden">
+          <div className="bg-aqua-500 px-8 py-10 text-white text-center">
+            <span className="w-14 h-14 rounded-3xl bg-white/20 grid place-items-center mx-auto mb-4">
+              <Clock className="w-7 h-7" />
+            </span>
+            <h1 className="font-display text-2xl font-extrabold mb-1.5">Registration received</h1>
+            <p className="text-white/80 text-sm">{submitted.school}</p>
+          </div>
+          <div className="p-8 space-y-4">
+            <p className="text-sm text-navy-700 leading-relaxed">
+              Your school is being reviewed by the TulongGuro team. We check every new
+              school before opening it up, so this usually takes about one working day.
+            </p>
+            <div className="bg-cream-100 border-2 border-navy-700/5 rounded-2xl p-4">
+              <p className="text-xs font-bold text-navy-500 uppercase tracking-wider mb-1">What happens next</p>
+              <p className="text-sm text-navy-600 leading-relaxed">
+                Once approved, sign in at the login page with <strong>{submitted.email}</strong> and
+                the password you just chose. Your admin account and school are already saved —
+                nothing needs to be set up again.
+              </p>
+            </div>
+            <Link to="/login"
+              className="block text-center w-full py-3 rounded-2xl bg-navy-700 text-white font-extrabold hover:bg-navy-800 transition-colors">
+              Go to sign in
+            </Link>
+            <Link to="/" className="block text-center text-sm font-bold text-navy-500 hover:text-royal-500">
+              Back to home
+            </Link>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-cream-100 tg-dotgrid flex items-center justify-center p-4 sm:p-6">

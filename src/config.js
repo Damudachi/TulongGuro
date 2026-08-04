@@ -2,3 +2,73 @@
 // falls back to localhost for local development.
 // In Vercel, set VITE_API_URL to your Render.com backend URL.
 export const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
+
+const TOKEN_KEY = 'tg_token';
+
+export const getToken = () => localStorage.getItem(TOKEN_KEY);
+
+/** Called on login. The token, not the user id, is what authenticates calls. */
+export const setSession = (user, token) => {
+  localStorage.setItem('user', JSON.stringify(user));
+  if (token) localStorage.setItem(TOKEN_KEY, token);
+};
+
+export const clearSession = () => {
+  localStorage.removeItem(TOKEN_KEY);
+  localStorage.removeItem('user');
+};
+
+/**
+ * Sign out everywhere, then locally.
+ *
+ * Dropping the token from this browser is enough for the person at the
+ * keyboard, but a token that has been copied elsewhere stays valid until it
+ * expires. Telling the server first ends every session for this account, which
+ * is what signing out of a shared classroom machine has to mean.
+ *
+ * The local clear happens regardless — if the network call fails, the user
+ * still gets signed out of this browser rather than being stuck.
+ */
+export const logout = async () => {
+  const token = getToken();
+  if (token) {
+    try {
+      await fetch(`${API_URL}/api/auth/logout`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+        keepalive: true,   // survives the navigation that follows
+      });
+    } catch { /* offline, or the token was already dead — clear locally anyway */ }
+  }
+  clearSession();
+};
+
+/**
+ * fetch, with the session token attached.
+ *
+ * Every call to our API goes through here. The server no longer takes the
+ * caller's identity from the URL — an id in a path is checked against the
+ * signed token now, so a request without one is refused.
+ *
+ * A 401 means the session is gone or expired: clear it and send them to the
+ * login screen, once. A 403 is deliberately left alone — the caller is signed
+ * in and simply may not do that, and bouncing them to a login they can already
+ * pass would lose whatever they were working on and explain nothing.
+ */
+let redirecting = false;
+export async function apiFetch(input, init = {}) {
+  const token = getToken();
+  const headers = new Headers(init.headers || {});
+  if (token) headers.set('Authorization', `Bearer ${token}`);
+
+  const res = await fetch(input, { ...init, headers });
+
+  if (res.status === 401) {
+    clearSession();
+    if (!redirecting && !window.location.pathname.startsWith('/login')) {
+      redirecting = true;
+      window.location.assign('/login?expired=1');
+    }
+  }
+  return res;
+}

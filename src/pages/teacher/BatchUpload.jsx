@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { ArrowLeft, UploadCloud, X, Loader2, Wifi, WifiOff, ShieldCheck, Info, FileText, Camera, Sparkles, Plus } from 'lucide-react';
 import { getQueue, buildJob, enqueue, flushQueue } from '../../utils/offlineQueue';
-import { API_URL } from '../../config';
+import { API_URL, apiFetch } from '../../config';
 import SubmissionImage from '../../components/SubmissionImage';
 import ImageRedactor from '../../components/ImageRedactor';
 
@@ -44,7 +44,7 @@ export default function BatchUpload() {
 
   useEffect(() => {
     if (classId || !activityId) return;
-    fetch(`${API_URL}/api/activities/${activityId}`)
+    apiFetch(`${API_URL}/api/activities/${activityId}`)
       .then(r => r.json())
       .then(d => { if (d.success && d.activity?.classId) setClassId(d.activity.classId); })
       .catch(() => {});
@@ -52,7 +52,7 @@ export default function BatchUpload() {
 
   useEffect(() => {
     if (classId) {
-      fetch(`${API_URL}/api/classes/${classId}`)
+      apiFetch(`${API_URL}/api/classes/${classId}`)
         .then(r => r.json())
         .then(d => {
           if (!d.success) return;
@@ -71,7 +71,7 @@ export default function BatchUpload() {
   useEffect(() => {
     if (!activityId) return;
     setIsLoadingSubmissions(true);
-    fetch(`${API_URL}/api/activities/${activityId}/submissions`)
+    apiFetch(`${API_URL}/api/activities/${activityId}/submissions`)
       .then(r => r.json())
       .then(d => { if (d.success) setActivitySubmissions(d.submissions || []); })
       .finally(() => setIsLoadingSubmissions(false));
@@ -174,7 +174,7 @@ export default function BatchUpload() {
       formData.append('studentId', studentId);
       formData.append('activityId', activityId);
       formData.append('skipGrading', 'true');
-      const res = await fetch(`${API_URL}/api/teacher/upload`, { method: 'POST', body: formData });
+      const res = await apiFetch(`${API_URL}/api/teacher/upload`, { method: 'POST', body: formData });
       const data = await res.json();
       if (data.success) {
         setActivitySubmissions(prev => [...prev.filter(s => s.studentId !== studentId), data.submission]);

@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useNavigate, useParams, Link } from 'react-router-dom';
 import { ArrowLeft, BookOpen, Award, Calendar, FileText, Loader2, Clock, CheckCircle2, UserCheck, ChevronRight } from 'lucide-react';
-import { API_URL } from '../../config';
+import { API_URL, apiFetch } from '../../config';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
 
@@ -21,7 +21,7 @@ export default function ActivityDetails() {
   useEffect(() => {
     const user = JSON.parse(localStorage.getItem('user') || '{}');
     if (!user.id || !activityId) return setIsLoading(false);
-    fetch(`${API_URL}/api/student/${user.id}/activities/${activityId}`)
+    apiFetch(`${API_URL}/api/student/${user.id}/activities/${activityId}`)
       .then(r => r.json())
       .then(d => { if (d.success) setActivity(d.activity); })
       .finally(() => setIsLoading(false));

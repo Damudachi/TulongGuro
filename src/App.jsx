@@ -2,6 +2,7 @@ import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-d
 import Landing from './pages/Landing';
 import Login from './pages/Login';
 import Register from './pages/Register';
+import PlatformApprovals from './pages/PlatformApprovals';
 import TeacherLayout from './layouts/TeacherLayout';
 import StudentLayout from './layouts/StudentLayout';
 import AdminLayout from './layouts/AdminLayout';
@@ -50,6 +51,9 @@ function App() {
         <Route path="/" element={<Landing />} />
         <Route path="/login" element={<Login />} />
         <Route path="/register" element={<Register />} />
+        {/* Operator-only, outside every school layout. Guarded server-side by
+            PLATFORM_ADMIN_KEY — the route itself is just a form. */}
+        <Route path="/platform/approvals" element={<PlatformApprovals />} />
 
         {/* Admin Routes */}
         <Route path="/admin" element={<AdminLayout />}>

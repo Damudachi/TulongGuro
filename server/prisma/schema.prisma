@@ -10,29 +10,41 @@ datasource db {
 /// A school tenant. Admins, teachers, sections, curriculums and school-wide
 /// rubric templates all hang off one School so nothing leaks across schools.
 model School {
-  id              String           @id @default(uuid())
-  name            String           @unique
+  id               String           @id @default(uuid())
+  name             String           @unique
   /// Optional school branding, set at registration. Null falls back to an
   /// initials placeholder and the default TulongGuro palette.
-  logoUrl         String?
-  brandColor      String?
+  logoUrl          String?
+  brandColor       String?
+  /// PENDING | APPROVED | REJECTED — platform-operator review of a new school.
+  /// Nobody belonging to a school can log in until it is APPROVED.
+  ///
+  /// Defaults to APPROVED, and /api/auth/register sets PENDING explicitly. That
+  /// looks backwards, and it is deliberate: the default is what every existing
+  /// row gets when this column is pushed, so defaulting to PENDING would lock
+  /// every school already using the system out at the moment of deploy. Any
+  /// future code path that creates a School must set status itself.
+  status           String           @default("APPROVED")
+  /// When a platform operator approved it, and who/why if it was refused.
+  approvedAt       DateTime?
+  rejectedReason   String?
   /// Grade at or above which a student is considered passing. DepEd uses 75.
   /// School-wide on purpose: "who needs help" has to mean the same thing in
   /// every class, or the analytics can't be compared across sections.
-  passingGrade    Int              @default(75)
+  passingGrade     Int              @default(75)
   /// Whether report-card grades run through the DepEd transmutation table.
   /// Ships OFF. Transmutation has a floor of 60 and never lowers a grade, so
   /// switching it on moves every grade upward — on the current data by up to
   /// 11 points, enough to flip a failing student to passing. That belongs to a
   /// deliberate decision by the school, not to whenever this code deploys.
   /// Analytics and at-risk detection always use the untransmuted grade.
-  useTransmutation Boolean         @default(false)
-  createdAt       DateTime         @default(now())
-  curriculums     Curriculum[]
-  gradingPolicies GradingPolicy[]
-  rubricTemplates RubricTemplate[]
-  sections        Section[]
-  users           User[]
+  useTransmutation Boolean          @default(false)
+  createdAt        DateTime         @default(now())
+  curriculums      Curriculum[]
+  gradingPolicies  GradingPolicy[]
+  rubricTemplates  RubricTemplate[]
+  sections         Section[]
+  users            User[]
 }
 
 /// Component weights for one subject, e.g. Written Work 30 / Performance Task
@@ -70,6 +82,16 @@ model User {
   password        String
   /// ADMIN | TEACHER | STUDENT
   role            String
+  /// Sessions issued before this instant are refused.
+  ///
+  /// Tokens are stateless and carry their own expiry, so without this the only
+  /// way to end a session early was to rotate AUTH_SECRET and sign out every
+  /// user of every school at once. Bumping this signs out one person — which is
+  /// what a stolen laptop, a shared classroom machine, or an admin resetting a
+  /// teacher's password actually calls for.
+  ///
+  /// Null means "no revocation yet", which is every existing row.
+  sessionsValidFrom DateTime?
   schoolName      String?
   schoolId        String?
   createdAt       DateTime         @default(now())
@@ -166,7 +188,13 @@ model Activity {
   points          Int
   classId         String
   instructions    String?
+  /// The due date, as "YYYY-MM-DD". Work submitted after it is marked late.
+  /// Resolved to 23:59:59 Philippine time — see isPastDeadline in server.js.
   deadline        String?
+  /// Last date late work is still accepted, as "YYYY-MM-DD". Null means the
+  /// activity closes at the deadline, which is how every activity behaved
+  /// before this existed, so old rows keep their current behaviour.
+  lateUntil       String?
   submissionMode  String       @default("TEACHER_UPLOAD")
   additionalFiles String?
   rubric          String?
@@ -207,6 +235,11 @@ model Submission {
   skillScores      String?
   covData          String?
   attemptCount     Int       @default(1)
+  /// Submitted after the activity's deadline but within its late window.
+  /// A record, not a penalty: nothing in the grading engine reads this, so a
+  /// teacher decides what a late mark is worth. Set per attempt, so a student
+  /// who re-submits late after an on-time first attempt is marked late.
+  isLate           Boolean   @default(false)
   privacyViolation Boolean   @default(false)
   status           String    @default("PENDING")
   retainUntil      DateTime?

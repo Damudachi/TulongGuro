@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { Plus, Users, FileText, BookOpen, Filter, ChevronRight, Loader2, UploadCloud, X, Sparkles } from 'lucide-react';
-import { API_URL } from '../../config';
+import { API_URL, apiFetch } from '../../config';
 import { ONBOARDING, hasSeenOnboarding, markOnboardingSeen, markAllOnboardingSeen } from '../../utils/onboarding';
 import { GRADE_LEVELS, SUBJECTS, SCHOOL_YEARS, DEFAULT_SCHOOL_YEAR } from '../../constants/school';
 import SchoolBadge from '../../components/SchoolBadge';
@@ -30,7 +30,7 @@ function useCurriculumSuggestion(gradeLevel, subject) {
     }
     let cancelled = false;
     setIsChecking(true);
-    fetch(`${API_URL}/api/teacher/${user.id}/curriculum-suggestion?gradeLevel=${encodeURIComponent(gradeLevel)}&subject=${encodeURIComponent(subject)}`)
+    apiFetch(`${API_URL}/api/teacher/${user.id}/curriculum-suggestion?gradeLevel=${encodeURIComponent(gradeLevel)}&subject=${encodeURIComponent(subject)}`)
       .then(r => r.json())
       .then(d => { if (!cancelled) setSuggestion(d.success ? d.curriculum : null); })
       .catch(() => { if (!cancelled) setSuggestion(null); })
@@ -102,7 +102,7 @@ function WizardEmptyState({ onComplete, sections = [] }) {
       let finalSectionId = sectionId;
 
       if (isCreatingNew) {
-        const secRes = await fetch(`${API_URL}/api/teacher/sections`, {
+        const secRes = await apiFetch(`${API_URL}/api/teacher/sections`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ teacherId: user.id, name: sectionName })
@@ -127,7 +127,7 @@ function WizardEmptyState({ onComplete, sections = [] }) {
       if (suggestion && useCurriculum) fd.append('curriculumId', suggestion.id);
       if (curriculumFile) fd.append('curriculumFile', curriculumFile);
 
-      const clsRes = await fetch(`${API_URL}/api/teacher/classes`, {
+      const clsRes = await apiFetch(`${API_URL}/api/teacher/classes`, {
         method: 'POST',
         body: fd
       });
@@ -139,7 +139,7 @@ function WizardEmptyState({ onComplete, sections = [] }) {
           setIsParsing(true);
           setParseStatus('Scanning curriculum & generating rubrics...');
           try {
-            const parseRes = await fetch(`${API_URL}/api/teacher/classes/${clsData.class.id}/parse-curriculum`, {
+            const parseRes = await apiFetch(`${API_URL}/api/teacher/classes/${clsData.class.id}/parse-curriculum`, {
               method: 'POST'
             });
             const parseData = await parseRes.json();
@@ -458,8 +458,8 @@ export default function TeacherDashboard() {
     const user = JSON.parse(localStorage.getItem('user') || '{}');
     if (!user.id) return setIsLoading(false);
     Promise.all([
-      fetch(`${API_URL}/api/teacher/${user.id}/classes`).then(r => r.json()),
-      fetch(`${API_URL}/api/teacher/${user.id}/sections`).then(r => r.json())
+      apiFetch(`${API_URL}/api/teacher/${user.id}/classes`).then(r => r.json()),
+      apiFetch(`${API_URL}/api/teacher/${user.id}/sections`).then(r => r.json())
     ]).then(([clsData, secData]) => {
       if (clsData.success) {
         setClasses(clsData.classes);
@@ -498,7 +498,7 @@ export default function TeacherDashboard() {
       if (modalSuggestion && useModalCurriculum) fd.append('curriculumId', modalSuggestion.id);
       if (modalCurriculumFile) fd.append('curriculumFile', modalCurriculumFile);
 
-      const res = await fetch(`${API_URL}/api/teacher/classes`, {
+      const res = await apiFetch(`${API_URL}/api/teacher/classes`, {
         method: 'POST',
         body: fd
       });
@@ -511,7 +511,7 @@ export default function TeacherDashboard() {
           setModalIsParsing(true);
           setModalParseStatus('Scanning curriculum & generating rubrics...');
           try {
-            const parseRes = await fetch(`${API_URL}/api/teacher/classes/${data.class.id}/parse-curriculum`, {
+            const parseRes = await apiFetch(`${API_URL}/api/teacher/classes/${data.class.id}/parse-curriculum`, {
               method: 'POST'
             });
             const parseData = await parseRes.json();

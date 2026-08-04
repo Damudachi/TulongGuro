@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { BookOpen, UserCircle, GraduationCap, Eye, EyeOff, Building2, ArrowLeft, ArrowRight } from 'lucide-react';
-import { API_URL } from '../config';
+import { API_URL, apiFetch, setSession } from '../config';
 
 const ROLES = {
   teacher: {
@@ -40,7 +40,13 @@ export default function Login() {
   const [identifier, setIdentifier] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
-  const [errorMsg, setErrorMsg] = useState('');
+  const [errorMsg, setErrorMsg] = useState(
+    // apiFetch redirects here with ?expired=1 when a token is rejected, so
+    // the form explains itself instead of looking like it lost the password.
+    new URLSearchParams(window.location.search).has('expired')
+      ? 'Your session ended. Please sign in again.'
+      : ''
+  );
 
   const cfg = ROLES[role];
 
@@ -48,7 +54,7 @@ export default function Login() {
     e.preventDefault();
     setErrorMsg('');
     try {
-      const response = await fetch(`${API_URL}/api/auth/login`, {
+      const response = await apiFetch(`${API_URL}/api/auth/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username: identifier, password, role: role.toUpperCase() })
@@ -56,10 +62,14 @@ export default function Login() {
       const data = await response.json();
 
       if (data.success) {
-        localStorage.setItem('user', JSON.stringify(data.user));
+        setSession(data.user, data.token);
         navigate(cfg.home);
       } else {
-        setErrorMsg('Invalid credentials. Please check your details and try again.');
+        // The server distinguishes a wrong password from a school that is still
+        // awaiting approval or was refused. Blanketing all three as "invalid
+        // credentials" sent a pending admin off to reset a password that was
+        // never wrong.
+        setErrorMsg(data.error || 'Invalid credentials. Please check your details and try again.');
       }
     } catch (err) {
       setErrorMsg('Cannot connect to server.');

@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { AlertTriangle, ChevronRight, Eye, LifeBuoy, X } from 'lucide-react';
-import { API_URL } from '../config';
+import { API_URL, apiFetch } from '../config';
 import { pct } from '../utils/grading';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
@@ -30,7 +30,7 @@ export default function EarlyWarningPanel() {
     const user = JSON.parse(localStorage.getItem('user') || '{}');
     if (!user.id) return;
     let cancelled = false;
-    fetch(`${API_URL}/api/teacher/${user.id}/analytics`)
+    apiFetch(`${API_URL}/api/teacher/${user.id}/analytics`)
       .then(r => r.json())
       .then(d => { if (!cancelled && d.success) setData(d); })
       .catch(() => { /* the dashboard still works without the alert */ });

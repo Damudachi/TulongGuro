@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Scale, Loader2, Check, AlertTriangle, RotateCcw, Info } from 'lucide-react';
-import { API_URL } from '../../config';
+import { API_URL, apiFetch } from '../../config';
 import { GRADE_LEVELS, SUBJECTS } from '../../constants/school';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
@@ -37,7 +37,7 @@ export default function AdminGrading() {
 
   const load = useCallback(() => {
     if (!admin.id) return setIsLoading(false);
-    fetch(`${API_URL}/api/admin/${admin.id}/grading`)
+    apiFetch(`${API_URL}/api/admin/${admin.id}/grading`)
       .then(r => r.json())
       .then(d => {
         if (!d.success) return setError(d.error || 'Could not load grading settings.');
@@ -56,7 +56,7 @@ export default function AdminGrading() {
   const saveSettings = async () => {
     setBusy(true); setError('');
     try {
-      const res = await fetch(`${API_URL}/api/admin/${admin.id}/grading/settings`, {
+      const res = await apiFetch(`${API_URL}/api/admin/${admin.id}/grading/settings`, {
         method: 'PUT', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ passingGrade, useTransmutation })
       });
@@ -72,7 +72,7 @@ export default function AdminGrading() {
   const savePolicy = async () => {
     setBusy(true); setError('');
     try {
-      const res = await fetch(`${API_URL}/api/admin/${admin.id}/grading/policy`, {
+      const res = await apiFetch(`${API_URL}/api/admin/${admin.id}/grading/policy`, {
         method: 'PUT', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(form)
       });
@@ -88,7 +88,7 @@ export default function AdminGrading() {
     if (!window.confirm(`Reset ${label} to the DepEd default weights?`)) return;
     setBusy(true);
     try {
-      await fetch(`${API_URL}/api/admin/${admin.id}/grading/policy/${policyId}`, { method: 'DELETE' });
+      await apiFetch(`${API_URL}/api/admin/${admin.id}/grading/policy/${policyId}`, { method: 'DELETE' });
       flash(`${label} is back on the DepEd default.`);
       load();
     } finally { setBusy(false); }

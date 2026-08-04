@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { CheckCircle2, Clock, AlertCircle, Loader2, FileText, ChevronRight, BookOpen, UserCheck } from 'lucide-react';
-import { API_URL } from '../../config';
+import { API_URL, apiFetch } from '../../config';
+import { submissionWindow, formatDeadline } from '../../utils/deadlines';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
 
@@ -24,7 +25,7 @@ export default function SubjectActivities() {
   useEffect(() => {
     const user = JSON.parse(localStorage.getItem('user') || '{}');
     if (!user.id) return setIsLoading(false);
-    fetch(`${API_URL}/api/student/${user.id}/subjects`)
+    apiFetch(`${API_URL}/api/student/${user.id}/subjects`)
       .then(r => r.json())
       .then(d => { if (d.success) setSubjects(d.subjects || []); })
       .finally(() => setIsLoading(false));
@@ -83,7 +84,7 @@ export default function SubjectActivities() {
                   const statusKey = activity.submission?.status || 'NONE';
                   const status = STATUS_STYLES[statusKey] || STATUS_STYLES.NONE;
                   const StatusIcon = status.icon;
-                  const isPastDeadline = activity.deadline && new Date(activity.deadline) < new Date();
+                  const subWindow = submissionWindow(activity);
                   const isTeacherUpload = activity.submissionMode !== 'STUDENT_SUBMIT';
                   // Graded work opens the feedback page; otherwise go to the
                   // right activity page for this submission mode.
@@ -106,9 +107,9 @@ export default function SubjectActivities() {
                             <p className="text-xs text-slate-500 mt-0.5">
                               {activity.type} • {activity.points} pts
                               {activity.deadline && (
-                                <span className={isPastDeadline ? 'text-red-500 font-semibold' : ''}>
-                                  {' '}• Due {new Date(activity.deadline).toLocaleDateString('en-PH', { month: 'short', day: 'numeric' })}
-                                  {isPastDeadline && ' (Closed)'}
+                                <span className={subWindow.isClosed ? 'text-red-500 font-semibold' : subWindow.isLate ? 'text-amber-600 font-semibold' : ''}>
+                                  {' '}• Due {formatDeadline(activity.deadline)}
+                                  {subWindow.isClosed ? ' (Closed)' : subWindow.isLate ? ' (Late accepted)' : ''}
                                 </span>
                               )}
                             </p>

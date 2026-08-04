@@ -14,7 +14,13 @@ const { createClient } = require('@supabase/supabase-js');
 const bcrypt = require('bcryptjs');
 const path = require('path');
 const fs = require('fs');
+const crypto = require('crypto');
 const sharp = require('sharp');
+const {
+  signToken, authenticate, authorizePath,
+  configureRevocation, markRevoked,
+  loginRateLimit, registerRateLimit, platformRateLimit,
+} = require('./auth');
 const { getAllTopics, getTopicById, getTopicAIGuidance } = require('./depedTopics');
 const { getAllRubricTemplates, getRubricTemplateById } = require('./rubricTemplates');
 // Two distinct taxonomies coexist and are easy to confuse, so name them apart:
@@ -228,6 +234,26 @@ async function verifyStorage() {
 const uploadsDir = path.join(__dirname, 'uploads');
 if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir);
 app.use('/uploads', express.static(uploadsDir));
+
+// Render terminates TLS at a proxy, so without this every request appears to
+// come from the proxy's address and the per-IP rate limits below would apply
+// to the whole internet as one client. `1` = trust exactly one hop.
+app.set('trust proxy', 1);
+
+// auth.js owns revocation but must not import Prisma, so it is handed a reader.
+configureRevocation(async (userId) => {
+  const user = await prisma.user.findUnique({
+    where: { id: userId }, select: { sessionsValidFrom: true }
+  });
+  return user?.sessionsValidFrom || null;
+});
+
+// ── Sessions ──
+// Registered here, before any route, so a route added later is protected by
+// default rather than by remembering to guard it. See auth.js for what these
+// two do and, importantly, what they don't.
+app.use(authenticate);
+app.use(authorizePath);
 
 /**
  * Make a phone-camera filename safe to use as both a URL path segment and a
@@ -520,7 +546,7 @@ async function generateContentWithFallback(primaryModel, parts, opts = {}) {
 // are created by that admin (see /api/admin/:adminId/teachers) and student
 // accounts by teachers (see /api/teacher/sections) — neither can self-register.
 // Accepts JSON, or multipart/form-data when the admin attaches a school logo.
-app.post('/api/auth/register', (req, res, next) => {
+app.post('/api/auth/register', registerRateLimit, (req, res, next) => {
   const ct = req.headers['content-type'] || '';
   if (ct.includes('multipart/form-data')) {
     upload.single('logo')(req, res, next);
@@ -557,8 +583,11 @@ app.post('/api/auth/register', (req, res, next) => {
       ? await uploadToCloud(req.file.path, req.file.filename, { folder: 'school-logos', contentType: req.file.mimetype })
       : null;
 
+    // PENDING is set here rather than in the column default on purpose — see
+    // the note on School.status. A platform operator approves it before anyone
+    // at the school can log in.
     const school = await prisma.school.create({
-      data: { name: trimmedSchool, logoUrl, brandColor: brandColor || null }
+      data: { name: trimmedSchool, logoUrl, brandColor: brandColor || null, status: 'PENDING' }
     });
     const hashedPassword = await bcrypt.hash(password, BCRYPT_SALT_ROUNDS);
     const user = await prisma.user.create({
@@ -568,8 +597,16 @@ app.post('/api/auth/register', (req, res, next) => {
       }
     });
 
+    // No session is returned: the account exists but cannot be used until the
+    // school is approved, so handing back a user object would only let the
+    // client store credentials it is about to be refused on.
     const { password: _pw, ...safeAdmin } = user;
-    return res.json({ success: true, user: safeAdmin, school });
+    return res.json({
+      success: true,
+      pendingApproval: true,
+      user: { name: safeAdmin.name, email: safeAdmin.email },
+      school: { name: school.name, status: school.status }
+    });
   } catch (e) {
     return res.status(400).json({ success: false, error: e.message });
   }
@@ -618,7 +655,137 @@ async function seedDemoSandbox(user) {
     }
 }
 
-app.post('/api/auth/login', async (req, res) => {
+// ─────────────────────────────────────────
+// PLATFORM OPERATOR — school approval
+// ─────────────────────────────────────────
+/**
+ * These routes are for whoever runs TulongGuro, not for any school. They are
+ * guarded by a single shared secret in PLATFORM_ADMIN_KEY rather than by a user
+ * account, because there is no platform-level user model and inventing one to
+ * hold a single operator would be more surface area, not less.
+ *
+ * Consequences worth being honest about: the key is bearer authority, so anyone
+ * holding it can approve any school, and it can only be rotated by redeploying.
+ * That is an acceptable trade for an operator-only surface with three routes.
+ * If school approval ever becomes a team activity with an audit trail, this
+ * should become a real account.
+ *
+ * With no key configured every request is refused. Failing closed matters here:
+ * a missing env var must not silently turn approval into a public endpoint.
+ */
+function requirePlatformKey(req) {
+  const configured = process.env.PLATFORM_ADMIN_KEY;
+  if (!configured) {
+    const err = new Error('School approval is not configured on this server.');
+    err.status = 503;
+    throw err;
+  }
+  const supplied = req.get('x-platform-key') || '';
+  // Timing-safe compare over fixed-length digests, so the check cannot be
+  // turned into a character-by-character oracle and unequal lengths are fine.
+  const digest = (v) => crypto.createHash('sha256').update(String(v)).digest();
+  if (!crypto.timingSafeEqual(digest(supplied), digest(configured))) {
+    const err = new Error('Not authorised.');
+    err.status = 401;
+    throw err;
+  }
+}
+
+/** Schools awaiting review, newest first. `?status=` filters; default PENDING. */
+app.get('/api/platform/schools', platformRateLimit, async (req, res) => {
+  try {
+    requirePlatformKey(req);
+    const status = String(req.query.status || 'PENDING').toUpperCase();
+    const schools = await prisma.school.findMany({
+      where: status === 'ALL' ? {} : { status },
+      orderBy: { createdAt: 'desc' },
+      include: {
+        // The registering admin is the contact to verify the school against.
+        users: {
+          where: { role: 'ADMIN' },
+          select: { id: true, name: true, email: true, createdAt: true },
+          orderBy: { createdAt: 'asc' }
+        },
+        _count: { select: { users: true, sections: true, curriculums: true } }
+      }
+    });
+    res.json({ success: true, schools });
+  } catch (e) {
+    res.status(e.status || 500).json({ success: false, error: e.message });
+  }
+});
+
+app.post('/api/platform/schools/:schoolId/approve', platformRateLimit, async (req, res) => {
+  try {
+    requirePlatformKey(req);
+    const school = await prisma.school.findUnique({ where: { id: req.params.schoolId } });
+    if (!school) return res.status(404).json({ success: false, error: 'School not found.' });
+    const updated = await prisma.school.update({
+      where: { id: school.id },
+      data: { status: 'APPROVED', approvedAt: new Date(), rejectedReason: null }
+    });
+    console.log(`✅ Approved school "${updated.name}"`);
+    res.json({ success: true, school: updated });
+  } catch (e) {
+    res.status(e.status || 500).json({ success: false, error: e.message });
+  }
+});
+
+app.post('/api/platform/schools/:schoolId/reject', platformRateLimit, async (req, res) => {
+  try {
+    requirePlatformKey(req);
+    const { reason } = req.body || {};
+    if (!reason?.trim()) {
+      return res.status(400).json({ success: false, error: 'A reason is required — it is shown to the school at login.' });
+    }
+    const school = await prisma.school.findUnique({ where: { id: req.params.schoolId } });
+    if (!school) return res.status(404).json({ success: false, error: 'School not found.' });
+    const updated = await prisma.school.update({
+      where: { id: school.id },
+      // The rows are kept, not deleted: a refusal is often a "we couldn't verify
+      // you yet" that gets reversed, and deleting takes the admin account with it.
+      data: { status: 'REJECTED', rejectedReason: reason.trim(), approvedAt: null }
+    });
+    // The login gate only stops *new* sign-ins. Anyone already holding a token
+    // would keep working until it expired, so end those sessions now.
+    const revokedAt = new Date();
+    const members = await prisma.user.findMany({ where: { schoolId: school.id }, select: { id: true } });
+    await prisma.user.updateMany({
+      where: { schoolId: school.id },
+      data: { sessionsValidFrom: revokedAt }
+    });
+    members.forEach(m => markRevoked(m.id, revokedAt));
+    console.log(`⛔ Rejected school "${updated.name}": ${reason.trim()}`);
+    res.json({ success: true, school: updated });
+  } catch (e) {
+    res.status(e.status || 500).json({ success: false, error: e.message });
+  }
+});
+
+/**
+ * Sign out, for real.
+ *
+ * Clearing the token in the browser is enough for the person at the keyboard,
+ * but not for a token already copied elsewhere. This ends every session for the
+ * caller, which is what "sign out" means on a shared classroom machine.
+ */
+app.post('/api/auth/logout', async (req, res) => {
+  try {
+    const revokedAt = new Date();
+    await prisma.user.update({
+      where: { id: req.auth.sub },
+      data: { sessionsValidFrom: revokedAt }
+    });
+    markRevoked(req.auth.sub, revokedAt);
+    res.json({ success: true });
+  } catch (e) {
+    // The client clears its token regardless, so a failure here is not worth
+    // blocking the user on.
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+app.post('/api/auth/login', loginRateLimit, async (req, res) => {
   try {
     const { username, password, role } = req.body;
     // Include related section data so clients receive up-to-date section info on login
@@ -628,6 +795,21 @@ app.post('/api/auth/login', async (req, res) => {
     });
     if (!user || !(await bcrypt.compare(password, user.password))) {
       return res.status(401).json({ success: false, error: 'Invalid credentials' });
+    }
+
+    // ── School approval gate ──
+    // Checked after the password so this never doubles as a way to probe which
+    // schools exist. Users with no school (demo students, a teacher's personal
+    // sandbox section) have nothing to approve and pass straight through.
+    if (user.school && user.school.status !== 'APPROVED') {
+      const rejected = user.school.status === 'REJECTED';
+      return res.status(403).json({
+        success: false,
+        code: rejected ? 'SCHOOL_REJECTED' : 'SCHOOL_PENDING',
+        error: rejected
+          ? `${user.school.name}'s registration was not approved.${user.school.rejectedReason ? ` Reason: ${user.school.rejectedReason}` : ''} Please contact TulongGuro support.`
+          : `${user.school.name} is still being reviewed by TulongGuro. You'll be able to sign in once the school is approved — this is usually within one working day.`
+      });
     }
 
     // ── Student Sandbox: Auto-seed a demo graded essay on first login ──
@@ -686,8 +868,12 @@ app.post('/api/auth/login', async (req, res) => {
       }
     }
 
+    // The token is the credential from here on. The user object is still
+    // returned because every screen reads name/role/section off it, but it is
+    // no longer what proves who the caller is — that used to be the whole
+    // problem, since a user id is not a secret.
     const { password: _pw, ...safeUser } = user;
-    res.json({ success: true, user: safeUser });
+    res.json({ success: true, user: safeUser, token: signToken(user) });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
   }
@@ -1168,10 +1354,18 @@ app.put('/api/admin/:adminId/teachers/:teacherId/password', async (req, res) => 
     if (!teacher || teacher.schoolId !== admin.schoolId) {
       return res.status(404).json({ success: false, error: 'Teacher not found in your school.' });
     }
+    const revokedAt = new Date();
     await prisma.user.update({
       where: { id: teacher.id },
-      data: { password: await bcrypt.hash(password, BCRYPT_SALT_ROUNDS) }
+      data: {
+        password: await bcrypt.hash(password, BCRYPT_SALT_ROUNDS),
+        // Changing the password ends every session opened with the old one.
+        // Without this, resetting the password of a misused account left the
+        // person misusing it signed in for up to another twelve hours.
+        sessionsValidFrom: revokedAt,
+      }
     });
+    markRevoked(teacher.id, revokedAt);
     res.json({ success: true });
   } catch (e) { sendAdminError(res, e); }
 });
@@ -1574,48 +1768,100 @@ app.delete('/api/admin/:adminId/sections/:sectionId', async (req, res) => {
  * Returns how many distinct templates were saved.
  */
 async function saveCurriculumRubrics(curriculum, lessons) {
-  const byName = new Map();
+  // Keyed by the rubric's actual content, not by its output type. Keying on
+  // output type alone silently threw away real work: twelve lessons with twelve
+  // genuinely different essay rubrics collapsed into whichever one happened to
+  // come first, and the admin was told "1 rubric saved" with no hint that
+  // eleven had been discarded.
+  const signature = (criteria) => JSON.stringify(
+    criteria.map(c => [String(c.name || '').trim().toLowerCase(), Number(c.points) || 0])
+  );
+
+  const bySignature = new Map();
+  const skipped = [];
 
   for (const lesson of lessons) {
     const criteria = lesson.defaultRubric?.criteria;
-    if (!Array.isArray(criteria) || criteria.length === 0) continue;
+    const label = lesson.title || lesson.outputType || 'a lesson';
+    if (!Array.isArray(criteria) || criteria.length === 0) continue;   // no rubric to save
 
-    // Weights must total 100 to be usable in the activity builder.
-    const total = criteria.reduce((sum, c) => sum + (parseInt(c.points) || 0), 0);
-    if (total !== 100) continue;
+    if (criteria.some(c => !String(c?.name || '').trim())) {
+      skipped.push({ lesson: label, reason: 'a criterion had no name' });
+      continue;
+    }
+    // Only a zero total is unusable — everything scores against the rubric's
+    // own total, so a rubric out of 50 is valid. Requiring exactly 100 here was
+    // dropping perfectly good rubrics the AI had extracted from the document.
+    const total = criteria.reduce((sum, c) => sum + (Number(c.points) || 0), 0);
+    if (total <= 0) {
+      skipped.push({ lesson: label, reason: 'its criteria added up to zero' });
+      continue;
+    }
 
-    const outputType = lesson.outputType || 'Essay';
-    // Name by what the rubric grades, not by the lesson — a "Survey/Form"
-    // rubric is reusable across every survey lesson in the curriculum.
-    const name = `${outputType} — ${curriculum.subject} ${curriculum.gradeLevel}`;
-    if (!byName.has(name)) byName.set(name, { name, outputType, criteria });
+    const key = signature(criteria);
+    if (!bySignature.has(key)) {
+      bySignature.set(key, { outputType: lesson.outputType || 'Essay', criteria, lessons: [label] });
+    } else {
+      // Same rubric on another lesson — genuinely one template, as intended.
+      bySignature.get(key).lessons.push(label);
+    }
   }
 
-  if (byName.size === 0) return 0;
+  if (bySignature.size === 0) {
+    return { saved: 0, merged: 0, skipped, names: [] };
+  }
+
+  // Name by what the rubric grades, not by the lesson — one "Survey/Form"
+  // rubric is reusable across every survey lesson. Where a single output type
+  // has several distinct rubrics, disambiguate rather than overwrite.
+  const byType = new Map();
+  for (const entry of bySignature.values()) {
+    const list = byType.get(entry.outputType) || [];
+    list.push(entry);
+    byType.set(entry.outputType, list);
+  }
+  const candidates = [];
+  for (const [outputType, entries] of byType) {
+    entries.forEach((entry, i) => {
+      const base = `${outputType} — ${curriculum.subject} ${curriculum.gradeLevel}`;
+      candidates.push({
+        ...entry,
+        // "Essay — English Grade 6" and "Essay — English Grade 6 (Week 3: ...)"
+        name: entries.length === 1 ? base : `${base} (${entry.lessons[0]})`.slice(0, 180),
+      });
+    });
+  }
 
   // Don't duplicate a template the school already has under the same name.
   const existing = await prisma.rubricTemplate.findMany({
-    where: { schoolId: curriculum.schoolId, name: { in: [...byName.keys()] } },
+    where: { schoolId: curriculum.schoolId, name: { in: candidates.map(c => c.name) } },
     select: { name: true }
   });
   const taken = new Set(existing.map(r => r.name));
-  const fresh = [...byName.values()].filter(r => !taken.has(r.name));
-  if (fresh.length === 0) return 0;
+  const fresh = candidates.filter(r => !taken.has(r.name));
 
-  await prisma.rubricTemplate.createMany({
-    data: fresh.map(r => ({
-      name: r.name,
-      criteria: JSON.stringify(r.criteria),
-      schoolId: curriculum.schoolId,
-      teacherId: null,
-      gradeLevel: curriculum.gradeLevel,
-      subject: curriculum.subject,
-      curriculumId: curriculum.id,
-      outputType: r.outputType
-    }))
-  });
-  console.log(`📐 Saved ${fresh.length} rubric template(s) from curriculum "${curriculum.title}"`);
-  return fresh.length;
+  if (fresh.length) {
+    await prisma.rubricTemplate.createMany({
+      data: fresh.map(r => ({
+        name: r.name,
+        criteria: JSON.stringify(r.criteria),
+        schoolId: curriculum.schoolId,
+        teacherId: null,
+        gradeLevel: curriculum.gradeLevel,
+        subject: curriculum.subject,
+        curriculumId: curriculum.id,
+        outputType: r.outputType
+      }))
+    });
+  }
+
+  // How many lessons shared a rubric with another — worth reporting so a
+  // count of 3 from 20 lessons doesn't look like something went wrong.
+  const merged = [...bySignature.values()].reduce((n, e) => n + Math.max(0, e.lessons.length - 1), 0);
+  console.log(`📐 Saved ${fresh.length} rubric template(s) from curriculum "${curriculum.title}"` +
+    `${merged ? `, ${merged} lesson(s) shared one` : ''}${skipped.length ? `, ${skipped.length} skipped` : ''}`);
+
+  return { saved: fresh.length, merged, skipped, names: fresh.map(r => r.name) };
 }
 
 app.get('/api/admin/:adminId/curriculums', async (req, res) => {
@@ -1662,7 +1908,7 @@ app.post('/api/admin/:adminId/curriculums', upload.single('curriculumFile'), asy
     });
 
     let parseWarning = null;
-    let savedRubrics = 0;
+    let rubricReport = { saved: 0, merged: 0, skipped: [], names: [] };
     if (req.file) {
       try {
         const lessons = await extractLessonsFromCurriculum(req.file.path, subject, gradeLevel);
@@ -1677,7 +1923,7 @@ app.post('/api/admin/:adminId/curriculums', upload.single('curriculumFile'), asy
               defaultRubric: l.defaultRubric ? JSON.stringify(l.defaultRubric) : null
             }))
           });
-          savedRubrics = await saveCurriculumRubrics(curriculum, lessons);
+          rubricReport = await saveCurriculumRubrics(curriculum, lessons);
         } else {
           parseWarning = 'No lessons could be extracted from that file. You can still add them by hand.';
         }
@@ -1690,7 +1936,15 @@ app.post('/api/admin/:adminId/curriculums', upload.single('curriculumFile'), asy
       where: { id: curriculum.id },
       include: { lessons: true, rubrics: true }
     });
-    res.json({ success: true, curriculum: saved, savedRubrics, warning: parseWarning });
+    res.json({
+      success: true,
+      curriculum: saved,
+      savedRubrics: rubricReport.saved,
+      // What was merged or dropped, so "3 rubrics saved" from 20 lessons is
+      // explainable instead of looking like a failure.
+      rubricReport,
+      warning: parseWarning
+    });
   } catch (e) { sendAdminError(res, e); }
 });
 
@@ -1718,8 +1972,8 @@ app.post('/api/admin/:adminId/curriculums/:curriculumId/promote-rubrics', async 
       return { outputType: l.outputType, defaultRubric };
     });
 
-    const savedRubrics = await saveCurriculumRubrics(curriculum, lessons);
-    res.json({ success: true, savedRubrics });
+    const rubricReport = await saveCurriculumRubrics(curriculum, lessons);
+    res.json({ success: true, savedRubrics: rubricReport.saved, rubricReport });
   } catch (e) { sendAdminError(res, e); }
 });
 
@@ -1881,7 +2135,11 @@ app.get('/api/teacher/:teacherId/curriculum-suggestion', async (req, res) => {
 // ─────────────────────────────────────────
 app.post('/api/teacher/quick-setup', async (req, res) => {
   try {
-    const { teacherId, sectionName, subject, gradeLevel, schoolYear } = req.body;
+    // The acting teacher comes from the session. authorizePath already
+    // proved the caller is a teacher; this stops one teacher creating or
+    // attributing data under another teacher's id.
+    const teacherId = req.auth.sub;
+    const { sectionName, subject, gradeLevel, schoolYear } = req.body;
     if (!teacherId || !sectionName || !subject || !gradeLevel) {
       return res.status(400).json({ success: false, error: 'Missing required fields' });
     }
@@ -2120,7 +2378,11 @@ async function enrolStudents(section, studentsList, { schoolId, teacherId }) {
 
 app.post('/api/teacher/sections', async (req, res) => {
   try {
-    const { name, teacherId, studentsList, gradeLevel } = req.body;
+    // The acting teacher comes from the session. authorizePath already
+    // proved the caller is a teacher; this stops one teacher creating or
+    // attributing data under another teacher's id.
+    const teacherId = req.auth.sub;
+    const { name, studentsList, gradeLevel } = req.body;
     const creator = await prisma.user.findUnique({ where: { id: teacherId } });
     const schoolId = creator?.schoolId || null;
 
@@ -2190,7 +2452,11 @@ app.post('/api/teacher/classes', (req, res, next) => {
   }
 }, async (req, res) => {
   try {
-    const { name, gradeLevel, subject, schoolYear, teacherId, sectionId, curriculumId } = req.body;
+    // The acting teacher comes from the session. authorizePath already
+    // proved the caller is a teacher; this stops one teacher creating or
+    // attributing data under another teacher's id.
+    const teacherId = req.auth.sub;
+    const { name, gradeLevel, subject, schoolYear, sectionId, curriculumId } = req.body;
     if (!sectionId || !teacherId) {
       return res.status(400).json({ success: false, error: 'Missing required fields: sectionId and teacherId are required.' });
     }
@@ -2480,6 +2746,137 @@ app.post('/api/teacher/activities/:activityId/scores', async (req, res) => {
   }
 });
 
+/**
+ * Check a rubric before it becomes the thing students are graded against.
+ *
+ * The builder validated this only in the browser, so anything reaching the API
+ * another way — a retried request, the offline queue, a direct call — could
+ * store a rubric with no criteria, unnamed criteria, or zero total weight. Each
+ * of those breaks scoring silently rather than loudly: the AI is handed a
+ * rubric it cannot score against, and the review screen divides by a zero
+ * total and reports every submission as 0%.
+ *
+ * The 100% rule applies only to hand-built standard rubrics, which is the one
+ * case where `points` really is a percentage weight the teacher chose. An
+ * uploaded rubric is a real school document that may be out of 50 or 60, and a
+ * range rubric's total is whatever its bands add up to — both are scored as a
+ * share of their own total, so forcing them to 100 would reject valid rubrics.
+ *
+ * @returns {string|null} an error message, or null when the rubric is usable
+ */
+function validateRubric(rubricJson) {
+  if (rubricJson === null || rubricJson === undefined || rubricJson === '') return null;   // no rubric is allowed
+
+  let parsed;
+  try {
+    parsed = typeof rubricJson === 'string' ? JSON.parse(rubricJson) : rubricJson;
+  } catch {
+    return 'The rubric could not be read. Please re-select or re-enter it.';
+  }
+
+  const criteria = Array.isArray(parsed) ? parsed : parsed?.criteria;
+  if (!Array.isArray(criteria) || criteria.length === 0) {
+    return 'The rubric needs at least one criterion.';
+  }
+  if (criteria.some(c => !String(c?.name || '').trim())) {
+    return 'Every rubric criterion needs a name.';
+  }
+
+  const points = criteria.map(c => Number(c?.points));
+  if (points.some(p => !Number.isFinite(p) || p < 0)) {
+    return 'Rubric criterion weights must be zero or a positive number.';
+  }
+
+  const total = points.reduce((sum, p) => sum + p, 0);
+  if (total <= 0) {
+    return 'The rubric criteria add up to zero, so nothing could be scored against it.';
+  }
+
+  const type = parsed?.type || (criteria[0]?.bands?.length ? 'range' : 'standard');
+  const source = parsed?.source;
+  if (type === 'standard' && source !== 'upload' && total !== 100) {
+    return `Rubric weights must total 100%. They currently total ${total}%.`;
+  }
+
+  return null;
+}
+
+/**
+ * The rubric an activity should carry when the caller didn't supply one.
+ *
+ * The activity builder resolves this in the browser, but it is not the only way
+ * an activity gets made — the quick-create form in ClassHub sends no rubric at
+ * all, and anything created that way fell through to the generic DepEd prompt
+ * in the AI grader and a hardcoded Content/Organization/Grammar 40/30/30 in the
+ * review screen. Neither has anything to do with what the school teaches.
+ *
+ * Doing it here rather than in each form means every path gets the same answer,
+ * including ones added later. Deliberately the same order the builder offers
+ * and generateSubmissionFeedback falls back through: the curriculum lesson
+ * first, then a school rubric for this output type, then the school's rubrics
+ * generally. Returns null when the school has published nothing — the AI's own
+ * ladder still applies at grading time, and inventing a rubric here would be
+ * worse than leaving it open.
+ */
+async function resolveActivityRubric({ classId, classLessonId, type }) {
+  const usable = (raw) => {
+    try {
+      const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+      const criteria = Array.isArray(parsed) ? parsed : parsed?.criteria;
+      if (!criteria?.length) return null;
+      if (criteria.reduce((s, c) => s + (Number(c?.points) || 0), 0) <= 0) return null;
+      return JSON.stringify({ source: 'template', type: parsed?.type || (criteria[0]?.bands?.length ? 'range' : 'standard'), criteria });
+    } catch { return null; }
+  };
+
+  // 1) The curriculum lesson the activity is mapped to.
+  if (classLessonId) {
+    const lesson = await prisma.classLesson.findUnique({
+      where: { id: classLessonId }, select: { defaultRubric: true }
+    });
+    const fromLesson = usable(lesson?.defaultRubric);
+    if (fromLesson) return fromLesson;
+  }
+
+  if (!classId) return null;
+  const cls = await prisma.class.findUnique({
+    where: { id: classId },
+    select: { gradeLevel: true, subject: true, teacher: { select: { schoolId: true } } }
+  });
+  const schoolId = cls?.teacher?.schoolId;
+  if (!schoolId) return null;
+
+  // 2/3) School rubrics for this class, the matching output type first.
+  //      Untagged rubrics apply everywhere, so they stay in the running.
+  const candidates = await prisma.rubricTemplate.findMany({
+    where: {
+      schoolId,
+      teacherId: null,
+      AND: [
+        { OR: [{ gradeLevel: cls.gradeLevel }, { gradeLevel: null }] },
+        { OR: [{ subject: cls.subject }, { subject: null }] }
+      ]
+    },
+    orderBy: { createdAt: 'desc' }
+  });
+  const byType = type ? candidates.find(r => r.outputType === type) : null;
+  for (const candidate of [byType, ...candidates]) {
+    const resolved = usable(candidate?.criteria);
+    if (resolved) return resolved;
+  }
+  return null;
+}
+
+/**
+ * A date the teacher typed, or null. Rejects anything that isn't YYYY-MM-DD so
+ * a malformed value can't quietly become a deadline nobody can satisfy.
+ */
+function normalizeDateInput(value) {
+  const s = String(value ?? '').trim();
+  if (!s) return null;
+  return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : null;
+}
+
 /** WW / PT / QA, defaulting to Written Work for anything unrecognised. */
 function normalizeComponent(value) {
   const c = String(value || '').toUpperCase();
@@ -2501,7 +2898,23 @@ app.post('/api/teacher/activities', (req, res, next) => {
   }
 }, async (req, res) => {
   try {
-    const { title, type, points, classId, instructions, deadline, submissionMode, rubric, topic, maxAttempts, classLessonId, component } = req.body;
+    const { title, type, points, classId, instructions, deadline, lateUntil, submissionMode, rubric, topic, maxAttempts, classLessonId, component } = req.body;
+
+    const rubricError = validateRubric(rubric);
+    if (rubricError) return res.status(400).json({ success: false, error: rubricError });
+
+    // Forms that don't ask for a rubric (ClassHub's quick-create) get the
+    // school's own instead of falling through to a generic sample at grading.
+    const resolvedRubric = rubric || await resolveActivityRubric({
+      classId, classLessonId, type
+    });
+
+    const due = normalizeDateInput(deadline);
+    const late = normalizeDateInput(lateUntil);
+    // A late window that closes before the due date would refuse work that was
+    // never actually late. Treat it as no window rather than failing the save.
+    const lateWindow = late && due && late >= due ? late : null;
+
     const filePaths = await Promise.all(
       (req.files || []).map(f => uploadToCloud(f.path, f.filename, { folder: 'activity-files', contentType: f.mimetype }))
     );
@@ -2511,12 +2924,13 @@ app.post('/api/teacher/activities', (req, res, next) => {
         topic: topic || null,
         points: parseInt(points) || 100,
         classId, instructions,
-        deadline: deadline || null,
+        deadline: due,
+        lateUntil: lateWindow,
         submissionMode: submissionMode || 'TEACHER_UPLOAD',
         component: normalizeComponent(component),
         maxAttempts: normalizeMaxAttempts(maxAttempts),
         additionalFiles: filePaths.length ? JSON.stringify(filePaths) : null,
-        rubric: rubric || null,
+        rubric: resolvedRubric || null,
         classLessonId: classLessonId || null
       }
     });
@@ -2529,19 +2943,36 @@ app.post('/api/teacher/activities', (req, res, next) => {
 // Update activity details (deadline, instructions)
 app.put('/api/teacher/activities/:activityId', async (req, res) => {
   try {
-    const { title, type, points, topic, deadline, instructions, submissionMode, maxAttempts, rubric } = req.body;
+    const { title, type, points, topic, deadline, lateUntil, instructions, submissionMode, maxAttempts, rubric } = req.body;
+
+    if (rubric !== undefined) {
+      const rubricError = validateRubric(rubric);
+      if (rubricError) return res.status(400).json({ success: false, error: rubricError });
+    }
+
     const updateData = {};
     if (title !== undefined) updateData.title = String(title);
     if (type !== undefined) updateData.type = String(type);
     if (points !== undefined) updateData.points = parseInt(points);
     if (topic !== undefined) updateData.topic = topic ? String(topic) : null;
-    if (deadline !== undefined) updateData.deadline = deadline ? String(deadline) : null;
+    if (deadline !== undefined) updateData.deadline = normalizeDateInput(deadline);
     if (instructions !== undefined) updateData.instructions = instructions ? String(instructions) : null;
     if (submissionMode !== undefined) updateData.submissionMode = String(submissionMode);
     if (req.body.component !== undefined) updateData.component = normalizeComponent(req.body.component);
     if (maxAttempts !== undefined) updateData.maxAttempts = normalizeMaxAttempts(maxAttempts);
     if (rubric !== undefined) updateData.rubric = rubric || null;
     if (req.body.classLessonId !== undefined) updateData.classLessonId = req.body.classLessonId || null;
+
+    if (lateUntil !== undefined) {
+      // Compared against the deadline as it will be after this update, not as
+      // it was, so moving both dates at once can't leave an impossible window.
+      const existing = await prisma.activity.findUnique({
+        where: { id: req.params.activityId }, select: { deadline: true }
+      });
+      const due = updateData.deadline !== undefined ? updateData.deadline : existing?.deadline;
+      const late = normalizeDateInput(lateUntil);
+      updateData.lateUntil = late && due && late >= due ? late : null;
+    }
 
     const updated = await prisma.activity.update({
       where: { id: req.params.activityId },
@@ -2603,8 +3034,12 @@ app.get('/api/teacher/rubric-templates/:teacherId', async (req, res) => {
 
 app.post('/api/teacher/rubric-templates', async (req, res) => {
   try {
-    const { name, criteria, teacherId } = req.body;
-    if (!name || !criteria || !teacherId) return res.status(400).json({ success: false, error: 'Missing fields' });
+    // The acting teacher comes from the session. authorizePath already
+    // proved the caller is a teacher; this stops one teacher creating or
+    // attributing data under another teacher's id.
+    const teacherId = req.auth.sub;
+    const { name, criteria } = req.body;
+    if (!name || !criteria) return res.status(400).json({ success: false, error: 'Missing fields' });
     
     const template = await prisma.rubricTemplate.create({
       data: {
@@ -2619,11 +3054,45 @@ app.post('/api/teacher/rubric-templates', async (req, res) => {
   }
 });
 
+/**
+ * A teacher may only change their own templates.
+ *
+ * These two routes used to key on the template id alone, so any teacher could
+ * rewrite or delete any template in the database — including the school-wide
+ * and curriculum-derived rubrics an admin published, which are offered to every
+ * teacher in the school and are listed in the teacher's own rubric manager. One
+ * teacher tidying up their list could silently rewrite the rubric every other
+ * class is graded against. School-wide rubrics are admin-owned; the admin
+ * routes above are where they are edited.
+ */
+async function requireOwnTemplate(templateId, teacherId) {
+  if (!teacherId) {
+    const err = new Error('A teacherId is required to change a rubric template.');
+    err.status = 400;
+    throw err;
+  }
+  const template = await prisma.rubricTemplate.findUnique({ where: { id: templateId } });
+  if (!template || template.teacherId !== teacherId) {
+    const err = new Error(
+      template?.schoolId
+        ? 'That rubric was published by your school. Ask your admin to change it.'
+        : 'Rubric template not found.'
+    );
+    err.status = template?.schoolId ? 403 : 404;
+    throw err;
+  }
+  return template;
+}
+
 app.put('/api/teacher/rubric-templates/:id', async (req, res) => {
   try {
     const { name, criteria } = req.body;
     if (!name || !criteria) return res.status(400).json({ success: false, error: 'Missing fields' });
-    
+    // The owner comes from the session, not the request body. A client-supplied
+    // teacherId is just a claim, and the whole point of this check is that the
+    // claim might be false.
+    await requireOwnTemplate(req.params.id, req.auth.sub);
+
     const template = await prisma.rubricTemplate.update({
       where: { id: req.params.id },
       data: {
@@ -2633,18 +3102,19 @@ app.put('/api/teacher/rubric-templates/:id', async (req, res) => {
     });
     res.json({ success: true, template });
   } catch (e) {
-    res.status(500).json({ success: false, error: e.message });
+    res.status(e.status || 500).json({ success: false, error: e.message });
   }
 });
 
 app.delete('/api/teacher/rubric-templates/:id', async (req, res) => {
   try {
+    await requireOwnTemplate(req.params.id, req.auth.sub);
     await prisma.rubricTemplate.delete({
       where: { id: req.params.id }
     });
     res.json({ success: true });
   } catch (e) {
-    res.status(500).json({ success: false, error: e.message });
+    res.status(e.status || 500).json({ success: false, error: e.message });
   }
 });
 
@@ -3212,11 +3682,31 @@ Respond with JSON ONLY using the same schema as before.`;
 // ─────────────────────────────────────────
 // HITL WORKSPACE
 // ─────────────────────────────────────────
+/**
+ * One submission, with the image, the AI's feedback and the rubric breakdown.
+ *
+ * Shared by the teacher's review screen and the student's own results page, so
+ * the ownership check lives here rather than in the path rules: a student may
+ * only open their own, staff may open any. Without it a student could page
+ * through classmates' work and feedback by changing the id in the URL.
+ */
 app.get('/api/submissions/:id', async (req, res) => {
   const sub = await prisma.submission.findUnique({
     where: { id: req.params.id },
-    include: { student: true, activity: { include: { class: true } } }
+    // classLesson comes along so the review screen can fall back to the
+    // curriculum's rubric when there is no AI result to read criteria from —
+    // the same ladder generateSubmissionFeedback walks. Without it the review
+    // screen dropped to a hardcoded Content/Organization/Grammar 40/30/30 that
+    // may have nothing to do with what the activity was set to measure.
+    include: {
+      student: true,
+      activity: { include: { class: true, classLesson: { select: { title: true, defaultRubric: true } } } }
+    }
   });
+  if (!sub) return res.status(404).json({ success: false, error: 'Submission not found.' });
+  if (req.auth.role === 'STUDENT' && sub.studentId !== req.auth.sub) {
+    return res.status(403).json({ success: false, code: 'FORBIDDEN', error: 'You can only see your own work.' });
+  }
   res.json({ success: true, submission: sub });
 });
 
@@ -3375,7 +3865,11 @@ Teacher's Instruction: ${teacherPrompt}`;
 
 app.put('/api/teacher/submissions/:id/grade', async (req, res) => {
   try {
-    const { hitlScore, hitlFeedback, readingStrategy, rubricData, teacherId } = req.body;
+    // The acting teacher comes from the session. authorizePath already
+    // proved the caller is a teacher; this stops one teacher creating or
+    // attributing data under another teacher's id.
+    const teacherId = req.auth.sub;
+    const { hitlScore, hitlFeedback, readingStrategy, rubricData } = req.body;
     const sub = await prisma.submission.findUnique({
       where: { id: req.params.id },
       include: { activity: { include: { class: true } } }
@@ -4165,7 +4659,7 @@ app.get('/api/student/:studentId/activities', async (req, res) => {
     // Check which ones student already submitted
     const mySubmissions = await prisma.submission.findMany({
       where: { studentId: req.params.studentId },
-      select: { activityId: true, status: true, id: true, imageUrl: true, attemptCount: true, updatedAt: true, hitlScore: true }
+      select: { activityId: true, status: true, id: true, imageUrl: true, attemptCount: true, updatedAt: true, hitlScore: true, isLate: true }
     });
     const submissionMap = {};
     mySubmissions.forEach(s => { submissionMap[s.activityId] = s; });
@@ -4330,9 +4824,55 @@ app.get('/api/student/:studentId/activities/:activityId', async (req, res) => {
 });
 
 // Student self-submission — stores image only, NO AI grading (teacher triggers AI via HITL)
+/**
+ * Whether an activity's deadline has passed, in Philippine time.
+ *
+ * Deadlines are stored as a bare "YYYY-MM-DD" string — a calendar date a
+ * teacher typed, with no time and no zone. `new Date("2026-08-04")` parses that
+ * as midnight *UTC*, which is 8am on the 4th in Manila: an activity due Friday
+ * went late at breakfast on Friday. A date-only deadline means the end of that
+ * day where the school is, so it is resolved to 23:59:59.999 at UTC+8.
+ *
+ * PH has no daylight saving, so the fixed offset is exact.
+ */
+const PH_UTC_OFFSET_HOURS = 8;
+function isPastDeadline(deadline) {
+  if (!deadline) return false;
+  const dateOnly = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(deadline).trim());
+  const due = dateOnly
+    ? new Date(Date.UTC(
+        Number(dateOnly[1]), Number(dateOnly[2]) - 1, Number(dateOnly[3]),
+        23 - PH_UTC_OFFSET_HOURS, 59, 59, 999
+      ))
+    : new Date(deadline);
+  if (Number.isNaN(due.getTime())) return false;   // unparseable: don't lock anyone out
+  return due < new Date();
+}
+
+/**
+ * Whether an activity is still open, and whether submitting now counts as late.
+ *
+ * Two dates, two different jobs. `deadline` is when work stops being on time;
+ * `lateUntil` is when it stops being accepted at all. With no late window the
+ * two coincide, which is exactly how activities behaved before late submission
+ * existed, so nothing changes for an activity that doesn't opt in.
+ *
+ * Kept in step with submissionWindow() in src/utils/deadlines.js — the student
+ * screen has to describe the same rule the server enforces.
+ */
+function submissionWindow(activity) {
+  const late = isPastDeadline(activity?.deadline);
+  const closesAt = activity?.lateUntil || activity?.deadline;
+  return { isLate: late, isClosed: isPastDeadline(closesAt), acceptsLate: !!activity?.lateUntil };
+}
+
 app.post('/api/student/submit', upload.array('images', 20), async (req, res) => {
   try {
-    const { studentId, activityId } = req.body;
+    const { activityId } = req.body;
+    // Whose work this is comes from the session. Taking it from the body let a
+    // student submit — or overwrite an ungraded submission — as a classmate.
+    const studentId = req.auth.role === 'STUDENT' ? req.auth.sub : req.body.studentId;
+    if (!studentId) return res.status(400).json({ success: false, error: 'No student on this submission.' });
     const imageFiles = req.files;
     if (!imageFiles || imageFiles.length === 0) return res.status(400).json({ error: 'No image provided' });
     
@@ -4343,7 +4883,26 @@ app.post('/api/student/submit', upload.array('images', 20), async (req, res) => 
 
     // Check for existing submission and update, or create new
     const existing = await prisma.submission.findFirst({ where: { studentId, activityId } });
-    const activity = await prisma.activity.findUnique({ where: { id: activityId }, select: { maxAttempts: true, deadline: true } });
+    const activity = await prisma.activity.findUnique({ where: { id: activityId }, select: { maxAttempts: true, deadline: true, lateUntil: true, submissionMode: true } });
+    if (!activity) return res.status(404).json({ success: false, error: 'Activity not found.' });
+    if (activity.submissionMode !== 'STUDENT_SUBMIT') {
+      return res.status(400).json({ success: false, error: 'This activity does not accept student uploads.' });
+    }
+
+    // The window applies to a first submission too. It used to be checked only
+    // on the resubmission path, so a student who had never submitted could
+    // upload at any point after the due date and nothing stopped them — the
+    // student screen greys the date red but has always let the button through.
+    const { isLate, isClosed } = submissionWindow(activity);
+    if (isClosed) {
+      return res.status(400).json({
+        success: false,
+        error: activity.lateUntil
+          ? 'This activity is closed. The late submission window has passed.'
+          : 'The deadline for this activity has passed.'
+      });
+    }
+
     // 0 means unlimited re-submissions.
     const maxAttempts = activity?.maxAttempts ?? 1;
     let submission;
@@ -4352,25 +4911,23 @@ app.post('/api/student/submit', upload.array('images', 20), async (req, res) => 
       if (existing.hitlScore !== null || existing.status === 'GRADED') {
         return res.status(400).json({ success: false, error: 'This submission has already been graded by your teacher. Resubmission is no longer allowed.' });
       }
-      // Block if deadline has passed
-      if (activity?.deadline && new Date(activity.deadline) < new Date()) {
-        return res.status(400).json({ success: false, error: 'The deadline for this activity has passed. Resubmission is no longer allowed.' });
-      }
       // Block if max attempts reached
       if (maxAttempts !== 0 && existing.attemptCount >= maxAttempts) {
         return res.status(400).json({ success: false, error: `You have used all ${maxAttempts} attempt(s) for this activity.` });
       }
       submission = await prisma.submission.update({
         where: { id: existing.id },
-        data: { imageUrl: finalImageUrl, status: 'PENDING', aiScore: null, hitlScore: null, aiFeedback: null, hitlFeedback: null, attemptCount: existing.attemptCount + 1, retainUntil: existing.retainUntil ?? await retainUntilForActivity(activityId) }
+        // isLate reflects this attempt, not the first one: re-submitting after
+        // the due date is late work even if the original arrived on time.
+        data: { imageUrl: finalImageUrl, status: 'PENDING', aiScore: null, hitlScore: null, aiFeedback: null, hitlFeedback: null, attemptCount: existing.attemptCount + 1, isLate, retainUntil: existing.retainUntil ?? await retainUntilForActivity(activityId) }
       });
     } else {
       submission = await prisma.submission.create({
-        data: { studentId, activityId, imageUrl: finalImageUrl, status: 'PENDING', attemptCount: 1, retainUntil: await retainUntilForActivity(activityId) }
+        data: { studentId, activityId, imageUrl: finalImageUrl, status: 'PENDING', attemptCount: 1, isLate, retainUntil: await retainUntilForActivity(activityId) }
       });
     }
-    
-    res.json({ success: true, submission });
+
+    res.json({ success: true, submission, isLate });
   } catch (e) {
     if (req.files) req.files.forEach(f => { try { fs.unlinkSync(f.path) } catch {} });
     res.status(500).json({ success: false, error: e.message });
@@ -4484,7 +5041,9 @@ app.post('/api/teacher/upload', upload.fields([{ name: 'image', maxCount: 1 }, {
 // ─────────────────────────────────────────
 app.post('/api/student/chat', async (req, res) => {
   try {
-    const { studentId, message, conversationHistory = [], context: specificContext } = req.body;
+    // Whose data the chatbot may read about — never taken from the caller.
+    const studentId = req.auth.role === 'STUDENT' ? req.auth.sub : req.body.studentId;
+    const { message, conversationHistory = [], context: specificContext } = req.body;
     if (!message?.trim()) return res.status(400).json({ success: false, error: 'Message is required' });
 
     // Fetch student context: recent submissions, skills, feedback
@@ -4604,6 +5163,10 @@ Remember: You are a tutor, not a homework machine. Guide, don't give answers.`;
 // ─────────────────────────────────────────
 app.post('/api/dev/seed', async (req, res) => {
   try {
+    // Creates accounts with published passwords. Never in production.
+    if (process.env.NODE_ENV === 'production') {
+      return res.status(404).json({ success: false, error: 'Not found.' });
+    }
     await prisma.$executeRawUnsafe('PRAGMA foreign_keys = OFF');
     await prisma.gradingExample.deleteMany();
     await prisma.submission.deleteMany();
@@ -5001,6 +5564,7 @@ app.get('/api/teacher/:teacherId/gradebook/export', async (req, res) => {
 // ─────────────────────────────────────────
 app.get('/api/admin/retention-report', async (req, res) => {
   try {
+    requirePlatformKey(req);
     const now = new Date();
     const submissions = await prisma.submission.findMany({
       where: { retainUntil: { not: null } },
@@ -5043,7 +5607,7 @@ app.get('/api/admin/retention-report', async (req, res) => {
       pastRetentionSubmissions: pastRetention.slice(0, 50) // Limit response size
     });
   } catch (e) {
-    res.status(500).json({ success: false, error: e.message });
+    res.status(e.status || 500).json({ success: false, error: e.message });
   }
 });
 
@@ -5058,6 +5622,7 @@ app.get('/api/admin/retention-report', async (req, res) => {
  */
 app.post('/api/admin/backfill-retention', async (req, res) => {
   try {
+    requirePlatformKey(req);
     const pending = await prisma.submission.findMany({
       where: { retainUntil: null },
       select: { id: true, activity: { select: { class: { select: { schoolYear: true } } } } }
@@ -5093,12 +5658,13 @@ app.post('/api/admin/backfill-retention', async (req, res) => {
       unresolved
     });
   } catch (e) {
-    res.status(500).json({ success: false, error: e.message });
+    res.status(e.status || 500).json({ success: false, error: e.message });
   }
 });
 
 app.post('/api/admin/archive-grades', async (req, res) => {
   try {
+    requirePlatformKey(req);
     const now = new Date();
     const result = await prisma.submission.updateMany({
       where: {
@@ -5109,12 +5675,13 @@ app.post('/api/admin/archive-grades', async (req, res) => {
     });
     res.json({ success: true, archivedCount: result.count });
   } catch (e) {
-    res.status(500).json({ success: false, error: e.message });
+    res.status(e.status || 500).json({ success: false, error: e.message });
   }
 });
 
 app.delete('/api/admin/purge-grades', async (req, res) => {
   try {
+    requirePlatformKey(req);
     const now = new Date();
     const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
     const result = await prisma.submission.deleteMany({
@@ -5125,7 +5692,7 @@ app.delete('/api/admin/purge-grades', async (req, res) => {
     });
     res.json({ success: true, purgedCount: result.count });
   } catch (e) {
-    res.status(500).json({ success: false, error: e.message });
+    res.status(e.status || 500).json({ success: false, error: e.message });
   }
 });
 

@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { ArrowLeft, Check, Edit2, Info, Sparkles, X, Send, Bot, Loader2, CheckCircle2, ChevronDown, Plus, Trash2, AlertTriangle } from 'lucide-react';
-import { API_URL } from '../../config';
+import { API_URL, apiFetch } from '../../config';
 import SubmissionImage from '../../components/SubmissionImage';
 import { ONBOARDING, hasSeenOnboarding, markOnboardingSeen } from '../../utils/onboarding';
 
@@ -73,7 +73,12 @@ export default function HITLWorkspace() {
   const [legacyFeedbackText, setLegacyFeedbackText] = useState('');
 
   const [readingStrategy, setReadingStrategy] = useState('');
-  const [scores, setScores] = useState({ content: 35, organization: 25, grammar: 25 });
+  // Starts empty, not at a plausible-looking 35/25/25. Those invented mid-band
+  // numbers survived every branch that didn't explicitly reset them — a
+  // submission with no rubricData landed on the review screen already showing
+  // 85/100, which a teacher could approve and release without anything ever
+  // having been assessed.
+  const [scores, setScores] = useState({});
   const [dynamicRubric, setDynamicRubric] = useState(null);
   const [isEditingAssessment, setIsEditingAssessment] = useState(false);
   const [isChatOpen, setIsChatOpen] = useState(false);
@@ -106,7 +111,7 @@ export default function HITLWorkspace() {
       setIsLoading(false);
       return;
     }
-    fetch(`${API_URL}/api/submissions/${submissionId}`)
+    apiFetch(`${API_URL}/api/submissions/${submissionId}`)
       .then(r => r.json())
       .then(d => {
         if (d.success && d.submission) {
@@ -184,9 +189,67 @@ export default function HITLWorkspace() {
 
   useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [chatHistory]);
 
-  const totalScore = dynamicRubric
-    ? dynamicRubric.reduce((sum, item) => sum + (scores[item.criterionName] || 0), 0)
-    : ((scores.content || 0) + (scores.organization || 0) + (scores.grammar || 0));
+  /**
+   * The rubric this submission is graded against, resolved once.
+   *
+   * Criterion scores are in the rubric's own points (a 15-point criterion is
+   * scored 0–15), so the percentage is the sum over the rubric total — not the
+   * sum itself. Treating the raw sum as a percentage happened to look right only
+   * while a rubric added up to exactly 100; on any other rubric it silently
+   * mis-scored the submission, and it was the number being saved as the
+   * teacher's final grade.
+   */
+  const rubricItems = useMemo(() => {
+    const palette = ['bg-brand-green', 'bg-amber-400', 'bg-blue-400', 'bg-purple-400', 'bg-pink-400'];
+
+    if (dynamicRubric) {
+      let activityCriteria = null;
+      try {
+        activityCriteria = submission?.activity?.rubric
+          ? JSON.parse(submission.activity.rubric).criteria
+          : null;
+      } catch { /* the AI's own band text is the fallback */ }
+
+      return dynamicRubric.map((r, i) => {
+        let fullDesc = r.bandDescription;
+        const criterion = activityCriteria?.find(c => c.name === r.criterionName);
+        const band = criterion?.bands?.find(
+          b => b.label?.toLowerCase() === r.bandDescription?.toLowerCase()
+        );
+        if (band?.description) fullDesc = `${band.label} — ${band.description}`;
+        return { key: r.criterionName, name: r.criterionName, max: r.maxPoints, color: palette[i % 5], desc: fullDesc };
+      });
+    }
+
+    // No AI result yet (e.g. the student-submit flow): fall back to the rubric
+    // the activity is actually graded against, in the same order the AI uses —
+    // the activity's own rubric, then the curriculum lesson's.
+    for (const source of [submission?.activity?.rubric, submission?.activity?.classLesson?.defaultRubric]) {
+      if (!source) continue;
+      try {
+        const parsed = typeof source === 'string' ? JSON.parse(source) : source;
+        if (parsed?.criteria?.length) {
+          return parsed.criteria.map((c, i) => ({
+            key: c.name, name: c.name, max: c.points || 0, color: palette[i % 5], desc: c.description || '',
+          }));
+        }
+      } catch { /* try the next source, then the legacy shape */ }
+    }
+
+    return [
+      { key: 'content', name: 'Content & Ideas', max: 40, color: 'bg-brand-green' },
+      { key: 'organization', name: 'Organization', max: 30, color: 'bg-amber-400' },
+      { key: 'grammar', name: 'Grammar', max: 30, color: 'bg-blue-400' },
+    ];
+  }, [dynamicRubric, submission]);
+
+  // Sum of the criterion scores, in rubric points.
+  const totalScore = rubricItems.reduce((sum, item) => sum + (scores[item.key] || 0), 0);
+  const rubricTotal = rubricItems.reduce((sum, item) => sum + (item.max || 0), 0);
+  // The grade, as a percentage of the rubric — this is what gets saved.
+  const scorePercent = rubricTotal > 0 ? (totalScore / rubricTotal) * 100 : 0;
+  // What that percentage is worth in the activity's own points.
+  const scoreInPoints = (scorePercent / 100) * (submission?.activity?.points || 100);
 
   // AI grading hasn't produced a result yet. The AI-failure case still counts as
   // "done" so the teacher can fall back to grading manually.
@@ -256,7 +319,7 @@ export default function HITLWorkspace() {
     setChatInput('');
     setIsChatLoading(true);
     try {
-      const res = await fetch(`${API_URL}/api/teacher/refine`, {
+      const res = await apiFetch(`${API_URL}/api/teacher/refine`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ currentFeedback: feedbackText, prompt: msg, isStructured })
@@ -303,11 +366,13 @@ export default function HITLWorkspace() {
         const hitlFeedback = isStructured
           ? serializeStructuredFeedback(structuredFeedback)
           : legacyFeedbackText;
-        await fetch(`${API_URL}/api/teacher/submissions/${submissionId}/grade`, {
+        await apiFetch(`${API_URL}/api/teacher/submissions/${submissionId}/grade`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            hitlScore: totalScore,
+            // A percentage of the rubric, not the raw point sum — the sum only
+            // equalled the percentage when a rubric happened to total 100.
+            hitlScore: scorePercent,
             hitlFeedback,
             readingStrategy,
             teacherId: user.id,
@@ -336,7 +401,7 @@ export default function HITLWorkspace() {
     if (!submissionId) return;
     setIsAnalyzing(true);
     try {
-      const res = await fetch(`${API_URL}/api/teacher/submissions/${submissionId}/analyze`, {
+      const res = await apiFetch(`${API_URL}/api/teacher/submissions/${submissionId}/analyze`, {
         method: 'POST'
       });
       const data = await res.json();
@@ -383,7 +448,9 @@ export default function HITLWorkspace() {
               setScores(initialScores);
               setDynamicRubric(rd);
             } else {
-              setScores({ content: rd.content?.score ?? 35, organization: rd.organization?.score ?? 25, grammar: rd.grammar?.score ?? 25 });
+              // Absent criteria default to 0 — see the note on the initial
+              // state. Never to invented mid-band scores.
+              setScores({ content: rd.content?.score ?? 0, organization: rd.organization?.score ?? 0, grammar: rd.grammar?.score ?? 0 });
             }
           } catch { }
         }
@@ -409,54 +476,9 @@ export default function HITLWorkspace() {
   if (isLoading) return <div className="flex items-center justify-center h-64 text-slate-400"><Loader2 className="w-6 h-6 animate-spin mr-2" />Loading submission...</div>;
 
   const activity = submission?.activity;
+  // rubricItems / totalScore / scorePercent are resolved above, before the
+  // loading return, because the save handler needs them too.
 
-  let rubricItems;
-  if (dynamicRubric) {
-    rubricItems = dynamicRubric.map((r, i) => {
-      let fullDesc = r.bandDescription;
-      if (submission?.activity?.rubric) {
-        try {
-          const activityRubric = JSON.parse(submission.activity.rubric);
-          const criteria = activityRubric.criteria?.find(c => c.name === r.criterionName);
-          if (criteria && criteria.bands) {
-            const band = criteria.bands.find(b => b.label.toLowerCase() === r.bandDescription?.toLowerCase());
-            if (band && band.description) {
-              fullDesc = `${band.label} — ${band.description}`;
-            }
-          }
-        } catch (e) { /* ignore */ }
-      }
-      return {
-        key: r.criterionName,
-        name: r.criterionName,
-        max: r.maxPoints,
-        color: ['bg-brand-green', 'bg-amber-400', 'bg-blue-400', 'bg-purple-400', 'bg-pink-400'][i % 5],
-        desc: fullDesc
-      };
-    });
-  } else if (submission?.activity?.rubric) {
-    // Fallback: parse the activity's rubric definition so the UI shows the correct criteria
-    // even before AI grading has run (e.g. Student Submit flow)
-    try {
-      const parsedActivityRubric = JSON.parse(submission.activity.rubric);
-      if (parsedActivityRubric.criteria?.length) {
-        rubricItems = parsedActivityRubric.criteria.map((c, i) => ({
-          key: c.name,
-          name: c.name,
-          max: c.points || 0,
-          color: ['bg-brand-green', 'bg-amber-400', 'bg-blue-400', 'bg-purple-400', 'bg-pink-400'][i % 5],
-          desc: c.description || ''
-        }));
-      }
-    } catch { /* ignore */ }
-  }
-  if (!rubricItems || rubricItems.length === 0) {
-    rubricItems = [
-      { key: 'content', name: 'Content & Ideas', max: 40, color: 'bg-brand-green' },
-      { key: 'organization', name: 'Organization', max: 30, color: 'bg-amber-400' },
-      { key: 'grammar', name: 'Grammar', max: 30, color: 'bg-blue-400' },
-    ];
-  }
 
   const skillLabels = {
     vocabulary: 'Vocabulary',
@@ -590,6 +612,13 @@ export default function HITLWorkspace() {
             <div>
               <h2 className="text-xl font-bold text-brand-slate">{submission?.student?.name || 'Student Review'}</h2>
               <p className="text-slate-500 text-sm">{submission?.activity?.title || 'Essay Submission'}</p>
+              {/* A record, not a penalty — nothing deducts marks for this, so
+                  the teacher decides what a late piece is worth. */}
+              {submission?.isLate && (
+                <span className="mt-1 inline-flex items-center gap-1 text-xs font-bold text-amber-700 bg-amber-50 border border-amber-200 px-2 py-1 rounded-full">
+                  ⏰ Submitted late
+                </span>
+              )}
               {isApproved && (
                 <span className="mt-1 inline-flex items-center gap-1 text-xs font-bold text-green-600 bg-green-50 px-2 py-1 rounded-full">
                   <CheckCircle2 className="w-3 h-3" /> Released to Student
@@ -614,7 +643,10 @@ export default function HITLWorkspace() {
               )}
               <div className="text-center bg-blue-50 px-4 py-2 rounded-xl border border-blue-100">
                 <span className="block text-xs font-bold text-brand-navy uppercase tracking-wider mb-1">Total Score</span>
-                <span className="text-3xl font-bold text-brand-navy">{submission?.aiScore === null && submission?.status === 'PENDING' ? '--' : ((totalScore / 100) * (activity?.points || 100)).toFixed(1).replace(/\.0$/, '')}<span className="text-xl text-blue-300">/{activity?.points || 100}</span></span>
+                <span className="text-3xl font-bold text-brand-navy">{submission?.aiScore === null && submission?.status === 'PENDING' ? '--' : scoreInPoints.toFixed(1).replace(/\.0$/, '')}<span className="text-xl text-blue-300">/{activity?.points || 100}</span></span>
+                <span className="block text-[11px] font-semibold text-blue-400 mt-0.5">
+                  {totalScore}/{rubricTotal} rubric pts · {Math.round(scorePercent)}%
+                </span>
               </div>
             </div>
           </div>
@@ -628,8 +660,14 @@ export default function HITLWorkspace() {
                   <div className="flex justify-between text-sm mb-1">
                     <span className="font-medium text-slate-700">{item.name}</span>
                     <div className="flex items-center gap-2">
-                      <span className="font-bold text-slate-900">{scores[item.key] || 0}% / {item.max}%</span>
-                      <span className="text-xs text-brand-navy font-bold">({(((scores[item.key] || 0) / 100) * (activity?.points || 100)).toFixed(1).replace(/\.0$/, '')} pts)</span>
+                      {/* Rubric points, labelled as such. These were shown as
+                          "0% / 15%" and then re-scaled as if the point value
+                          were a percentage, so a 12-out-of-15 criterion on a
+                          60-point activity reported "7.2 pts". */}
+                      <span className="font-bold text-slate-900">{scores[item.key] || 0} / {item.max}</span>
+                      <span className="text-xs text-brand-navy font-bold">
+                        ({item.max ? Math.round(((scores[item.key] || 0) / item.max) * 100) : 0}%)
+                      </span>
                     </div>
                   </div>
                   {item.desc && (

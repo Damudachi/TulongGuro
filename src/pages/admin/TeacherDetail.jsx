@@ -4,7 +4,7 @@ import {
   ArrowLeft, Loader2, Pencil, Trash2, Check, X, KeyRound, UserPlus, UserCog,
   BookOpen, Users, GraduationCap, AlertTriangle, Copy,
 } from 'lucide-react';
-import { API_URL } from '../../config';
+import { API_URL, apiFetch } from '../../config';
 import { GRADE_LEVELS } from '../../constants/school';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
@@ -42,7 +42,7 @@ export default function AdminTeacherDetail() {
 
   const load = useCallback(() => {
     if (!admin.id) return setIsLoading(false);
-    fetch(`${API_URL}/api/admin/${admin.id}/teachers/${teacherId}`)
+    apiFetch(`${API_URL}/api/admin/${admin.id}/teachers/${teacherId}`)
       .then(r => r.json())
       .then(d => {
         if (d.success) setData(d);

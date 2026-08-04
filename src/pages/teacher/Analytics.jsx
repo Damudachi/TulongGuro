@@ -3,7 +3,7 @@ import {
   BarChart2, Users, Loader2, ArrowLeft, FileText, ChevronRight, Sparkles,
   LifeBuoy, Trophy, Target, TrendingUp, TrendingDown, Minus, ClipboardList,
 } from 'lucide-react';
-import { API_URL } from '../../config';
+import { API_URL, apiFetch } from '../../config';
 import { bandsFor, bandFor, toPoints, pct, DEFAULT_PASSING_GRADE } from '../../utils/grading';
 import SkillProgressChart from '../../components/SkillProgressChart';
 
@@ -94,7 +94,7 @@ export default function Analytics() {
   useEffect(() => {
     const user = JSON.parse(localStorage.getItem('user') || '{}');
     if (!user.id) return setIsLoading(false);
-    fetch(`${API_URL}/api/teacher/${user.id}/sections`)
+    apiFetch(`${API_URL}/api/teacher/${user.id}/sections`)
       .then(r => r.json())
       .then(d => { if (d.success) setSectionsList(d.sections || []); })
       .catch(() => {})
@@ -118,7 +118,7 @@ export default function Analytics() {
   const loadStudentDetail = (student) => {
     setSelectedStudent(student);
     setLoadingStudent(true);
-    fetch(`${API_URL}/api/teacher/student/${student.id}/analytics`)
+    apiFetch(`${API_URL}/api/teacher/student/${student.id}/analytics`)
       .then(r => r.json())
       .then(d => { if (d.success) setStudentData(d); })
       .finally(() => setLoadingStudent(false));

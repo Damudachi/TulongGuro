@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Link, useSearchParams, useNavigate } from 'react-router-dom';
 import { Users, Search, Download, Loader2, ChevronRight, BarChart2 } from 'lucide-react';
-import { API_URL } from '../../config';
+import { API_URL, apiFetch } from '../../config';
 import PageHeader from '../../components/PageHeader';
 import { gradeChip } from '../../utils/grading';
 import { usePassingGrade } from '../../utils/useSchool';
@@ -30,7 +30,7 @@ export default function Gradebook() {
     if (!user.id) return;
     setExportingSectionId(sectionId);
     try {
-      const response = await fetch(`${API_URL}/api/teacher/${user.id}/gradebook/export?sectionId=${sectionId}&format=xlsx`);
+      const response = await apiFetch(`${API_URL}/api/teacher/${user.id}/gradebook/export?sectionId=${sectionId}&format=xlsx`);
       if (!response.ok) throw new Error('Export failed');
       const blob = await response.blob();
       const url = window.URL.createObjectURL(blob);
@@ -57,7 +57,7 @@ export default function Gradebook() {
     const user = JSON.parse(localStorage.getItem('user') || '{}');
     if (!user.id) return setIsLoading(false);
     // Fetch teacher-level classes for the section picker
-    fetch(`${API_URL}/api/teacher/${user.id}/classes`).then(r => r.json()).then(d => { if (d.success) setTeacherClasses(d.classes || []); }).catch(() => {});
+    apiFetch(`${API_URL}/api/teacher/${user.id}/classes`).then(r => r.json()).then(d => { if (d.success) setTeacherClasses(d.classes || []); }).catch(() => {});
     // Only fetch gradebook data when a specific class is selected
     if (selectedClassId) {
       const url = `${API_URL}/api/teacher/${user.id}/gradebook?classId=${selectedClassId}`;

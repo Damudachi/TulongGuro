@@ -13,5 +13,13 @@ services:
         sync: false
       - key: SUPABASE_KEY
         sync: false
+      # Signs login sessions. The server refuses to start without it in
+      # production rather than fall back to a guessable key, so a missing value
+      # here is a failed deploy, not a silently insecure one.
+      - key: AUTH_SECRET
+        sync: false
+      # Unlocks /platform/approvals. Must be a different value from AUTH_SECRET.
+      - key: PLATFORM_ADMIN_KEY
+        sync: false
       - key: NODE_ENV
         value: production

@@ -3,6 +3,7 @@ import { Users, BookOpen, ClipboardList, Scale, TrendingUp, LogOut } from 'lucid
 import { useEffect } from 'react';
 import SchoolBadge from '../components/SchoolBadge';
 import { useSchoolTheme } from '../utils/useSchool';
+import { logout } from '../config';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
 
@@ -82,7 +83,7 @@ export default function AdminLayout() {
               <p className="text-[11px] font-semibold text-white/50 truncate">{user.email || 'Administrator'}</p>
             </div>
           </div>
-          <Link to="/login" onClick={() => localStorage.removeItem('user')}
+          <Link to="/login" onClick={() => logout()}
             className="flex items-center gap-3 px-3 py-2.5 rounded-2xl text-sm font-bold text-white/60 hover:bg-red-500 hover:text-white transition-colors">
             <LogOut className="w-4 h-4" /> Sign Out
           </Link>
@@ -115,7 +116,7 @@ export default function AdminLayout() {
               own place in the dock or there's no way out on a phone. The rule
               keeps it from reading as another destination. */}
           <span aria-hidden="true" className="w-px my-2.5 bg-white/15 shrink-0" />
-          <Link to="/login" onClick={() => localStorage.removeItem('user')}
+          <Link to="/login" onClick={() => logout()}
             aria-label="Sign out"
             className="flex-1 min-w-0 grid place-items-center rounded-2xl min-h-12 text-white/55 active:bg-red-500 active:text-white transition-colors">
             <LogOut className="w-5 h-5 shrink-0" />

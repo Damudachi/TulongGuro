@@ -4,7 +4,7 @@ import {
   ArrowLeft, Loader2, Pencil, Trash2, Check, X, UserPlus,
   BookOpen, Users, GraduationCap, AlertTriangle,
 } from 'lucide-react';
-import { API_URL } from '../../config';
+import { API_URL, apiFetch } from '../../config';
 import { GRADE_LEVELS } from '../../constants/school';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
@@ -32,7 +32,7 @@ export default function AdminSectionDetail() {
 
   const load = useCallback(() => {
     if (!admin.id) return setIsLoading(false);
-    fetch(`${API_URL}/api/admin/${admin.id}/sections/${sectionId}`)
+    apiFetch(`${API_URL}/api/admin/${admin.id}/sections/${sectionId}`)
       .then(r => r.json())
       .then(d => {
         if (d.success) setData(d);

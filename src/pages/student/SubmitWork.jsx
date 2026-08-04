@@ -1,9 +1,10 @@
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { ArrowLeft, Camera, UploadCloud, FileText, CheckCircle2, Clock, Loader2, ChevronRight, AlertTriangle, ShieldCheck, BookOpen, Calendar, Award, RefreshCw, Eye } from 'lucide-react';
-import { API_URL } from '../../config';
+import { API_URL, apiFetch } from '../../config';
 import SubmissionImage from '../../components/SubmissionImage';
 import ImageRedactor from '../../components/ImageRedactor';
+import { deadlineInstant, formatDeadline, submissionWindow } from '../../utils/deadlines';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
 
@@ -35,7 +36,7 @@ export default function SubmitWork() {
   useEffect(() => {
     const user = JSON.parse(localStorage.getItem('user') || '{}');
     if (!user.id) return setIsLoading(false);
-    fetch(`${API_URL}/api/student/${user.id}/activities`)
+    apiFetch(`${API_URL}/api/student/${user.id}/activities`)
       .then(r => r.json())
       .then(d => {
         if (d.success) {
@@ -149,11 +150,11 @@ export default function SubmitWork() {
       formData.append('studentId', user.id);
       formData.append('activityId', selected.id);
 
-      const res = await fetch(`${API_URL}/api/student/submit`, { method: 'POST', body: formData });
+      const res = await apiFetch(`${API_URL}/api/student/submit`, { method: 'POST', body: formData });
       const data = await res.json();
       if (data.success) {
         setResult(data);
-        const activitiesRes = await fetch(`${API_URL}/api/student/${user.id}/activities`);
+        const activitiesRes = await apiFetch(`${API_URL}/api/student/${user.id}/activities`);
         const activitiesData = await activitiesRes.json();
         if (activitiesData.success) setActivities(activitiesData.activities);
       } else {
@@ -281,8 +282,12 @@ export default function SubmitWork() {
   // ─── SCREEN 2: FULL-SCREEN ASSIGNMENT DETAIL + SUBMIT ──────────────
   if (selected && privacyConfirmed) {
     const sub = selected.mySubmission;
-    const isPastDeadline = selected.deadline && new Date(selected.deadline) < new Date();
-    const dueDate = selected.deadline ? new Date(selected.deadline) : null;
+    // isLate and isClosed are different questions once a teacher allows late
+    // work: past the due date the activity is still open, it just marks what
+    // arrives. The server decides both — this only describes the same rule.
+    const { isLate, isClosed, acceptsLate } = submissionWindow(selected);
+    const isPastDeadline = isLate;
+    const dueDate = deadlineInstant(selected.deadline);
 
     return (
       <div className="p-4 md:p-8 max-w-3xl mx-auto pb-24">
@@ -306,7 +311,7 @@ export default function SubmitWork() {
                 <span className="block text-[10px] uppercase tracking-wider font-extrabold mb-0.5 text-royal-100">Due Date</span>
                 <span className="font-extrabold flex items-center">
                   <Calendar className="w-4 h-4 mr-1.5" />
-                  {dueDate.toLocaleDateString('en-PH', { month: 'short', day: 'numeric', year: 'numeric' })}
+                  {formatDeadline(selected.deadline, { month: 'short', day: 'numeric', year: 'numeric' })}
                 </span>
               </div>
             )}
@@ -395,9 +400,39 @@ export default function SubmitWork() {
               </div>
             )}
           </div>
+        ) : isClosed ? (
+          /* The window is enforced by the server too — this screen only ever
+             coloured the date red and still let the button through, so a
+             student who had never submitted could upload weeks late. */
+          <div className="bg-white border-2 border-red-200 rounded-3xl p-6 text-center">
+            <Clock className="w-10 h-10 text-red-400 mx-auto mb-3" />
+            <p className="font-display text-lg font-extrabold text-navy-700 mb-1">This activity is closed</p>
+            <p className="text-sm text-navy-500">
+              {acceptsLate
+                ? `Late submissions were accepted until ${formatDeadline(selected.lateUntil, { month: 'long', day: 'numeric', year: 'numeric' })}.`
+                : `It closed on ${formatDeadline(selected.deadline, { month: 'long', day: 'numeric', year: 'numeric' })}.`}
+              {' '}Talk to your teacher if you still need to submit.
+            </p>
+          </div>
         ) : (
           /* ── UPLOAD FORM ── */
           <>
+            {/* Still open, but past the due date: say so plainly before they
+                upload rather than surprising them with a LATE tag afterwards. */}
+            {isLate && (
+              <div className="mb-5 bg-amber-50 border-2 border-amber-300 rounded-3xl p-5 flex items-start gap-3">
+                <Clock className="w-5 h-5 text-amber-700 shrink-0 mt-0.5" />
+                <div>
+                  <p className="text-sm font-extrabold text-navy-700">This will be marked late</p>
+                  <p className="text-sm text-navy-600 mt-0.5 leading-relaxed">
+                    The due date was {formatDeadline(selected.deadline, { month: 'long', day: 'numeric' })}.
+                    You can still submit until {formatDeadline(selected.lateUntil, { month: 'long', day: 'numeric' })} —
+                    your teacher will see that it came in late and decide how to mark it.
+                  </p>
+                </div>
+              </div>
+            )}
+
             {/* Handwriting tip */}
             <div className="mb-5 bg-sun-100 border-2 border-sun-200 rounded-3xl p-5">
               <div className="flex items-start gap-3">
@@ -533,7 +568,7 @@ export default function SubmitWork() {
           {activities.map(activity => {
             const sub = activity.mySubmission;
             const StatusIcon = sub ? (STATUS_LABEL[sub.status]?.icon || Clock) : null;
-            const isPastDeadline = activity.deadline && new Date(activity.deadline) < new Date();
+            const subWindow = submissionWindow(activity);
 
             return (
               <button key={activity.id} onClick={() => handleSelectActivity(activity)}
@@ -548,8 +583,13 @@ export default function SubmitWork() {
                       <p className="font-bold text-navy-700 truncate">{activity.title}</p>
                       <p className="text-xs text-navy-500 truncate">{activity.className} • {activity.type} • {activity.points} pts</p>
                       {activity.deadline && (
-                        <p className={cn('text-xs mt-0.5 font-semibold', isPastDeadline ? 'text-red-500' : 'text-navy-400')}>
-                          {isPastDeadline ? '⏰ Deadline passed' : `Due: ${new Date(activity.deadline).toLocaleDateString('en-PH', { month: 'short', day: 'numeric' })}`}
+                        <p className={cn('text-xs mt-0.5 font-semibold',
+                          subWindow.isClosed ? 'text-red-500' : subWindow.isLate ? 'text-amber-600' : 'text-navy-400')}>
+                          {subWindow.isClosed
+                            ? '⏰ Closed'
+                            : subWindow.isLate
+                              ? `⚠ Late — accepted until ${formatDeadline(activity.lateUntil)}`
+                              : `Due: ${formatDeadline(activity.deadline)}`}
                         </p>
                       )}
                       {(activity.maxAttempts === 0 || activity.maxAttempts > 1) && (

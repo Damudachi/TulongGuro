@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { API_URL } from '../config';
+import { API_URL, apiFetch } from '../config';
 import { applySchoolTheme } from './schoolTheme';
 import { DEFAULT_PASSING_GRADE } from './grading';
 
@@ -29,7 +29,7 @@ export default function useSchool() {
     const user = JSON.parse(localStorage.getItem('user') || '{}');
     if (!user.id) return;
     let cancelled = false;
-    fetch(`${API_URL}/api/users/${user.id}/school`)
+    apiFetch(`${API_URL}/api/users/${user.id}/school`)
       .then(r => r.json())
       .then(d => {
         if (cancelled || !d.success || !d.school) return;

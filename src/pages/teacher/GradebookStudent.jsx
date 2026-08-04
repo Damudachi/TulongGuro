@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { FileText, Loader2 } from 'lucide-react';
-import { API_URL } from '../../config';
+import { API_URL, apiFetch } from '../../config';
 import PageHeader from '../../components/PageHeader';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
@@ -45,7 +45,7 @@ export default function GradebookStudent() {
   useEffect(() => {
     const user = JSON.parse(localStorage.getItem('user') || '{}');
     if (!user.id) return setIsLoading(false);
-    fetch(`${API_URL}/api/teacher/${user.id}/student/${studentId}/gradebook`)
+    apiFetch(`${API_URL}/api/teacher/${user.id}/student/${studentId}/gradebook`)
       .then(r => r.json())
       .then(d => { if (d.success) setData(d); })
       .finally(() => setIsLoading(false));

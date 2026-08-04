@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { Award, CheckCircle2, Star, Loader2, Lightbulb, ChevronRight, Clock, BookOpen, Send } from 'lucide-react';
-import { API_URL } from '../../config';
+import { API_URL, apiFetch } from '../../config';
 import { gradeChip } from '../../utils/grading';
 import { usePassingGrade } from '../../utils/useSchool';
 import SkillProgressChart from '../../components/SkillProgressChart';
@@ -59,7 +59,7 @@ export default function StudentDashboard() {
     }
     const user = JSON.parse(localStorage.getItem('user') || '{}');
     if (!user.id) return setIsLoading(false);
-    fetch(`${API_URL}/api/student/${user.id}/dashboard`)
+    apiFetch(`${API_URL}/api/student/${user.id}/dashboard`)
       .then(r => r.json())
       .then(d => { if (d.success) setData(d); })
       .finally(() => setIsLoading(false));

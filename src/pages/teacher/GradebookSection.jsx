@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { Users, Download, Loader2, BookOpen } from 'lucide-react';
-import { API_URL } from '../../config';
+import { API_URL, apiFetch } from '../../config';
 import PageHeader from '../../components/PageHeader';
 
 export default function GradebookSection() {
@@ -14,7 +14,7 @@ export default function GradebookSection() {
   useEffect(() => {
     const user = JSON.parse(localStorage.getItem('user') || '{}');
     if (!user.id) return setIsLoading(false);
-    fetch(`${API_URL}/api/teacher/${user.id}/classes`).then(r => r.json()).then(d => { if (d.success) setTeacherClasses(d.classes || []); }).finally(() => setIsLoading(false));
+    apiFetch(`${API_URL}/api/teacher/${user.id}/classes`).then(r => r.json()).then(d => { if (d.success) setTeacherClasses(d.classes || []); }).finally(() => setIsLoading(false));
   }, [sectionId]);
 
   const classes = (teacherClasses || []).filter(c => c.sectionId === sectionId);
@@ -26,7 +26,7 @@ export default function GradebookSection() {
     if (!user.id) return;
     setExportingClassId(classId);
     try {
-      const response = await fetch(`${API_URL}/api/teacher/${user.id}/gradebook/export?classId=${classId}&format=xlsx`);
+      const response = await apiFetch(`${API_URL}/api/teacher/${user.id}/gradebook/export?classId=${classId}&format=xlsx`);
       if (!response.ok) throw new Error('Export failed');
       const blob = await response.blob();
       const url = window.URL.createObjectURL(blob);

@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { Loader2, BarChart2, ChevronRight, TrendingUp } from 'lucide-react';
-import { API_URL } from '../../config';
+import { API_URL, apiFetch } from '../../config';
 import { gradeTone } from '../../utils/grading';
 import { usePassingGrade } from '../../utils/useSchool';
 
@@ -23,7 +23,7 @@ export default function SubjectGradebook() {
   useEffect(() => {
     const user = JSON.parse(localStorage.getItem('user') || '{}');
     if (!user.id) return setIsLoading(false);
-    fetch(`${API_URL}/api/student/${user.id}/subjects`)
+    apiFetch(`${API_URL}/api/student/${user.id}/subjects`)
       .then(r => r.json())
       .then(d => { if (d.success) setSubjects(d.subjects || []); })
       .finally(() => setIsLoading(false));
@@ -99,7 +99,10 @@ export default function SubjectGradebook() {
                   </div>
                   <div className="text-right">
                     <p className="text-[10px] uppercase text-slate-400 font-bold tracking-wider">Average</p>
-                    <p className={cn('text-2xl font-extrabold', gradeColor(subject.overallGrade))}>
+                    {/* gradeColor() never existed in this file — this threw a
+                        ReferenceError as soon as a subject card rendered. The
+                        table below already uses the shared helper. */}
+                    <p className={cn('text-2xl font-extrabold', gradeTone(subject.overallGrade, passingGrade, 'text-slate-300'))}>
                       {subject.overallGrade !== null ? `${subject.overallGrade}%` : '—'}
                     </p>
                   </div>

@@ -1,8 +1,9 @@
 import { useState, useEffect } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
-import { Plus, Search, FileText, User, ArrowLeft, Clock, CheckCircle2, AlertCircle, UploadCloud, Trash2, Eye, X, PenLine } from 'lucide-react';
-import { API_URL } from '../../config';
+import { Plus, Search, FileText, User, ArrowLeft, Clock, CheckCircle2, AlertCircle, UploadCloud, Trash2, PenLine } from 'lucide-react';
+import { API_URL, apiFetch } from '../../config';
 import { ACTIVITY_TYPES } from '../../constants/activityTypes';
+import { isPastDeadline, formatDeadline } from '../../utils/deadlines';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
 
@@ -28,12 +29,11 @@ export default function ClassHub() {
   const [isDeleting, setIsDeleting] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [isSavingEdit, setIsSavingEdit] = useState(false);
-  const [showPreview, setShowPreview] = useState(false);
   const [classLessons, setClassLessons] = useState([]);
   const [selectedLessonId, setSelectedLessonId] = useState('');
 
   useEffect(() => {
-    fetch(`${API_URL}/api/classes/${classId}`)
+    apiFetch(`${API_URL}/api/classes/${classId}`)
       .then(r => r.json())
       .then(d => { if (d.success) setClassData(d.classData); })
       .finally(() => setIsLoading(false));
@@ -41,7 +41,7 @@ export default function ClassHub() {
 
   useEffect(() => {
     if (!classId) return;
-    fetch(`${API_URL}/api/teacher/classes/${classId}/lessons`)
+    apiFetch(`${API_URL}/api/teacher/classes/${classId}/lessons`)
       .then(r => r.json())
       .then(d => { if (d.success) setClassLessons(d.lessons || []); })
       .catch(() => {});
@@ -49,7 +49,7 @@ export default function ClassHub() {
 
   const handleCreateActivity = async (e) => {
     e.preventDefault();
-    const res = await fetch(`${API_URL}/api/teacher/activities`, {
+    const res = await apiFetch(`${API_URL}/api/teacher/activities`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ ...newActivity, classId, classLessonId: selectedLessonId || null })
@@ -88,7 +88,7 @@ export default function ClassHub() {
     if (!editActivity) return;
     setIsSavingEdit(true);
     try {
-      const res = await fetch(`${API_URL}/api/teacher/activities/${editActivity.id}`,
+      const res = await apiFetch(`${API_URL}/api/teacher/activities/${editActivity.id}`,
         {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
@@ -116,7 +116,7 @@ export default function ClassHub() {
     if (deleteConfirmText !== 'DELETE') return;
     setIsDeleting(true);
     try {
-      const res = await fetch(`${API_URL}/api/teacher/activities/${editActivity.id}`, { method: 'DELETE' });
+      const res = await apiFetch(`${API_URL}/api/teacher/activities/${editActivity.id}`, { method: 'DELETE' });
       const data = await res.json();
       if (data.success) {
         setClassData(prev => ({ ...prev, activities: prev.activities.filter(a => a.id !== editActivity.id) }));
@@ -149,12 +149,6 @@ export default function ClassHub() {
           <h1 className="text-2xl font-bold text-brand-slate">{classData.name}</h1>
           <p className="text-slate-500 text-sm">{classData.schoolYear} • {classData.section?.name} • {students.length} Students</p>
         </div>
-        <button
-          onClick={() => setShowPreview(true)}
-          className="flex items-center gap-1.5 text-sm font-medium text-brand-navy bg-blue-50 hover:bg-blue-100 border border-blue-200 px-3 py-1.5 rounded-lg transition-colors"
-        >
-          <Eye className="w-4 h-4" /> 👁 Preview Student View
-        </button>
       </div>
 
       {/* Demo Data Banner */}
@@ -168,7 +162,7 @@ export default function ClassHub() {
             onClick={async () => {
               if (!confirm('Delete all demo data? This cannot be undone.')) return;
               try {
-                const res = await fetch(`${API_URL}/api/teacher/demo-data/${classId}`, { method: 'DELETE' });
+                const res = await apiFetch(`${API_URL}/api/teacher/demo-data/${classId}`, { method: 'DELETE' });
                 const data = await res.json();
                 if (data.success) navigate('/teacher/dashboard');
                 else alert('Error: ' + data.error);
@@ -221,7 +215,7 @@ export default function ClassHub() {
             // Show proper status: check if submissions exist and their status
             const pendingCount = activity.submissions?.filter(s => s.status === 'PENDING').length || 0;
             const gradedCount = activity.submissions?.filter(s => s.status === 'GRADED').length || 0;
-            const isPastDeadline = activity.deadline && new Date(activity.deadline) < new Date();
+            const pastDeadline = isPastDeadline(activity.deadline);
             return (
               <div
                 key={activity.id}
@@ -244,8 +238,8 @@ export default function ClassHub() {
                     </div>
                     <p className="text-xs text-slate-500 mb-1">
                       {activity.type} • {activity.points} pts
-                      {activity.deadline ? ` • Due ${new Date(activity.deadline).toLocaleDateString('en-PH', { month: 'short', day: 'numeric' })}` : ''}
-                      {isPastDeadline && activity.deadline ? <span className="text-red-500 font-semibold"> (Closed)</span> : ''}
+                      {activity.deadline ? ` • Due ${formatDeadline(activity.deadline)}` : ''}
+                      {pastDeadline && activity.deadline ? <span className="text-red-500 font-semibold"> (Closed)</span> : ''}
                     </p>
                     <div className="flex items-center gap-1.5 flex-wrap">
                       {subCount === 0 ? (
@@ -544,94 +538,6 @@ export default function ClassHub() {
         </div>
       )}
 
-      {/* Preview Student View Modal */}
-      {showPreview && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={() => setShowPreview(false)}>
-          <div className="bg-white rounded-2xl w-full max-w-xl shadow-2xl max-h-[90vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
-            {/* Modal Header */}
-            <div className="sticky top-0 bg-white rounded-t-2xl border-b border-slate-100 px-6 py-4 flex items-center justify-between z-10">
-              <div className="flex items-center gap-2">
-                <div className="p-2 rounded-lg bg-blue-50">
-                  <Eye className="w-5 h-5 text-brand-navy" />
-                </div>
-                <h2 className="text-lg font-bold text-brand-slate">How Students See Their Feedback</h2>
-              </div>
-              <button onClick={() => setShowPreview(false)} className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-400 hover:text-slate-600 transition-colors">
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            {/* Mock Student Feedback Card */}
-            <div className="p-6 space-y-5">
-              {/* Submission Header */}
-              <div className="bg-gradient-to-br from-blue-50 to-green-50 rounded-xl border border-slate-200 p-4">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <p className="text-xs font-semibold text-brand-navy uppercase tracking-wide mb-1">Activity</p>
-                    <h3 className="font-bold text-brand-slate text-lg">Noli Me Tangere Reflection</h3>
-                    <p className="text-sm text-slate-500">Filipino 10 — Grade 10</p>
-                  </div>
-                  {/* Score Ring */}
-                  <div className="relative w-16 h-16 shrink-0">
-                    <svg className="w-16 h-16 -rotate-90" viewBox="0 0 64 64">
-                      <circle cx="32" cy="32" r="28" fill="none" stroke="#e2e8f0" strokeWidth="5" />
-                      <circle cx="32" cy="32" r="28" fill="none" stroke="#22c55e" strokeWidth="5"
-                        strokeDasharray={`${(85 / 100) * 175.93} 175.93`} strokeLinecap="round" />
-                    </svg>
-                    <div className="absolute inset-0 flex items-center justify-center">
-                      <span className="text-sm font-bold text-brand-slate">85<span className="text-[10px] text-slate-400">/100</span></span>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              {/* Strengths */}
-              <div>
-                <div className="flex items-center gap-2 mb-2">
-                  <span className="text-lg">💪</span>
-                  <h4 className="font-bold text-brand-slate text-sm">Strengths</h4>
-                </div>
-                <div className="bg-green-50 border border-green-200 rounded-xl p-3">
-                  <p className="text-sm text-green-800">Napakagaling! Your reflection showed a deep understanding of Crisostomo Ibarra's motivations.</p>
-                </div>
-              </div>
-
-              {/* Areas for Growth */}
-              <div>
-                <div className="flex items-center gap-2 mb-2">
-                  <span className="text-lg">🌱</span>
-                  <h4 className="font-bold text-brand-slate text-sm">Areas for Growth</h4>
-                </div>
-                <div className="bg-amber-50 border border-amber-200 rounded-xl p-3">
-                  <div className="border-l-4 border-amber-400 pl-3">
-                    <p className="text-sm text-amber-900 italic mb-1">"Ibarra is want to change the Philippines"</p>
-                    <p className="text-sm text-amber-800">Try: <span className="font-semibold">"Ibarra wants to change the Philippines."</span> Notice how 'want' becomes 'wants' when the subject is he or she.</p>
-                  </div>
-                </div>
-              </div>
-
-              {/* Action Steps */}
-              <div>
-                <div className="flex items-center gap-2 mb-2">
-                  <span className="text-lg">🎯</span>
-                  <h4 className="font-bold text-brand-slate text-sm">Action Steps</h4>
-                </div>
-                <div className="bg-blue-50 border border-blue-200 rounded-xl p-3">
-                  <p className="text-sm text-blue-800">Rewrite your opening sentence to start with a hook question.</p>
-                </div>
-              </div>
-
-              {/* Bottom Note */}
-              <div className="bg-slate-50 rounded-xl p-3 border border-slate-200 flex items-start gap-2">
-                <span className="text-base mt-0.5">ℹ️</span>
-                <p className="text-xs text-slate-500 leading-relaxed">
-                  Students see encouraging, age-appropriate feedback. The AI adapts its language to the grade level.
-                </p>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

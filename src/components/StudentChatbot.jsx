@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { MessageCircle, X, Send, Loader2, Sparkles, Bot } from 'lucide-react';
 import { clsx } from 'clsx';
 import { twMerge } from 'tailwind-merge';
-import { API_URL } from '../config';
+import { API_URL, apiFetch } from '../config';
 
 function cn(...inputs) {
   return twMerge(clsx(inputs));
@@ -108,7 +108,7 @@ export default function StudentChatbot({ initialMessage }) {
           context: contextRef.current // Send the specific assignment context if available
         };
 
-        const res = await fetch(`${API_URL}/api/student/chat`, {
+        const res = await apiFetch(`${API_URL}/api/student/chat`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload),

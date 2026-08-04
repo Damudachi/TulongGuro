@@ -1,8 +1,9 @@
 import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { BookOpen, ChevronRight, ArrowLeft, Loader2, FileText, CheckCircle2, Clock, AlertCircle, MessageSquare } from 'lucide-react';
-import { API_URL } from '../../config';
+import { API_URL, apiFetch } from '../../config';
 import { gradeTone, gradeChip, DEFAULT_PASSING_GRADE } from '../../utils/grading';
+import { submissionWindow, formatDeadline } from '../../utils/deadlines';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
 
@@ -39,7 +40,7 @@ export default function Subjects() {
   useEffect(() => {
     const user = JSON.parse(localStorage.getItem('user') || '{}');
     if (!user.id) return setIsLoading(false);
-    fetch(`${API_URL}/api/student/${user.id}/subjects`)
+    apiFetch(`${API_URL}/api/student/${user.id}/subjects`)
       .then(r => r.json())
       .then(d => {
         if (!d.success) return;
@@ -116,7 +117,7 @@ export default function Subjects() {
               // than 75 points rendered red — a perfect 30/30 read as failing.
               const percent = activity.submission?.percent;
               const hasFeedback = !!activity.submission?.feedback;
-              const isPastDeadline = activity.deadline && new Date(activity.deadline) < new Date();
+              const subWindow = submissionWindow(activity);
 
               return (
                 <div key={activity.id} className="tg-card p-5">
@@ -130,9 +131,9 @@ export default function Subjects() {
                         <p className="text-xs text-navy-500 mt-0.5">
                           {activity.type} • {activity.points} pts
                           {activity.deadline && (
-                            <span className={isPastDeadline ? 'text-red-500 font-bold' : ''}>
-                              {' '}• Due {new Date(activity.deadline).toLocaleDateString('en-PH', { month: 'short', day: 'numeric' })}
-                              {isPastDeadline && ' (Closed)'}
+                            <span className={subWindow.isClosed ? 'text-red-500 font-bold' : subWindow.isLate ? 'text-amber-600 font-bold' : ''}>
+                              {' '}• Due {formatDeadline(activity.deadline)}
+                              {subWindow.isClosed ? ' (Closed)' : subWindow.isLate ? ' (Late accepted)' : ''}
                             </span>
                           )}
                         </p>

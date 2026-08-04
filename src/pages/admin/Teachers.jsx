@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import { Users, Plus, Loader2, Trash2, KeyRound, X, Copy, Check, GraduationCap, BookOpen, ClipboardList, ChevronRight, Search } from 'lucide-react';
-import { API_URL } from '../../config';
+import { API_URL, apiFetch } from '../../config';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
 
@@ -26,7 +26,7 @@ export default function AdminTeachers() {
 
   const load = useCallback(() => {
     if (!admin.id) return setIsLoading(false);
-    fetch(`${API_URL}/api/admin/${admin.id}/overview`)
+    apiFetch(`${API_URL}/api/admin/${admin.id}/overview`)
       .then(r => r.json())
       .then(d => { if (d.success) setData(d); })
       .finally(() => setIsLoading(false));
@@ -46,7 +46,7 @@ export default function AdminTeachers() {
     setIsSaving(true);
     setError('');
     try {
-      const res = await fetch(`${API_URL}/api/admin/${admin.id}/teachers`, {
+      const res = await apiFetch(`${API_URL}/api/admin/${admin.id}/teachers`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(form)
@@ -71,7 +71,7 @@ export default function AdminTeachers() {
     if (!confirm(`Reset ${teacher.name}'s password? Their current one stops working immediately.`)) return;
     setBusyTeacherId(teacher.id);
     try {
-      const res = await fetch(`${API_URL}/api/admin/${admin.id}/teachers/${teacher.id}/password`, {
+      const res = await apiFetch(`${API_URL}/api/admin/${admin.id}/teachers/${teacher.id}/password`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ password })
@@ -88,7 +88,7 @@ export default function AdminTeachers() {
     if (!confirm(`Remove ${teacher.name} from ${data?.school?.name}? This cannot be undone.`)) return;
     setBusyTeacherId(teacher.id);
     try {
-      const res = await fetch(`${API_URL}/api/admin/${admin.id}/teachers/${teacher.id}`, { method: 'DELETE' });
+      const res = await apiFetch(`${API_URL}/api/admin/${admin.id}/teachers/${teacher.id}`, { method: 'DELETE' });
       const d = await res.json();
       if (d.success) load();
       else alert(d.error || 'Could not remove this teacher.');

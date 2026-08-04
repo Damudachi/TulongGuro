@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo } from 'react';
 import { TrendingUp, TrendingDown, Loader2, AlertTriangle, Users, BookOpen } from 'lucide-react';
-import { API_URL } from '../../config';
+import { API_URL, apiFetch } from '../../config';
 import { bandsFor, gradeTone } from '../../utils/grading';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
@@ -48,7 +48,7 @@ export default function AdminAnalytics() {
 
   useEffect(() => {
     if (!admin.id) return setIsLoading(false);
-    fetch(`${API_URL}/api/admin/${admin.id}/analytics`)
+    apiFetch(`${API_URL}/api/admin/${admin.id}/analytics`)
       .then(r => r.json())
       .then(d => d.success ? setData(d) : setError(d.error || 'Could not load analytics.'))
       .catch(() => setError('Network error.'))
