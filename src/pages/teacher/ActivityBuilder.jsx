@@ -356,6 +356,24 @@ export default function ActivityBuilder() {
   const totalPercentage = activeCriteria.reduce((s, c) => s + (c.points || 0), 0);
 
   /**
+   * What one criterion is worth in this activity's own points.
+   *
+   * Divides by the rubric's own total rather than by 100, which is what the
+   * grading engine does: a score is `earned / rubricTotal` scaled to
+   * activity.points, so a rubric out of 50 or 60 converts correctly too.
+   *
+   * Applies to range rubrics as well as standard ones. Curriculum rubrics are
+   * extracted with scoring bands, so they classify as `range` — gating this on
+   * `standard` meant the conversion never appeared on exactly the rubrics
+   * teachers use most.
+   */
+  const toActivityPoints = (criterionPoints) => {
+    if (!totalPercentage || !form.points) return null;
+    const value = (criterionPoints / totalPercentage) * form.points;
+    return value.toFixed(1).replace(/\.0$/, '');
+  };
+
+  /**
    * One line naming the rubric actually in force and where it came from.
    *
    * The rubric section offers three modes, two types and four possible sources,
@@ -603,7 +621,7 @@ export default function ActivityBuilder() {
                   className="w-20 px-3 py-1.5 border border-slate-200 rounded-lg text-sm" />
                 <span className="text-slate-500 font-medium">%</span>
                 <span className="text-brand-navy font-bold text-sm ml-2">
-                  = {((c.points / 100) * (form.points || 0)).toFixed(1).replace(/\.0$/, '')} pts
+                  = {toActivityPoints(c.points) ?? 0} pts
                 </span>
               </div>
             )}
@@ -946,13 +964,13 @@ export default function ActivityBuilder() {
                 <p className="font-bold text-brand-slate text-sm truncate">{rubricSummary.name}</p>
                 {rubricSummary.note && <p className="text-xs text-slate-600 mt-0.5">{rubricSummary.note}</p>}
                 {activeCriteria.length > 0 && rubricSummary.tone !== 'warn' && (
-                  /* Says what the weights are worth in *this* activity's points.
-                     "100% total" on a 50-point activity reads like the rubric is
-                     out of 100 and leaves the teacher doing the arithmetic. */
+                  /* Says what the rubric is worth in *this* activity's points.
+                     "100 pts total" on a 50-point activity reads like the rubric
+                     overrides the activity and leaves the teacher doing the
+                     arithmetic. */
                   <p className="text-xs text-slate-500 mt-1.5">
-                    {activeCriteria.length} criteria · {rubricType === 'standard'
-                      ? `${totalPercentage}% of ${form.points || 0} point${form.points === 1 ? '' : 's'}`
-                      : `${totalPercentage} pts total`}
+                    {activeCriteria.length} criteria · {totalPercentage} rubric pts
+                    {form.points ? ` → graded out of ${form.points}` : ''}
                   </p>
                 )}
               </div>
@@ -972,9 +990,8 @@ export default function ActivityBuilder() {
                 <li key={i} className="flex items-baseline justify-between gap-3 text-sm">
                   <span className="text-slate-700 truncate">{c.name}</span>
                   <span className="text-slate-400 text-xs shrink-0">
-                    {rubricType === 'standard'
-                      ? `${c.points}% · ${((c.points / 100) * (form.points || 0)).toFixed(1).replace(/\.0$/, '')} pts`
-                      : `${c.points} pts`}
+                    {c.points}{rubricType === 'standard' ? '%' : ' pts'}
+                    {toActivityPoints(c.points) && ` · ${toActivityPoints(c.points)} of ${form.points}`}
                   </span>
                 </li>
               ))}
@@ -1091,7 +1108,7 @@ export default function ActivityBuilder() {
                     {rubricType === 'standard' && (
                       <div className="flex flex-col items-center justify-center shrink-0 min-w-[60px]">
                         <span className="text-sm font-bold text-brand-navy">{c.points}%</span>
-                        <span className="text-[11px] font-semibold text-slate-400">({((c.points / 100) * (form.points || 0)).toFixed(1).replace(/\.0$/, '')} pts)</span>
+                        <span className="text-[11px] font-semibold text-slate-400">({toActivityPoints(c.points) ?? 0} pts)</span>
                       </div>
                     )}
                   </div>
