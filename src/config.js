@@ -63,7 +63,14 @@ export async function apiFetch(input, init = {}) {
 
   const res = await fetch(input, { ...init, headers });
 
-  if (res.status === 401) {
+  // The operator approvals page authenticates with PLATFORM_ADMIN_KEY, not a
+  // user session, so a 401 there means "wrong key" — not "your session ended".
+  // Treating it as the latter signed the operator out of an unrelated admin
+  // account in the same browser and bounced them to /login, where the page's
+  // own "that key was wrong" handling never got to run.
+  const isPlatformCall = String(input).includes('/api/platform/');
+
+  if (res.status === 401 && !isPlatformCall) {
     clearSession();
     if (!redirecting && !window.location.pathname.startsWith('/login')) {
       redirecting = true;
