@@ -4200,7 +4200,11 @@ app.get('/api/teacher/student/:studentId/analytics', async (req, res) => {
     if (!student) return res.status(404).json({ success: false, error: 'Student not found' });
 
     const submissions = await prisma.submission.findMany({
-      where: { studentId: student.id },
+      // Scoped to the classes this teacher actually teaches. Unfiltered, this
+      // returned the student's work in every subject in the school, so a Maths
+      // teacher opening a student saw their English feedback and grades — and
+      // the average blended subjects the teacher has no part in.
+      where: { studentId: student.id, activity: { class: { teacherId: req.auth.sub } } },
       orderBy: { createdAt: 'asc' },
       include: { activity: { select: { title: true, type: true, points: true, classId: true, component: true, class: { select: { name: true, subject: true, gradeLevel: true } } } } }
     });
