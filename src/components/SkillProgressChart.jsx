@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import { TrendingUp, Loader2 } from 'lucide-react';
 import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid, Legend, Tooltip } from 'recharts';
-import { API_URL } from '../config';
+import { API_URL, apiFetch } from '../config';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
 
@@ -61,7 +61,7 @@ export default function SkillProgressChart({
   useEffect(() => {
     if (!url) { setIsLoading(false); return; }
     setIsLoading(true);
-    fetch(url)
+    apiFetch(url)
       .then(r => r.json())
       .then(d => { if (d.success) setData(d); })
       .finally(() => setIsLoading(false));

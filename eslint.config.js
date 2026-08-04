@@ -17,6 +17,21 @@ export default defineConfig([
       sourceType: 'commonjs',
     },
   },
+  // Bare fetch() sends no Authorization header, so a call that uses it reaches
+  // the API unauthenticated and comes back 401 — which most screens render as
+  // "no data" rather than an error. That failure is silent and cost real
+  // debugging time, so the linter catches it now. config.js is exempt: it is
+  // where apiFetch and logout legitimately call fetch directly.
+  {
+    files: ['src/**/*.{js,jsx}'],
+    ignores: ['src/config.js'],
+    rules: {
+      'no-restricted-globals': ['error', {
+        name: 'fetch',
+        message: 'Use apiFetch from src/config.js — bare fetch() omits the auth token and silently 401s.',
+      }],
+    },
+  },
   {
     files: ['src/**/*.{js,jsx}'],
     extends: [

@@ -47,7 +47,7 @@ export default function AdminSectionDetail() {
     setBusy(true);
     setError('');
     try {
-      const res = await fetch(url, options);
+      const res = await apiFetch(url, options);
       const d = await res.json();
       if (d.success) { onOk?.(d); load(); }
       else setError(d.error || 'That did not work.');

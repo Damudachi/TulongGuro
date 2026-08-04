@@ -109,7 +109,7 @@ export default function Analytics() {
     const url = selectedSectionId
       ? `${API_URL}/api/teacher/${user.id}/analytics?sectionId=${selectedSectionId}`
       : `${API_URL}/api/teacher/${user.id}/analytics`;
-    fetch(url).then(r => r.json())
+    apiFetch(url).then(r => r.json())
       .then(d => setData(d.success ? d : null))
       .finally(() => setIsLoading(false));
     setSkillFilter(null);

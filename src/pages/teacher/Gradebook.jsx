@@ -62,7 +62,7 @@ export default function Gradebook() {
     if (selectedClassId) {
       const url = `${API_URL}/api/teacher/${user.id}/gradebook?classId=${selectedClassId}`;
       setIsLoading(true);
-      fetch(url).then(r => r.json())
+      apiFetch(url).then(r => r.json())
         .then(d => { if (d.success) setData(d); })
         .finally(() => setIsLoading(false));
     } else {
