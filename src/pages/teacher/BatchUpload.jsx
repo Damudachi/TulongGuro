@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
-import { ArrowLeft, UploadCloud, X, Loader2, Wifi, WifiOff, ShieldCheck, Info, FileText, Camera, Sparkles, Plus } from 'lucide-react';
+import { ArrowLeft, UploadCloud, X, Loader2, Wifi, WifiOff, ShieldCheck, Info, FileText, Camera, Sparkles, Plus, CheckCircle2, AlertTriangle, ClipboardCheck } from 'lucide-react';
 import { getQueue, buildJob, enqueue, flushQueue } from '../../utils/offlineQueue';
 import { API_URL, apiFetch } from '../../config';
 import SubmissionImage from '../../components/SubmissionImage';
@@ -30,6 +30,14 @@ export default function BatchUpload() {
   const [queuedCount, setQueuedCount] = useState(getQueue().length);
   const [isFlushing, setIsFlushing] = useState(false);
   const [piiConfirmed, setPiiConfirmed] = useState(false);
+
+  // ── Class-wide AI check ──
+  // What one "AI-check all" press would cost, and how the run is going. The
+  // check is a server-side job rather than a held-open request: a class set
+  // takes minutes, which is longer than school wifi will keep a request alive.
+  const [aiPlan, setAiPlan] = useState(null);     // { ready, batchSize, requestsNeeded, capacity }
+  const [aiJob, setAiJob] = useState(null);
+  const [isStartingAi, setIsStartingAi] = useState(false);
 
   // Per-student staged pages (picked but not yet uploaded), and upload-in-flight tracking.
   // Shape: { [studentId]: { pages: [{ file, preview }] } }
@@ -77,6 +85,53 @@ export default function BatchUpload() {
       .finally(() => setIsLoadingSubmissions(false));
   }, [activityId]);
 
+  const refreshAiPlan = () => {
+    if (!activityId) return;
+    apiFetch(`${API_URL}/api/teacher/activities/${activityId}/ai-check`)
+      .then(r => r.json())
+      .then(d => { if (d.success) setAiPlan(d); })
+      .catch(() => {});
+  };
+
+  useEffect(refreshAiPlan, [activityId, activitySubmissions.length]);
+
+  // Poll a running job. Stops as soon as the server reports it finished, so a
+  // completed run costs no further requests.
+  useEffect(() => {
+    if (!aiJob?.jobId || aiJob.state !== 'running') return;
+    const timer = setInterval(() => {
+      apiFetch(`${API_URL}/api/teacher/ai-jobs/${aiJob.jobId}`)
+        .then(r => r.json())
+        .then(d => {
+          if (!d.success) return;
+          setAiJob(d);
+          if (d.state !== 'running') {
+            refreshAiPlan();
+            // Pull the refreshed scores in so the roster reflects the run.
+            apiFetch(`${API_URL}/api/activities/${activityId}/submissions`)
+              .then(r => r.json())
+              .then(s => { if (s.success) setActivitySubmissions(s.submissions || []); });
+          }
+        })
+        .catch(() => {});
+    }, 2500);
+    return () => clearInterval(timer);
+  }, [aiJob?.jobId, aiJob?.state, activityId]);
+
+  const startAiCheck = async () => {
+    setIsStartingAi(true);
+    try {
+      const res = await apiFetch(`${API_URL}/api/teacher/activities/${activityId}/ai-check`, { method: 'POST' });
+      const data = await res.json();
+      if (data.success) setAiJob(data);
+      else alert(data.error || 'Could not start the AI check.');
+    } catch {
+      alert('Could not start the AI check. Please check your connection.');
+    } finally {
+      setIsStartingAi(false);
+    }
+  };
+
   const isStudentSubmitMode = activityMeta?.submissionMode === 'STUDENT_SUBMIT';
   const submissionsByStudentId = activitySubmissions.reduce((map, sub) => {
     map[sub.studentId] = sub;
@@ -85,7 +140,12 @@ export default function BatchUpload() {
   const maxPoints = activityMeta?.points || 100;
 
   // ── Per-student staged upload (teacher-upload mode) ──
-  const MAX_PAGES = 20;
+  // Capped at 12, not 20. Pages are stitched into one image before they go to
+  // the model, and the model refuses an image past roughly 62 megapixels —
+  // measured as 16 pages of a 1654px-wide scan, but only 12 pages of a phone
+  // photo, which the pipeline caps at 1920px wide. Allowing 20 meant a teacher
+  // could stage a submission that was guaranteed to fail on both models.
+  const MAX_PAGES = 12;
 
   const triggerFilePick = (studentId, source = 'files') => {
     pendingUploadStudentId.current = studentId;
@@ -498,6 +558,99 @@ export default function BatchUpload() {
           </div>
         )}
       </div>
+
+      {/* ── Class-wide AI check ── */}
+      {!isStudentSubmitMode && (aiPlan?.ready > 0 || aiJob) && (
+        <div className="fixed bottom-0 left-0 right-0 z-40 border-t border-slate-200 bg-white/95 backdrop-blur px-4 py-3 shadow-[0_-4px_16px_rgba(15,23,42,0.08)]">
+          <div className="max-w-5xl mx-auto">
+            {/* Running */}
+            {aiJob?.state === 'running' ? (
+              <div className="flex items-center gap-3">
+                <Loader2 className="w-5 h-5 animate-spin text-brand-navy shrink-0" />
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-bold text-brand-slate">
+                    Checking {aiJob.done + aiJob.flagged + aiJob.failed} of {aiJob.total} papers…
+                  </p>
+                  <div className="mt-1.5 h-1.5 w-full rounded-full bg-slate-200 overflow-hidden">
+                    <div
+                      className="h-full bg-brand-navy transition-all duration-500"
+                      style={{ width: `${Math.round(((aiJob.done + aiJob.flagged + aiJob.failed) / Math.max(aiJob.total, 1)) * 100)}%` }}
+                    />
+                  </div>
+                  <p className="text-[11px] text-slate-500 mt-1">
+                    You can leave this page — the check keeps running.
+                  </p>
+                </div>
+              </div>
+            ) : aiJob ? (
+              /* Finished */
+              <div className="flex items-center gap-3 flex-wrap">
+                <CheckCircle2 className="w-5 h-5 text-green-600 shrink-0" />
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-bold text-brand-slate">
+                    {aiJob.done} checked
+                    {aiJob.flagged > 0 && <span className="text-orange-600"> · {aiJob.flagged} flagged for a name on the paper</span>}
+                    {aiJob.failed > 0 && <span className="text-red-600"> · {aiJob.failed} failed</span>}
+                    {aiJob.skipped > 0 && <span className="text-amber-600"> · {aiJob.skipped} not reached</span>}
+                  </p>
+                  {aiJob.stoppedMessage && (
+                    <p className="text-[11px] text-amber-700 mt-0.5 flex items-start gap-1">
+                      <AlertTriangle className="w-3 h-3 mt-0.5 shrink-0" /> {aiJob.stoppedMessage}
+                    </p>
+                  )}
+                  {aiJob.realignments > 0 && (
+                    <p className="text-[11px] text-slate-500 mt-0.5">
+                      {aiJob.realignments} batch{aiJob.realignments > 1 ? 'es were' : ' was'} re-checked one paper at a time to guarantee each result went to the right student.
+                    </p>
+                  )}
+                </div>
+                <div className="flex gap-2 shrink-0">
+                  <button onClick={() => setAiJob(null)}
+                    className="text-xs px-3 py-2 rounded-lg font-bold text-slate-500 hover:bg-slate-100">
+                    Dismiss
+                  </button>
+                  {aiJob.done > 0 && (
+                    <button
+                      onClick={() => {
+                        const first = aiJob.items.find(i => i.state === 'done');
+                        if (first) navigate(`/teacher/review/${first.submissionId}?queue=${activityId}`);
+                      }}
+                      className="text-xs px-4 py-2 rounded-lg font-bold bg-brand-navy text-white hover:bg-blue-900 flex items-center gap-1.5">
+                      <ClipboardCheck className="w-4 h-4" /> Review {aiJob.done} paper{aiJob.done > 1 ? 's' : ''}
+                    </button>
+                  )}
+                </div>
+              </div>
+            ) : (
+              /* Ready to start */
+              <div className="flex items-center gap-3 flex-wrap">
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-bold text-brand-slate">
+                    {aiPlan.ready} paper{aiPlan.ready > 1 ? 's' : ''} ready for AI checking
+                  </p>
+                  {/* Shown before the teacher spends it, not after they hit the
+                      wall halfway down the class list. */}
+                  <p className="text-[11px] text-slate-500 mt-0.5">
+                    ≈ {aiPlan.requestsNeeded} request{aiPlan.requestsNeeded > 1 ? 's' : ''} ({aiPlan.batchSize} paper{aiPlan.batchSize > 1 ? 's' : ''} per request)
+                    {aiPlan.capacity?.configured && <> · about {aiPlan.capacity.remaining} check{aiPlan.capacity.remaining === 1 ? '' : 's'} left today (estimate)</>}
+                  </p>
+                  {aiPlan.capacity?.configured && aiPlan.capacity.remaining < aiPlan.requestsNeeded && (
+                    <p className="text-[11px] text-amber-700 mt-0.5 flex items-start gap-1">
+                      <AlertTriangle className="w-3 h-3 mt-0.5 shrink-0" />
+                      This is more than today's remaining limit. The run will check what it can and leave the rest un-scored.
+                    </p>
+                  )}
+                </div>
+                <button onClick={startAiCheck} disabled={isStartingAi}
+                  className="shrink-0 text-sm px-5 py-2.5 rounded-xl font-bold bg-brand-navy text-white hover:bg-blue-900 disabled:opacity-60 flex items-center gap-2">
+                  {isStartingAi ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
+                  AI-check {aiPlan.ready} paper{aiPlan.ready > 1 ? 's' : ''}
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

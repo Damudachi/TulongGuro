@@ -405,23 +405,67 @@ async function resolveLocalImagePath(imageUrl) {
 const PRIMARY_MODEL_ID = process.env.GEMINI_MODEL || 'gemini-3.6-flash';
 const LITE_MODEL_ID = process.env.GEMINI_LITE_MODEL || 'gemini-3.5-flash-lite';
 
-const genAI = aiConfigured ? new GoogleGenerativeAI(aiApiKey) : null;
-const model = genAI ? genAI.getGenerativeModel({
-  model: PRIMARY_MODEL_ID,
-  generationConfig: { responseMimeType: 'application/json' }
-}) : null;
-const modelLite = genAI ? genAI.getGenerativeModel({
-  model: LITE_MODEL_ID,
-  generationConfig: { responseMimeType: 'application/json' }
-}) : null;
+// Grading runs against a rotation POOL, not a primary with a fallback bolted on.
+// Quota is metered per project per model — the 429 body names the quota
+// "GenerateRequestsPerDayPerProjectPerModel" — so two models are two independent
+// daily budgets. Rotating spends both; try-primary-then-fallback spends the
+// second only after the first has already failed and the teacher has already
+// waited out a doomed call. On the free tier the primary alone measured 20
+// checks a day, which is less than half a DepEd section.
+//
+// Order is preference order: the pool is tried in sequence from a rotating start
+// offset, so put the model whose vision quality you trust most first.
+const GRADING_MODEL_IDS = (process.env.GEMINI_GRADING_MODELS || `${PRIMARY_MODEL_ID},${LITE_MODEL_ID}`)
+  .split(',').map(s => s.trim()).filter(Boolean);
+
 // The Study Buddy chatbot is short conversational turns, not vision grading, and
-// it is the highest-volume AI surface in the app. Running it on Flash-Lite keeps
-// it off the primary model's rate limit so a class of students chatting can
-// never starve the teacher's grading queue.
-const chatModel = genAI ? genAI.getGenerativeModel({ model: LITE_MODEL_ID }) : null;
+// it is the highest-volume AI surface in the app. It gets a model that is
+// deliberately NOT in the grading pool: a class of students chatting must never
+// be able to spend the budget the teacher's grading queue is depending on.
+const CHAT_MODEL_ID = process.env.GEMINI_CHAT_MODEL || 'gemini-3.5-flash';
+
+// What one model is assumed to be good for in a day. Google does not expose a
+// remaining-quota endpoint, so this is a declared budget used only to show the
+// teacher a "checks left today" estimate before they start a batch — the real
+// limit is still whatever Google enforces.
+const AI_DAILY_BUDGET_PER_MODEL = Number(process.env.AI_DAILY_BUDGET_PER_MODEL || 20);
+
+const genAI = aiConfigured ? new GoogleGenerativeAI(aiApiKey) : null;
+
+/** One entry per grading model: the SDK handle plus this process's running view
+ *  of whether that model still has budget left today. */
+const gradingPool = genAI ? GRADING_MODEL_IDS.map(id => ({
+  id,
+  model: genAI.getGenerativeModel({ model: id, generationConfig: { responseMimeType: 'application/json' } }),
+  unavailableUntil: 0,  // set when the model reports its *daily* quota is gone
+  used: 0,              // calls this model actually answered today
+  failed: 0
+})) : [];
+let gradingPoolCursor = 0;
+let gradingPoolDay = new Date().toDateString();
+
+/** Google's daily quotas reset on their own clock, not ours, so rather than
+ *  trying to predict the reset we rest an exhausted model and re-probe it. One
+ *  wasted call an hour is cheaper than staying dark until someone restarts. */
+const GEMINI_DAILY_COOLDOWN_MS = Number(process.env.GEMINI_DAILY_COOLDOWN_MS || 15 * 60 * 1000);
+
+/** Clears the per-day counters once the calendar day turns over. */
+function rollPoolDayIfNeeded() {
+  const today = new Date().toDateString();
+  if (today === gradingPoolDay) return;
+  gradingPoolDay = today;
+  gradingPool.forEach(e => { e.used = 0; e.failed = 0; e.unavailableUntil = 0; });
+}
+
+// Single handles kept for the callers that are not grading (rubric extraction,
+// curriculum parsing, roster extraction) and want one model rather than the
+// rotation. They alias the ends of the pool so nothing downstream changed shape.
+const model = gradingPool[0]?.model || null;
+const modelLite = gradingPool[gradingPool.length - 1]?.model || null;
+const chatModel = genAI ? genAI.getGenerativeModel({ model: CHAT_MODEL_ID }) : null;
 
 if (aiConfigured) {
-  console.log(`🤖 Gemini AI enabled (primary: ${PRIMARY_MODEL_ID}, fallback: ${LITE_MODEL_ID})`);
+  console.log(`🤖 Gemini AI enabled (grading pool: ${GRADING_MODEL_IDS.join(' → ')}; chat: ${CHAT_MODEL_ID})`);
 } else {
   console.log('⚠ Gemini AI disabled: set GEMINI_API_KEY or GOOGLE_API_KEY in server/.env to enable AI features');
 }
@@ -444,6 +488,71 @@ function assertNoPrivacyViolation(aiResult) {
   if (aiResult?.privacyViolationDetected === true) {
     throw new PrivacyViolationError(aiResult.privacyViolationType);
   }
+}
+
+/**
+ * Raised when a batched grading response cannot be shown to line up with the
+ * papers that were sent — wrong number of results, or a paperNumber that is
+ * missing, out of range, or repeated.
+ *
+ * Always recoverable: the caller re-grades those papers one at a time. It costs
+ * extra requests, which is the cheap failure. The expensive one is publishing a
+ * student's feedback under a classmate's name, and that is what this prevents.
+ */
+class BatchAlignmentError extends Error {
+  constructor(detail) {
+    super(`The AI's batch response did not line up with the papers sent (${detail}).`);
+    this.name = 'BatchAlignmentError';
+  }
+}
+
+/**
+ * Normalise one paper's raw result.
+ *
+ * A privacy hit becomes a marker on the result rather than an exception, because
+ * in a batch a name on paper 2 must flag paper 2 and leave the rest gradeable —
+ * throwing would discard four good gradings and the request that paid for them.
+ */
+/**
+ * Extra `where` clause restricting a student to work that has actually been
+ * released to them.
+ *
+ * The /api/student/:studentId/* endpoints are read by the student *and* by their
+ * teacher and school admin, so the gate keys on who is asking rather than on the
+ * route: staff need to see approved-but-unreleased drafts — that is what the
+ * gradebook and analytics are for — while the student must not see a mark until
+ * the teacher publishes the set.
+ */
+function releaseFilterFor(auth) {
+  return auth?.role === 'STUDENT' ? { releasedAt: { not: null } } : {};
+}
+
+/**
+ * Blank out a validated-but-unreleased result for the student it belongs to.
+ *
+ * Used where the row itself still has to be returned — the student's activity
+ * list needs to show that their work was submitted and is being reviewed, so it
+ * cannot simply be filtered out; only the mark and the feedback are withheld.
+ * Staff get the row untouched.
+ */
+function maskUnreleasedForStudent(sub, auth) {
+  if (!sub || auth?.role !== 'STUDENT' || sub.releasedAt) return sub;
+  return {
+    ...sub,
+    status: sub.status === 'GRADED' ? 'PENDING' : sub.status,
+    hitlScore: null,
+    aiScore: null,
+    hitlFeedback: null,
+    aiFeedback: null,
+    awaitingRelease: true
+  };
+}
+
+function normalisePaperResult(raw, modelId) {
+  if (raw?.privacyViolationDetected === true) {
+    return { privacyViolation: true, violationType: raw.privacyViolationType || 'name', aiSource: modelId };
+  }
+  return { ...raw, privacyViolation: false, aiSource: modelId };
 }
 
 /**
@@ -535,48 +644,181 @@ function geminiQueueDepth() {
   return geminiGate.waiting.length + geminiGate.active;
 }
 
+/** Ceiling on a single retry sleep. Google's RetryInfo is free to ask for a long
+ *  wait; a teacher watching a spinner is not. Past this we stop waiting on the
+ *  model and let the rotation go spend a different budget instead. */
+const GEMINI_MAX_RETRY_DELAY_MS = Number(process.env.GEMINI_MAX_RETRY_DELAY_MS || 30000);
+
+/**
+ * Pull the useful facts out of a Gemini SDK error.
+ *
+ * The SDK flattens the whole error body into err.message, so the RetryInfo and
+ * QuotaFailure blocks Google sends back are sitting in there as text. Reading
+ * them beats guessing: a per-MINUTE 429 wants a short wait and then succeeds,
+ * while a per-DAY 429 will still be exhausted an hour later and must not be
+ * retried at all. The old code treated both as "retryable" and backed off
+ * 800ms/1600ms against a body that had explicitly asked for 7s, so both retries
+ * were spent inside the closed window and were guaranteed to fail.
+ */
+function classifyAiError(err) {
+  const msg = (err && err.message) || String(err || '');
+  // '"retryDelay":"7s"' inside the RetryInfo block, or the human sentence
+  // ("Please retry in 7.325236758s.") that precedes it.
+  const hinted = /"retryDelay"\s*:\s*"([\d.]+)s"/.exec(msg) || /retry in ([\d.]+)\s*s/i.exec(msg);
+  const quota = /429|resource.?exhausted|exceeded your current quota|rate limit/i.test(msg);
+  return {
+    quota,
+    // The one that cannot be waited out inside a single request.
+    dailyQuota: quota && /PerDay|per_day|requests per day/i.test(msg),
+    transient: /50[034]|overloaded|high demand|unavailable|deadline|timeout|ETIMEDOUT|ECONNRESET/i.test(msg),
+    // A page image the model refuses to decode — measured at ~62 megapixels of
+    // stitched output, i.e. roughly 12 phone photos in one submission. Not
+    // retryable and not a quota problem: the fix is fewer pages.
+    badImage: /unable to process input image|image.*too large|invalid image/i.test(msg),
+    retryAfterMs: hinted ? Math.ceil(parseFloat(hinted[1]) * 1000) : null,
+    message: msg
+  };
+}
+
+/**
+ * Raised once every grading model has been tried and none of them produced a
+ * result.
+ *
+ * Deliberately distinct from a bad grade: it means nothing whatsoever is known
+ * about the paper, so no score of any kind may be recorded for it. The previous
+ * behaviour — writing aiScore 0 with an "AI grading is currently unavailable"
+ * string in the feedback field — put a zero in the gradebook that was
+ * indistinguishable from a paper the AI had actually read and failed.
+ */
+class AiUnavailableError extends Error {
+  constructor(reason, detail) {
+    super(detail || 'The AI service is unavailable.');
+    this.name = 'AiUnavailableError';
+    this.reason = reason;   // 'QUOTA' | 'IMAGE' | 'OUTAGE' | 'NOT_CONFIGURED'
+  }
+}
+
 // Wraps a Gemini generateContent() call with retry + backoff for transient
-// upstream failures (503 "high demand", 429 rate limits, etc.) so a momentary
-// blip on Google's side doesn't surface as a hard failure to the user.
-async function generateContentWithRetry(genModel, parts, { retries = 2, baseDelayMs = 800 } = {}) {
+// upstream failures (503 "high demand", per-minute 429s) so a momentary blip on
+// Google's side doesn't surface as a hard failure to the user.
+async function generateContentWithRetry(genModel, parts, { retries = 2, baseDelayMs = 800, poolEntry = null } = {}) {
   let lastErr;
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
       await acquireGeminiSlot();
       try {
-        return await genModel.generateContent(parts);
+        const result = await genModel.generateContent(parts);
+        if (poolEntry) poolEntry.used++;
+        return result;
       } finally {
         releaseGeminiSlot();
       }
     } catch (err) {
       lastErr = err;
-      const retryable = /503|overloaded|high demand|unavailable|429|rate limit|resource.?exhausted/i.test(err.message || '');
-      if (attempt < retries && retryable) {
-        const delay = baseDelayMs * Math.pow(2, attempt);
-        console.log(`⚠ Gemini call failed (attempt ${attempt + 1}/${retries + 1}), retrying in ${delay}ms: ${(err.message || '').slice(0, 120)}`);
-        await new Promise(r => setTimeout(r, delay));
-      } else {
-        break;
+      const cls = classifyAiError(err);
+      if (poolEntry) {
+        poolEntry.failed++;
+        if (cls.dailyQuota) {
+          poolEntry.unavailableUntil = Date.now() + GEMINI_DAILY_COOLDOWN_MS;
+          console.log(`⚠ ${poolEntry.id}: daily quota exhausted — resting it for ${Math.round(GEMINI_DAILY_COOLDOWN_MS / 60000)} min`);
+        }
       }
+      // A daily cap cannot be waited out inside one request, and an image the
+      // model can't decode will fail identically every time. Both go straight
+      // back to the caller so the rotation can spend a different model's budget
+      // rather than burning this one on attempts that cannot succeed.
+      const worthRetrying = (cls.quota || cls.transient) && !cls.dailyQuota && !cls.badImage;
+      if (!worthRetrying || attempt >= retries) break;
+      const backoff = baseDelayMs * Math.pow(2, attempt);
+      // Honour whichever is longer: our backoff, or the wait Google asked for.
+      const delay = Math.min(Math.max(backoff, cls.retryAfterMs || 0), GEMINI_MAX_RETRY_DELAY_MS);
+      console.log(`⚠ Gemini call failed (attempt ${attempt + 1}/${retries + 1}), retrying in ${delay}ms${cls.retryAfterMs ? ` (server asked for ${cls.retryAfterMs}ms)` : ''}: ${cls.message.slice(0, 120)}`);
+      await new Promise(r => setTimeout(r, delay));
     }
   }
   throw lastErr;
 }
 
+/** The pool in the order this call should try it: a round-robin start offset so
+ *  consecutive gradings open on different budgets, minus any model that has
+ *  already told us its daily quota is gone. */
+function gradingRotation() {
+  rollPoolDayIfNeeded();
+  if (!gradingPool.length) return [];
+  const now = Date.now();
+  const ordered = gradingPool.map((_, i) => gradingPool[(gradingPoolCursor + i) % gradingPool.length]);
+  gradingPoolCursor = (gradingPoolCursor + 1) % gradingPool.length;
+  return ordered.filter(e => e.unavailableUntil <= now);
+}
+
+/**
+ * Run a grading call against the pool, trying each live model in rotation order.
+ * Returns { result, modelId } so the caller can record which budget paid for it.
+ * Throws AiUnavailableError — never a placeholder result — when the pool is out.
+ */
+async function generateGradingContent(parts, opts = {}) {
+  if (!gradingPool.length) {
+    throw new AiUnavailableError('NOT_CONFIGURED', 'Gemini AI is not configured on this server.');
+  }
+  const rotation = gradingRotation();
+  if (!rotation.length) {
+    throw new AiUnavailableError('QUOTA', 'Every AI model has used up its daily checking limit.');
+  }
+  let last = null;
+  for (const entry of rotation) {
+    try {
+      const result = await generateContentWithRetry(entry.model, parts, { retries: 1, ...opts, poolEntry: entry });
+      return { result, modelId: entry.id };
+    } catch (err) {
+      last = classifyAiError(err);
+      console.log(`⚠ ${entry.id} failed: ${last.message.slice(0, 140)}`);
+    }
+  }
+  if (last?.badImage) {
+    throw new AiUnavailableError('IMAGE', 'The pages for this student add up to an image too large for the AI to read. Upload fewer pages and try again.');
+  }
+  if (last?.quota) {
+    throw new AiUnavailableError('QUOTA', 'The daily AI checking limit has been reached.');
+  }
+  throw new AiUnavailableError('OUTAGE', 'The AI service did not respond. Please try again shortly.');
+}
+
 // Same as generateContentWithRetry, but if the primary model still fails after
 // exhausting its retries (e.g. a sustained outage, not just a momentary blip),
-// falls back once to modelLite before giving up.
+// falls back once to modelLite before giving up. Used by the non-grading callers
+// — grading itself goes through generateGradingContent's full rotation.
 async function generateContentWithFallback(primaryModel, parts, opts = {}) {
   try {
     return await generateContentWithRetry(primaryModel, parts, opts);
   } catch (err) {
-    const retryable = /503|overloaded|high demand|unavailable|429|rate limit|resource.?exhausted/i.test(err.message || '');
-    if (retryable && modelLite && primaryModel !== modelLite) {
-      console.log(`⚠ Primary model still failing after retries, falling back to modelLite: ${(err.message || '').slice(0, 120)}`);
+    const cls = classifyAiError(err);
+    if ((cls.quota || cls.transient) && modelLite && primaryModel !== modelLite) {
+      console.log(`⚠ Primary model still failing after retries, falling back to modelLite: ${cls.message.slice(0, 120)}`);
       return await generateContentWithRetry(modelLite, parts, { retries: 1, baseDelayMs: opts.baseDelayMs || 800 });
     }
     throw err;
   }
+}
+
+/** Snapshot of the grading pool for the teacher-facing "checks left today"
+ *  estimate. Google exposes no remaining-quota API, so this is this process's
+ *  own tally against a declared budget — an estimate, and labelled as one. */
+function gradingCapacitySnapshot() {
+  rollPoolDayIfNeeded();
+  const now = Date.now();
+  const models = gradingPool.map(e => ({
+    id: e.id,
+    used: e.used,
+    exhausted: e.unavailableUntil > now,
+    remaining: e.unavailableUntil > now ? 0 : Math.max(0, AI_DAILY_BUDGET_PER_MODEL - e.used)
+  }));
+  return {
+    configured: gradingPool.length > 0,
+    budgetPerModel: AI_DAILY_BUDGET_PER_MODEL,
+    remaining: models.reduce((sum, m) => sum + m.remaining, 0),
+    queueDepth: geminiQueueDepth(),
+    models
+  };
 }
 
 // ─────────────────────────────────────────
@@ -2771,7 +3013,11 @@ app.post('/api/teacher/activities/:activityId/scores', async (req, res) => {
       const existing = await prisma.submission.findFirst({
         where: { studentId: row.studentId, activityId }, select: { id: true }
       });
-      const data = { hitlScore: percent, status: 'GRADED', gradedAt: new Date() };
+      // Released on the spot, unlike an AI draft. There is no draft to review
+      // here — the teacher typed this mark themselves, so validating it and
+      // publishing it are the same act, and holding it back would mean scores
+      // entered by hand silently never reached the class.
+      const data = { hitlScore: percent, status: 'GRADED', gradedAt: new Date(), releasedAt: new Date() };
       const saved = existing
         ? await prisma.submission.update({ where: { id: existing.id }, data })
         : await prisma.submission.create({
@@ -3330,7 +3576,25 @@ async function stitchPages(imageFiles) {
 // VLM UPLOAD (Gemini Vision)
 // ─────────────────────────────────────────
 
-async function generateSubmissionFeedback(imagePath, activityId, studentId) {
+/**
+ * Grade one or more papers for the same activity in a single inference.
+ *
+ * `imagePaths` may be a single path (one paper — the original behaviour) or an
+ * array of paths, one per student. Batching exists because quota is metered in
+ * *requests*, not tokens: on the free tier a request is the scarce thing, and N
+ * papers sent as N separate image parts cost one request while each keeping its
+ * own full image-token budget. Stitching them into one tall image would also be
+ * one request but collapses every paper into a single ~1,000-token budget, so
+ * the handwriting stops being legible. Separate parts, one request.
+ *
+ * Returns an array of per-paper results, always the same length and order as the
+ * input. A paper the privacy gate rejected comes back as { privacyViolation:
+ * true } rather than throwing, so one flagged paper cannot void the whole batch.
+ */
+async function generateSubmissionFeedback(imagePaths, activityId, studentId) {
+    const paperPaths = Array.isArray(imagePaths) ? imagePaths : [imagePaths];
+    const paperCount = paperPaths.length;
+    if (paperCount === 0) return [];
     // Formats a criteria array into the "MANDATORY RUBRIC" prompt block, shared by all rubric tiers below.
     function formatRubricCriteria(criteria, sourceLabel) {
       return `MANDATORY RUBRIC${sourceLabel ? ` (${sourceLabel})` : ''} — You MUST use this rubric for scoring. Do NOT use any default rubric.\n\n` +
@@ -3542,15 +3806,34 @@ IMPORTANT RULES:
 - DATA PRIVACY RULE: Do NOT mention or include the student's name anywhere in your feedback.
 - TONE RULE: Do NOT use exclamation marks in praise. Do NOT use words like "excellent", "amazing", "wonderful", "fantastic", "brilliant" unless quoting the rubric band label. Be factual and measured.
 
-TASK: In ONE step:
+${paperCount > 1 ? `THIS REQUEST CONTAINS ${paperCount} SEPARATE PAPERS BY ${paperCount} DIFFERENT STUDENTS.
+Each paper is introduced by a "[PAPER n]" marker immediately before its image.
+
+BATCH RULES — these override anything that reads as a single-paper instruction:
+- Grade each paper INDEPENDENTLY and ONLY against the rubric above.
+- Do NOT compare the papers to each other. Do NOT grade on a curve. A paper's
+  score must be identical to what it would receive if it were the only paper in
+  this request. The other papers are not context and are not a reference point.
+- Never carry a quote, an error, or an observation from one paper to another.
+  Every studentQuote must come from the paper it is filed under.
+- Apply STEP 0 (the privacy gate) separately to each paper. A name on paper 2
+  flags ONLY paper 2; the rest are still graded normally.
+- Return exactly ${paperCount} results, one per paper, in paper order.
+
+` : ''}TASK: In ONE step, for ${paperCount > 1 ? 'EACH paper' : 'the paper'}:
 1. Read and transcribe the handwritten student essay from the image.
 2. Grade it against the rubric.
 3. Provide structured, evidence-based clinical feedback.
 4. Generate a personalized reading intervention strategy connected to the weaknesses found.
 
 You MUST respond with valid JSON matching this exact schema:
+${paperCount > 1 ? `{ "results": [ <one object per paper, in paper order, each shaped exactly like the object below and each carrying its own "paperNumber"> ] }
+
+Each object in "results":
 {
-  "privacyViolationDetected": <true if STEP 0 found identifying information; when true return ONLY this field and privacyViolationType>,
+  "paperNumber": <the n from its [PAPER n] marker, 1-${paperCount}>,
+  "firstLine": "<the first line of handwriting on this paper, copied exactly — this is how the paper is matched back to its student, so it must come from this paper and no other>",` : `{`}
+  "privacyViolationDetected": <true if STEP 0 found identifying information; when true return ONLY this field and privacyViolationType${paperCount > 1 ? ' and paperNumber, for THIS paper only' : ''}>,
   "score": <total 0-100, use 0 if no readable text>,
   "rubricScores": [
     { "criterionName": "<string>", "score": <number>, "maxPoints": <number>, "bandDescription": "<the FULL descriptive text of the scoring band the student achieved>" }
@@ -3598,125 +3881,87 @@ RULES FOR skillExplanations:
 - Each explanation should reference specific evidence from the essay.
 - Keep each to 1 sentence.`;
 
-    // Track AI source for transparency
-    let aiSource = 'mock';  // 'gemini' | 'gemini-lite' | 'mock'
-    let aiError = null;
+    // ── Execute ──────────────────────────────────────────────────────────────
+    // A "[PAPER n]" text marker is interleaved before each image. Anchoring on a
+    // label the model can actually see beats trusting positional order in the
+    // parts array: a shuffled or short response would otherwise file one
+    // student's feedback under another student's name, which in a gradebook is
+    // unrecoverable.
+    const parts = [prompt];
+    for (let i = 0; i < paperCount; i++) {
+      const buf = fs.readFileSync(paperPaths[i]);
+      if (paperCount > 1) parts.push(`\n[PAPER ${i + 1}]\n`);
+      parts.push({ inlineData: { data: buf.toString('base64'), mimeType: 'image/jpeg' } });
+    }
 
-    let aiResult = null;
-
-    // Robust JSON parsing with retry logic. Goes through generateContentWithRetry
-    // rather than calling the model directly so these grading calls are subject to
-    // the same rate gate as everything else — this is the highest-volume AI path
-    // in the app and the one most likely to burst.
-    // This loop's job is now only malformed JSON — transport failures (503/429)
-    // are already retried with backoff one level down, so keeping the old
-    // retries=2 here would have multiplied out to nine calls for a single essay
-    // and burned a minute of rate-limit budget getting nowhere.
-    async function callGemini(m, parts, retries = 1) {
+    /** One grading call: rotate across the model pool, then parse. Retries only
+     *  malformed JSON — transport failures are already handled a level down, so
+     *  retrying them here too would multiply out into a burst of doomed calls. */
+    async function gradeOnce(retries = 1) {
+      let lastParseErr;
       for (let attempt = 0; attempt <= retries; attempt++) {
+        const { result, modelId } = await generateGradingContent(parts);
         try {
-          const result = await generateContentWithRetry(m, parts, { retries: 1 });
-          const text = result.response.text();
-          // Clean up common Gemini output artifacts
-          let cleaned = text
+          const cleaned = result.response.text()
             .replace(/```json\s*/gi, '')
             .replace(/```\s*/g, '')
             .replace(/^[^{]*/, '')  // Remove anything before the first {
             .replace(/[^}]*$/, '')  // Remove anything after the last }
             .trim();
-          return JSON.parse(cleaned);
+          return { parsed: JSON.parse(cleaned), modelId };
         } catch (parseErr) {
-          if (attempt < retries) {
-            console.log(`⚠ JSON parse attempt ${attempt + 1} failed, retrying... (${parseErr.message?.slice(0, 60)})`);
-            // Small delay before retry
-            await new Promise(r => setTimeout(r, 500 * (attempt + 1)));
-          } else {
-            throw parseErr;
-          }
+          lastParseErr = parseErr;
+          console.log(`⚠ JSON parse attempt ${attempt + 1} failed (${modelId}): ${parseErr.message?.slice(0, 60)}`);
+          if (attempt < retries) await new Promise(r => setTimeout(r, 500 * (attempt + 1)));
         }
       }
+      throw lastParseErr;
     }
 
-    const imgBuffer = fs.readFileSync(imagePath);
-    const imageParts = [{ inlineData: { data: imgBuffer.toString('base64'), mimeType: 'image/jpeg' } }];
+    const { parsed, modelId } = await gradeOnce();
 
-    // Primary grading call
-    try {
-      aiResult = await callGemini(model, [prompt, ...imageParts]);
-      aiSource = 'gemini';
-      assertNoPrivacyViolation(aiResult);
-      console.log('✅ Gemini graded:', aiResult.score, '/ 100', aiResult.noTextDetected ? '(NO TEXT DETECTED)' : '');
-    } catch (e) {
-      // A privacy hit is a definitive answer, not a failure — the paper really
-      // does have a name on it. Re-running it on the Lite model would only spend
-      // more tokens to reach the same conclusion.
-      if (e instanceof PrivacyViolationError) throw e;
-      const errMsg = e.message || String(e);
-      console.log('⚠ Primary model failed:', errMsg.slice(0, 200));
-      // Try lite model
-      try {
-        aiResult = await callGemini(modelLite, [prompt, ...imageParts]);
-        aiSource = 'gemini-lite';
-        assertNoPrivacyViolation(aiResult);
-        console.log('✅ Gemini-lite graded:', aiResult.score, '/ 100');
-      } catch (e2) {
-        if (e2 instanceof PrivacyViolationError) throw e2;
-        const errMsg2 = e2.message || String(e2);
-        console.log('⚠ Lite model also failed:', errMsg2.slice(0, 200));
-        aiError = `AI grading failed. Primary: ${errMsg.slice(0, 100)} | Lite: ${errMsg2.slice(0, 100)}`;
-        // Use placeholder — but mark it clearly as mock
-        aiResult = {
-          score: 0, contentScore: 0, contentMax: 40,
-          organizationScore: 0, organizationMax: 30,
-          grammarScore: 0, grammarMax: 30,
-          strengths: `⚠ AI grading is currently unavailable. Error: ${errMsg.slice(0, 120)}. The teacher will need to grade this manually.`,
-          areasForGrowth: [],
-          actionableSteps: [],
-          skillExplanations: { vocabulary: 'N/A', punctuation: 'N/A', thematicFlow: 'N/A', sentenceStructure: 'N/A' },
-          readingStrategy: 'AI was unable to analyze this submission. Manual review required.',
-          noTextDetected: false,
-          skillScores: { vocabulary: 0, punctuation: 0, thematicFlow: 0, sentenceStructure: 0 }
-        };
+    // One paper keeps the flat shape the model has always returned. Tolerate it
+    // wrapping a single result in the batch envelope anyway.
+    if (paperCount === 1) {
+      const only = (Array.isArray(parsed?.results) ? parsed.results[0] : parsed) || {};
+      console.log(`✅ ${modelId} graded: ${only.score} / 100${only.noTextDetected ? ' (NO TEXT DETECTED)' : ''}`);
+      return [normalisePaperResult(only, modelId)];
+    }
+
+    // ── Batch alignment guard ────────────────────────────────────────────────
+    // Everything below exists to establish that result k really is paper k. If
+    // that cannot be shown, the whole batch is rejected and the caller re-runs
+    // the papers one at a time: spending extra quota is recoverable, writing a
+    // grade under the wrong student's name is not.
+    const results = Array.isArray(parsed?.results) ? parsed.results : null;
+    if (!results || results.length !== paperCount) {
+      throw new BatchAlignmentError(`expected ${paperCount} results, got ${results ? results.length : 'none'}`);
+    }
+    const seen = new Set();
+    const ordered = new Array(paperCount);
+    for (const entry of results) {
+      const n = Number(entry?.paperNumber);
+      if (!Number.isInteger(n) || n < 1 || n > paperCount || seen.has(n)) {
+        throw new BatchAlignmentError(`bad or duplicate paperNumber ${JSON.stringify(entry?.paperNumber)}`);
       }
+      seen.add(n);
+      ordered[n - 1] = entry;
     }
-    
-    // Chain-of-Verification — SKIPPED by default during upload for speed
-    // Teacher can trigger verification from the HITL review page via /api/teacher/submissions/:id/verify
-    let covData = null;
-    const runCoV = false;
-    if (runCoV && aiSource !== 'mock' && !aiResult.noTextDetected) {
-      const originalScore = aiResult.score;
-      try {
-        const covPrompt = `You previously graded this handwritten student essay and produced this result:
-- Content: ${aiResult.contentScore}/${aiResult.contentMax}
-- Organization: ${aiResult.organizationScore}/${aiResult.organizationMax}
-- Grammar: ${aiResult.grammarScore}/${aiResult.grammarMax}
-- Total: ${aiResult.score}/100
-- Feedback: "${aiResult.strengths}"
+    if (ordered.some(e => !e)) throw new BatchAlignmentError('a paper came back with no result');
 
-${rubricContext}
+    console.log(`✅ ${modelId} graded ${paperCount} papers: ${ordered.map(r => r.privacyViolationDetected ? 'PII' : r.score).join(', ')}`);
+    return ordered.map(r => normalisePaperResult(r, modelId));
+}
 
-Now VERIFY: Re-examine the image carefully. Is this grade fair and accurate?
-If correct, return the same scores. If you find an error, correct it.
-Respond with JSON ONLY using the same schema as before.`;
-
-        const verifiedResult = await callGemini(model, [covPrompt, ...imageParts]);
-        const scoreDelta = Math.abs(verifiedResult.score - originalScore);
-        const conflict = scoreDelta > 10;
-        covData = { originalScore, verifiedScore: verifiedResult.score, conflict, delta: scoreDelta };
-
-        if (conflict) {
-          console.log(`🔍 CoV conflict: ${originalScore} → ${verifiedResult.score} (Δ${scoreDelta})`);
-          aiResult = verifiedResult;
-        } else {
-          console.log(`✅ CoV confirmed: ${aiResult.score}`);
-        }
-      } catch (e) {
-        console.log('⚠ CoV skipped:', e.message?.slice(0, 80));
-      }
-    }
-
-    return aiResult;
+/**
+ * Single-paper wrapper preserving the original contract — one flat result
+ * object, PrivacyViolationError thrown — for the callers that grade one paper
+ * at a time and already have cleanup built around that exception.
+ */
+async function gradeSingleSubmission(imagePath, activityId, studentId) {
+  const [result] = await generateSubmissionFeedback([imagePath], activityId, studentId);
+  if (result?.privacyViolation) throw new PrivacyViolationError(result.violationType);
+  return result;
 }
 
 // ─────────────────────────────────────────
@@ -3746,6 +3991,16 @@ app.get('/api/submissions/:id', async (req, res) => {
   if (!sub) return res.status(404).json({ success: false, error: 'Submission not found.' });
   if (req.auth.role === 'STUDENT' && sub.studentId !== req.auth.sub) {
     return res.status(403).json({ success: false, code: 'FORBIDDEN', error: 'You can only see your own work.' });
+  }
+  // Validated but not yet published. The student's own row exists and they may
+  // know it does, so this is a "not ready" answer rather than a 403 — the paper
+  // is theirs, the teacher simply has not released the class set yet.
+  if (req.auth.role === 'STUDENT' && !sub.releasedAt) {
+    return res.status(409).json({
+      success: false,
+      code: 'NOT_RELEASED',
+      error: 'Your teacher is still reviewing this activity. Your feedback will appear here once it is released.'
+    });
   }
   res.json({ success: true, submission: sub });
 });
@@ -3782,7 +4037,7 @@ app.post('/api/teacher/submissions/:id/analyze', async (req, res) => {
 
     let aiData;
     try {
-      aiData = await generateSubmissionFeedback(imagePath, sub.activityId, sub.studentId);
+      aiData = await gradeSingleSubmission(imagePath, sub.activityId, sub.studentId);
     } finally {
       if (isTemp) { try { fs.unlinkSync(imagePath); } catch {} }
     }
@@ -3834,8 +4089,375 @@ app.post('/api/teacher/submissions/:id/analyze', async (req, res) => {
         submission: flagged
       });
     }
+    // The AI never read the paper, so nothing is known about it. Leave the
+    // submission exactly as it was — still PENDING, still un-scored — so it
+    // stays in the "ready for AI checking" queue and the teacher can retry once
+    // the quota resets. Writing a score here (this used to store 0 with an "AI
+    // grading is currently unavailable" note) put a zero in the gradebook that
+    // was indistinguishable from a paper the AI had actually read and failed.
+    if (e instanceof AiUnavailableError) {
+      return res.status(503).json({
+        success: false,
+        code: e.reason === 'QUOTA' ? 'AI_QUOTA_EXHAUSTED' : `AI_${e.reason}`,
+        error: e.reason === 'QUOTA'
+          ? 'The daily AI checking limit has been reached, so this paper was not checked and no score was recorded. It stays in the queue — try again after the limit resets, or grade it manually.'
+          : e.message,
+        capacity: gradingCapacitySnapshot()
+      });
+    }
     console.error('Analyze error:', e);
     await prisma.submission.update({ where: { id: req.params.id }, data: { status: 'ERROR', aiFeedback: '? AI Error: ' + e.message } });
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// ─────────────────────────────────────────
+// BATCH AI CHECKING
+// ─────────────────────────────────────────
+// Quota is metered in requests, not tokens, so the scarce thing is the call
+// itself. N papers sent as N image parts in one request cost one unit of daily
+// quota while each paper keeps its own full image-token budget. At the measured
+// free-tier ceiling of 20 requests/day/model, batches of 5 turn one model's
+// budget from 20 papers into 100.
+//
+// AI_BATCH_SIZE=1 disables batching. That is both the kill switch, if batched
+// grading is ever shown to drift from solo grading, and the way to run the
+// solo-vs-batch comparison without maintaining two code paths.
+const AI_BATCH_SIZE = Math.max(1, Number(process.env.AI_BATCH_SIZE || 5));
+
+/** In-memory job registry. Checking a class set takes minutes — far longer than
+ *  a teacher's phone will hold a request open on school wifi — so the work is a
+ *  job the client polls, not a response it waits on. */
+const aiJobs = new Map();
+const AI_JOB_TTL_MS = 60 * 60 * 1000;
+
+function pruneAiJobs() {
+  const cutoff = Date.now() - AI_JOB_TTL_MS;
+  for (const [id, job] of aiJobs) {
+    if (job.finishedAt && job.finishedAt < cutoff) aiJobs.delete(id);
+  }
+}
+
+function setJobItem(job, submissionId, state, extra = {}) {
+  job.items.set(submissionId, { submissionId, state, ...extra });
+}
+
+/** Write one paper's AI result onto its submission. Shared by the single-paper
+ *  analyze endpoint and the batch runner so both record the identical shape. */
+async function persistGradingResult(submissionId, activityId, aiData, existingRetainUntil) {
+  return prisma.submission.update({
+    where: { id: submissionId },
+    data: {
+      aiScore: aiData.score,
+      aiFeedback: JSON.stringify({
+        strengths: aiData.strengths,
+        areasForGrowth: aiData.areasForGrowth,
+        actionableSteps: aiData.actionableSteps
+      }),
+      readingStrategy: aiData.readingStrategy,
+      rubricData: JSON.stringify(aiData.rubricScores || []),
+      skillScores: JSON.stringify(aiData.skillScores),
+      status: 'PENDING',
+      privacyViolation: false,
+      gradedAt: new Date(),
+      retainUntil: existingRetainUntil ?? await retainUntilForActivity(activityId)
+    }
+  });
+}
+
+async function applyBatchResult(job, sub, result) {
+  if (!result) {
+    return setJobItem(job, sub.id, 'failed', { error: 'The AI returned no result for this paper.' });
+  }
+  // A name on one paper flags that paper only. The rest of the batch is already
+  // graded and keeps its results — this is the whole reason the privacy verdict
+  // comes back per paper instead of as a thrown error.
+  if (result.privacyViolation) {
+    await prisma.submission.update({
+      where: { id: sub.id },
+      data: { privacyViolation: true, status: 'PENDING' }
+    });
+    return setJobItem(job, sub.id, 'flagged', {
+      violationType: result.violationType,
+      error: 'Identifying information was detected on this paper, so it was not graded.'
+    });
+  }
+  await persistGradingResult(sub.id, job.activityId, result, sub.retainUntil);
+  setJobItem(job, sub.id, 'done', { score: result.score });
+}
+
+async function runAiCheckJob(job) {
+  const chunks = [];
+  for (let i = 0; i < job.queue.length; i += AI_BATCH_SIZE) {
+    chunks.push(job.queue.slice(i, i + AI_BATCH_SIZE));
+  }
+
+  for (const chunk of chunks) {
+    if (job.cancelled) break;
+
+    // Resolve the images first, so a submission whose photo has gone missing
+    // fails on its own rather than taking the rest of the batch down with it.
+    const loaded = [];
+    for (const sub of chunk) {
+      try {
+        const { path: imgPath, isTemp } = await resolveLocalImagePath(sub.imageUrl);
+        if (!fs.existsSync(imgPath)) throw new Error('missing');
+        loaded.push({ sub, path: imgPath, isTemp });
+      } catch {
+        setJobItem(job, sub.id, 'failed', {
+          error: 'The photo for this submission is no longer stored on the server. Upload it again.'
+        });
+      }
+    }
+    if (!loaded.length) continue;
+
+    try {
+      let results;
+      try {
+        results = await generateSubmissionFeedback(loaded.map(l => l.path), job.activityId);
+      } catch (err) {
+        // Alignment could not be proven. Never guess which result belongs to
+        // which student — pay the extra requests and grade them individually.
+        if (!(err instanceof BatchAlignmentError) || loaded.length === 1) throw err;
+        console.log(`⚠ ${err.message} Re-grading ${loaded.length} papers one at a time.`);
+        job.realignments++;
+        results = [];
+        for (const l of loaded) {
+          const [one] = await generateSubmissionFeedback([l.path], job.activityId);
+          results.push(one);
+        }
+      }
+      for (let i = 0; i < loaded.length; i++) {
+        await applyBatchResult(job, loaded[i].sub, results[i]);
+      }
+    } catch (err) {
+      if (err instanceof AiUnavailableError) {
+        // Out of budget. Stop rather than grinding through the remaining
+        // chunks: every one of them would fail the same way, and nothing is
+        // recorded for a paper the AI never read.
+        job.stoppedReason = err.reason;
+        job.stoppedMessage = err.message;
+        console.log(`⚠ AI check job ${job.id} stopped: ${err.message}`);
+        break;
+      }
+      console.error('Batch grading error:', err);
+      loaded.forEach(l => setJobItem(job, l.sub.id, 'failed', { error: err.message }));
+    } finally {
+      loaded.forEach(l => { if (l.isTemp) { try { fs.unlinkSync(l.path); } catch {} } });
+    }
+  }
+
+  // Anything never reached — because the pool ran dry or the job was cancelled
+  // — is explicitly skipped, not failed. Nothing was written for these.
+  for (const sub of job.queue) {
+    if (job.items.get(sub.id)?.state === 'pending') {
+      setJobItem(job, sub.id, 'skipped', {
+        error: job.stoppedMessage || 'Not checked — the run stopped before reaching this paper.'
+      });
+    }
+  }
+  job.finishedAt = Date.now();
+  job.state = job.cancelled ? 'cancelled' : 'finished';
+  pruneAiJobs();
+}
+
+function serialiseJob(job) {
+  const items = [...job.items.values()];
+  const count = (state) => items.filter(i => i.state === state).length;
+  return {
+    jobId: job.id,
+    activityId: job.activityId,
+    state: job.state,
+    total: items.length,
+    done: count('done'),
+    flagged: count('flagged'),
+    failed: count('failed'),
+    skipped: count('skipped'),
+    pending: count('pending'),
+    realignments: job.realignments,
+    stoppedReason: job.stoppedReason || null,
+    stoppedMessage: job.stoppedMessage || null,
+    batchSize: AI_BATCH_SIZE,
+    items,
+    capacity: gradingCapacitySnapshot()
+  };
+}
+
+/** Ensures the signed-in teacher owns the activity they are acting on. */
+async function teacherOwnsActivity(activityId, teacherId) {
+  const activity = await prisma.activity.findUnique({
+    where: { id: activityId },
+    include: { class: { select: { teacherId: true } } }
+  });
+  if (!activity) return { ok: false, code: 404, error: 'Activity not found.' };
+  if (activity.class?.teacherId !== teacherId) {
+    return { ok: false, code: 403, error: 'You can only check papers for your own classes.' };
+  }
+  return { ok: true, activity };
+}
+
+/** What one "AI-check all" press would cost, so the teacher can see it before
+ *  spending it rather than discovering the limit halfway down the class list. */
+app.get('/api/teacher/activities/:activityId/ai-check', async (req, res) => {
+  const owned = await teacherOwnsActivity(req.params.activityId, req.auth.sub);
+  if (!owned.ok) return res.status(owned.code).json({ success: false, error: owned.error });
+
+  const ready = await prisma.submission.count({
+    where: { activityId: req.params.activityId, aiScore: null, imageUrl: { not: null }, status: 'PENDING' }
+  });
+  res.json({
+    success: true,
+    ready,
+    batchSize: AI_BATCH_SIZE,
+    requestsNeeded: Math.ceil(ready / AI_BATCH_SIZE),
+    capacity: gradingCapacitySnapshot()
+  });
+});
+
+/** Start checking every un-checked paper on this activity. Returns immediately
+ *  with a job id; the run continues server-side and is polled. */
+app.post('/api/teacher/activities/:activityId/ai-check', async (req, res) => {
+  try {
+    const owned = await teacherOwnsActivity(req.params.activityId, req.auth.sub);
+    if (!owned.ok) return res.status(owned.code).json({ success: false, error: owned.error });
+
+    const running = [...aiJobs.values()].find(j => j.activityId === req.params.activityId && j.state === 'running');
+    if (running) return res.json({ success: true, alreadyRunning: true, ...serialiseJob(running) });
+
+    const { submissionIds } = req.body || {};
+    const queue = await prisma.submission.findMany({
+      where: {
+        activityId: req.params.activityId,
+        aiScore: null,
+        imageUrl: { not: null },
+        status: 'PENDING',
+        ...(Array.isArray(submissionIds) && submissionIds.length ? { id: { in: submissionIds } } : {})
+      },
+      select: { id: true, imageUrl: true, retainUntil: true, studentId: true },
+      orderBy: { createdAt: 'asc' }
+    });
+    if (!queue.length) {
+      return res.status(400).json({ success: false, error: 'There are no unchecked papers on this activity.' });
+    }
+
+    const capacity = gradingCapacitySnapshot();
+    if (!capacity.configured) {
+      return res.status(503).json({ success: false, code: 'AI_NOT_CONFIGURED', error: 'Gemini AI is not configured on this server.' });
+    }
+
+    const job = {
+      id: crypto.randomUUID(),
+      activityId: req.params.activityId,
+      teacherId: req.auth.sub,
+      queue,
+      items: new Map(queue.map(s => [s.id, { submissionId: s.id, studentId: s.studentId, state: 'pending' }])),
+      state: 'running',
+      realignments: 0,
+      cancelled: false,
+      stoppedReason: null,
+      stoppedMessage: null,
+      startedAt: Date.now(),
+      finishedAt: null
+    };
+    aiJobs.set(job.id, job);
+    // Deliberately not awaited: the response goes back now and the run
+    // continues behind it.
+    runAiCheckJob(job).catch(err => {
+      console.error('AI check job crashed:', err);
+      job.state = 'finished';
+      job.finishedAt = Date.now();
+      job.stoppedMessage = err.message;
+    });
+
+    res.json({ success: true, ...serialiseJob(job) });
+  } catch (e) {
+    console.error('ai-check start error:', e);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+app.get('/api/teacher/ai-jobs/:jobId', (req, res) => {
+  const job = aiJobs.get(req.params.jobId);
+  if (!job) return res.status(404).json({ success: false, error: 'That AI check is no longer available.' });
+  if (job.teacherId !== req.auth.sub) return res.status(403).json({ success: false, error: 'That AI check belongs to another teacher.' });
+  res.json({ success: true, ...serialiseJob(job) });
+});
+
+app.delete('/api/teacher/ai-jobs/:jobId', (req, res) => {
+  const job = aiJobs.get(req.params.jobId);
+  if (!job) return res.status(404).json({ success: false, error: 'That AI check is no longer available.' });
+  if (job.teacherId !== req.auth.sub) return res.status(403).json({ success: false, error: 'That AI check belongs to another teacher.' });
+  job.cancelled = true;
+  res.json({ success: true, ...serialiseJob(job) });
+});
+
+app.get('/api/teacher/ai-capacity', (req, res) => {
+  res.json({ success: true, capacity: gradingCapacitySnapshot() });
+});
+
+// ─────────────────────────────────────────
+// RELEASING RESULTS TO STUDENTS
+// ─────────────────────────────────────────
+// Validating a draft and publishing it are two different decisions. Validating
+// says "this mark is right"; releasing says "the class may now see it". Keeping
+// them apart is what lets a teacher review the whole set, notice their standard
+// drifted around paper 12, and fix it before anyone has seen a number.
+
+/** Where the activity stands: how much is reviewed, and how much is public. */
+app.get('/api/teacher/activities/:activityId/release', async (req, res) => {
+  const owned = await teacherOwnsActivity(req.params.activityId, req.auth.sub);
+  if (!owned.ok) return res.status(owned.code).json({ success: false, error: owned.error });
+
+  const [total, reviewed, released] = await Promise.all([
+    prisma.submission.count({ where: { activityId: req.params.activityId } }),
+    prisma.submission.count({ where: { activityId: req.params.activityId, status: 'GRADED' } }),
+    prisma.submission.count({ where: { activityId: req.params.activityId, releasedAt: { not: null } } })
+  ]);
+  res.json({ success: true, total, reviewed, released, readyToRelease: reviewed - released });
+});
+
+/** Publish every reviewed paper on this activity at once. */
+app.post('/api/teacher/activities/:activityId/release', async (req, res) => {
+  try {
+    const owned = await teacherOwnsActivity(req.params.activityId, req.auth.sub);
+    if (!owned.ok) return res.status(owned.code).json({ success: false, error: owned.error });
+
+    const result = await prisma.submission.updateMany({
+      // Only validated work goes out. A paper still sitting on an unreviewed AI
+      // draft must never be published by a bulk action — that would hand the
+      // class a set of marks no human ever approved, which is the exact thing
+      // the human-in-the-loop design exists to prevent.
+      where: { activityId: req.params.activityId, status: 'GRADED', releasedAt: null },
+      data: { releasedAt: new Date() }
+    });
+    res.json({ success: true, released: result.count });
+  } catch (e) {
+    console.error('release error:', e);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+/** Publish one paper on its own, for the teacher who graded three and wants
+ *  them out now rather than waiting to finish the set. */
+app.post('/api/teacher/submissions/:id/release', async (req, res) => {
+  try {
+    const sub = await prisma.submission.findUnique({
+      where: { id: req.params.id },
+      include: { activity: { include: { class: { select: { teacherId: true } } } } }
+    });
+    if (!sub) return res.status(404).json({ success: false, error: 'Submission not found.' });
+    if (sub.activity?.class?.teacherId !== req.auth.sub) {
+      return res.status(403).json({ success: false, error: 'You can only release papers from your own classes.' });
+    }
+    if (sub.status !== 'GRADED') {
+      return res.status(400).json({ success: false, error: 'Validate this paper before releasing it.' });
+    }
+    const updated = await prisma.submission.update({
+      where: { id: sub.id },
+      data: { releasedAt: sub.releasedAt ?? new Date() }
+    });
+    res.json({ success: true, submission: updated });
+  } catch (e) {
     res.status(500).json({ success: false, error: e.message });
   }
 });
@@ -4326,7 +4948,7 @@ app.get('/api/student/:studentId/dashboard', async (req, res) => {
       include: { section: { include: { classes: true } } }
     });
     const submissions = await prisma.submission.findMany({
-      where: { studentId: req.params.studentId, status: 'GRADED' },
+      where: { studentId: req.params.studentId, status: 'GRADED', ...releaseFilterFor(req.auth) },
       include: { activity: { include: { class: true } } },
       orderBy: { updatedAt: 'desc' }
     });
@@ -4559,7 +5181,7 @@ const SKILL_PROGRESS_ACTIVITY_SELECT = {
 app.get('/api/student/:studentId/skill-progress', async (req, res) => {
   try {
     const submissions = await prisma.submission.findMany({
-      where: { studentId: req.params.studentId, status: 'GRADED', rubricData: { not: null } },
+      where: { studentId: req.params.studentId, status: 'GRADED', rubricData: { not: null }, ...releaseFilterFor(req.auth) },
       include: { activity: { select: SKILL_PROGRESS_ACTIVITY_SELECT } }
     });
     const result = computeSkillProgress(submissions);
@@ -4710,10 +5332,10 @@ app.get('/api/student/:studentId/activities', async (req, res) => {
     // Check which ones student already submitted
     const mySubmissions = await prisma.submission.findMany({
       where: { studentId: req.params.studentId },
-      select: { activityId: true, status: true, id: true, imageUrl: true, attemptCount: true, updatedAt: true, hitlScore: true, isLate: true }
+      select: { activityId: true, status: true, id: true, imageUrl: true, attemptCount: true, updatedAt: true, hitlScore: true, isLate: true, releasedAt: true }
     });
     const submissionMap = {};
-    mySubmissions.forEach(s => { submissionMap[s.activityId] = s; });
+    mySubmissions.forEach(s => { submissionMap[s.activityId] = maskUnreleasedForStudent(s, req.auth); });
     const activitiesWithStatus = activities.map(a => ({
       ...a,
       mySubmission: submissionMap[a.id] || null
@@ -4750,11 +5372,11 @@ app.get('/api/student/:studentId/subjects', async (req, res) => {
       where: { studentId },
       select: {
         id: true, activityId: true, status: true, hitlScore: true, aiScore: true,
-        hitlFeedback: true, aiFeedback: true, updatedAt: true
+        hitlFeedback: true, aiFeedback: true, updatedAt: true, releasedAt: true
       }
     });
     const submissionByActivity = {};
-    mySubmissions.forEach(s => { submissionByActivity[s.activityId] = s; });
+    mySubmissions.forEach(s => { submissionByActivity[s.activityId] = maskUnreleasedForStudent(s, req.auth); });
 
     // The student's screens colour and label scores, so they need the same
     // threshold and the same component weights the teacher's gradebook uses.
@@ -4862,12 +5484,12 @@ app.get('/api/student/:studentId/activities/:activityId', async (req, res) => {
 
     const mySubmission = await prisma.submission.findFirst({
       where: { studentId, activityId },
-      select: { id: true, status: true, imageUrl: true, hitlScore: true, aiScore: true, attemptCount: true, updatedAt: true }
+      select: { id: true, status: true, imageUrl: true, hitlScore: true, aiScore: true, attemptCount: true, updatedAt: true, releasedAt: true }
     });
 
     res.json({
       success: true,
-      activity: { ...activity, className: activity.class?.name || '', mySubmission: mySubmission || null }
+      activity: { ...activity, className: activity.class?.name || '', mySubmission: maskUnreleasedForStudent(mySubmission, req.auth) || null }
     });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
@@ -5015,6 +5637,9 @@ app.post('/api/teacher/upload', upload.fields([{ name: 'image', maxCount: 1 }, {
     }
 
     let submissionData;
+    // Set when the photo was stored but the AI could not be reached, so the
+    // response can say so without pretending the paper was graded.
+    let aiUnavailable = null;
     if (skipGrading === 'true') {
       // Store the image only — grading happens later, on demand, via
       // POST /api/teacher/submissions/:id/analyze (see the "Ready for AI
@@ -5031,22 +5656,40 @@ app.post('/api/teacher/upload', upload.fields([{ name: 'image', maxCount: 1 }, {
       };
     } else {
       // 2) Call the shared AI grading function
-      const aiData = await generateSubmissionFeedback(processedPath, activityId, studentId);
-      const aiFeedbackStr = JSON.stringify({
-        strengths: aiData.strengths,
-        areasForGrowth: aiData.areasForGrowth,
-        actionableSteps: aiData.actionableSteps
-      });
-      submissionData = {
-        imageUrl: processedUrl,
-        aiScore: aiData.score,
-        aiFeedback: aiFeedbackStr,
-        readingStrategy: aiData.readingStrategy,
-        rubricData: JSON.stringify(aiData.rubricScores || []),
-        skillScores: JSON.stringify(aiData.skillScores),
-        status: 'PENDING',
-        gradedAt: new Date()
-      };
+      try {
+        const aiData = await gradeSingleSubmission(processedPath, activityId, studentId);
+        const aiFeedbackStr = JSON.stringify({
+          strengths: aiData.strengths,
+          areasForGrowth: aiData.areasForGrowth,
+          actionableSteps: aiData.actionableSteps
+        });
+        submissionData = {
+          imageUrl: processedUrl,
+          aiScore: aiData.score,
+          aiFeedback: aiFeedbackStr,
+          readingStrategy: aiData.readingStrategy,
+          rubricData: JSON.stringify(aiData.rubricScores || []),
+          skillScores: JSON.stringify(aiData.skillScores),
+          status: 'PENDING',
+          gradedAt: new Date()
+        };
+      } catch (aiErr) {
+        // The AI being out is not a reason to lose the teacher's photo. Keep the
+        // upload exactly as the skipGrading path would have stored it — image
+        // saved, nothing scored — so the paper sits in the "ready for AI
+        // checking" queue and can be re-checked later or graded by hand.
+        if (!(aiErr instanceof AiUnavailableError)) throw aiErr;
+        aiUnavailable = aiErr;
+        submissionData = {
+          imageUrl: processedUrl,
+          status: 'PENDING',
+          aiScore: null,
+          aiFeedback: null,
+          rubricData: null,
+          skillScores: null,
+          gradedAt: null
+        };
+      }
     }
 
     // Check for existing submission
@@ -5063,7 +5706,18 @@ app.post('/api/teacher/upload', upload.fields([{ name: 'image', maxCount: 1 }, {
       });
     }
 
-    res.json({ success: true, submission });
+    res.json({
+      success: true,
+      submission,
+      ...(aiUnavailable ? {
+        aiSkipped: true,
+        aiSkippedCode: aiUnavailable.reason === 'QUOTA' ? 'AI_QUOTA_EXHAUSTED' : `AI_${aiUnavailable.reason}`,
+        aiSkippedReason: aiUnavailable.reason === 'QUOTA'
+          ? 'The photo was saved, but the daily AI checking limit has been reached so it was not checked and no score was recorded.'
+          : `The photo was saved, but it could not be checked: ${aiUnavailable.message}`,
+        capacity: gradingCapacitySnapshot()
+      } : {})
+    });
   } catch (e) {
     // Auto-delete uploaded files on failure — including the privacy path, where
     // deleting the scan is the whole point: a paper with a name on it must not
@@ -5106,7 +5760,7 @@ app.post('/api/student/chat', async (req, res) => {
       });
 
       const recentSubs = await prisma.submission.findMany({
-        where: { studentId, status: 'GRADED' },
+        where: { studentId, status: 'GRADED', ...releaseFilterFor(req.auth) },
         orderBy: { updatedAt: 'desc' },
         take: 5,
         include: { activity: { select: { title: true, type: true, class: { select: { name: true, gradeLevel: true } } } } }
@@ -5311,7 +5965,7 @@ app.get('/api/student/:studentId/analytics', async (req, res) => {
   try {
     const { studentId } = req.params;
     const submissions = await prisma.submission.findMany({
-      where: { studentId, status: 'GRADED', archivedAt: null },
+      where: { studentId, status: 'GRADED', archivedAt: null, ...releaseFilterFor(req.auth) },
       include: {
         activity: { select: { title: true, type: true, topic: true, points: true, class: { select: { name: true } } } }
       },

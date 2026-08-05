@@ -261,6 +261,10 @@ const platformRateLimit = rateLimit({ windowMs: 15 * 60_000, max: 20, key: clien
 const TEACHER_ROUTE_SEGMENTS = new Set([
   'classes', 'activities', 'rubric-templates', 'rubric', 'upload', 'refine',
   'sections', 'quick-setup', 'submissions', 'extract-students', 'demo-data', 'student',
+  // Batch AI checking: 'ai-jobs' addresses a job id and 'ai-capacity' takes no
+  // id at all, so neither is a teacher id. Ownership of the underlying activity
+  // and job is checked in the handlers.
+  'ai-jobs', 'ai-capacity',
 ]);
 const STUDENT_ROUTE_SEGMENTS = new Set(['submit', 'chat']);
 

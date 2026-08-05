@@ -242,6 +242,16 @@ model Submission {
   isLate           Boolean   @default(false)
   privacyViolation Boolean   @default(false)
   status           String    @default("PENDING")
+  /// When the teacher published this result to the student.
+  ///
+  /// Separate from status GRADED, which only means the teacher has validated the
+  /// draft. Teachers recalibrate partway down a class set — if paper 2 is
+  /// published the moment it is approved, a standard that drifts by paper 20 can
+  /// only be corrected in front of the student. Holding release until the whole
+  /// set has been reviewed also stops grades trickling out to some pupils while
+  /// their classmates are still waiting. Staff always see the un-released work;
+  /// students only ever see rows where this is set.
+  releasedAt       DateTime?
   retainUntil      DateTime?
   archivedAt       DateTime?
   gradedAt         DateTime?

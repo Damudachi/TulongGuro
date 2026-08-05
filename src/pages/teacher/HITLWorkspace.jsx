@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
-import { ArrowLeft, Check, Edit2, Info, Sparkles, X, Send, Bot, Loader2, CheckCircle2, ChevronDown, Plus, Trash2, AlertTriangle } from 'lucide-react';
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import { ArrowLeft, Check, Edit2, Info, Sparkles, X, Send, Bot, Loader2, CheckCircle2, ChevronDown, Plus, Trash2, AlertTriangle, SkipForward, Send as SendIcon } from 'lucide-react';
 import { API_URL, apiFetch } from '../../config';
 import SubmissionImage from '../../components/SubmissionImage';
 import { ONBOARDING, hasSeenOnboarding, markOnboardingSeen } from '../../utils/onboarding';
@@ -61,6 +61,19 @@ const EMPTY_STRUCTURED = { strengths: '', areasForGrowth: [], actionableSteps: [
 export default function HITLWorkspace() {
   const navigate = useNavigate();
   const { submissionId } = useParams();
+
+  // ── Review queue ──
+  // Arriving with ?queue=<activityId> turns this screen into a run through the
+  // whole activity instead of a single paper: validating advances to the next
+  // unreviewed paper rather than dropping the teacher back on the roster. A
+  // teacher working 45 papers should press one button per paper, not three.
+  const [searchParams] = useSearchParams();
+  const queueActivityId = searchParams.get('queue');
+  const [queue, setQueue] = useState([]);          // [{ id, studentName, reviewed }]
+  const [skipped, setSkipped] = useState([]);      // submission ids passed over this run
+  const [showSummary, setShowSummary] = useState(false);
+  const [releaseState, setReleaseState] = useState(null);  // { total, reviewed, released, readyToRelease }
+  const [isReleasing, setIsReleasing] = useState(false);
 
   const [submission, setSubmission] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -391,9 +404,95 @@ export default function HITLWorkspace() {
       }
     } catch (e) {
       alert('Save failed. Please try again.');
-    } finally {
       setIsSaving(false);
       setIsEditingAssessment(false);
+      return;
+    }
+    setIsSaving(false);
+    setIsEditingAssessment(false);
+    // In a queue run, validating IS the "next" action. Anywhere else the screen
+    // behaves as it always did and waits for the teacher.
+    if (queueActivityId) goToNext();
+  };
+
+  // ── Queue navigation ──
+  useEffect(() => {
+    if (!queueActivityId) return;
+    apiFetch(`${API_URL}/api/activities/${queueActivityId}/submissions`)
+      .then(r => r.json())
+      .then(d => {
+        if (!d.success) return;
+        setQueue((d.submissions || [])
+          // Only papers that have something to review. An un-checked paper has
+          // no draft to approve, so it does not belong in a review run.
+          .filter(s => s.aiScore !== null || s.status === 'GRADED')
+          .map(s => ({
+            id: s.id,
+            studentName: s.student?.name || 'Student',
+            reviewed: s.status === 'GRADED',
+            released: !!s.releasedAt
+          })));
+      })
+      .catch(() => {});
+  }, [queueActivityId, submissionId]);
+
+  const queueIndex = queue.findIndex(q => q.id === submissionId);
+
+  const loadReleaseState = () => {
+    if (!queueActivityId) return;
+    apiFetch(`${API_URL}/api/teacher/activities/${queueActivityId}/release`)
+      .then(r => r.json())
+      .then(d => { if (d.success) setReleaseState(d); })
+      .catch(() => {});
+  };
+
+  const goToNext = () => {
+    const next = queue.find(q => q.id !== submissionId && !q.reviewed && !skipped.includes(q.id));
+    if (next) {
+      navigate(`/teacher/review/${next.id}?queue=${queueActivityId}`);
+    } else {
+      loadReleaseState();
+      setShowSummary(true);
+    }
+  };
+
+  const handleSkip = () => {
+    setSkipped(prev => (prev.includes(submissionId) ? prev : [...prev, submissionId]));
+    goToNext();
+  };
+
+  // Keyboard shortcuts for a queue run. A teacher going through 45 papers is
+  // doing the same two actions over and over; reaching for the mouse each time
+  // is most of the work. Ignored while the caret is in a field, so editing
+  // feedback never triggers them.
+  useEffect(() => {
+    if (!queueActivityId || showSummary) return;
+    const onKey = (e) => {
+      const tag = (e.target?.tagName || '').toLowerCase();
+      if (tag === 'input' || tag === 'textarea' || e.target?.isContentEditable) return;
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      if (e.key === 'Enter' && canValidate && !isSaving) { e.preventDefault(); handleValidate(); }
+      if (e.key === 's' || e.key === 'S') { e.preventDefault(); handleSkip(); }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  });
+
+  const releaseAll = async () => {
+    setIsReleasing(true);
+    try {
+      const res = await apiFetch(`${API_URL}/api/teacher/activities/${queueActivityId}/release`, { method: 'POST' });
+      const data = await res.json();
+      if (data.success) {
+        loadReleaseState();
+        setQueue(prev => prev.map(q => (q.reviewed ? { ...q, released: true } : q)));
+      } else {
+        alert(data.error || 'Could not release the results.');
+      }
+    } catch {
+      alert('Could not release the results. Please check your connection.');
+    } finally {
+      setIsReleasing(false);
     }
   };
 
@@ -497,6 +596,35 @@ export default function HITLWorkspace() {
         <button onClick={() => navigate(-1)} className="flex items-center text-sm text-slate-500 hover:text-brand-slate mb-4 shrink-0">
           <ArrowLeft className="w-4 h-4 mr-1" /> Back to Queue
         </button>
+
+        {/* Queue position — where the teacher is in the run, and how much is left. */}
+        {queueActivityId && queue.length > 0 && (
+          <div className="mb-4 shrink-0">
+            <div className="flex items-center justify-between mb-1.5">
+              <p className="text-xs font-bold text-brand-slate">
+                Paper {queueIndex >= 0 ? queueIndex + 1 : '–'} of {queue.length}
+              </p>
+              <p className="text-[11px] text-slate-500">
+                {queue.filter(q => q.reviewed).length} reviewed
+                {skipped.length > 0 && ` · ${skipped.length} skipped`}
+              </p>
+            </div>
+            <div className="flex gap-1 flex-wrap">
+              {queue.map((q) => (
+                <button
+                  key={q.id}
+                  title={`${q.studentName}${q.reviewed ? ' — reviewed' : ''}`}
+                  onClick={() => navigate(`/teacher/review/${q.id}?queue=${queueActivityId}`)}
+                  className={cn('h-1.5 flex-1 min-w-[8px] rounded-full transition-colors',
+                    q.id === submissionId ? 'bg-brand-navy'
+                      : q.reviewed ? 'bg-brand-green'
+                        : skipped.includes(q.id) ? 'bg-amber-400'
+                          : 'bg-slate-300 hover:bg-slate-400')}
+                />
+              ))}
+            </div>
+          </div>
+        )}
         <div className="flex-1 bg-slate-200 rounded-xl border border-slate-300 overflow-hidden relative min-h-[300px]">
           {submission?.imageUrl ? (
             <SubmissionImage url={submission.imageUrl} alt="Essay" className="w-full h-full object-contain" wrapperClassName="h-full" />
@@ -942,10 +1070,18 @@ export default function HITLWorkspace() {
 
         {/* Footer Buttons */}
         <div className="p-4 bg-white border-t border-slate-200 flex gap-3 sticky bottom-0 z-10">
-          <button onClick={() => navigate(-1)} className="flex-1 py-3 px-4 rounded-xl border-2 border-slate-200 text-slate-700 font-bold hover:bg-slate-50 transition-colors">
-            Back
-          </button>
-          {isApproved && !isEditingAssessment ? (
+          {queueActivityId ? (
+            <button onClick={handleSkip}
+              title="Come back to this one at the end of the run (S)"
+              className="py-3 px-4 rounded-xl border-2 border-slate-200 text-slate-700 font-bold hover:bg-slate-50 transition-colors flex items-center justify-center gap-2">
+              <SkipForward className="w-5 h-5" /> Skip
+            </button>
+          ) : (
+            <button onClick={() => navigate(-1)} className="flex-1 py-3 px-4 rounded-xl border-2 border-slate-200 text-slate-700 font-bold hover:bg-slate-50 transition-colors">
+              Back
+            </button>
+          )}
+          {isApproved && !isEditingAssessment && !queueActivityId ? (
             <button
               onClick={() => navigate(rosterLink)}
               className="flex-1 py-3 px-4 rounded-xl bg-brand-green text-white font-bold hover:bg-emerald-600 transition-colors flex items-center justify-center gap-2">
@@ -953,17 +1089,82 @@ export default function HITLWorkspace() {
             </button>
           ) : (
             <button onClick={handleValidate} disabled={isSaving || !canValidate}
-              title={!canValidate ? 'Run AI checking first — there is nothing to validate yet.' : ''}
+              title={!canValidate ? 'Run AI checking first — there is nothing to validate yet.' : 'Approve this mark and move on (Enter)'}
               className={cn('flex-1 py-3 px-4 rounded-xl font-bold transition-colors flex items-center justify-center gap-2',
                 canValidate
                   ? 'bg-brand-green text-white hover:bg-emerald-600 shadow-lg shadow-emerald-500/20 disabled:opacity-60'
                   : 'bg-slate-200 text-slate-400 cursor-not-allowed')}>
               {isSaving ? <Loader2 className="w-5 h-5 animate-spin" /> : <Check className="w-5 h-5" />}
-              {isSaving ? 'Saving...' : isAnalyzing ? 'AI checking...' : awaitingAiCheck ? 'Waiting for AI check' : (isApproved ? 'Save Changes' : 'Validate & Release')}
+              {/* No longer "Validate & Release": validating records the mark,
+                  releasing publishes the set. The teacher does the second one
+                  deliberately, at the end, having seen the whole spread. */}
+              {isSaving ? 'Saving...' : isAnalyzing ? 'AI checking...' : awaitingAiCheck ? 'Waiting for AI check' : (isApproved ? 'Save Changes' : queueActivityId ? 'Validate & next' : 'Validate')}
             </button>
           )}
         </div>
       </div>
+
+      {/* ── End of the review run ──
+          The whole point of holding release until here: the teacher has now
+          seen every paper in the set and can publish them as one decision,
+          instead of having published paper 2 before discovering their standard
+          had drifted by paper 20. */}
+      {showSummary && (
+        <div className="fixed inset-0 z-[110] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
+          <div className="bg-white rounded-2xl w-full max-w-md overflow-hidden shadow-2xl">
+            <div className="p-6 text-center border-b border-slate-100">
+              <div className="w-14 h-14 bg-green-50 text-brand-green rounded-full flex items-center justify-center mx-auto mb-4">
+                <CheckCircle2 className="w-7 h-7" />
+              </div>
+              <h3 className="text-lg font-bold text-brand-slate mb-1">Review complete</h3>
+              <p className="text-sm text-slate-500">
+                {releaseState
+                  ? `${releaseState.reviewed} of ${releaseState.total} papers reviewed.`
+                  : `${queue.filter(q => q.reviewed).length} of ${queue.length} papers reviewed.`}
+                {skipped.length > 0 && ` ${skipped.length} skipped.`}
+              </p>
+            </div>
+
+            <div className="p-6 flex flex-col gap-2">
+              {releaseState?.readyToRelease > 0 ? (
+                <>
+                  <p className="text-xs text-slate-500 text-center mb-1">
+                    Nothing is visible to your students yet. Releasing publishes all
+                    {' '}{releaseState.readyToRelease} reviewed result{releaseState.readyToRelease > 1 ? 's' : ''} at once.
+                  </p>
+                  <button onClick={releaseAll} disabled={isReleasing}
+                    className="w-full py-3 bg-brand-green text-white rounded-xl font-bold hover:bg-emerald-600 transition-colors flex items-center justify-center gap-2 disabled:opacity-60">
+                    {isReleasing ? <Loader2 className="w-4 h-4 animate-spin" /> : <SendIcon className="w-4 h-4" />}
+                    Release {releaseState.readyToRelease} result{releaseState.readyToRelease > 1 ? 's' : ''} to students
+                  </button>
+                </>
+              ) : releaseState ? (
+                <p className="text-xs text-green-700 text-center bg-green-50 border border-green-200 rounded-lg py-2.5 px-3">
+                  All {releaseState.released} reviewed result{releaseState.released === 1 ? '' : 's'} {releaseState.released === 1 ? 'has' : 'have'} been released to students.
+                </p>
+              ) : null}
+
+              {skipped.length > 0 && (
+                <button
+                  onClick={() => {
+                    const first = skipped[0];
+                    setSkipped(prev => prev.filter(id => id !== first));
+                    setShowSummary(false);
+                    navigate(`/teacher/review/${first}?queue=${queueActivityId}`);
+                  }}
+                  className="w-full py-3 border-2 border-slate-200 rounded-xl font-bold text-slate-600 hover:bg-slate-50 transition-colors">
+                  Go back to {skipped.length} skipped paper{skipped.length > 1 ? 's' : ''}
+                </button>
+              )}
+
+              <button onClick={() => navigate(rosterLink)}
+                className="w-full py-2 text-sm font-medium text-slate-400 hover:text-slate-600 transition-colors">
+                Back to class list
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* AI Co-Pilot Drawer */}
       <div className={cn('fixed inset-y-0 right-0 w-full md:w-[400px] bg-white shadow-2xl border-l border-slate-200 transform transition-transform duration-300 z-50 flex flex-col',
