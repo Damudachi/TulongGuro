@@ -631,7 +631,8 @@ export default function BatchUpload() {
                   {/* Shown before the teacher spends it, not after they hit the
                       wall halfway down the class list. */}
                   <p className="text-[11px] text-slate-500 mt-0.5">
-                    ≈ {aiPlan.requestsNeeded} request{aiPlan.requestsNeeded > 1 ? 's' : ''} ({aiPlan.batchSize} paper{aiPlan.batchSize > 1 ? 's' : ''} per request)
+                    ≈ {aiPlan.requestsNeeded} request{aiPlan.requestsNeeded > 1 ? 's' : ''}
+                    {aiPlan.batchSize > 1 && <> ({aiPlan.batchSize} papers per request)</>}
                     {aiPlan.capacity?.configured && <> · about {aiPlan.capacity.remaining} check{aiPlan.capacity.remaining === 1 ? '' : 's'} left today (estimate)</>}
                   </p>
                   {aiPlan.capacity?.configured && aiPlan.capacity.remaining < aiPlan.requestsNeeded && (

@@ -197,8 +197,33 @@ async function workingAverageAcrossSubjects(subs, schoolId) {
   return Math.round(perSubject.reduce((sum, v) => sum + v, 0) / perSubject.length);
 }
 
-const aiApiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || '';
-const aiConfigured = Boolean(aiApiKey && aiApiKey !== 'mock' && aiApiKey !== 'YOUR_API_KEY');
+/**
+ * Every Gemini credential this deployment holds, in preference order.
+ *
+ * More than one is supported because the daily request quota is metered per
+ * *project*, not per key: two keys from the same project share one budget and
+ * buy nothing, while two keys from two projects are two independent budgets.
+ * That is the cheapest way to lift the ceiling without enabling billing, and at
+ * a measured 20 requests/day/model it is the difference between grading a class
+ * set and grading a fifth of one.
+ *
+ * Reads GEMINI_API_KEY and GEMINI_API_KEY1..9 (plus GOOGLE_API_KEY), so a
+ * single-key deployment needs no change and a second project is one env var.
+ */
+const aiApiKeys = (() => {
+  const names = ['GEMINI_API_KEY', 'GOOGLE_API_KEY', ...Array.from({ length: 9 }, (_, i) => `GEMINI_API_KEY${i + 1}`)];
+  const seen = new Set();
+  const keys = [];
+  for (const name of names) {
+    const value = (process.env[name] || '').trim();
+    if (!value || value === 'mock' || value === 'YOUR_API_KEY' || seen.has(value)) continue;
+    seen.add(value);
+    keys.push({ name, value });
+  }
+  return keys;
+})();
+const aiApiKey = aiApiKeys[0]?.value || '';
+const aiConfigured = aiApiKeys.length > 0;
 
 app.use(cors());
 app.use(express.json());
@@ -424,23 +449,39 @@ const GRADING_MODEL_IDS = (process.env.GEMINI_GRADING_MODELS || `${PRIMARY_MODEL
 // be able to spend the budget the teacher's grading queue is depending on.
 const CHAT_MODEL_ID = process.env.GEMINI_CHAT_MODEL || 'gemini-3.5-flash';
 
-// What one model is assumed to be good for in a day. Google does not expose a
+// What one bucket is assumed to be good for in a day. Google does not expose a
 // remaining-quota endpoint, so this is a declared budget used only to show the
 // teacher a "checks left today" estimate before they start a batch — the real
 // limit is still whatever Google enforces.
 const AI_DAILY_BUDGET_PER_MODEL = Number(process.env.AI_DAILY_BUDGET_PER_MODEL || 20);
 
-const genAI = aiConfigured ? new GoogleGenerativeAI(aiApiKey) : null;
+const genAIByKey = aiApiKeys.map(k => ({ ...k, client: new GoogleGenerativeAI(k.value) }));
+const genAI = genAIByKey[0]?.client || null;
 
-/** One entry per grading model: the SDK handle plus this process's running view
- *  of whether that model still has budget left today. */
-const gradingPool = genAI ? GRADING_MODEL_IDS.map(id => ({
-  id,
-  model: genAI.getGenerativeModel({ model: id, generationConfig: { responseMimeType: 'application/json' } }),
-  unavailableUntil: 0,  // set when the model reports its *daily* quota is gone
-  used: 0,              // calls this model actually answered today
-  failed: 0
-})) : [];
+/**
+ * The grading pool: one entry per (credential × model) pair, because that pair
+ * — not the model alone — is what Google meters. Two projects and two models
+ * give four independent daily budgets.
+ *
+ * Ordered model-major so the rotation prefers the better model on every key
+ * before dropping to the weaker one: with models [A, B] and keys [1, 2] the
+ * order is A/key1, A/key2, B/key1, B/key2.
+ *
+ * Two keys that turn out to share a project will both 429 and both be rested;
+ * that costs one redundant call to discover and is self-correcting, which is
+ * cheaper than trying to infer project identity from a key we cannot inspect.
+ */
+const gradingPool = GRADING_MODEL_IDS.flatMap(id =>
+  genAIByKey.map(k => ({
+    id,
+    key: k.name,
+    label: `${id}@${k.name}`,
+    model: k.client.getGenerativeModel({ model: id, generationConfig: { responseMimeType: 'application/json' } }),
+    unavailableUntil: 0,  // set when this bucket reports its *daily* quota is gone
+    used: 0,              // calls this bucket actually answered today
+    failed: 0
+  }))
+);
 let gradingPoolCursor = 0;
 let gradingPoolDay = new Date().toDateString();
 
@@ -462,12 +503,21 @@ function rollPoolDayIfNeeded() {
 // rotation. They alias the ends of the pool so nothing downstream changed shape.
 const model = gradingPool[0]?.model || null;
 const modelLite = gradingPool[gradingPool.length - 1]?.model || null;
-const chatModel = genAI ? genAI.getGenerativeModel({ model: CHAT_MODEL_ID }) : null;
+// The chatbot runs on the LAST credential, so on a multi-project deployment
+// student conversation is charged to a different project than the grading
+// rotation opens on — the same isolation reasoning as giving it its own model.
+const chatModel = genAIByKey.length
+  ? genAIByKey[genAIByKey.length - 1].client.getGenerativeModel({ model: CHAT_MODEL_ID })
+  : null;
 
 if (aiConfigured) {
-  console.log(`🤖 Gemini AI enabled (grading pool: ${GRADING_MODEL_IDS.join(' → ')}; chat: ${CHAT_MODEL_ID})`);
+  console.log(`🤖 Gemini AI enabled — ${gradingPool.length} grading bucket(s): ${gradingPool.map(e => e.label).join(', ')}`);
+  console.log(`   chat: ${CHAT_MODEL_ID}@${genAIByKey[genAIByKey.length - 1].name}`);
+  if (aiApiKeys.length === 1) {
+    console.log('   note: one credential in use. Quota is metered per project, so a key from a second project doubles the daily budget.');
+  }
 } else {
-  console.log('⚠ Gemini AI disabled: set GEMINI_API_KEY or GOOGLE_API_KEY in server/.env to enable AI features');
+  console.log('⚠ Gemini AI disabled: set GEMINI_API_KEY (or GEMINI_API_KEY1) in server/.env to enable AI features');
 }
 
 /**
@@ -720,7 +770,7 @@ async function generateContentWithRetry(genModel, parts, { retries = 2, baseDela
         poolEntry.failed++;
         if (cls.dailyQuota) {
           poolEntry.unavailableUntil = Date.now() + GEMINI_DAILY_COOLDOWN_MS;
-          console.log(`⚠ ${poolEntry.id}: daily quota exhausted — resting it for ${Math.round(GEMINI_DAILY_COOLDOWN_MS / 60000)} min`);
+          console.log(`⚠ ${poolEntry.label}: daily quota exhausted — resting it for ${Math.round(GEMINI_DAILY_COOLDOWN_MS / 60000)} min`);
         }
       }
       // A daily cap cannot be waited out inside one request, and an image the
@@ -768,10 +818,10 @@ async function generateGradingContent(parts, opts = {}) {
   for (const entry of rotation) {
     try {
       const result = await generateContentWithRetry(entry.model, parts, { retries: 1, ...opts, poolEntry: entry });
-      return { result, modelId: entry.id };
+      return { result, modelId: entry.label };
     } catch (err) {
       last = classifyAiError(err);
-      console.log(`⚠ ${entry.id} failed: ${last.message.slice(0, 140)}`);
+      console.log(`⚠ ${entry.label} failed: ${last.message.slice(0, 140)}`);
     }
   }
   if (last?.badImage) {
@@ -808,6 +858,8 @@ function gradingCapacitySnapshot() {
   const now = Date.now();
   const models = gradingPool.map(e => ({
     id: e.id,
+    key: e.key,
+    label: e.label,
     used: e.used,
     exhausted: e.unavailableUntil > now,
     remaining: e.unavailableUntil > now ? 0 : Math.max(0, AI_DAILY_BUDGET_PER_MODEL - e.used)
@@ -815,6 +867,8 @@ function gradingCapacitySnapshot() {
   return {
     configured: gradingPool.length > 0,
     budgetPerModel: AI_DAILY_BUDGET_PER_MODEL,
+    buckets: gradingPool.length,
+    credentials: aiApiKeys.length,
     remaining: models.reduce((sum, m) => sum + m.remaining, 0),
     queueDepth: geminiQueueDepth(),
     models
@@ -4120,10 +4174,27 @@ app.post('/api/teacher/submissions/:id/analyze', async (req, res) => {
 // free-tier ceiling of 20 requests/day/model, batches of 5 turn one model's
 // budget from 20 papers into 100.
 //
-// AI_BATCH_SIZE=1 disables batching. That is both the kill switch, if batched
-// grading is ever shown to drift from solo grading, and the way to run the
-// solo-vs-batch comparison without maintaining two code paths.
-const AI_BATCH_SIZE = Math.max(1, Number(process.env.AI_BATCH_SIZE || 5));
+// DEFAULTS TO 1 — batching is built, tested, and deliberately OFF.
+//
+// Measured on gemini-3.5-flash-lite, holding one paper and the rubric constant
+// and changing only which papers it was batched alongside:
+//
+//     graded alone                 85, 85, 86   (mean 85.3)
+//     batched with 3 weak papers   92, 92, 92   (mean 92.0,  +6.7)
+//     batched with 3 strong papers 78, 78, 78   (mean 78.0,  -7.3)
+//
+// A 14-point spread on an identical paper, with SD 0 inside each condition —
+// so this is reproducible bias, not variance. The model grades a batch
+// comparatively no matter how firmly the prompt forbids it. A pupil's mark
+// would then depend on which classmates happened to land in the same request,
+// which is indefensible in a gradebook and would invalidate any accuracy
+// measurement taken through it.
+//
+// Raising this trades grade validity for daily quota. Do not raise it to solve
+// a capacity problem: a second API key from a second Google Cloud project adds
+// a whole independent daily budget at no cost to validity, and that is the
+// lever to reach for first.
+const AI_BATCH_SIZE = Math.max(1, Number(process.env.AI_BATCH_SIZE || 1));
 
 /** In-memory job registry. Checking a class set takes minutes — far longer than
  *  a teacher's phone will hold a request open on school wifi — so the work is a
