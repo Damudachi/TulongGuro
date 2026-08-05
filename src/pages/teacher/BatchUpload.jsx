@@ -2,11 +2,15 @@ import { useState, useEffect, useRef } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { ArrowLeft, UploadCloud, X, Loader2, Wifi, WifiOff, ShieldCheck, Info, FileText, Camera, Sparkles, Plus, CheckCircle2, AlertTriangle, ClipboardCheck } from 'lucide-react';
 import { getQueue, buildJob, enqueue, flushQueue } from '../../utils/offlineQueue';
-import { API_URL, apiFetch } from '../../config';
+import { API_URL, apiFetch, MAX_SUBMISSION_PAGES } from '../../config';
 import SubmissionImage from '../../components/SubmissionImage';
 import ImageRedactor from '../../components/ImageRedactor';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
+
+/** Photographs can be previewed and redacted in the browser; a PDF or Word
+ *  file can be neither, so the staged tile shows the file instead. */
+const isImageFile = (file) => (file?.type || '').startsWith('image/');
 
 const SUBMISSION_STATUS = {
   PENDING: { label: 'Needs Review', color: 'bg-amber-100 text-amber-700' },
@@ -44,7 +48,6 @@ export default function BatchUpload() {
   const [stagedByStudentId, setStagedByStudentId] = useState({});
   const [uploadingStudentId, setUploadingStudentId] = useState(null);
   const [redacting, setRedacting] = useState(null);   // { studentId, pageIndex }
-  const [confirmingStudent, setConfirmingStudent] = useState(null); // student pending the "start AI checking?" prompt
   const [privacyBlocked, setPrivacyBlocked] = useState(null); // { studentId, message } when the server refused a scan for PII
   const fileInputRef = useRef(null);
   const cameraInputRef = useRef(null);
@@ -140,12 +143,9 @@ export default function BatchUpload() {
   const maxPoints = activityMeta?.points || 100;
 
   // ── Per-student staged upload (teacher-upload mode) ──
-  // Capped at 12, not 20. Pages are stitched into one image before they go to
-  // the model, and the model refuses an image past roughly 62 megapixels —
-  // measured as 16 pages of a 1654px-wide scan, but only 12 pages of a phone
-  // photo, which the pipeline caps at 1920px wide. Allowing 20 meant a teacher
-  // could stage a submission that was guaranteed to fail on both models.
-  const MAX_PAGES = 12;
+  // The cap lives in config.js and is enforced by the server; this is the same
+  // number so the UI never lets a teacher stage pages that would be refused.
+  const MAX_PAGES = MAX_SUBMISSION_PAGES;
 
   const triggerFilePick = (studentId, source = 'files') => {
     pendingUploadStudentId.current = studentId;
@@ -198,13 +198,15 @@ export default function BatchUpload() {
 
   /**
    * Upload the staged pages for a student.
-   * @param {boolean} startAiChecking — when true, jump straight to the AI review
-   *   workspace after upload; when false the photo is saved for later review.
+   *
+   * Saves the work and nothing more — there is no longer a prompt asking whether
+   * to start AI checking. Checking is a class-wide action on the bar at the
+   * bottom of this screen, which is both fewer taps per pupil and the only way
+   * the teacher can see what a run will cost before starting it.
    */
-  const uploadStaged = async (studentId, startAiChecking) => {
+  const uploadStaged = async (studentId) => {
     const pages = stagedByStudentId[studentId]?.pages || [];
     if (pages.length === 0 || !piiConfirmed) return;
-    setConfirmingStudent(null);
     setPrivacyBlocked(prev => (prev?.studentId === studentId ? null : prev));
     setUploadingStudentId(studentId);
 
@@ -239,11 +241,7 @@ export default function BatchUpload() {
       if (data.success) {
         setActivitySubmissions(prev => [...prev.filter(s => s.studentId !== studentId), data.submission]);
         cancelStaged(studentId);
-        if (startAiChecking) {
-          navigate(`/teacher/review/${data.submission.id}`);
-        } else {
-          setUploadingStudentId(null);
-        }
+        setUploadingStudentId(null);
       } else if (data.code === 'PRIVACY_VIOLATION') {
         // The server refused the scan and discarded it, so the staged pages are
         // deliberately kept: the teacher needs them to redact and retry, and
@@ -283,51 +281,18 @@ export default function BatchUpload() {
         />
       )}
 
-      {/* "Start AI checking now?" confirmation */}
-      {confirmingStudent && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm">
-          <div className="bg-white rounded-2xl w-full max-w-sm overflow-hidden shadow-2xl">
-            <div className="p-6 text-center">
-              <div className="w-14 h-14 bg-blue-50 text-brand-navy rounded-full flex items-center justify-center mx-auto mb-4">
-                <Sparkles className="w-7 h-7" />
-              </div>
-              <h3 className="text-lg font-bold text-brand-slate mb-1">Start AI checking now?</h3>
-              <p className="text-sm text-slate-500 leading-relaxed">
-                Upload {(stagedByStudentId[confirmingStudent.id]?.pages || []).length} page(s) for{' '}
-                <span className="font-semibold text-brand-slate">{confirmingStudent.name}</span>. You can have the AI
-                check it right away, or just save the photo and review it later.
-              </p>
-            </div>
-            <div className="px-6 pb-6 flex flex-col gap-2">
-              <button onClick={() => uploadStaged(confirmingStudent.id, true)}
-                className="w-full py-3 bg-brand-navy text-white rounded-xl font-bold hover:bg-blue-900 transition-colors flex items-center justify-center gap-2">
-                <Sparkles className="w-4 h-4" /> Yes, start AI checking
-              </button>
-              <button onClick={() => uploadStaged(confirmingStudent.id, false)}
-                className="w-full py-3 border-2 border-slate-200 rounded-xl font-bold text-slate-600 hover:bg-slate-50 transition-colors">
-                No, just save it for later
-              </button>
-              <button onClick={() => setConfirmingStudent(null)}
-                className="w-full py-2 text-sm font-medium text-slate-400 hover:text-slate-600 transition-colors">
-                Cancel
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
       {/* Hidden shared file inputs for per-student upload */}
-      <input ref={fileInputRef} type="file" accept="image/*" multiple className="hidden" onChange={handleFilePicked} />
+      <input ref={fileInputRef} type="file" accept="image/*,application/pdf,.pdf,.docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document" multiple className="hidden" onChange={handleFilePicked} />
       <input ref={cameraInputRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={handleFilePicked} />
 
       {/* Offline Banner */}
-      {!isStudentSubmitMode && !isOnline && (
+      {!isOnline && (
         <div className="flex items-center gap-2 p-3 bg-amber-50 border border-amber-300 rounded-xl text-sm text-amber-800">
           <WifiOff className="w-4 h-4 shrink-0" />
           <span><strong>You're offline.</strong> Your essays will be saved and uploaded automatically once you're connected again. </span>
         </div>
       )}
-      {!isStudentSubmitMode && isOnline && queuedCount > 0 && (
+      {isOnline && queuedCount > 0 && (
         <div className="flex items-center justify-between gap-2 p-3 bg-blue-50 border border-blue-200 rounded-xl text-sm text-blue-800">
           <div className="flex items-center gap-2">
             <Wifi className="w-4 h-4 shrink-0 text-blue-500" />
@@ -341,7 +306,11 @@ export default function BatchUpload() {
       )}
 
       <div className="flex justify-between items-center">
-        <button onClick={() => navigate('/teacher/dashboard')} className="flex items-center text-sm text-slate-500 hover:text-brand-slate">
+        {/* Back to the activity list for this class, not the dashboard. This
+            screen is always reached from a specific activity, so the dashboard
+            is two steps further out than where the teacher came from. */}
+        <button onClick={() => navigate(classId ? `/teacher/class/${classId}` : '/teacher/dashboard')}
+          className="flex items-center text-sm text-slate-500 hover:text-brand-slate">
           <ArrowLeft className="w-4 h-4 mr-1" /> Back
         </button>
       </div>
@@ -352,14 +321,15 @@ export default function BatchUpload() {
         </h1>
         <p className="text-slate-500 text-sm">
           {isStudentSubmitMode
-            ? 'Review student-submitted outputs for this activity.'
+            ? 'Students submit their own work here. For anyone without a device, upload on their behalf using the buttons beside their name.'
             : 'Take a photo or upload each student\'s output — add multiple pages if the output spans more than one sheet. Grade it now, or save it and review it later.'}
         </p>
       </div>
 
-      {/* PII Guard — Mandatory Privacy Confirmation */}
-      {!isStudentSubmitMode && (
-        <div className={cn('p-4 rounded-xl border text-sm', piiConfirmed ? 'bg-green-50 border-green-200' : 'bg-amber-50 border-amber-200')}>
+      {/* PII Guard — mandatory before any upload, in either mode. It gates the
+          teacher's own uploads, which are now possible for a pupil without a
+          device even on a student-submit activity. */}
+      <div className={cn('p-4 rounded-xl border text-sm', piiConfirmed ? 'bg-green-50 border-green-200' : 'bg-amber-50 border-amber-200')}>
           <label className="flex items-start gap-3 cursor-pointer">
             <input
               type="checkbox"
@@ -375,12 +345,11 @@ export default function BatchUpload() {
                 I confirm that the student's name is covered, folded, or not visible in the uploaded image(s). No personally identifiable information (PII) is included.
               </p>
             </div>
-          </label>
-        </div>
-      )}
+        </label>
+      </div>
 
       {/* Handwriting Legibility Banner */}
-      {!isStudentSubmitMode && (
+      {(
         <div className="bg-blue-500/10 border border-blue-500/30 rounded-xl p-4">
           <div className="flex items-start gap-3">
             <Info className="w-5 h-5 text-blue-400 shrink-0 mt-0.5" />
@@ -406,7 +375,7 @@ export default function BatchUpload() {
           <div className="space-y-3">
             {students.map((student) => {
               const sub = submissionsByStudentId[student.id] || null;
-              const stagedPages = !isStudentSubmitMode ? (stagedByStudentId[student.id]?.pages || []) : [];
+              const stagedPages = stagedByStudentId[student.id]?.pages || [];
               const staged = stagedPages.length > 0;
               const statusKey = sub?.status || 'NONE';
               const statusCfg = SUBMISSION_STATUS[statusKey] || SUBMISSION_STATUS.NONE;
@@ -463,28 +432,57 @@ export default function BatchUpload() {
                         <span className="inline-flex mt-2 text-[11px] font-bold px-2 py-0.5 rounded-full bg-blue-100 text-blue-700">
                           Ready to upload — {stagedPages.length} page{stagedPages.length > 1 ? 's' : ''}
                         </span>
-                        <div className="flex flex-wrap gap-1.5 mt-2">
+                        {/* Both controls are always visible, never hover-only.
+                            They used to appear on :hover, which does not exist
+                            on the phones this is used on — so on the target
+                            device the redaction tool was unreachable, and
+                            covering the name is a Data Privacy Act requirement,
+                            not a power-user extra. Thumbnails are also sized for
+                            a fingertip rather than a cursor. */}
+                        <div className="flex flex-wrap gap-2 mt-2">
                           {stagedPages.map((page, i) => (
-                            <div key={i} className="relative w-10 h-12 rounded-md overflow-hidden border border-slate-200 group/page">
-                              <img src={page.preview} alt={`page ${i + 1}`} className="w-full h-full object-cover" />
-                              <button type="button" onClick={() => setRedacting({ studentId: student.id, pageIndex: i })}
-                                title={`Redact name on page ${i + 1}`}
-                                className="absolute inset-0 bg-black/50 text-white opacity-0 group-hover/page:opacity-100 transition-opacity flex items-center justify-center">
-                                <ShieldCheck className="w-3.5 h-3.5" />
-                              </button>
-                              <button type="button" onClick={() => removePage(student.id, i)} title={`Remove page ${i + 1}`}
-                                className="absolute -top-0.5 -right-0.5 w-4 h-4 bg-red-500 text-white rounded-full flex items-center justify-center opacity-0 group-hover/page:opacity-100 transition-opacity">
-                                <X className="w-2.5 h-2.5" />
+                            <div key={i} className="relative w-16 rounded-md border border-slate-200 overflow-hidden">
+                              {isImageFile(page.file) ? (
+                                <img src={page.preview} alt={`page ${i + 1}`} className="w-full h-16 object-cover" />
+                              ) : (
+                                <div className="w-full h-16 flex flex-col items-center justify-center gap-1 bg-slate-100 px-1 text-center">
+                                  <FileText className="w-5 h-5 text-slate-400" />
+                                  <span className="text-[8px] font-bold text-slate-500 uppercase">
+                                    {page.file.name.split('.').pop()}
+                                  </span>
+                                </div>
+                              )}
+                              {/* Redaction paints on a canvas, so it only applies
+                                  to photographs. A typed document is still read
+                                  by the server's privacy gate before grading. */}
+                              {isImageFile(page.file) ? (
+                                <button type="button" onClick={() => setRedacting({ studentId: student.id, pageIndex: i })}
+                                  title={`Cover the name on page ${i + 1}`}
+                                  className="w-full py-1 bg-slate-800 text-white text-[10px] font-bold flex items-center justify-center gap-1 hover:bg-brand-navy transition-colors">
+                                  <ShieldCheck className="w-3 h-3" /> Cover
+                                </button>
+                              ) : (
+                                <div className="w-full py-1 bg-slate-200 text-slate-500 text-[10px] font-bold text-center">File</div>
+                              )}
+                              <button type="button" onClick={() => removePage(student.id, i)}
+                                title={`Remove page ${i + 1}`} aria-label={`Remove page ${i + 1}`}
+                                className="absolute -top-1.5 -right-1.5 w-6 h-6 bg-red-500 text-white rounded-full flex items-center justify-center shadow-md hover:bg-red-600 transition-colors">
+                                <X className="w-3.5 h-3.5" />
                               </button>
                             </div>
                           ))}
                           {stagedPages.length < MAX_PAGES && (
                             <button type="button" onClick={() => triggerFilePick(student.id)} title="Add another page"
-                              className="w-10 h-12 rounded-md border-2 border-dashed border-slate-300 text-slate-400 flex items-center justify-center hover:border-brand-navy hover:text-brand-navy transition-colors">
-                              <Plus className="w-3.5 h-3.5" />
+                              className="w-16 h-[88px] rounded-md border-2 border-dashed border-slate-300 text-slate-400 flex flex-col items-center justify-center gap-0.5 hover:border-brand-navy hover:text-brand-navy transition-colors">
+                              <Plus className="w-4 h-4" />
+                              <span className="text-[10px] font-bold">Page</span>
                             </button>
                           )}
                         </div>
+                        <p className="text-[11px] text-slate-500 mt-1.5 flex items-start gap-1">
+                          <ShieldCheck className="w-3 h-3 mt-0.5 shrink-0 text-slate-400" />
+                          Tap <span className="font-semibold">Cover</span> on any photo to black out the student&apos;s name before uploading. PDF and Word files are checked for names on the server.
+                        </p>
                       </>
                     ) : (
                       <>
@@ -500,25 +498,26 @@ export default function BatchUpload() {
                     )}
                   </div>
 
-                  {isStudentSubmitMode ? (
-                    sub?.id ? (
-                      <div className="flex flex-col items-center gap-1 shrink-0">
-                        <Link to={`/teacher/review/${sub.id}`}
-                          className="text-xs bg-brand-navy text-white px-3 py-1.5 rounded-md font-medium hover:bg-blue-900">
-                          Review
-                        </Link>
-                        {grade !== null && <span className="text-xs font-bold text-brand-slate">{grade}/{maxPoints}</span>}
-                      </div>
-                    ) : (
-                      <span className="text-xs text-slate-400 font-medium shrink-0">No submission</span>
-                    )
+                  {/* In student-submit mode a pupil who has already handed work
+                      in is only reviewed — the teacher must not overwrite it. A
+                      pupil with nothing in yet still gets the upload controls,
+                      because not every learner in a DepEd classroom has a device
+                      and the ones who don't cannot be left unable to submit. */}
+                  {isStudentSubmitMode && sub?.id ? (
+                    <div className="flex flex-col items-center gap-1 shrink-0">
+                      <Link to={`/teacher/review/${sub.id}`}
+                        className="text-xs bg-brand-navy text-white px-3 py-1.5 rounded-md font-medium hover:bg-blue-900">
+                        Review
+                      </Link>
+                      {grade !== null && <span className="text-xs font-bold text-brand-slate">{grade}/{maxPoints}</span>}
+                    </div>
                   ) : staged ? (
                     <div className="flex flex-col items-end gap-1.5 shrink-0">
                       <button type="button" onClick={() => cancelStaged(student.id)}
                         className="text-xs text-slate-400 hover:text-red-600 font-medium flex items-center gap-1">
                         <X className="w-3.5 h-3.5" /> Discard all
                       </button>
-                      <button type="button" onClick={() => setConfirmingStudent(student)}
+                      <button type="button" onClick={() => uploadStaged(student.id)}
                         disabled={!piiConfirmed || isUploading}
                         className={cn('text-xs px-3 py-1.5 rounded-md font-medium flex items-center gap-1',
                           piiConfirmed ? 'bg-brand-navy text-white hover:bg-blue-900' : 'bg-slate-200 text-slate-400 cursor-not-allowed')}>
@@ -560,7 +559,7 @@ export default function BatchUpload() {
       </div>
 
       {/* ── Class-wide AI check ── */}
-      {!isStudentSubmitMode && (aiPlan?.ready > 0 || aiJob) && (
+      {(aiPlan?.ready > 0 || aiJob) && (
         <div className="fixed bottom-0 left-0 right-0 z-40 border-t border-slate-200 bg-white/95 backdrop-blur px-4 py-3 shadow-[0_-4px_16px_rgba(15,23,42,0.08)]">
           <div className="max-w-5xl mx-auto">
             {/* Running */}

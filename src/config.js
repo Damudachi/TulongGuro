@@ -3,6 +3,17 @@
 // In Vercel, set VITE_API_URL to your Render.com backend URL.
 export const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
 
+/**
+ * Pages accepted for one student's submission. Must match MAX_SUBMISSION_PAGES
+ * on the server, which is what actually enforces it — this copy only stops the
+ * UI from letting a teacher stage pages that would be refused on arrival.
+ *
+ * 12 because the pages are stitched into one image before the AI sees them, and
+ * the model rejects an image past roughly 62 megapixels — about 12 pages of a
+ * phone photo once the pipeline has capped it at 1920px wide.
+ */
+export const MAX_SUBMISSION_PAGES = 12;
+
 const TOKEN_KEY = 'tg_token';
 
 export const getToken = () => localStorage.getItem(TOKEN_KEY);

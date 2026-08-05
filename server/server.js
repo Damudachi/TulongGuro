@@ -16,6 +16,7 @@ const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
 const sharp = require('sharp');
+const mammoth = require('mammoth');
 const {
   signToken, authenticate, authorizePath,
   configureRevocation, markRevoked,
@@ -335,11 +336,75 @@ function safeUploadName(originalname) {
   return `${Date.now()}-${base || 'upload'}${ext || '.jpg'}`;
 }
 
+/**
+ * Pages accepted for one student's submission.
+ *
+ * 12, because the pages are stitched into a single image before they reach the
+ * model and the model refuses an image past roughly 62 megapixels. Measured,
+ * that is 16 pages of a 1654px-wide scan but only 12 of a phone photo, which the
+ * pipeline caps at 1920px wide. Enforced here rather than only in the UI: the
+ * offline queue, student self-submission, and any direct API call all arrive
+ * through these endpoints, and a limit the server does not enforce is a
+ * suggestion.
+ */
+const MAX_SUBMISSION_PAGES = Number(process.env.MAX_SUBMISSION_PAGES || 12);
+
+/**
+ * Ceiling on the decoded area of one image sent to the model, in pixels.
+ *
+ * Measured empirically: a stitched page image was accepted at 61.9 MP and
+ * rejected with HTTP 400 "Unable to process input image" at 65.8 MP. 60 MP
+ * leaves headroom under the observed boundary.
+ */
+const MAX_IMAGE_PIXELS = Number(process.env.MAX_IMAGE_PIXELS || 60_000_000);
+
+/** Per-file upload ceiling. A 1920px-wide q88 page is ~300-700 KB, so 20 MB is
+ *  generous for an unprocessed phone original while still refusing a file that
+ *  would sit in memory and on disk for no good reason. */
+const MAX_UPLOAD_BYTES = Number(process.env.MAX_UPLOAD_BYTES || 20 * 1024 * 1024);
+
+/**
+ * What a submission may be.
+ *
+ * Photographs of paper are the primary case, but work is increasingly typed and
+ * handed in as a file, so PDF and Word are accepted too. The three are handled
+ * differently downstream — see buildFilePart — because the model takes images
+ * and PDFs natively but rejects .docx outright with "Unsupported MIME type".
+ */
+const SUBMISSION_MIME_TYPES = new Set([
+  'image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'image/heic', 'image/heif',
+  'application/pdf',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document'  // .docx
+]);
+const isImageMime = (m) => (m || '').startsWith('image/');
+
 const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, uploadsDir),
   filename: (req, file, cb) => cb(null, safeUploadName(file.originalname))
 });
-const upload = multer({ storage });
+const upload = multer({
+  storage,
+  limits: {
+    fileSize: MAX_UPLOAD_BYTES,
+    // +1 for the legacy single-'image' field the teacher upload still accepts.
+    files: MAX_SUBMISSION_PAGES + 1
+  }
+});
+
+/** Upload middleware for student work, which additionally screens the file type
+ *  so an unusable format is refused at the door with a readable reason rather
+ *  than failing later inside sharp or at the model. */
+const submissionUpload = multer({
+  storage,
+  limits: { fileSize: MAX_UPLOAD_BYTES, files: MAX_SUBMISSION_PAGES + 1 },
+  fileFilter: (req, file, cb) => {
+    if (SUBMISSION_MIME_TYPES.has((file.mimetype || '').toLowerCase())) return cb(null, true);
+    const err = new Error('Only photos, PDF files, and Word (.docx) documents can be submitted. Older .doc files need to be saved as .docx or PDF first.');
+    err.name = 'MulterError';
+    err.code = 'LIMIT_UNEXPECTED_FILE';
+    cb(err);
+  }
+});
 
 /**
  * Persist a local file and return the URL to store in the database. Every
@@ -443,11 +508,15 @@ const LITE_MODEL_ID = process.env.GEMINI_LITE_MODEL || 'gemini-3.5-flash-lite';
 const GRADING_MODEL_IDS = (process.env.GEMINI_GRADING_MODELS || `${PRIMARY_MODEL_ID},${LITE_MODEL_ID}`)
   .split(',').map(s => s.trim()).filter(Boolean);
 
-// The Study Buddy chatbot is short conversational turns, not vision grading, and
-// it is the highest-volume AI surface in the app. It gets a model that is
-// deliberately NOT in the grading pool: a class of students chatting must never
-// be able to spend the budget the teacher's grading queue is depending on.
-const CHAT_MODEL_ID = process.env.GEMINI_CHAT_MODEL || 'gemini-3.5-flash';
+// The teacher's AI Co-Pilot rewrites feedback wording on request. It is short
+// text turns, not vision grading, so it gets a model deliberately NOT in the
+// grading pool: rewording a comment must never be able to spend budget the
+// grading queue is depending on.
+//
+// There is no student-facing AI. The Study Buddy chatbot that used to run here
+// was removed along with its endpoint — the AI in this system is a teacher tool,
+// and every AI output a learner sees has passed through a teacher first.
+const ASSIST_MODEL_ID = process.env.GEMINI_ASSIST_MODEL || process.env.GEMINI_CHAT_MODEL || 'gemini-3.5-flash';
 
 // What one bucket is assumed to be good for in a day. Google does not expose a
 // remaining-quota endpoint, so this is a declared budget used only to show the
@@ -503,16 +572,16 @@ function rollPoolDayIfNeeded() {
 // rotation. They alias the ends of the pool so nothing downstream changed shape.
 const model = gradingPool[0]?.model || null;
 const modelLite = gradingPool[gradingPool.length - 1]?.model || null;
-// The chatbot runs on the LAST credential, so on a multi-project deployment
-// student conversation is charged to a different project than the grading
-// rotation opens on — the same isolation reasoning as giving it its own model.
-const chatModel = genAIByKey.length
-  ? genAIByKey[genAIByKey.length - 1].client.getGenerativeModel({ model: CHAT_MODEL_ID })
+// Runs on the LAST credential, so on a multi-project deployment the Co-Pilot is
+// charged to a different project than the grading rotation opens on — the same
+// isolation reasoning as giving it its own model.
+const assistModel = genAIByKey.length
+  ? genAIByKey[genAIByKey.length - 1].client.getGenerativeModel({ model: ASSIST_MODEL_ID })
   : null;
 
 if (aiConfigured) {
   console.log(`🤖 Gemini AI enabled — ${gradingPool.length} grading bucket(s): ${gradingPool.map(e => e.label).join(', ')}`);
-  console.log(`   chat: ${CHAT_MODEL_ID}@${genAIByKey[genAIByKey.length - 1].name}`);
+  console.log(`   teacher co-pilot: ${ASSIST_MODEL_ID}@${genAIByKey[genAIByKey.length - 1].name}`);
   if (aiApiKeys.length === 1) {
     console.log('   note: one credential in use. Quota is metered per project, so a key from a second project doubles the daily budget.');
   }
@@ -2658,14 +2727,64 @@ app.post('/api/teacher/extract-students', upload.single('file'), async (req, res
  *
  * Shared by the teacher roster flow and the admin console.
  */
+/** Password given to a learner enrolled without a birthday on the roster. */
+const DEFAULT_STUDENT_PASSWORD = 'password123';
+
+/**
+ * Reads a birthday off a roster entry.
+ *
+ * Accepts what a Philippine school form actually contains — 03/15/2014,
+ * 3-15-2014, 2014-03-15 — and refuses anything it cannot read unambiguously
+ * rather than guessing, because a misread birthday becomes a password the
+ * learner cannot sign in with. Returns a Date at UTC midnight, or null.
+ */
+function parseBirthday(value) {
+  if (!value) return null;
+  if (value instanceof Date) return isNaN(value) ? null : value;
+  const text = String(value).trim();
+  if (!text) return null;
+
+  let y, m, d;
+  let match = /^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$/.exec(text);        // 2014-03-15
+  if (match) { [, y, m, d] = match; }
+  else {
+    match = /^(\d{1,2})[-/](\d{1,2})[-/](\d{4})$/.exec(text);          // 03/15/2014
+    if (match) { [, m, d, y] = match; }
+  }
+  if (!match) return null;
+
+  y = Number(y); m = Number(m); d = Number(d);
+  if (m < 1 || m > 12 || d < 1 || d > 31) return null;
+  const date = new Date(Date.UTC(y, m - 1, d));
+  // Rejects 31 February and friends: the Date constructor rolls those over
+  // silently, so compare the parts back.
+  if (date.getUTCFullYear() !== y || date.getUTCMonth() !== m - 1 || date.getUTCDate() !== d) return null;
+  // A learner born in the future, or before living memory, is a typo.
+  const year = date.getUTCFullYear();
+  if (year < 1950 || date.getTime() > Date.now()) return null;
+  return date;
+}
+
+/** The birthday rendered as the pupil's password: MMDDYYYY. */
+function birthdayPassword(date) {
+  const mm = String(date.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(date.getUTCDate()).padStart(2, '0');
+  return `${mm}${dd}${date.getUTCFullYear()}`;
+}
+
 async function enrolStudents(section, studentsList, { schoolId, teacherId }) {
   const createdStudents = [];
   const skippedStudents = [];
   const linkedStudents = [];
-  const names = (studentsList || []).filter(n => n && n.trim());
-  if (names.length === 0) return { createdStudents, skippedStudents, linkedStudents };
+  // A roster entry is either a bare name (how it has always arrived, and how
+  // file extraction still produces them) or { name, birthday }. Both are
+  // accepted so nothing that previously worked has to change.
+  const entries = (studentsList || [])
+    .map(entry => (typeof entry === 'string' ? { name: entry, birthday: null } : entry))
+    .filter(e => e && typeof e.name === 'string' && e.name.trim());
+  if (entries.length === 0) return { createdStudents, skippedStudents, linkedStudents };
 
-  const defaultStudentPassword = await bcrypt.hash('password123', BCRYPT_SALT_ROUNDS);
+  const defaultStudentPassword = await bcrypt.hash(DEFAULT_STUDENT_PASSWORD, BCRYPT_SALT_ROUNDS);
 
   const sectionStudents = await prisma.user.findMany({ where: { sectionId: section.id, role: 'STUDENT' } });
   const sectionNamesSet = new Set(sectionStudents.map(s => s.name.toLowerCase().trim()));
@@ -2676,7 +2795,8 @@ async function enrolStudents(section, studentsList, { schoolId, teacherId }) {
     where: { role: 'STUDENT', section: schoolId ? { schoolId } : { teacherId } }
   });
 
-  for (const studentName of names) {
+  for (const entry of entries) {
+    const studentName = entry.name;
     const normalizedName = studentName.toLowerCase().trim();
 
     if (sectionNamesSet.has(normalizedName)) {
@@ -2700,11 +2820,32 @@ async function enrolStudents(section, studentsList, { schoolId, teacherId }) {
       studentId = `${prefix}-${String(count).padStart(3, '0')}`;
     }
 
+    // The birthday seeds the first password, as MMDDYYYY. A Grade 6 learner
+    // remembers their own birthday; a generated string means the teacher spends
+    // the year re-issuing it. Where no birthday was supplied the old shared
+    // default still applies, and the caller is told which is which so the
+    // roster screen can show the right thing to hand out.
+    const birthdate = parseBirthday(entry.birthday);
+    const initialPassword = birthdate ? birthdayPassword(birthdate) : DEFAULT_STUDENT_PASSWORD;
+    const passwordHash = birthdate
+      ? await bcrypt.hash(initialPassword, BCRYPT_SALT_ROUNDS)
+      : defaultStudentPassword;
+
     const user = await prisma.user.create({
-      data: { name: studentName.trim(), username: studentId, password: defaultStudentPassword, role: 'STUDENT', sectionId: section.id }
+      data: {
+        name: studentName.trim(),
+        username: studentId,
+        password: passwordHash,
+        role: 'STUDENT',
+        sectionId: section.id,
+        birthdate
+      }
     });
     const { password: _pw, ...safeUser } = user;
-    createdStudents.push(safeUser);
+    // Returned in the clear on purpose: it is the credential the teacher has to
+    // read out to the pupil, and it is only ever sent back to the teacher who
+    // just created the account, in the response to their own request.
+    createdStudents.push({ ...safeUser, initialPassword, passwordSource: birthdate ? 'birthday' : 'default' });
     sectionNamesSet.add(normalizedName);
     count++;
   }
@@ -3570,12 +3711,110 @@ app.get('/api/activities/:activityId/submissions', async (req, res) => {
 // Minimal non-destructive pipeline: EXIF rotation fix + JPEG compression only
 // The VLM reads color photos natively — NO binarization, NO filters, NO sharpening
 // ─────────────────────────────────────────
+/** How a stored submission file has to be handed to the model. */
+function kindForPath(filePath) {
+  const ext = path.extname(filePath || '').toLowerCase();
+  if (ext === '.docx') return 'text';
+  if (ext === '.pdf') return 'pdf';
+  return 'image';
+}
+
+/**
+ * Turn one stored submission file into a part the model can actually read.
+ *
+ * Images and PDFs go inline and are read natively — a PDF keeps its layout, so
+ * a typed essay arrives as the pupil formatted it. Word is different: the API
+ * rejects .docx with "Unsupported MIME type", so the text is extracted here and
+ * sent as text. Formatting is lost in that case, which is an acceptable trade —
+ * a typed essay is assessed on its words, and the rubric criteria are about
+ * content, organisation and language rather than layout.
+ */
+async function buildFilePart(localPath) {
+  const kind = kindForPath(localPath);
+  if (kind === 'text') {
+    const { value } = await mammoth.extractRawText({ path: localPath });
+    const text = (value || '').trim();
+    if (!text) {
+      throw new AiUnavailableError('IMAGE', 'That Word document has no readable text in it, so there was nothing to check.');
+    }
+    return `\n--- BEGIN TYPED SUBMISSION ---\n${text}\n--- END TYPED SUBMISSION ---\n`;
+  }
+  const ext = path.extname(localPath).toLowerCase();
+  const mimeType = kind === 'pdf' ? 'application/pdf'
+    : ext === '.png' ? 'image/png'
+      : ext === '.webp' ? 'image/webp'
+        : 'image/jpeg';
+  return { inlineData: { data: fs.readFileSync(localPath).toString('base64'), mimeType } };
+}
+
+/**
+ * Prepare the uploaded files for storage and grading.
+ *
+ * Photos take the existing route: stitched into one continuous image, then
+ * optimised. A PDF or Word file is already a document — there is no page to
+ * stitch and nothing for sharp to do — so it is stored exactly as it arrived,
+ * which also means a PDF reaches the model with its layout intact.
+ *
+ * Mixing photos and a document in one submission is refused rather than guessed
+ * at: there is no sensible order to merge them in, and silently dropping half
+ * of a pupil's work is worse than asking for it again.
+ */
+async function prepareSubmissionUpload(files) {
+  const images = files.filter(f => isImageMime(f.mimetype));
+  const docs = files.filter(f => !isImageMime(f.mimetype));
+
+  if (docs.length && images.length) {
+    const err = new Error('Send either photos or one document for a submission, not both together.');
+    err.status = 400;
+    throw err;
+  }
+  if (docs.length > 1) {
+    const err = new Error('Only one PDF or Word file can be submitted at a time — a single file can hold as many pages as you need.');
+    err.status = 400;
+    throw err;
+  }
+  if (docs.length === 1) {
+    return { path: docs[0].path, filename: docs[0].filename, contentType: docs[0].mimetype, extraToDelete: [] };
+  }
+
+  const combined = await stitchPages(images);
+  const processedPath = await preprocessImage(combined.path);
+  return {
+    path: processedPath,
+    filename: path.basename(processedPath),
+    contentType: 'image/jpeg',
+    // preprocessImage writes a *new* file and leaves its input behind; without
+    // this the pre-processing original accumulates on every upload. Guarded on
+    // inequality because preprocessImage returns its input unchanged when sharp
+    // fails, and that file is the one being uploaded.
+    extraToDelete: processedPath !== combined.path ? [combined.path] : []
+  };
+}
+
 async function preprocessImage(inputPath) {
   const outputPath = inputPath.replace(/(\.[^.]+)$/, '-processed.jpg');
   try {
+    // Width alone does not bound the area. A stitched multi-page image is only
+    // as wide as one page but arbitrarily tall, and the model rejects an image
+    // past ~62 MP outright — measured, that is 13 pages of a 9:16 phone photo,
+    // which is inside the page limit. So cap area as well as width, scaling both
+    // dimensions by sqrt(ceiling/area) to preserve the aspect ratio. Degrading
+    // the image beats a hard rejection: the teacher keeps their upload, and if
+    // the result really is unreadable the model still says so via noTextDetected.
+    const meta = await sharp(inputPath).rotate().metadata();
+    const width = meta.width || 0, height = meta.height || 0;
+    let targetWidth = Math.min(1920, width || 1920);
+    if (width && height) {
+      const scaled = Math.min(1, targetWidth / width);
+      const area = width * scaled * height * scaled;
+      if (area > MAX_IMAGE_PIXELS) {
+        targetWidth = Math.floor(width * scaled * Math.sqrt(MAX_IMAGE_PIXELS / area));
+        console.log(`📐 Image is ${(area / 1e6).toFixed(1)}MP after the width cap — scaling to ${targetWidth}px wide to stay under ${(MAX_IMAGE_PIXELS / 1e6).toFixed(0)}MP.`);
+      }
+    }
     await sharp(inputPath)
       .rotate()                               // EXIF auto-rotation: fix phone camera orientation
-      .resize({ width: 1920, withoutEnlargement: true }) // Cap at 1920px: reduce upload size
+      .resize({ width: targetWidth, withoutEnlargement: true }) // Cap width and total area
       .jpeg({ quality: 88 })                  // Compress to JPEG: save mobile data
       .toFile(outputPath);
     const origSize = fs.statSync(inputPath).size;
@@ -3649,6 +3888,13 @@ async function generateSubmissionFeedback(imagePaths, activityId, studentId) {
     const paperPaths = Array.isArray(imagePaths) ? imagePaths : [imagePaths];
     const paperCount = paperPaths.length;
     if (paperCount === 0) return [];
+    // A submission may be a photo of paper, a PDF, or a Word document. The
+    // wording of the task below changes accordingly: telling the model to
+    // "transcribe the handwriting" on a typed file invites it to describe
+    // something that is not there.
+    const paperKinds = paperPaths.map(kindForPath);
+    const anyHandwritten = paperKinds.includes('image');
+    const sourceNoun = anyHandwritten ? 'handwritten paper' : 'typed submission';
     // Formats a criteria array into the "MANDATORY RUBRIC" prompt block, shared by all rubric tiers below.
     function formatRubricCriteria(criteria, sourceLabel) {
       return `MANDATORY RUBRIC${sourceLabel ? ` (${sourceLabel})` : ''} — You MUST use this rubric for scoring. Do NOT use any default rubric.\n\n` +
@@ -3732,8 +3978,20 @@ async function generateSubmissionFeedback(imagePaths, activityId, studentId) {
       const activity = await prisma.activity.findUnique({ where: { id: activityId }, include: { class: true } });
       const teacherId = activity?.class?.teacherId;
       if (teacherId) {
+        // Scoped to the grade level as well as the teacher and activity type.
+        // gradeLevel was already being recorded on every example but never
+        // queried, so a teacher's Grade 10 correction could be handed to the
+        // model as a demonstration while it graded a Grade 6 paper. Measured,
+        // the few-shot block moves a score by up to 20 points, so a mismatched
+        // exemplar is not a cosmetic problem.
+        //
+        // Filtered strictly rather than falling back to un-scoped rows: legacy
+        // examples stored before gradeLevel was populated simply stop being
+        // used, which costs a little calibration until the pool refills and is
+        // the safe direction to err in.
+        const exampleGradeLevel = activity?.class?.gradeLevel || null;
         const examples = await prisma.gradingExample.findMany({
-          where: { teacherId, activityType: activity?.type || 'Essay' },
+          where: { teacherId, activityType: activity?.type || 'Essay', gradeLevel: exampleGradeLevel },
           orderBy: { createdAt: 'desc' },
           take: 3
         });
@@ -3854,8 +4112,8 @@ STEP 0 — DATA PRIVACY GATE (do this FIRST, before reading or grading anything)
   continue to the rules below.
 
 IMPORTANT RULES:
-- Next, check if the image contains readable handwritten or printed text.
-- If the image is BLANK, contains only drawings/art with no text, is too blurry to read, or has NO readable written content, you MUST set score to 0, set noTextDetected to true, provide a short explanation in strengths, and leave areasForGrowth and actionableSteps as empty arrays.
+- Next, check whether the ${sourceNoun} contains readable text.
+- If it is BLANK, contains only drawings/art with no text, ${anyHandwritten ? 'is too blurry to read, ' : ''}or has NO readable written content, you MUST set score to 0, set noTextDetected to true, provide a short explanation in strengths, and leave areasForGrowth and actionableSteps as empty arrays.
 - If you CAN read text, grade it normally against the rubric using the structured feedback format below.
 - DATA PRIVACY RULE: Do NOT mention or include the student's name anywhere in your feedback.
 - TONE RULE: Do NOT use exclamation marks in praise. Do NOT use words like "excellent", "amazing", "wonderful", "fantastic", "brilliant" unless quoting the rubric band label. Be factual and measured.
@@ -3875,7 +4133,7 @@ BATCH RULES — these override anything that reads as a single-paper instruction
 - Return exactly ${paperCount} results, one per paper, in paper order.
 
 ` : ''}TASK: In ONE step, for ${paperCount > 1 ? 'EACH paper' : 'the paper'}:
-1. Read and transcribe the handwritten student essay from the image.
+1. Read the student's ${sourceNoun}${anyHandwritten ? ', transcribing the handwriting' : ''}.
 2. Grade it against the rubric.
 3. Provide structured, evidence-based clinical feedback.
 4. Generate a personalized reading intervention strategy connected to the weaknesses found.
@@ -3923,7 +4181,7 @@ Each object in "results":
 
 RULES FOR areasForGrowth:
 - Include 1-3 items. Focus on the most impactful issues.
-- studentQuote MUST be copied exactly from the student's handwriting (even if it has errors — that's the point).
+- studentQuote MUST be copied exactly from the student's own writing (even if it has errors — that's the point).
 - Do NOT invent quotes. If you cannot read a specific phrase, say so honestly.
 
 RULES FOR actionableSteps:
@@ -3943,9 +4201,8 @@ RULES FOR skillExplanations:
     // unrecoverable.
     const parts = [prompt];
     for (let i = 0; i < paperCount; i++) {
-      const buf = fs.readFileSync(paperPaths[i]);
       if (paperCount > 1) parts.push(`\n[PAPER ${i + 1}]\n`);
-      parts.push({ inlineData: { data: buf.toString('base64'), mimeType: 'image/jpeg' } });
+      parts.push(await buildFilePart(paperPaths[i]));
     }
 
     /** One grading call: rotate across the model pool, then parse. Retries only
@@ -4575,9 +4832,9 @@ Teacher's Instruction: ${teacherPrompt}`;
     }
 
     let refinedFeedback = currentFeedback; // fallback: return unchanged
-    if (chatModel) {
+    if (assistModel) {
       try {
-        const result = await generateContentWithRetry(chatModel, {
+        const result = await generateContentWithRetry(assistModel, {
           contents: [{ role: 'user', parts: [{ text: sys }] }],
           generationConfig: isStructured ? { responseMimeType: "application/json" } : undefined
         });
@@ -5610,7 +5867,7 @@ function submissionWindow(activity) {
   return { isLate: late, isClosed: isPastDeadline(closesAt), acceptsLate: !!activity?.lateUntil };
 }
 
-app.post('/api/student/submit', upload.array('images', 20), async (req, res) => {
+app.post('/api/student/submit', submissionUpload.array('images', MAX_SUBMISSION_PAGES), async (req, res) => {
   try {
     const { activityId } = req.body;
     // Whose work this is comes from the session. Taking it from the body let a
@@ -5620,10 +5877,9 @@ app.post('/api/student/submit', upload.array('images', 20), async (req, res) => 
     const imageFiles = req.files;
     if (!imageFiles || imageFiles.length === 0) return res.status(400).json({ error: 'No image provided' });
     
-    const combined = await stitchPages(imageFiles);
-    const finalImageUrl = await uploadToCloud(combined.path, combined.filename, {
-      contentType: combined.isStitched ? 'image/jpeg' : (imageFiles[0].mimetype || 'image/jpeg')
-    });
+    const prepared = await prepareSubmissionUpload(imageFiles);
+    const finalImageUrl = await uploadToCloud(prepared.path, prepared.filename, { contentType: prepared.contentType });
+    prepared.extraToDelete.forEach(f => { try { fs.unlinkSync(f); } catch {} });
 
     // Check for existing submission and update, or create new
     const existing = await prisma.submission.findFirst({ where: { studentId, activityId } });
@@ -5674,12 +5930,12 @@ app.post('/api/student/submit', upload.array('images', 20), async (req, res) => 
     res.json({ success: true, submission, isLate });
   } catch (e) {
     if (req.files) req.files.forEach(f => { try { fs.unlinkSync(f.path) } catch {} });
-    res.status(500).json({ success: false, error: e.message });
+    res.status(e.status || 500).json({ success: false, error: e.message });
   }
 });
 
 // Accepts a single page as `image` (legacy / offline queue) or multiple pages as `images`.
-app.post('/api/teacher/upload', upload.fields([{ name: 'image', maxCount: 1 }, { name: 'images', maxCount: 20 }]), async (req, res) => {
+app.post('/api/teacher/upload', submissionUpload.fields([{ name: 'image', maxCount: 1 }, { name: 'images', maxCount: MAX_SUBMISSION_PAGES }]), async (req, res) => {
   // Tracked outside the try so the privacy-rejection path can un-persist it.
   let storedUrl = null;
   try {
@@ -5691,22 +5947,12 @@ app.post('/api/teacher/upload', upload.fields([{ name: 'image', maxCount: 1 }, {
       return res.status(400).json({ success: false, error: 'Please assign a student before grading. A student must be selected.' });
     }
 
-    // 1) Stitch multi-page outputs into one image, then preprocess it
-    const combined = await stitchPages(imageFiles);
-    const processedPath = await preprocessImage(combined.path);
-    const processedFilename = path.basename(processedPath);
-    // Upload to Supabase Storage in production, local path in dev
-    const processedUrl = await uploadToCloud(processedPath, processedFilename);
+    // 1) Photos are stitched and optimised; a PDF or Word file is stored as-is.
+    const prepared = await prepareSubmissionUpload(imageFiles);
+    const processedPath = prepared.path;
+    const processedUrl = await uploadToCloud(processedPath, prepared.filename, { contentType: prepared.contentType });
     storedUrl = processedUrl;
-    // preprocessImage writes a *new* -processed.jpg and leaves its input behind.
-    // uploadToCloud only removes the file it was handed, so without this the
-    // pre-processing original accumulates in uploads/ on every single upload.
-    // Guarded on inequality because preprocessImage returns its input unchanged
-    // when sharp fails, and that file is the one we just uploaded.
-    if (processedPath !== combined.path) {
-      try { fs.unlinkSync(combined.path); } catch {}
-    }
-
+    prepared.extraToDelete.forEach(f => { try { fs.unlinkSync(f); } catch {} });
     let submissionData;
     // Set when the photo was stored but the AI could not be reached, so the
     // response can say so without pretending the paper was graded.
@@ -5808,131 +6054,13 @@ app.post('/api/teacher/upload', upload.fields([{ name: 'image', maxCount: 1 }, {
         error: 'This paper has the student\'s identifying information written on it, so it was not graded and the photo was discarded. Cover or crop out the name, then upload it again.'
       });
     }
-    res.status(500).json({ success: false, error: e.message });
+    // prepareSubmissionUpload refuses an unusable combination of files with a
+    // 400 and an explanation; without honouring e.status that surfaced as a
+    // generic 500 and the teacher was told to check their connection.
+    res.status(e.status || 500).json({ success: false, error: e.message });
   }
 });
 
-// ─────────────────────────────────────────
-// STUDENT CHATBOT (AI Study Buddy)
-// ─────────────────────────────────────────
-app.post('/api/student/chat', async (req, res) => {
-  try {
-    // Whose data the chatbot may read about — never taken from the caller.
-    const studentId = req.auth.role === 'STUDENT' ? req.auth.sub : req.body.studentId;
-    const { message, conversationHistory = [], context: specificContext } = req.body;
-    if (!message?.trim()) return res.status(400).json({ success: false, error: 'Message is required' });
-
-    // Fetch student context: recent submissions, skills, feedback
-    let studentContext = '';
-    if (studentId) {
-      const student = await prisma.user.findUnique({
-        where: { id: studentId },
-        select: { name: true, section: { select: { name: true } } }
-      });
-
-      const recentSubs = await prisma.submission.findMany({
-        where: { studentId, status: 'GRADED', ...releaseFilterFor(req.auth) },
-        orderBy: { updatedAt: 'desc' },
-        take: 5,
-        include: { activity: { select: { title: true, type: true, class: { select: { name: true, gradeLevel: true } } } } }
-      });
-
-      if (student) {
-        // PII POLICY: Do NOT send student name to AI. Use anonymous identifier.
-        studentContext += `\nSTUDENT PROFILE:\n- Student ID: ${studentId.substring(0, 8)}\n- Section: ${student.section?.name || 'Unknown'}\n`;
-      }
-
-      if (recentSubs.length > 0) {
-        const gradeLevel = recentSubs[0]?.activity?.class?.gradeLevel || 'Grade 6';
-        studentContext += `- Grade Level: ${gradeLevel}\n`;
-        studentContext += `\nRECENT GRADES (most recent first):\n`;
-        for (const sub of recentSubs) {
-          const score = sub.hitlScore ?? sub.aiScore ?? 0;
-          let feedbackSummary = '';
-          try {
-            const fb = JSON.parse(sub.hitlFeedback || sub.aiFeedback || '{}');
-            feedbackSummary = fb.strengths || fb.areasForGrowth?.[0]?.explanation || '';
-          } catch {
-            feedbackSummary = (sub.hitlFeedback || sub.aiFeedback || '').slice(0, 100);
-          }
-          studentContext += `  - "${sub.activity?.title}" (${sub.activity?.class?.name}): Score ${score}/100. Feedback: "${feedbackSummary.slice(0, 120)}"\n`;
-
-          // Include skill scores if available
-          if (sub.skillScores) {
-            try {
-              const skills = JSON.parse(sub.skillScores);
-              studentContext += `    Skills: Vocabulary ${skills.vocabulary}/25, Punctuation ${skills.punctuation}/25, Thematic Flow ${skills.thematicFlow}/25, Sentence Structure ${skills.sentenceStructure}/25\n`;
-            } catch {}
-          }
-        }
-      }
-    }
-
-    if (specificContext) {
-      studentContext += `\nCURRENT CONTEXT THE STUDENT IS ASKING ABOUT:\n${JSON.stringify(specificContext, null, 2)}\n`;
-    }
-
-    // Build the conversation for Gemini
-    const systemPrompt = `You are "Study Buddy," an encouraging, localized Socratic tutor for a student in a Philippine public school. You speak warmly, like a supportive Ate or Kuya.
-
-YOUR ABSOLUTE RULES:
-1. You are STRICTLY FORBIDDEN from writing essays, answers, paragraphs, or any homework content for the student. NEVER do the student's work.
-2. If the student asks you to write something for them, kindly refuse and instead ask a guiding question.
-3. Use the Socratic method: ask leading questions to help the student discover the answer themselves.
-4. Celebrate effort and progress — even small wins.
-5. Keep responses SHORT (2-4 sentences max). Students lose attention with long messages.
-6. If the student asks about their grades or feedback, reference their ACTUAL data below — do not make up scores.
-7. You may use simple Filipino/Taglish phrases naturally (e.g., "Magaling!", "Kaya mo 'yan!") to feel more relatable.
-8. If the student seems frustrated, validate their feelings first, then gently guide them.
-
-${studentContext}
-
-Remember: You are a tutor, not a homework machine. Guide, don't give answers.`;
-
-    // Build conversation history for multi-turn chat
-    const contents = [];
-
-    // Add system instruction as the first user turn
-    contents.push({ role: 'user', parts: [{ text: systemPrompt }] });
-    contents.push({ role: 'model', parts: [{ text: "Understood! I'm Study Buddy — I'll guide and encourage, never give answers directly. How can I help you today? 😊" }] });
-
-    // Add previous conversation turns
-    for (const turn of conversationHistory.slice(-10)) { // Limit to last 10 turns
-      contents.push({
-        role: turn.role === 'user' ? 'user' : 'model',
-        parts: [{ text: turn.text }]
-      });
-    }
-
-    // Add the current message
-    contents.push({ role: 'user', parts: [{ text: message }] });
-
-    let reply = "I'm having a little trouble right now. Can you try asking again? 😊";
-    if (!chatModel) {
-      reply = "AI tutoring is currently unavailable. Please try again shortly.";
-    } else {
-      try {
-        const result = await generateContentWithRetry(chatModel, { contents });
-        reply = result.response.text().trim();
-      } catch (e) {
-        console.log('⚠ Student chat AI error:', e.message?.slice(0, 100));
-        // Try with a simpler single-turn call
-        try {
-          const fallbackPrompt = `${systemPrompt}\n\nStudent says: "${message}"\n\nRespond as Study Buddy (2-4 sentences, encouraging, Socratic):`;
-          const result = await generateContentWithRetry(chatModel, fallbackPrompt, { retries: 0 });
-          reply = result.response.text().trim();
-        } catch (e2) {
-          console.log('⚠ Student chat fallback also failed:', e2.message?.slice(0, 80));
-        }
-      }
-    }
-
-    res.json({ success: true, reply });
-  } catch (e) {
-    console.log('❌ Student chat error:', e.message);
-    res.status(500).json({ success: false, error: e.message });
-  }
-});
 
 // ─────────────────────────────────────────
 // DEV SEED
@@ -6470,6 +6598,33 @@ app.delete('/api/admin/purge-grades', async (req, res) => {
   } catch (e) {
     res.status(e.status || 500).json({ success: false, error: e.message });
   }
+});
+
+/**
+ * Turns upload rejections into something a teacher can act on.
+ *
+ * Multer throws before any route handler runs, so without this the response was
+ * Express's default HTML error page behind a 500 — which the client reports as
+ * "Upload failed. Please check your connection", blaming the school's wifi for
+ * a file the server deliberately refused. Registered last so it only sees
+ * errors the routes did not already handle themselves.
+ */
+app.use((err, req, res, next) => {
+  if (err && err.name === 'MulterError') {
+    const messages = {
+      LIMIT_FILE_SIZE: `That photo is larger than ${Math.round(MAX_UPLOAD_BYTES / 1024 / 1024)}MB. Retake it at a lower resolution, or pick a smaller file.`,
+      LIMIT_FILE_COUNT: `Only ${MAX_SUBMISSION_PAGES} pages can be uploaded for one student at a time.`,
+      LIMIT_UNEXPECTED_FILE: `Only ${MAX_SUBMISSION_PAGES} pages can be uploaded for one student at a time.`
+    };
+    return res.status(400).json({
+      success: false,
+      code: err.code,
+      error: messages[err.code] || `That upload was rejected: ${err.message}`
+    });
+  }
+  if (!err) return next();
+  console.error('Unhandled error:', err);
+  res.status(500).json({ success: false, error: err.message || 'Something went wrong.' });
 });
 
 app.listen(port, () => {

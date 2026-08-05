@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { ArrowLeft, Camera, UploadCloud, FileText, CheckCircle2, Clock, Loader2, ChevronRight, AlertTriangle, ShieldCheck, BookOpen, Calendar, Award, RefreshCw, Eye } from 'lucide-react';
-import { API_URL, apiFetch } from '../../config';
+import { API_URL, apiFetch, MAX_SUBMISSION_PAGES } from '../../config';
 import SubmissionImage from '../../components/SubmissionImage';
 import ImageRedactor from '../../components/ImageRedactor';
 import { deadlineInstant, formatDeadline, submissionWindow } from '../../utils/deadlines';
@@ -99,17 +99,30 @@ export default function SubmitWork() {
   const handleFile = (e) => {
     const selectedFiles = Array.from(e.target.files || e.dataTransfer?.files || []);
     if (selectedFiles.length === 0) return;
-    // Queue files for PII redaction one at a time
-    setPendingFiles(selectedFiles);
-    const first = selectedFiles[0];
-    setRedactingFile({ objectUrl: URL.createObjectURL(first), originalFile: first, index: 0 });
     setResult(null);
+
+    // Only photographs go through the redactor: it paints over a canvas, and a
+    // PDF or Word file cannot be loaded into one. Typed work is attached
+    // directly — the server's privacy gate still reads it for a name before any
+    // grading happens, so nothing is waved through unchecked.
+    const images = selectedFiles.filter(f => (f.type || '').startsWith('image/'));
+    const documents = selectedFiles.filter(f => !(f.type || '').startsWith('image/'));
+
+    if (documents.length > 0) {
+      setFiles(prev => [...prev, ...documents].slice(0, MAX_SUBMISSION_PAGES));
+      setPreviews(prev => [...prev, ...documents.map(f => ({ document: f.name }))].slice(0, MAX_SUBMISSION_PAGES));
+    }
+    if (images.length === 0) return;
+
+    // Queue photos for PII redaction one at a time
+    setPendingFiles(images);
+    setRedactingFile({ objectUrl: URL.createObjectURL(images[0]), originalFile: images[0], index: 0 });
   };
 
   const handleRedactConfirm = (redactedBlob) => {
     // Convert blob to File and add to files list
     const redactedFile = new File([redactedBlob], redactingFile.originalFile.name, { type: 'image/jpeg' });
-    const newFiles = [...files, redactedFile].slice(0, 20);
+    const newFiles = [...files, redactedFile].slice(0, MAX_SUBMISSION_PAGES);
     setFiles(newFiles);
     setPreviews(prev => [...prev, URL.createObjectURL(redactedBlob)]);
     // Process next pending file
@@ -483,7 +496,14 @@ export default function SubmitWork() {
                     <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
                       {previews.map((prev, idx) => (
                         <div key={idx} className="relative group rounded-2xl overflow-hidden border-2 border-cream-200 aspect-[3/4]">
-                          <img src={prev} alt={`page ${idx+1}`} className="w-full h-full object-cover" />
+                          {prev?.document ? (
+                            <div className="w-full h-full flex flex-col items-center justify-center gap-2 bg-cream-100 p-3 text-center">
+                              <FileText className="w-8 h-8 text-navy-900/40" />
+                              <span className="text-[10px] font-bold text-navy-900/70 break-all line-clamp-3">{prev.document}</span>
+                            </div>
+                          ) : (
+                            <img src={prev} alt={`page ${idx+1}`} className="w-full h-full object-cover" />
+                          )}
                           <div className="absolute top-2 left-2 bg-navy-900/70 text-white text-[10px] px-2 py-1 rounded-lg font-bold">
                             Page {idx + 1}
                           </div>
@@ -516,7 +536,7 @@ export default function SubmitWork() {
                     </div>
                   </div>
                 )}
-                <input ref={fileRef} type="file" accept="image/*" multiple capture="environment" className="hidden" onChange={handleFile} />
+                <input ref={fileRef} type="file" accept="image/*,application/pdf,.pdf,.docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document" multiple className="hidden" onChange={handleFile} />
               </div>
             </div>
 

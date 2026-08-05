@@ -593,7 +593,7 @@ export default function HITLWorkspace() {
 
       {/* Left: Essay Image */}
       <div className="w-full md:w-5/12 lg:w-1/2 p-4 flex flex-col border-r border-slate-200 bg-slate-50">
-        <button onClick={() => navigate(-1)} className="flex items-center text-sm text-slate-500 hover:text-brand-slate mb-4 shrink-0">
+        <button onClick={() => navigate(rosterLink)} className="flex items-center text-sm text-slate-500 hover:text-brand-slate mb-4 shrink-0">
           <ArrowLeft className="w-4 h-4 mr-1" /> Back to Queue
         </button>
 
@@ -1077,7 +1077,7 @@ export default function HITLWorkspace() {
               <SkipForward className="w-5 h-5" /> Skip
             </button>
           ) : (
-            <button onClick={() => navigate(-1)} className="flex-1 py-3 px-4 rounded-xl border-2 border-slate-200 text-slate-700 font-bold hover:bg-slate-50 transition-colors">
+            <button onClick={() => navigate(rosterLink)} className="flex-1 py-3 px-4 rounded-xl border-2 border-slate-200 text-slate-700 font-bold hover:bg-slate-50 transition-colors">
               Back
             </button>
           )}

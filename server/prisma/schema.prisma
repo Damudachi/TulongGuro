@@ -92,6 +92,14 @@ model User {
   ///
   /// Null means "no revocation yet", which is every existing row.
   sessionsValidFrom DateTime?
+  /// Date of birth, for learners enrolled from a class roster.
+  ///
+  /// Recorded because it seeds the pupil's first password (see enrolStudents):
+  /// a Grade 6 learner can be told "your password is your birthday" and will
+  /// remember it, where a generated string means the teacher re-issues it all
+  /// year. It is knowable by classmates, so it is a starting credential rather
+  /// than a secret — see the password-change note on the roster screen.
+  birthdate       DateTime?
   schoolName      String?
   schoolId        String?
   createdAt       DateTime         @default(now())

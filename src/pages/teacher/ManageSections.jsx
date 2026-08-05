@@ -3,6 +3,50 @@ import { Users, Plus, ChevronDown, X, Upload, Pencil, UserPlus, Loader2, Search 
 import { API_URL, apiFetch } from '../../config';
 import { GRADE_LEVELS } from '../../constants/school';
 
+/**
+ * Reads one roster line: "Juan Dela Cruz, 03/15/2014".
+ *
+ * The birthday is optional and becomes the pupil's first password, so an
+ * unreadable one is surfaced to the teacher rather than quietly dropped — a
+ * misparsed date is an account the learner cannot sign in to. Splits on the
+ * LAST comma so names containing one ("Dela Cruz, Juan") still work.
+ */
+function parseRoster(text) {
+  return (text || '').split('\n').map(line => line.trim()).filter(Boolean).map(line => {
+    const cut = line.lastIndexOf(',');
+    const looksDated = cut > 0 && /\d/.test(line.slice(cut + 1));
+    const name = (looksDated ? line.slice(0, cut) : line).trim();
+    const birthdayRaw = looksDated ? line.slice(cut + 1).trim() : '';
+    return { name, birthdayRaw, birthday: birthdayRaw && isReadableDate(birthdayRaw) ? birthdayRaw : null };
+  }).filter(r => r.name);
+}
+
+/** Mirrors the server's parseBirthday: MM/DD/YYYY or YYYY-MM-DD, real dates only. */
+function isReadableDate(text) {
+  let y, m, d;
+  let match = /^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$/.exec(text);
+  if (match) { [, y, m, d] = match; }
+  else {
+    match = /^(\d{1,2})[-/](\d{1,2})[-/](\d{4})$/.exec(text);
+    if (match) { [, m, d, y] = match; }
+  }
+  if (!match) return false;
+  y = Number(y); m = Number(m); d = Number(d);
+  if (m < 1 || m > 12 || d < 1 || d > 31) return false;
+  const date = new Date(Date.UTC(y, m - 1, d));
+  if (date.getUTCFullYear() !== y || date.getUTCMonth() !== m - 1 || date.getUTCDate() !== d) return false;
+  return y >= 1950 && date.getTime() <= Date.now();
+}
+
+/** The password the pupil will be given: their birthday as MMDDYYYY. */
+function previewPassword(raw) {
+  if (!isReadableDate(raw)) return null;
+  let y, m, d;
+  let match = /^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$/.exec(raw);
+  if (match) { [, y, m, d] = match; } else { [, m, d, y] = /^(\d{1,2})[-/](\d{1,2})[-/](\d{4})$/.exec(raw); }
+  return `${String(Number(m)).padStart(2, '0')}${String(Number(d)).padStart(2, '0')}${y}`;
+}
+
 export default function ManageSections() {
   const [sections, setSections] = useState([]);
   const [searchQuery, setSearchQuery] = useState('');
@@ -34,10 +78,18 @@ export default function ManageSections() {
 
   const handleCreate = async (e) => {
     e.preventDefault();
+    const parsed = parseRoster(studentsText);
+    const badRows = parsed.filter(r => r.birthdayRaw && !r.birthday);
+    if (badRows.length) {
+      return alert(
+        `These birthdays could not be read:\n\n${badRows.map(r => `• ${r.name} — "${r.birthdayRaw}"`).join('\n')}\n\n` +
+        'Use MM/DD/YYYY, for example 03/15/2014.'
+      );
+    }
     setIsLoading(true);
     try {
       const user = JSON.parse(localStorage.getItem('user'));
-      const studentNames = studentsText.split('\n').filter(s => s.trim());
+      const studentNames = parsed.map(r => ({ name: r.name, birthday: r.birthday }));
       const res = await apiFetch(`${API_URL}/api/teacher/sections`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -48,6 +100,10 @@ export default function ManageSections() {
         setName(''); setGradeLevel(''); setStudentsText(''); setShowForm(false);
         fetchSections();
         let msg = data.message || `Created ${data.createdStudents.length} student accounts.`;
+        // The teacher has to read these out to the class, so list them.
+        if (data.createdStudents?.length > 0) {
+          msg += `\n\nSign-in details:\n${data.createdStudents.map(s => `• ${s.name} — ${s.username} / ${s.initialPassword}`).join('\n')}`;
+        }
         if (data.skippedStudents?.length > 0) msg += `\n\nSkipped (already in section):\n${data.skippedStudents.map(s => `• ${s.name}`).join('\n')}`;
         if (data.linkedStudents?.length > 0) msg += `\n\nLinked existing accounts:\n${data.linkedStudents.map(s => `• ${s.name} (${s.username})`).join('\n')}`;
         alert(msg);
@@ -87,8 +143,16 @@ export default function ManageSections() {
   const toggleSection = (id) => setExpandedId(prev => prev === id ? null : id);
 
   const handleAddStudents = async (section) => {
-    const studentNames = addStudentsText.split('\n').filter(s => s.trim());
-    if (studentNames.length === 0) return alert('Please enter at least one student name.');
+    const parsed = parseRoster(addStudentsText);
+    if (parsed.length === 0) return alert('Please enter at least one student name.');
+    const badRows = parsed.filter(r => r.birthdayRaw && !r.birthday);
+    if (badRows.length) {
+      return alert(
+        `These birthdays could not be read:\n\n${badRows.map(r => `• ${r.name} — "${r.birthdayRaw}"`).join('\n')}\n\n` +
+        'Use MM/DD/YYYY, for example 03/15/2014.'
+      );
+    }
+    const studentNames = parsed.map(r => ({ name: r.name, birthday: r.birthday }));
     setIsAddingStudents(true);
     try {
       const user = JSON.parse(localStorage.getItem('user'));
@@ -184,7 +248,7 @@ export default function ManageSections() {
             </p>
             <div>
               <div className="flex justify-between items-center mb-1">
-                <label className="block text-sm font-medium text-slate-700">Student Names (One per line)</label>
+                <label className="block text-sm font-medium text-slate-700">Students — one per line, <span className="font-normal text-slate-500">Name, Birthday</span></label>
                 <button type="button" onClick={() => fileInputRef.current?.click()} disabled={isExtracting}
                   className="text-xs font-bold text-brand-navy bg-blue-50 hover:bg-blue-100 px-3 py-1.5 rounded-lg flex items-center gap-1 transition-colors disabled:opacity-50">
                   {isExtracting ? 'Extracting...' : <><Upload className="w-3.5 h-3.5" /> Auto-fill from Excel/Image</>}
@@ -193,8 +257,30 @@ export default function ManageSections() {
               </div>
               <textarea required value={studentsText} onChange={(e) => setStudentsText(e.target.value)}
                 rows={6} className="w-full px-4 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-brand-navy outline-none"
-                placeholder={"Juan Dela Cruz\nMaria Clara\nJose Rizal"} />
-              <p className="text-xs text-slate-500 mt-1">Existing students won't be duplicated. Default password: 'password123'.</p>
+                placeholder={"Juan Dela Cruz, 03/15/2014\nMaria Clara, 07/02/2014\nJose Rizal"} />
+
+              {/* Shown before submitting, because the birthday becomes the
+                  password — a typo here is a pupil who cannot sign in, and it
+                  is far cheaper to catch it while the class list is still on
+                  screen than after fifty accounts exist. */}
+              {studentsText.trim() && (
+                <div className="mt-2 rounded-lg border border-slate-200 bg-slate-50 divide-y divide-slate-200 max-h-44 overflow-y-auto">
+                  {parseRoster(studentsText).map((r, i) => (
+                    <div key={i} className="flex items-center justify-between gap-3 px-3 py-1.5 text-xs">
+                      <span className="font-medium text-brand-slate truncate">{r.name}</span>
+                      {r.birthday
+                        ? <span className="shrink-0 text-slate-500">password <span className="font-mono font-bold text-brand-slate">{previewPassword(r.birthday)}</span></span>
+                        : r.birthdayRaw
+                          ? <span className="shrink-0 text-red-600 font-medium">can&apos;t read &ldquo;{r.birthdayRaw}&rdquo;</span>
+                          : <span className="shrink-0 text-amber-600">no birthday — password123</span>}
+                    </div>
+                  ))}
+                </div>
+              )}
+              <p className="text-xs text-slate-500 mt-1">
+                The birthday becomes the pupil&apos;s password (03/15/2014 → <span className="font-mono">03152014</span>). Leave it out and they get
+                &lsquo;password123&rsquo;. Existing students won&apos;t be duplicated.
+              </p>
             </div>
             <div className="flex gap-3">
               <button type="button" onClick={() => setShowForm(false)}
@@ -304,7 +390,7 @@ export default function ManageSections() {
                             </div>
                             <textarea value={addStudentsText} onChange={(e) => setAddStudentsText(e.target.value)}
                               rows={4} className="w-full px-3 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-brand-navy outline-none text-sm"
-                              placeholder={"Juan Dela Cruz\nMaria Clara"} />
+                              placeholder={"Juan Dela Cruz, 03/15/2014\nMaria Clara, 07/02/2014"} />
                             <p className="text-[11px] text-slate-400 mt-1">Existing students won't be duplicated. Default password: 'password123'.</p>
                           </div>
                           <div className="flex gap-2">

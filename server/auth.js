@@ -266,7 +266,7 @@ const TEACHER_ROUTE_SEGMENTS = new Set([
   // and job is checked in the handlers.
   'ai-jobs', 'ai-capacity',
 ]);
-const STUDENT_ROUTE_SEGMENTS = new Set(['submit', 'chat']);
+const STUDENT_ROUTE_SEGMENTS = new Set(['submit']);
 
 const deny = (res, error) => res.status(403).json({ success: false, code: 'FORBIDDEN', error });
 
