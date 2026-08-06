@@ -513,13 +513,17 @@ const LITE_MODEL_ID = process.env.GEMINI_LITE_MODEL || 'gemini-3.5-flash-lite';
 // second only after the first has already failed and the teacher has already
 // waited out a doomed call.
 //
-// Published Flash-tier daily quotas commonly run 250-1,000 RPD (with 10-15 RPM
-// throttling on top — see the GEMINI RATE GATE below), well above the ~20/day
-// this deployment's own free-tier project measured at one point. Treat any
-// single number here as this project's observed ceiling, not a platform
-// constant — it varies by tier, model, and whatever Google is enforcing that
-// week. With 2 credentials × 2 models this pool already holds 4 independent
-// buckets, which is the lever to reach for before assuming a hard capacity wall.
+// Google's own 429 body is the authority here, not a general figure for "the
+// Flash tier": a live call against this project's free-tier gemini-3.6-flash
+// bucket on 2026-08-06 came back "quotaId: GenerateRequestsPerDayPerProjectPerModel-FreeTier,
+// quotaValue: 20" — confirming the original 20/day reading was this project's
+// actual ceiling, not a stale pessimistic guess. Published Flash-tier figures
+// elsewhere (250-1,000 RPD) may describe a different tier or billing account;
+// they are not what this deployment's own credentials are actually granted.
+// Re-verify against a live 429 before trusting any number here over another —
+// with 2 credentials × 2 models this pool holds 4 buckets, each potentially at
+// a different real ceiling, which is the lever to reach for regardless of what
+// that ceiling turns out to be.
 //
 // Order is preference order: the pool is tried in sequence from a rotating start
 // offset, so put the model whose vision quality you trust most first.
@@ -613,12 +617,17 @@ const ASSIST_MODEL_ID = process.env.GEMINI_ASSIST_MODEL || process.env.GEMINI_CH
 // What one bucket is assumed to be good for in a day. Google does not expose a
 // remaining-quota endpoint, so this is a declared budget used only to show the
 // teacher a "checks left today" estimate before they start a batch — the real
-// limit is still whatever Google enforces. 250 is the conservative end of the
-// commonly published Flash-tier daily quota (250-1,000 RPD); raise it via env
-// if this deployment's own project measures higher, the same way the older
-// default of 20 was this project's own — much lower — observed ceiling rather
-// than a platform limit.
-const AI_DAILY_BUDGET_PER_MODEL = Number(process.env.AI_DAILY_BUDGET_PER_MODEL || 250);
+// limit is still whatever Google enforces.
+//
+// This was briefly raised to 250 on the assumption that published Flash-tier
+// figures (250-1,000 RPD) applied here. A live 429 against this project's own
+// gemini-3.6-flash credential on 2026-08-06 returned the quota body directly:
+// "quotaId: GenerateRequestsPerDayPerProjectPerModel-FreeTier, quotaValue: 20"
+// — so 20 was correct for this deployment all along, and the 250 default was
+// a regression based on an unverified general figure. Reverted. If a
+// different project/tier genuinely grants more, override via env — but verify
+// it against an actual 429 body first, not a published-figure assumption.
+const AI_DAILY_BUDGET_PER_MODEL = Number(process.env.AI_DAILY_BUDGET_PER_MODEL || 20);
 
 const genAIByKey = aiApiKeys.map(k => ({ ...k, client: new GoogleGenerativeAI(k.value) }));
 const genAI = genAIByKey[0]?.client || null;
@@ -832,12 +841,16 @@ async function retainUntilForActivity(activityId) {
 // whole burst 429s together, and every retry lands inside the same exhausted
 // minute. Spacing them means the same thirty photos take longer but all succeed.
 //
-// Flash-tier RPM limits commonly run 10-15, varying by model and tier — rather
-// than assume the top of that range, the default of 6s spacing targets 10
-// requests/minute, the low end, and leans on classifyAiError's retry/backoff
-// (which honours Google's own requested wait) to absorb the rest of the
-// headroom instead of spacing for it. Paid tiers with a confirmed higher RPM
-// should raise this via env rather than trusting a lower observed number.
+// Published Flash-tier RPM limits commonly run 10-15, varying by model and
+// tier — unverified against this project the way the daily quota now is (a
+// live 429 on 2026-08-06 confirmed the daily figure directly and overturned an
+// assumption based on this same kind of published-range claim; the RPM number
+// below has not had that same confirmation). Rather than assume the top of the
+// range, the default of 6s spacing targets 10 requests/minute, the low end,
+// and leans on classifyAiError's retry/backoff (which honours Google's own
+// requested wait) to absorb the rest of the headroom instead of spacing for
+// it. Before raising this, get an actual per-minute 429 body rather than
+// trusting a general figure again.
 const GEMINI_MAX_CONCURRENCY = Number(process.env.GEMINI_MAX_CONCURRENCY || 2);
 const GEMINI_MIN_SPACING_MS = Number(process.env.GEMINI_MIN_SPACING_MS || 6000);
 
@@ -4270,7 +4283,7 @@ LANGUAGE:
 ${toneOverride}
 ${activityContext}
 ${topicGuidance ? `\nTOPIC FOCUS RULE:\nThis activity is mapped to the topic/lesson: ${topicGuidance}\nYou MUST focus your feedback STRICTLY on this topic. Do NOT introduce or critique concepts outside of this topic. Evaluate only how well the student demonstrates mastery of this specific skill or lesson.\n` : ''}
-${additionalMaterialParts.length ? `\nREFERENCE MATERIAL RULE:\nThe teacher has attached ${additionalMaterialParts.length} reference file(s) for this activity — sent after this prompt and before the student's ${paperCount > 1 ? 'papers' : 'paper'}, introduced by a "[TEACHER-PROVIDED REFERENCE MATERIAL]" marker. This may be a source passage, an answer key, a diagram, or similar. Use it as grading context (e.g. checking whether the student's summary matches the source, or whether their answer matches the key) — do NOT grade, transcribe, or critique the reference material itself as if it were student work.\n` : ''}
+${additionalMaterialParts.length ? `\nREFERENCE MATERIAL RULE:\nThe teacher has attached ${additionalMaterialParts.length} reference file(s) for this activity — sent after this prompt and before the student's ${paperCount > 1 ? 'papers' : 'paper'}, introduced by a "[TEACHER-PROVIDED REFERENCE MATERIAL]" marker. This may be a source passage, an answer key, a diagram, a worksheet, or a required format/template the student's output must follow.\n- Read it FIRST, before grading, and treat any concrete requirement it states — a required structure, required phrases, a required number of parts, a fact the student's answer must match — as MANDATORY, with the same force as the rubric itself, not as optional background.\n- Check the student's submission against every such requirement explicitly. If the student's work deviates from a stated requirement, you MUST name that specific deviation by number/name in areasForGrowth (e.g. "the assignment sheet requires each paragraph to open with 'X'; paragraph 2 does not") — do not fold it into generic writing-quality commentary where it could be mistaken for an ordinary style note.\n- Do NOT grade, transcribe, or critique the reference material itself as if it were student work — it is the standard the student is held to, not something being scored.\n` : ''}
 ${rubricContext}${fewShotExamples}${sectionContext}
 
 BLANK / UNREADABLE WORK:
