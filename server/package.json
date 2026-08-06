@@ -9,9 +9,10 @@
     "verify:grading": "node scripts/verify-grading.js",
     "verify:dashboard": "node scripts/verify-dashboard.js",
     "verify:routes": "node scripts/verify-route-authorization.js",
-    "verify": "npm run verify:grading && npm run verify:dashboard && npm run verify:routes",
+    "verify": "npm run verify:grading && npm run verify:dashboard && npm run verify:routes && npm test",
     "report:grades": "node scripts/grade-migration-report.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "keywords": [],
   "author": "",
@@ -32,6 +33,7 @@
   },
   "devDependencies": {
     "nodemon": "^3.1.14",
-    "prisma": "^5.22.0"
+    "prisma": "^5.22.0",
+    "vitest": "^4.1.10"
   }
 }

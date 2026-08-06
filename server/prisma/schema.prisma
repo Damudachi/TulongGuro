@@ -310,6 +310,23 @@ model Submission {
   /// gradeLevelAssumed: never blocks the save, just tells the teacher in the
   /// HITL workspace that the paper wasn't graded against what they set up.
   rubricParseFailed     Boolean           @default(false)
+  /// True when the AI returned a score outside 0-100 (or one that was not a
+  /// finite number) and it had to be clamped to fit.
+  ///
+  /// The model is told to return 0-100, but the prompt also makes the scaling
+  /// its job — "the total score = sum of all criterion scores, scaled to
+  /// 0-100" — and a rubric whose criteria don't sum to 100 is exactly when it
+  /// gets that arithmetic wrong. Nothing checked the result: `aiScore` was
+  /// written straight from the model's JSON, so a 120 flowed into the class
+  /// average, the descriptor band, the star award and the export as though it
+  /// were real, while the teacher saw "120%" with no indication anything had
+  /// gone wrong. Rubric JSON has been validated since validateRubric existed;
+  /// the headline number it produces was not.
+  ///
+  /// Same treatment as gradeLevelAssumed: never blocks the save, just tells
+  /// the teacher in the HITL workspace that the number was adjusted, so they
+  /// look at the rubric breakdown rather than trusting the total.
+  scoreOutOfRange       Boolean           @default(false)
   privacyViolation      Boolean           @default(false)
   status                String            @default("PENDING")
   /// When the teacher published this result to the student.

@@ -22,6 +22,7 @@ const {
   configureRevocation, markRevoked,
   loginRateLimit, registerRateLimit, platformRateLimit, changePasswordRateLimit,
 } = require('./auth');
+const { classSchoolId, staffMayAccess } = require('./access');
 const { getAllTopics, getTopicById, getTopicAIGuidance } = require('./depedTopics');
 const { getAllRubricTemplates, getRubricTemplateById } = require('./rubricTemplates');
 // Two distinct taxonomies coexist and are easy to confuse, so name them apart:
@@ -85,6 +86,24 @@ async function gradingPolicyFor(schoolId, gradeLevel, subject) {
     if (p) return { WW: p.wwWeight, PT: p.ptWeight, QA: p.qaWeight };
   }
   return grading.defaultPolicyFor(subject);
+}
+
+/**
+ * A memo over gradingPolicyFor for the life of one request.
+ *
+ * gradingPolicyFor is a database read, and the analytics endpoints ask for the
+ * same handful of (gradeLevel, subject) pairs once per student — forty
+ * students across three subjects is up to 120 round trips for at most three
+ * distinct answers. Scoped per request rather than module-wide on purpose: a
+ * long-lived cache would keep serving the old weights after an admin edits a
+ * policy, and a coordinator changing weights expects the next page load to
+ * show it.
+ *
+ * Caches the promise, not the resolved value, so concurrent callers asking for
+ * the same pair share one query instead of racing to issue several.
+ */
+function makePolicyCache(schoolId) {
+  return grading.memoPolicyLoader((gradeLevel, subject) => gradingPolicyFor(schoolId, gradeLevel, subject));
 }
 
 /**
@@ -186,7 +205,11 @@ function workingAverage(subs, policy) {
  * the caller knows (or can look up) how many the student is enrolled in
  * overall, and is the one who can render "based on N of M subjects."
  */
-async function workingAverageAcrossSubjects(subs, schoolId) {
+async function workingAverageAcrossSubjects(subs, schoolId, resolvePolicy = null) {
+  // Callers that compute this for many students in one request pass a shared
+  // makePolicyCache, so the per-subject policy is read once rather than once
+  // per student.
+  const policyFor = resolvePolicy || ((gradeLevel, subject) => gradingPolicyFor(schoolId, gradeLevel, subject));
   const bySubject = new Map();
   for (const s of subs || []) {
     const cls = s.activity?.class;
@@ -200,7 +223,7 @@ async function workingAverageAcrossSubjects(subs, schoolId) {
 
   const perSubject = [];
   for (const { subject, gradeLevel, items } of bySubject.values()) {
-    const policy = await gradingPolicyFor(schoolId, gradeLevel, subject);
+    const policy = await policyFor(gradeLevel, subject);
     const avg = workingAverage(items, policy);
     if (avg !== null) perSubject.push(avg);
   }
@@ -575,6 +598,36 @@ const GRADING_MODEL_IDS = (process.env.GEMINI_GRADING_MODELS || `${PRIMARY_MODEL
 const GRADING_MAX_OUTPUT_TOKENS = Number(process.env.GEMINI_GRADING_MAX_OUTPUT_TOKENS || 8192);
 
 /**
+ * Sampling temperature for grading. Nothing set one before, so every grading
+ * call ran at the SDK default (~1.0) — tuned for creative generation, not for
+ * assessment.
+ *
+ * Measured before changing it, with scripts/measure-grading-variance.js: three
+ * fixed papers, five runs each, same rubric, same system instruction, typed
+ * text so handwriting transcription could not confound it.
+ *
+ *     paper       default            0.2
+ *     weak        SD 3.71, 40-48     SD 2.19, 40-45
+ *     middling    SD 0.71, 79-81     SD 1.00, 79-81
+ *     strong      SD 0.89, 94-96     SD 0.58, 95-96
+ *     mean SD     1.77               1.26
+ *
+ * Two things worth saying plainly. The effect is real but modest — this is not
+ * the 14-point reproducible bias AI_BATCH_SIZE documents for batching, and the
+ * model is already near-deterministic on middling and strong work because the
+ * rubric constrains it hard. And the gain is concentrated exactly where it
+ * matters most: the weak paper was 4-5x noisier than the others and 0.2 nearly
+ * halves its spread. A learner near the at-risk line is the one whose mark
+ * should not depend on which sample came back.
+ *
+ * 0.2 rather than 0: a little sampling keeps the written feedback from
+ * collapsing into the same few phrasings across a whole class set, which
+ * teachers notice and students discount. Override per deployment if a future
+ * model behaves differently — but re-run the measurement rather than guessing.
+ */
+const GRADING_TEMPERATURE = Number(process.env.GRADING_TEMPERATURE ?? 0.2);
+
+/**
  * The grading models' system role — set once, at pool construction, via the
  * SDK's own systemInstruction field rather than folded into the first line of
  * the per-call prompt.
@@ -688,7 +741,11 @@ const gradingPool = GRADING_MODEL_IDS.flatMap(id =>
     model: k.client.getGenerativeModel({
       model: id,
       systemInstruction: GRADING_SYSTEM_INSTRUCTION,
-      generationConfig: { responseMimeType: 'application/json', maxOutputTokens: GRADING_MAX_OUTPUT_TOKENS }
+      generationConfig: {
+        responseMimeType: 'application/json',
+        maxOutputTokens: GRADING_MAX_OUTPUT_TOKENS,
+        temperature: GRADING_TEMPERATURE,
+      }
     }),
     unavailableUntil: 0,  // set when this bucket reports its *daily* quota is gone
     used: 0,              // calls this bucket actually answered today
@@ -869,8 +926,18 @@ function normalisePaperResult(raw, modelId, gradeLevelAssumed = false, rubricPar
   if (raw?.privacyViolationDetected === true) {
     return { privacyViolation: true, violationType: raw.privacyViolationType || 'name', aiSource: modelId };
   }
+  // The model's headline number, bounded. Nothing checked it before: `score`
+  // was spread straight out of the parsed JSON and written to Submission.aiScore
+  // as a Float, so a 120 — which the prompt invites by making the 0-100 scaling
+  // the model's own job — propagated into the class average, the descriptor
+  // band, three stars and the export, and showed the teacher "120%" with
+  // nothing saying it was impossible. This is the same treatment validateRubric
+  // has always given the rubric that produces the number.
+  const { score, changed: scoreOutOfRange } = grading.clampScore(raw?.score);
   return {
     ...raw,
+    score,
+    scoreOutOfRange,
     privacyViolation: false,
     aiSource: modelId,
     gradeLevelAssumed,
@@ -1631,17 +1698,39 @@ app.get('/api/admin/:adminId/analytics', async (req, res) => {
       orderBy: [{ gradedAt: 'asc' }, { updatedAt: 'asc' }],
       select: {
         studentId: true, hitlScore: true, aiScore: true,
-        activity: { select: { points: true, component: true, classId: true } }
+        activity: {
+          select: {
+            points: true, component: true, classId: true,
+            // subject + gradeLevel are what workingAverageAcrossSubjects keys
+            // its per-subject weighting on, for the school-wide band
+            // distribution below.
+            class: { select: { subject: true, gradeLevel: true } },
+          }
+        }
       }
     });
 
     const byClass = new Map();
+    const byStudent = new Map();
     for (const s of graded) {
       const cid = s.activity?.classId;
-      if (!cid) continue;
-      if (!byClass.has(cid)) byClass.set(cid, []);
-      byClass.get(cid).push(s);
+      if (cid) {
+        if (!byClass.has(cid)) byClass.set(cid, []);
+        byClass.get(cid).push(s);
+      }
+      if (!byStudent.has(s.studentId)) byStudent.set(s.studentId, []);
+      byStudent.get(s.studentId).push(s);
     }
+
+    // Every student in the school, once. `classes` lists them per class, so a
+    // learner taking five subjects appears five times there.
+    const allStudents = new Map();
+    for (const cls of classes) {
+      for (const st of cls.section?.students || []) allStudents.set(st.id, st);
+    }
+
+    // Read once per (gradeLevel, subject) instead of once per student.
+    const policyFor = makePolicyCache(admin.schoolId);
 
     // Same descriptor ladder as everywhere else, so a school passing above 80
     // can't end up with a band that sits below its own passing line.
@@ -1669,21 +1758,28 @@ app.get('/api/admin/:adminId/analytics', async (req, res) => {
     };
 
     for (const cls of classes) {
-      const policy = await gradingPolicyFor(admin.schoolId, cls.gradeLevel, cls.subject);
+      const policy = await policyFor(cls.gradeLevel, cls.subject);
       const subs = byClass.get(cls.id) || [];
-      const byStudent = new Map();
+      // Named apart from the school-wide `byStudent` above: this one is a
+      // student's work in THIS class only, which is a different question.
+      const byStudentInClass = new Map();
       for (const s of subs) {
-        if (!byStudent.has(s.studentId)) byStudent.set(s.studentId, []);
-        byStudent.get(s.studentId).push(s);
+        if (!byStudentInClass.has(s.studentId)) byStudentInClass.set(s.studentId, []);
+        byStudentInClass.get(s.studentId).push(s);
       }
 
       const students = cls.section?.students || [];
       const averages = [];
       for (const st of students) {
-        const mine = byStudent.get(st.id) || [];
+        const mine = byStudentInClass.get(st.id) || [];
         const avg = workingAverage(mine, policy);
         const band = bandOf(avg);
-        schoolBands[band]++;
+        // NB: schoolBands is deliberately NOT incremented here. This loop runs
+        // once per student per class, so a learner taking five subjects would
+        // contribute five entries to a distribution shown directly beneath a
+        // headline count of unique students — the bar summed to roughly five
+        // times the number of children it claimed to describe. The school-wide
+        // distribution is computed once per student, after this loop.
 
         // Names, averages and how many pieces of work — enough to coordinate an
         // intervention. No feedback, no rubric detail, no images: the
@@ -1739,6 +1835,19 @@ app.get('/api/admin/:adminId/analytics', async (req, res) => {
       }
     }
 
+    // ── School-wide spread: one entry per student, not per student-class ──
+    // Each learner's general average across every subject they take, computed
+    // the same way their own dashboard and the teacher's analytics compute it
+    // — each subject under its own DepEd weights, then averaged. A student
+    // with nothing graded anywhere lands in notGraded, which is why this walks
+    // the roster rather than the submissions.
+    for (const st of allStudents.values()) {
+      const { average } = await workingAverageAcrossSubjects(
+        byStudent.get(st.id) || [], admin.schoolId, policyFor
+      );
+      schoolBands[bandOf(average)]++;
+    }
+
     const bySubject = [...subjectTotals.entries()].map(([subject, avgs]) => ({
       subject,
       studentCount: avgs.length,
@@ -1754,7 +1863,9 @@ app.get('/api/admin/:adminId/analytics', async (req, res) => {
       passingGrade,
       summary: {
         classCount: classes.length,
-        studentCount: [...new Set(classes.flatMap(c => (c.section?.students || []).map(s => s.id)))].length,
+        // Same collection the band distribution below counts, so the headline
+        // and the bar under it describe the same population.
+        studentCount: allStudents.size,
         schoolAverage: allAverages.length
           ? Math.round(allAverages.reduce((a, b) => a + b, 0) / allAverages.length) : null,
         atRiskCount: atRisk.length,
@@ -4250,18 +4361,40 @@ Rules:
  * /api/submissions/:id — other staff at the same school legitimately need to
  * open an activity that isn't theirs (a coordinator, a covering teacher).
  */
+/**
+ * The Prisma select a class needs for staffMayAccessClass to judge it.
+ * Exported as a constant so a caller cannot half-fetch the class and silently
+ * lose an arm of the ladder — a missing `teacher` would read as "no school".
+ */
+const CLASS_TENANCY_SELECT = {
+  teacherId: true,
+  section: { select: { schoolId: true } },
+  teacher: { select: { schoolId: true } },
+};
+
+/**
+ * Whether a staff caller may read work belonging to this class.
+ *
+ * The rule itself lives in access.js as a pure function so it can be tested;
+ * this is only the database lookup it needs. The caller is fetched solely to
+ * compare schools, so it is skipped entirely when there is no school to
+ * compare against.
+ */
+async function staffMayAccessClass(cls, authSub) {
+  const caller = classSchoolId(cls)
+    ? await prisma.user.findUnique({ where: { id: authSub }, select: { schoolId: true } })
+    : null;
+  return staffMayAccess(cls, { callerId: authSub, callerSchoolId: caller?.schoolId ?? null });
+}
+
 async function staffOwnsActivitySchool(activityId, authSub) {
   const activity = await prisma.activity.findUnique({
     where: { id: activityId },
-    include: { class: { select: { id: true, name: true, section: { select: { schoolId: true } } } } }
+    include: { class: { select: { id: true, name: true, ...CLASS_TENANCY_SELECT } } }
   });
   if (!activity) return { ok: false, code: 404, error: 'Activity not found' };
-  const activitySchoolId = activity.class?.section?.schoolId;
-  if (activitySchoolId) {
-    const caller = await prisma.user.findUnique({ where: { id: authSub }, select: { schoolId: true } });
-    if (caller?.schoolId !== activitySchoolId) {
-      return { ok: false, code: 403, error: 'You can only view activities from your own school.' };
-    }
+  if (!(await staffMayAccessClass(activity.class, authSub))) {
+    return { ok: false, code: 403, error: 'You can only view activities from your own school.' };
   }
   return { ok: true, activity };
 }
@@ -4955,7 +5088,7 @@ app.get('/api/submissions/:id', async (req, res) => {
       student: true,
       activity: {
         include: {
-          class: { include: { section: { select: { schoolId: true } } } },
+          class: { include: { section: { select: { schoolId: true } }, teacher: { select: { schoolId: true } } } },
           classLesson: { select: { title: true, defaultRubric: true } }
         }
       }
@@ -4966,15 +5099,14 @@ app.get('/api/submissions/:id', async (req, res) => {
     return res.status(403).json({ success: false, code: 'FORBIDDEN', error: 'You can only see your own work.' });
   }
   if (req.auth.role !== 'STUDENT') {
-    const submissionSchoolId = sub.activity?.class?.section?.schoolId;
-    if (submissionSchoolId) {
-      const caller = await prisma.user.findUnique({ where: { id: req.auth.sub }, select: { schoolId: true } });
-      // An unaffiliated staff account (no school yet) falls back to seeing
-      // only its own work, same as the sections endpoint — nothing leaks
-      // between accounts that aren't tied to a school at all.
-      if (caller?.schoolId !== submissionSchoolId) {
-        return res.status(403).json({ success: false, code: 'FORBIDDEN', error: 'You can only view submissions from your own school.' });
-      }
+    // School first, then the class's own teacher when there is no school to
+    // scope by — see staffMayAccessClass. The unaffiliated-account fallback
+    // this used to describe in a comment was never actually implemented: the
+    // check was skipped entirely when the section had no schoolId, so any
+    // staff account on the platform could read the whole submission — the
+    // student record, the image URL, the AI feedback and the rubric data.
+    if (!(await staffMayAccessClass(sub.activity?.class, req.auth.sub))) {
+      return res.status(403).json({ success: false, code: 'FORBIDDEN', error: 'You can only view submissions from your own school.' });
     }
   }
   // Validated but not yet published. The student's own row exists and they may
@@ -5066,6 +5198,7 @@ app.post('/api/teacher/submissions/:id/analyze', async (req, res) => {
         gradeLevelAssumed: !!aiData.gradeLevelAssumed,
         rubricParseFailed: !!aiData.rubricParseFailed,
         scoreFeedbackMismatch: !!aiData.scoreFeedbackMismatch,
+        scoreOutOfRange: !!aiData.scoreOutOfRange,
         gradedAt: new Date(),
         retainUntil: sub.retainUntil ?? await retainUntilForActivity(sub.activityId)
       },
@@ -5297,6 +5430,7 @@ async function persistGradingResult(submissionId, activityId, aiData, existingRe
       gradeLevelAssumed: !!aiData.gradeLevelAssumed,
       rubricParseFailed: !!aiData.rubricParseFailed,
       scoreFeedbackMismatch: !!aiData.scoreFeedbackMismatch,
+      scoreOutOfRange: !!aiData.scoreOutOfRange,
       gradedAt: new Date(),
       retainUntil: existingRetainUntil ?? await retainUntilForActivity(activityId)
     }
@@ -5789,6 +5923,27 @@ app.put('/api/teacher/submissions/:id/grade', async (req, res) => {
     // attributing data under another teacher's id.
     const teacherId = req.auth.sub;
     const { hitlScore, hitlFeedback, readingStrategy, rubricData } = req.body;
+
+    // Validated here, not just in the browser. The review screen bounds its
+    // sliders, but scorePercent is derived arithmetic and this endpoint is
+    // reachable directly — nothing stopped a 500, a NaN, or an omitted field
+    // becoming the grade of record, and from there it propagates into the
+    // class average, the descriptor band, the star award and the export before
+    // anyone notices.
+    //
+    // Refused rather than clamped: unlike an AI result, a value out of range
+    // here means the caller is wrong, and silently rewriting a teacher's
+    // submitted mark would be worse than telling them. parseScore keeps its
+    // precision — the score is a percentage of the rubric and truncating it
+    // would quietly cost the student the fraction.
+    const score = grading.parseScore(hitlScore);
+    if (score === null) {
+      return res.status(400).json({
+        success: false,
+        error: `A validated score must be a number between ${grading.MIN_SCORE} and ${grading.MAX_SCORE}.`,
+      });
+    }
+
     const sub = await prisma.submission.findUnique({
       where: { id: req.params.id },
       include: { activity: { include: { class: true } } }
@@ -5800,16 +5955,23 @@ app.put('/api/teacher/submissions/:id/grade', async (req, res) => {
 
     const updated = await prisma.submission.update({
       where: { id: req.params.id },
-      // Number, not parseInt: the teacher's approved score is the grade of
-      // record, and truncating it would quietly cost the student the fraction
-      // now that scores keep their precision.
-      data: { hitlScore: Number(hitlScore), hitlFeedback, readingStrategy, rubricData: JSON.stringify(rubricData), status: 'GRADED', gradedAt: new Date() },
+      data: { hitlScore: score, hitlFeedback, readingStrategy, rubricData: JSON.stringify(rubricData), status: 'GRADED', gradedAt: new Date() },
       include: { student: true, activity: { include: { class: true } } }
     });
 
     // FEATURE 5: Mini-RAG capture — save as grading example if teacher meaningfully changed the AI result
-    if (sub && teacherId) {
-      const scoreDelta = Math.abs(Number(hitlScore) - (sub.aiScore ?? 0));
+    //
+    // Requires a real AI result to have existed. This used to run whenever
+    // `sub` was present and compare the teacher's mark against `sub.aiScore ?? 0`,
+    // so a paper the AI never touched — graded straight from the review screen,
+    // or checked after the daily quota ran out — produced a delta equal to the
+    // whole grade and stored a correction that never happened: "the AI said 0,
+    // the teacher gave 85", with an empty aiFeedback string. Those rows are fed
+    // back into the prompt as few-shot demonstrations of this teacher's
+    // standards, so the fabricated ones actively teach the model that its own
+    // scores run catastrophically low.
+    if (sub.aiScore !== null && sub.aiScore !== undefined && teacherId) {
+      const scoreDelta = Math.abs(score - sub.aiScore);
       const feedbackChanged = feedbackSubstantivelyChanged(hitlFeedback, sub.aiFeedback);
       if (scoreDelta >= 5 || feedbackChanged) {
         const activityType = sub.activity?.type || 'Essay';
@@ -5825,14 +5987,14 @@ app.put('/api/teacher/submissions/:id/grade', async (req, res) => {
             // material ("AI said 78, teacher gave 85"), not a grade of record,
             // and decimals there would be noise. Submission scores are floats
             // now, so round rather than handing Prisma a decimal for an Int.
-            aiScore: Math.round(sub.aiScore ?? 0),
-            teacherScore: Math.round(Number(hitlScore))
+            aiScore: Math.round(sub.aiScore),
+            teacherScore: Math.round(score)
           }
         });
         console.log(`📚 Mini-RAG: Saved grading example (Δ${scoreDelta}pts, feedbackChanged=${feedbackChanged})`);
       }
     }
-    await logGradingEvent(req.params.id, 'TEACHER_VALIDATED', { actorId: teacherId, score: Number(hitlScore) });
+    await logGradingEvent(req.params.id, 'TEACHER_VALIDATED', { actorId: teacherId, score });
 
     res.json({ success: true, submission: updated });
   } catch (e) {
@@ -5890,6 +6052,15 @@ app.get('/api/teacher/:teacherId/analytics', async (req, res) => {
     });
     const { passingGrade } = await gradingSettingsFor(teacherRecord?.schoolId);
 
+    // Read once per (gradeLevel, subject) rather than once per student.
+    // workingAverageAcrossSubjects looks a policy up for each subject a student
+    // has work in, and it is called inside the per-student loop below — so a
+    // forty-pupil section across three subjects issued up to 120 sequential
+    // database round trips per page load, for at most three distinct answers.
+    // On the Supabase pooler that is several seconds of pure latency before
+    // the page can render.
+    const policyFor = makePolicyCache(teacherRecord?.schoolId);
+
     const byStudent = new Map();
     for (const s of graded) {
       if (!byStudent.has(s.studentId)) byStudent.set(s.studentId, []);
@@ -5945,7 +6116,7 @@ app.get('/api/teacher/:teacherId/analytics', async (req, res) => {
       // function the student dashboard/gradebook/export already use. `percents`
       // is kept for the sparkline, which is a history of individual scores
       // rather than an average.
-      const { average: avgPercent } = await workingAverageAcrossSubjects(subs, teacherRecord?.schoolId);
+      const { average: avgPercent } = await workingAverageAcrossSubjects(subs, teacherRecord?.schoolId, policyFor);
 
       const skillHistory = subs
         .filter(s => s.skillScores)
@@ -6313,17 +6484,22 @@ app.get('/api/student/:studentId/dashboard', async (req, res) => {
       orderBy: { updatedAt: 'desc' }
     });
 
-    const now = new Date();
     // Exclude activities the student has already submitted (both GRADED and PENDING)
     const submittedActivityIds = [
       ...submissions.map(s => s.activityId),
       ...pendingSubmissions.map(s => s.activityId)
     ];
-    
+
     const upcomingDeadlines = upcomingActivities.filter(a => {
       if (submittedActivityIds.includes(a.id)) return false;
-      const deadlineDate = new Date(a.deadline);
-      return deadlineDate >= now || isNaN(deadlineDate); // Include if valid future date or format that doesn't parse to past
+      // Same rule the submit endpoint enforces. This used to test
+      // `new Date(a.deadline) >= now`, which reads a bare "YYYY-MM-DD" as
+      // midnight UTC — 08:00 in Manila. So a task due today dropped off the
+      // student's dashboard over breakfast on the due date, sixteen hours
+      // before it actually closed and while /api/student/submit would still
+      // happily accept it. Losing sight of work that is still open is the
+      // worst direction for this particular bug to fail in.
+      return !isPastDeadline(a.deadline);
     }).map(a => ({
       id: a.id,
       title: a.title,
@@ -6594,21 +6770,36 @@ app.get('/api/teacher/:teacherId/student/:studentId/gradebook', async (req, res)
         class: { select: { name: true } },
         submissions: {
           where: { studentId },
-          select: { id: true, hitlScore: true, aiScore: true, status: true, createdAt: true }
+          select: { id: true, hitlScore: true, aiScore: true, status: true, createdAt: true, isLate: true }
         }
       },
       orderBy: { deadline: 'asc' }
     });
 
-    const now = new Date();
     const rows = activities.map(a => {
       const sub = a.submissions[0] || null;
-      const deadline = a.deadline ? new Date(a.deadline) : null;
 
+      // ── Lateness is read, not re-derived ──
+      // This used to compute it here as `sub.createdAt > new Date(a.deadline)`,
+      // which is wrong twice over.
+      //
+      // First, `new Date("2025-03-15")` is midnight *UTC* — 08:00 in Manila —
+      // so work handed in on the morning of the due date was labelled LATE.
+      // That is the exact bug isPastDeadline() and src/utils/deadlines.js exist
+      // to prevent, and this screen was the one place still doing it by hand.
+      //
+      // Second, Submission.isLate is already the answer. Both write paths set
+      // it through submissionWindow() at the moment the work arrives — the
+      // student's own upload and the teacher's batch scan alike — so it knows
+      // something recomputing from createdAt cannot: a student who re-submits
+      // after the deadline is late even though their first attempt was on
+      // time, and createdAt still points at that first, punctual attempt.
+      // Reading the stored flag also means this screen says the same thing the
+      // student was told when they pressed submit.
       let status;
       if (sub) {
-        status = (deadline && sub.createdAt > deadline) ? 'LATE' : 'DONE';
-      } else if (deadline && deadline < now) {
+        status = sub.isLate ? 'LATE' : 'DONE';
+      } else if (isPastDeadline(a.deadline)) {
         status = 'MISSING';
       } else {
         status = 'UPCOMING';
@@ -7345,26 +7536,81 @@ app.get('/api/teacher/:teacherId/gradebook/export', async (req, res) => {
       // 50-point activity came out as 113%.
       // Class has no schoolId of its own; it inherits the section's.
       const exportPolicy = await gradingPolicyFor(cls.section?.schoolId ?? null, cls.gradeLevel, cls.subject);
-      const { passingGrade: exportPassing } = await gradingSettingsFor(cls.section?.schoolId ?? null);
+      // ── The one place transmutation applies ──
+      // School.useTransmutation was stored, exposed on the admin API, toggled
+      // in Admin -> Grading behind a confirmation warning, and snapshotted into
+      // GradingAuditLog on every release — and read by nothing that computes a
+      // grade. Every computeGrade call site in the app passed
+      // `{ transmute: false }`, so the switch moved no number anywhere and the
+      // audit log recorded a policy that had never been applied.
+      //
+      // The export is the report card, so this is where it belongs. Analytics,
+      // the at-risk list and the student's own progress view stay untransmuted
+      // on purpose — see workingAverage: the table floors at 60 and only ever
+      // raises a grade, so transmuting there would hide the students the
+      // early-warning system exists to find.
+      const { passingGrade: exportPassing, useTransmutation } =
+        await gradingSettingsFor(cls.section?.schoolId ?? null);
+
+      // Papers handed in but not yet validated by a teacher. Counted so the
+      // export can say on its face that it is incomplete — a blank cell alone
+      // looks identical to "never submitted", and a teacher exporting halfway
+      // through marking would have no way to tell the two apart.
+      let unreviewedCount = 0;
+
       const rows = students.map(student => {
         const row = { name: student.name, username: student.username };
         const entries = [];
         for (const act of activities) {
           const sub = act.submissions.find(s => s.studentId === student.id && !s.archivedAt);
-          const score = sub ? (sub.hitlScore ?? sub.aiScore ?? null) : null;
+          // Only validated work is a grade — see countsAsGrade. This used to
+          // read `hitlScore ?? aiScore` off any non-archived submission, so an
+          // AI draft nobody had reviewed was written into the official class
+          // record. With "AI-check all" able to score a whole set in one press,
+          // a teacher who exported before reviewing shipped a section's worth
+          // of unapproved machine marks.
+          if (sub && !grading.countsAsGrade(sub)) unreviewedCount++;
+          const score = grading.gradePercentOf(sub);
           row[act.id] = score === null ? null : Math.round(score * 10) / 10;
           if (score !== null) {
             entries.push({ percent: score, points: act.points || 100, component: act.component || 'WW' });
           }
         }
-        const { initialGrade } = grading.computeGrade(entries, exportPolicy, { transmute: false });
-        row.average = initialGrade === null ? null : Math.round(initialGrade);
+        // Only the computed grade transmutes, never the individual activity
+        // scores above — DO 8 s.2015 maps the Initial Grade, not raw marks.
+        // finalGrade already resolves to whichever basis is in force, so the
+        // two branches cannot drift.
+        const { finalGrade } = grading.computeGrade(entries, exportPolicy, { transmute: useTransmutation });
+        row.average = finalGrade;
         return row;
       });
 
       // Carried through because the sheet-building loop below is a separate
       // scope and colours each cell against the school's own passing grade.
-      classData.push({ cls, activities, students, rows, passingGrade: exportPassing });
+      classData.push({ cls, activities, students, rows, passingGrade: exportPassing, unreviewedCount, useTransmutation });
+    }
+
+    // ── Preflight ──
+    // Answers "what would I get if I exported right now?" as JSON, so the
+    // teacher can be warned before a file lands in their downloads folder
+    // rather than after. Deliberately the same handler and the same row
+    // building as the real export — a separate counting query would be free to
+    // drift from what the file actually contains, and then the warning would
+    // be worse than none.
+    if (req.query.preflight) {
+      return res.json({
+        success: true,
+        classes: classData.map(({ cls, rows, unreviewedCount }) => ({
+          id: cls.id,
+          name: cls.name,
+          unreviewedCount,
+          gradedCells: rows.reduce(
+            (n, row) => n + Object.keys(row).filter(k => k !== 'name' && k !== 'username' && k !== 'average' && row[k] !== null).length,
+            0
+          ),
+        })),
+        totalUnreviewed: classData.reduce((n, c) => n + c.unreviewedCount, 0),
+      });
     }
 
     if (format === 'xlsx') {
@@ -7380,7 +7626,7 @@ app.get('/api/teacher/:teacherId/gradebook/export', async (req, res) => {
       workbook.creator = 'TulongGuro';
       workbook.created = new Date();
 
-      for (const { cls, activities, rows, passingGrade: exportPassing } of classData) {
+      for (const { cls, activities, rows, passingGrade: exportPassing, unreviewedCount, useTransmutation } of classData) {
         const sheetName = (cls.name || 'Grades').substring(0, 31);
         const sheet = workbook.addWorksheet(sheetName);
 
@@ -7389,10 +7635,34 @@ app.get('/api/teacher/:teacherId/gradebook/export', async (req, res) => {
         sheet.addRow(['Section:', cls.section?.name || 'N/A']);
         sheet.addRow(['School Year:', cls.schoolYear]);
         sheet.addRow(['Exported:', new Date().toLocaleDateString('en-PH', { dateStyle: 'long' })]);
+        // Two schools can export the same raw marks and get different final
+        // grades, so the sheet has to say which basis produced these. Without
+        // it a transmuted 80 and an untransmuted 80 are indistinguishable on
+        // paper, and only one of them came from a 69.
+        sheet.addRow([
+          'Grading basis:',
+          useTransmutation
+            ? 'DepEd transmutation table applied (DO 8 s.2015). Activity scores are raw; the final grade is transmuted.'
+            : 'Initial Grade — points-weighted, not transmuted.'
+        ]);
+        // Stated in the sheet, not just implied by empty cells, so an export
+        // taken mid-marking cannot be mistaken for a complete record.
+        if (unreviewedCount > 0) {
+          const warnRow = sheet.addRow([
+            'Incomplete:',
+            `${unreviewedCount} submission(s) not yet validated by a teacher — excluded from this export and from the averages below.`
+          ]);
+          warnRow.getCell(1).font = { bold: true, color: { argb: 'FFD97706' } };
+          warnRow.getCell(2).font = { color: { argb: 'FFD97706' } };
+        }
         sheet.addRow([]);
 
         // Header row
-        const headers = ['Student Name', ...activities.map(a => a.title), 'Average (%)'];
+        const headers = [
+          'Student Name',
+          ...activities.map(a => a.title),
+          useTransmutation ? 'Final Grade (transmuted)' : 'Average (%)'
+        ];
         const headerRow = sheet.addRow(headers);
         headerRow.eachCell(cell => {
           cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF6B21A8' } };
@@ -7464,15 +7734,27 @@ app.get('/api/teacher/:teacherId/gradebook/export', async (req, res) => {
     } else {
       // CSV export
       const lines = [];
-      for (const { cls, activities, rows } of classData) {
+      for (const { cls, activities, rows, unreviewedCount, useTransmutation } of classData) {
         lines.push(`# Class: ${cls.name}`);
         lines.push(`# Section: ${cls.section?.name || 'N/A'}`);
         lines.push(`# School Year: ${cls.schoolYear}`);
         lines.push(`# Exported: ${new Date().toLocaleDateString('en-PH', { dateStyle: 'long' })}`);
+        lines.push(`# Grading basis: ${useTransmutation
+          ? 'DepEd transmutation table applied (DO 8 s.2015). Activity scores are raw; the final grade is transmuted.'
+          : 'Initial Grade — points-weighted, not transmuted.'}`);
+        // Said out loud, because an empty cell reads the same whether the
+        // student never submitted or the teacher simply hasn't marked it yet.
+        if (unreviewedCount > 0) {
+          lines.push(`# INCOMPLETE: ${unreviewedCount} submission(s) not yet validated by a teacher — excluded from this export and from the averages.`);
+        }
         lines.push('');
 
         // Header
-        const headers = ['Student Name', ...activities.map(a => `"${a.title.replace(/"/g, '""')}"`), 'Average (%)'];
+        const headers = [
+          'Student Name',
+          ...activities.map(a => `"${a.title.replace(/"/g, '""')}"`),
+          useTransmutation ? 'Final Grade (transmuted)' : 'Average (%)'
+        ];
         lines.push(headers.join(','));
 
         // Data rows

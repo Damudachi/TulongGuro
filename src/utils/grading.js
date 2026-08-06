@@ -73,10 +73,23 @@ export function bandsFor(passingGrade = DEFAULT_PASSING_GRADE) {
   ];
 }
 
-/** The band a score falls into, or null when nothing is graded yet. */
+/**
+ * The band a score falls into, or null when nothing is graded yet.
+ *
+ * Rounds before comparing, matching bandKeyFor() in server/grading.js and
+ * computeGrade's own `Math.round(final) >= passing` test for isPassing.
+ *
+ * Scores are stored unrounded on purpose — 7 out of a 30-point activity is
+ * 23.333…%, and keeping that precision is what makes points -> percent ->
+ * points lossless. Every screen rounds for display. Comparing the *unrounded*
+ * value against a band edge therefore disagreed with the number on screen and
+ * with the server: a 74.6 against a passing line of 75 displays as "75",
+ * counts as passing in the server's analytics and at-risk list, and was
+ * coloured red as a fail here. Same mark, three answers.
+ */
 export function bandFor(value, passingGrade = DEFAULT_PASSING_GRADE) {
   if (value === null || value === undefined) return null;
-  return bandsFor(passingGrade).find(b => value >= b.min) || null;
+  return bandsFor(passingGrade).find(b => Math.round(value) >= b.min) || null;
 }
 
 /** Text colour for a score. The single rule every screen should use. */
@@ -91,8 +104,15 @@ export function gradeChip(value, passingGrade = DEFAULT_PASSING_GRADE, emptyChip
   return band ? band.chip : emptyChip;
 }
 
-/** Whether a score passes. Null in, null out — "not graded" is not "failing". */
+/**
+ * Whether a score passes. Null in, null out — "not graded" is not "failing".
+ *
+ * Rounds first, for the same reason bandFor does: computeGrade decides
+ * isPassing as `Math.round(final) >= passing`, and a client that answered
+ * differently would tell a student they had failed a mark the school's own
+ * records count as a pass.
+ */
 export function isPassing(value, passingGrade = DEFAULT_PASSING_GRADE) {
   if (value === null || value === undefined) return null;
-  return value >= (Number(passingGrade) || DEFAULT_PASSING_GRADE);
+  return Math.round(value) >= (Number(passingGrade) || DEFAULT_PASSING_GRADE);
 }

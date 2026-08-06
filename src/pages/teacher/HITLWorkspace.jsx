@@ -922,6 +922,29 @@ export default function HITLWorkspace() {
             </div>
           )}
 
+          {/* Score Out Of Range Banner — the AI returned a total outside 0-100
+              and it was clamped on the way in. The prompt makes the 0-100
+              scaling the model's own job ("the total score = sum of all
+              criterion scores, scaled to 0-100"), and it gets that arithmetic
+              wrong most often when the rubric's criteria don't themselves sum
+              to 100 — so the rubric breakdown is the thing worth checking, not
+              the total. Flagged rather than hidden: a silent clamp leaves a
+              teacher looking at criteria adding to 120 against a total of 100
+              with nothing explaining the difference. */}
+          {submission?.scoreOutOfRange && (
+            <div className="flex items-start gap-3 p-4 bg-amber-50 border-2 border-amber-300 rounded-xl text-sm">
+              <AlertTriangle className="w-5 h-5 shrink-0 text-amber-600" />
+              <div>
+                <p className="font-bold text-amber-800">Score Was Out Of Range</p>
+                <p className="text-amber-700 text-xs mt-0.5">
+                  The AI returned a total outside 0&ndash;100, so it was capped to fit. Its arithmetic on this paper
+                  can&apos;t be trusted &mdash; work out the score from the rubric breakdown below rather than accepting
+                  the total. If this activity&apos;s criteria don&apos;t add up to 100, fixing that will usually stop it recurring.
+                </p>
+              </div>
+            </div>
+          )}
+
           {/* No Text Detected Banner */}
           {submission?.aiScore === 0 && !submission?.aiFeedback?.includes('⚠') && !submission?.privacyViolation && (
             <div className="flex items-start gap-3 p-4 bg-amber-50 border-2 border-amber-300 rounded-xl text-sm">

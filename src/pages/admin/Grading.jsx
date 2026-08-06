@@ -157,8 +157,10 @@ export default function AdminGrading() {
               </span>
               <span className="block text-xs text-navy-500 mt-1 leading-relaxed">
                 The table has a floor of 60 and never lowers a grade, so switching this on
-                raises every grade in the school. Analytics and the support list always use
-                the untransmuted grade, so a struggling student stays visible either way.
+                raises every grade in the school. It applies to the <span className="font-bold">gradebook
+                export</span> — the report-card record — and the exported file states which basis was used.
+                Analytics, the support list and each student&apos;s own progress view always use the
+                untransmuted grade, so a struggling learner stays visible either way.
               </span>
             </span>
           </label>

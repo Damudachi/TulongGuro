@@ -2,12 +2,34 @@ services:
   - type: web
     name: tulongguro-api
     runtime: node
+    # ── Single instance is load-bearing, not incidental ──
+    # Three pieces of server state live in process memory and have no shared
+    # store behind them:
+    #   • the AI-check job registry (aiJobs) — a job started on one instance is
+    #     invisible to any other, so a poll that lands elsewhere 404s while the
+    #     run is still burning quota;
+    #   • the login/password rate-limit buckets — the effective limit
+    #     multiplies by the instance count;
+    #   • the per-model daily AI quota counters (gradingPool[].used) — each
+    #     instance would believe it has the whole daily budget to itself and
+    #     spend its way into 429s.
+    # Raising this needs those three moved to a shared store first. The server
+    # logs a warning at boot restating this; see the aiJobs comment in
+    # server.js for the detail.
+    numInstances: 1
     # `npm run verify` runs the grading-math, dashboard and route-authorization
-    # checks. Placed before `db push` on purpose: a failure stops the deploy
-    # without having touched the database. All three scripts are pure — no
-    # Prisma client, no DB, no network — so they can only fail on a real
-    # regression, never on a missing env var or an unreachable service.
-    buildCommand: cd server && npm install && npm run verify && npx prisma generate && npx prisma db push
+    # checks, plus the unit suite. Placed before the migration on purpose: a
+    # failure stops the deploy without having touched the database.
+    #
+    # `migrate deploy`, not `db push`. db push diffs the live schema against
+    # schema.prisma and reshapes the database to match, with no record of what
+    # it did and no way back — on a database holding a term's marked work, a
+    # column rename it decides to implement as drop-and-add is unrecoverable.
+    # migrate deploy applies the reviewed SQL in prisma/migrations in order and
+    # refuses to run anything it does not recognise, so a drift between what
+    # was tested and what is live fails the deploy instead of silently
+    # rewriting production.
+    buildCommand: cd server && npm install && npm run verify && npx prisma generate && npx prisma migrate deploy
     startCommand: cd server && node server.js
     envVars:
       - key: DATABASE_URL

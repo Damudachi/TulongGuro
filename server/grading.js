@@ -50,8 +50,146 @@ function defaultPolicyFor(subject) {
   return { ...DEPED_DEFAULT_WEIGHTS[weightGroupForSubject(subject)] };
 }
 
+/**
+ * Wraps a (gradeLevel, subject) -> policy loader in a memo.
+ *
+ * The analytics endpoints ask for the same handful of pairs once per student.
+ * Looking a policy up is a database read, so forty students across three
+ * subjects meant up to 120 sequential round trips for at most three distinct
+ * answers — several seconds of latency before the page could render.
+ *
+ * Caches the promise rather than the resolved value, so two callers asking for
+ * the same pair before either has returned share one query instead of racing
+ * to issue two.
+ *
+ * The loader is injected, and the memo holds no reference to a school, so the
+ * caller decides the lifetime. Every current caller builds one per request:
+ * a longer-lived cache would keep serving stale weights after an admin edits a
+ * policy, and a coordinator who changes them expects the next page to show it.
+ */
+function memoPolicyLoader(load) {
+  const cache = new Map();
+  return (gradeLevel, subject) => {
+    // Both parts are in the key: a school may set its own policy per grade AND
+    // subject, so "Grade 6 English" and "Grade 3 English" are different
+    // answers. Nullish parts normalise to '' and share one bucket, which is
+    // correct — they all take the generic default.
+    const key = `${gradeLevel || ''}|${subject || ''}`;
+    if (!cache.has(key)) cache.set(key, load(gradeLevel, subject));
+    return cache.get(key);
+  };
+}
+
 const COMPONENTS = ['WW', 'PT', 'QA'];
 const PASSING_GRADE = 75;
+
+/**
+ * Scores are stored as a percentage of the rubric, so 0-100 is the only
+ * meaningful range — there is no extra-credit concept anywhere in the model.
+ */
+const MIN_SCORE = 0;
+const MAX_SCORE = 100;
+
+/**
+ * Whether a value is usable as a score.
+ *
+ * Rejects NaN and Infinity as well as out-of-range numbers: `Number("abc")` is
+ * NaN, and NaN passes every `<`/`>` comparison you might write by hand, so a
+ * bare range check would let it through to Prisma and surface as a 500.
+ */
+function isValidScore(value) {
+  return Number.isFinite(value) && value >= MIN_SCORE && value <= MAX_SCORE;
+}
+
+/**
+ * Reads a score off a request body: the number it denotes, or null when the
+ * value cannot be one.
+ *
+ * Coercing first and range-checking after is not enough, and the difference is
+ * a wrong grade rather than an error. `Number(null)`, `Number('')` and
+ * `Number([])` are all 0 — a perfectly valid score — so a request that omitted
+ * the mark, or carried a cleared input box, would have recorded a zero for the
+ * student and reported success. Booleans coerce too (`Number(true)` is 1).
+ *
+ * So the type is checked before the value: a real number, or a non-empty
+ * string that denotes one. Everything else is "no score sent", which is a
+ * refusal, not a zero.
+ */
+function parseScore(raw) {
+  if (typeof raw === 'number') return isValidScore(raw) ? raw : null;
+  if (typeof raw === 'string' && raw.trim() !== '') {
+    const n = Number(raw);
+    return isValidScore(n) ? n : null;
+  }
+  return null;
+}
+
+/**
+ * Forces a model-supplied score into the storable range.
+ *
+ * Clamped rather than refused, which is the opposite of parseScore's answer to
+ * the same bad input — and deliberately so. A teacher sending an out-of-range
+ * score is a caller bug worth a 400; the AI doing it is a fact about a paper
+ * that has already been read, and throwing it away would cost the whole
+ * grading call, the rubric breakdown and the feedback along with it. The
+ * teacher is going to review this before it becomes a grade regardless, so the
+ * useful move is to keep the work, bound the number and say it was adjusted.
+ *
+ * `changed` is what drives Submission.scoreOutOfRange: a silent clamp would
+ * leave a teacher looking at a rubric that sums to 120 and a total of 100 with
+ * no explanation for the mismatch.
+ *
+ * @returns {{score: number, changed: boolean}}
+ */
+function clampScore(raw) {
+  // The type is checked before coercing, for the same reason parseScore does
+  // it: Number(null), Number('') and Number([]) are all 0. A response that
+  // omitted `score` entirely would otherwise clamp to a legitimate-looking
+  // zero with `changed: false` — a failing grade for the student and no flag
+  // for the teacher, which is worse than the out-of-range case this exists to
+  // catch. Anything that is not a real number is garbage, not a mark.
+  const n = typeof raw === 'number' ? raw
+    : (typeof raw === 'string' && raw.trim() !== '') ? Number(raw)
+      : NaN;
+  if (!Number.isFinite(n)) return { score: MIN_SCORE, changed: true };
+  if (n < MIN_SCORE) return { score: MIN_SCORE, changed: true };
+  if (n > MAX_SCORE) return { score: MAX_SCORE, changed: true };
+  return { score: n, changed: false };
+}
+
+/**
+ * Whether a submission counts as a grade of record.
+ *
+ * The distinction this encodes is the whole point of the human-in-the-loop
+ * design: `aiScore` is a draft the model produced, `status: 'GRADED'` is a
+ * teacher having looked at it and signed it off. Only the second is a grade.
+ *
+ * It is written down here, once, because the gradebook export got it wrong —
+ * it read `hitlScore ?? aiScore` off every non-archived submission with no
+ * status check, so an unreviewed machine score went into the official class
+ * record indistinguishable from a validated one. Every other consumer
+ * (analytics, the student dashboard, release) filtered on GRADED in its own
+ * query; the one place a number leaves the system did not.
+ *
+ * Deliberately NOT gated on `releasedAt`. Release controls what the student
+ * can see, not whether the mark is real — a teacher exporting their own record
+ * before publishing to the class is doing something normal.
+ *
+ * @param {{status?: string, archivedAt?: Date|null}|null|undefined} sub
+ */
+function countsAsGrade(sub) {
+  return !!sub && !sub.archivedAt && sub.status === 'GRADED';
+}
+
+/**
+ * The percentage a submission contributes, or null if it is not a grade yet.
+ * `??` not `||`: a validated score of 0 is a real mark and must not fall
+ * through to whatever the AI originally said.
+ */
+function gradePercentOf(sub) {
+  if (!countsAsGrade(sub)) return null;
+  return sub.hitlScore ?? sub.aiScore ?? null;
+}
 
 /**
  * Percentage Score for one component.
@@ -283,8 +421,16 @@ module.exports = {
   COMPONENTS,
   PASSING_GRADE,
   DEPED_DEFAULT_WEIGHTS,
+  MIN_SCORE,
+  MAX_SCORE,
+  isValidScore,
+  parseScore,
+  clampScore,
+  countsAsGrade,
+  gradePercentOf,
   weightGroupForSubject,
   defaultPolicyFor,
+  memoPolicyLoader,
   componentPercentage,
   initialGrade,
   transmute,

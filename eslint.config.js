@@ -17,6 +17,20 @@ export default defineConfig([
       sourceType: 'commonjs',
     },
   },
+  // The unit tests and the Vitest config are the exception: Vitest transforms
+  // them through Vite, so they are written as ES modules and import across the
+  // CJS/ESM line freely (a test can pull in both server/grading.js and
+  // src/utils/grading.js). Linting them as CommonJS reports every `import` as a
+  // parse error. `.mjs` covers vitest.config.mjs, which is ESM for the same
+  // reason.
+  {
+    files: ['server/tests/**/*.js', 'server/**/*.mjs'],
+    languageOptions: {
+      globals: globals.node,
+      sourceType: 'module',
+      ecmaVersion: 'latest',
+    },
+  },
   // Bare fetch() sends no Authorization header, so a call that uses it reaches
   // the API unauthenticated and comes back 401 — which most screens render as
   // "no data" rather than an error. That failure is silent and cost real

@@ -30,6 +30,28 @@ export default function Gradebook() {
     if (!user.id) return;
     setExportingSectionId(sectionId);
     try {
+      // Ask what the file would contain before producing it. Only validated
+      // work is exported, so a set that is still half-marked comes out with
+      // gaps — and a teacher who has just run "AI-check all" has every reason
+      // to assume it is finished. Better to say so here than to let them send
+      // an incomplete record to the principal and find out later.
+      const preflight = await apiFetch(
+        `${API_URL}/api/teacher/${user.id}/gradebook/export?sectionId=${sectionId}&preflight=1`
+      ).then(r => r.json()).catch(() => null);
+
+      if (preflight?.success && preflight.totalUnreviewed > 0) {
+        const perClass = preflight.classes
+          .filter(c => c.unreviewedCount > 0)
+          .map(c => `  • ${c.name}: ${c.unreviewedCount}`)
+          .join('\n');
+        const proceed = window.confirm(
+          `${preflight.totalUnreviewed} submission(s) in this section have not been validated yet:\n\n${perClass}\n\n` +
+          'Only work you have validated is exported, so these will be blank and will not count toward any average. ' +
+          'The file will say so.\n\nExport anyway?'
+        );
+        if (!proceed) return;
+      }
+
       const response = await apiFetch(`${API_URL}/api/teacher/${user.id}/gradebook/export?sectionId=${sectionId}&format=xlsx`);
       if (!response.ok) throw new Error('Export failed');
       const blob = await response.blob();
@@ -113,22 +135,39 @@ export default function Gradebook() {
 
   const activeTypes = allTypes.filter(type => typeGroups[type].length > 0);
 
+  /**
+   * A student's average for one activity type, and whether any unvalidated AI
+   * draft went into it.
+   *
+   * This screen deliberately still shows drafts — it is the teacher's working
+   * view, and hiding a score they can see in the review queue would be worse
+   * than useless. But the export only counts validated work, so an unmarked
+   * draft here would silently disagree with the file. `hasDraft` is what lets
+   * the cell say which it is.
+   */
   function getStudentTypeAvg(studentId, type) {
     const acts = typeGroups[type];
-    if (!acts.length) return null;
+    if (!acts.length) return { avg: null, hasDraft: false };
+    let hasDraft = false;
     const scores = acts.map(a => {
       const sub = scoreMap[studentId]?.[a.id];
-      return sub ? (sub.hitlScore ?? sub.aiScore ?? null) : null;
+      if (!sub) return null;
+      const score = sub.hitlScore ?? sub.aiScore ?? null;
+      if (score !== null && sub.status !== 'GRADED') hasDraft = true;
+      return score;
     }).filter(s => s !== null);
-    if (!scores.length) return null;
-    return Math.round(scores.reduce((a, b) => a + b, 0) / scores.length);
+    if (!scores.length) return { avg: null, hasDraft: false };
+    return { avg: Math.round(scores.reduce((a, b) => a + b, 0) / scores.length), hasDraft };
   }
 
   const typeClassAvg = {};
   activeTypes.forEach(type => {
-    const allAvgs = uniqueStudents.map(s => getStudentTypeAvg(s.id, type)).filter(a => a !== null);
+    const allAvgs = uniqueStudents.map(s => getStudentTypeAvg(s.id, type).avg).filter(a => a !== null);
     typeClassAvg[type] = allAvgs.length ? Math.round(allAvgs.reduce((a, b) => a + b, 0) / allAvgs.length) : null;
   });
+
+  // Drives the legend below the table — only shown when there is something to explain.
+  const anyDrafts = uniqueStudents.some(s => activeTypes.some(t => getStudentTypeAvg(s.id, t).hasDraft));
 
   return (
     <>
@@ -235,8 +274,9 @@ export default function Gradebook() {
                     <tr><td colSpan={activeTypes.length + 2} className="py-12 text-center font-bold text-navy-400">No students found</td></tr>
                   ) : filteredStudents.map(student => {
                     const typeAvgs = activeTypes.map(type => getStudentTypeAvg(student.id, type));
-                    const validAvgs = typeAvgs.filter(a => a !== null);
+                    const validAvgs = typeAvgs.filter(a => a.avg !== null).map(a => a.avg);
                     const overall = validAvgs.length ? Math.round(validAvgs.reduce((a, b) => a + b, 0) / validAvgs.length) : null;
+                    const overallHasDraft = typeAvgs.some(a => a.hasDraft);
 
                     return (
                       <tr key={student.id} className="border-b border-cream-200 last:border-0 hover:bg-cream-50 transition-colors">
@@ -255,17 +295,28 @@ export default function Gradebook() {
                           </div>
                         </td>
                         {activeTypes.map((type, i) => {
-                          const avg = typeAvgs[i];
+                          const { avg, hasDraft } = typeAvgs[i];
                           if (avg === null) return <td key={type} className="px-5 py-3 text-center text-navy-300">—</td>;
                           return (
                             <td key={type} className="px-5 py-3 text-center">
-                              <span className={cn('inline-block px-3 py-1 rounded-full text-xs font-extrabold', scoreTone(avg))}>{avg}%</span>
+                              <span
+                                className={cn('inline-block px-3 py-1 rounded-full text-xs font-extrabold', scoreTone(avg),
+                                  // A ring, not a different fill: the fill colour already carries
+                                  // the score band and has to keep meaning only that.
+                                  hasDraft && 'ring-1 ring-amber-400 ring-offset-1')}
+                                title={hasDraft
+                                  ? 'Includes an AI draft you have not validated yet. Drafts are not exported and do not count toward the official record.'
+                                  : undefined}>
+                                {avg}%{hasDraft && <span className="ml-0.5 text-amber-600">*</span>}
+                              </span>
                             </td>
                           );
                         })}
                         <td className="px-4 py-3 text-center">
-                          <span className={cn('font-extrabold text-sm', overall === null ? 'text-navy-300' : scoreTone(overall).split(' ')[0])}>
+                          <span className={cn('font-extrabold text-sm', overall === null ? 'text-navy-300' : scoreTone(overall).split(' ')[0])}
+                            title={overallHasDraft ? 'Includes AI drafts that have not been validated.' : undefined}>
                             {overall !== null ? `${overall}%` : '—'}
+                            {overall !== null && overallHasDraft && <span className="ml-0.5 text-amber-600">*</span>}
                           </span>
                         </td>
                       </tr>
@@ -287,6 +338,15 @@ export default function Gradebook() {
                 </tfoot>
               </table>
             </div>
+
+            {anyDrafts && (
+              <p className="mt-3 text-xs font-semibold text-navy-500 flex items-start gap-1.5">
+                <span className="text-amber-600 font-extrabold shrink-0">*</span>
+                Includes an AI draft you haven&apos;t validated yet. Drafts show here so you can see where the class
+                stands, but they are not part of the official record — they are left out of exports and of the
+                averages in them. Validate them in the review queue to lock them in.
+              </p>
+            )}
           </>
         )}
       </div>
