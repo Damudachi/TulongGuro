@@ -2,6 +2,8 @@ import { useState, useEffect, useRef } from 'react';
 import { Users, Plus, ChevronDown, X, Upload, Pencil, UserPlus, Loader2, Search } from 'lucide-react';
 import { API_URL, apiFetch } from '../../config';
 import { GRADE_LEVELS } from '../../constants/school';
+import StudentCredentials from '../../components/StudentCredentials';
+import SectionMoveConfirm from '../../components/SectionMoveConfirm';
 
 /**
  * Reads one roster line: "Juan Dela Cruz, 03/15/2014".
@@ -63,6 +65,12 @@ export default function ManageSections() {
   const [isAddingStudents, setIsAddingStudents] = useState(false);
   const [isExtractingEdit, setIsExtractingEdit] = useState(false);
   const editFileRef = useRef(null);
+  // Sign-in details for the accounts just created, and the plain summary line.
+  const [newAccounts, setNewAccounts] = useState([]);
+  const [notice, setNotice] = useState('');
+  // Set when the server refused to re-home names already enrolled elsewhere.
+  // Holds everything needed to replay the same request with allowMove.
+  const [moveRequest, setMoveRequest] = useState(null);
 
   useEffect(() => { fetchSections(); }, []);
 
@@ -76,39 +84,90 @@ export default function ManageSections() {
     } catch (e) { console.error(e); }
   };
 
-  const handleCreate = async (e) => {
-    e.preventDefault();
-    const parsed = parseRoster(studentsText);
+  /**
+   * Reads the roster box, refusing unreadable birthdays.
+   * Returns the payload rows, or null when the teacher has been asked to fix
+   * something first.
+   */
+  const rosterPayload = (text) => {
+    const parsed = parseRoster(text);
     const badRows = parsed.filter(r => r.birthdayRaw && !r.birthday);
     if (badRows.length) {
-      return alert(
+      alert(
         `These birthdays could not be read:\n\n${badRows.map(r => `• ${r.name} — "${r.birthdayRaw}"`).join('\n')}\n\n` +
         'Use MM/DD/YYYY, for example 03/15/2014.'
       );
+      return null;
     }
+    return parsed.map(r => ({ name: r.name, birthday: r.birthday }));
+  };
+
+  /**
+   * The one call both "create a section" and "add students" make.
+   *
+   * `allowMove` is off on the first attempt, so the server reports names that
+   * already belong to another section instead of quietly re-homing them. When
+   * the teacher confirms, the identical request is replayed with it on.
+   */
+  const submitRoster = async ({ sectionName, grade, studentsList, allowMove, onDone }) => {
+    const user = JSON.parse(localStorage.getItem('user'));
+    const res = await apiFetch(`${API_URL}/api/teacher/sections`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: sectionName, gradeLevel: grade, teacherId: user.id, studentsList, allowMove })
+    });
+    const data = await res.json();
+    if (!data.success) { alert('Error: ' + data.error); return null; }
+
+    fetchSections();
+    // Appended, not replaced: the confirm-and-replay path runs this twice, and
+    // the second pass reports only the moves — replacing would throw away the
+    // passwords the first pass generated, which are unrecoverable.
+    setNewAccounts(prev => [...prev, ...(data.createdStudents || [])]);
+
+    const lines = [data.message].filter(Boolean);
+    if (data.skippedStudents?.length) {
+      lines.push(`Already in this section, so left alone: ${data.skippedStudents.map(s => s.name).join(', ')}.`);
+    }
+    if (data.linkedStudents?.length) {
+      lines.push(`Moved into this section: ${data.linkedStudents.map(s => `${s.name} (${s.username})`).join(', ')}.`);
+    }
+    setNotice(lines.join(' '));
+
+    if (data.pendingMoves?.length) {
+      // Nothing was written for these — hold the request so it can be replayed.
+      setMoveRequest({ sectionName, grade, studentsList, moves: data.pendingMoves, onDone });
+    } else {
+      onDone?.();
+    }
+    return data;
+  };
+
+  const handleCreate = async (e) => {
+    e.preventDefault();
+    const studentsList = rosterPayload(studentsText);
+    if (!studentsList) return;
+    setIsLoading(true);
+    setNewAccounts([]);
+    try {
+      await submitRoster({
+        sectionName: name, grade: gradeLevel, studentsList, allowMove: false,
+        onDone: () => { setName(''); setGradeLevel(''); setStudentsText(''); setShowForm(false); }
+      });
+    } catch { alert('Network error.'); }
+    finally { setIsLoading(false); }
+  };
+
+  /** The teacher confirmed the move — replay the same roster with allowMove. */
+  const confirmMoves = async () => {
+    const req = moveRequest;
+    if (!req) return;
     setIsLoading(true);
     try {
-      const user = JSON.parse(localStorage.getItem('user'));
-      const studentNames = parsed.map(r => ({ name: r.name, birthday: r.birthday }));
-      const res = await apiFetch(`${API_URL}/api/teacher/sections`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, gradeLevel, teacherId: user.id, studentsList: studentNames })
-      });
-      const data = await res.json();
-      if (data.success) {
-        setName(''); setGradeLevel(''); setStudentsText(''); setShowForm(false);
-        fetchSections();
-        let msg = data.message || `Created ${data.createdStudents.length} student accounts.`;
-        // The teacher has to read these out to the class, so list them.
-        if (data.createdStudents?.length > 0) {
-          msg += `\n\nSign-in details:\n${data.createdStudents.map(s => `• ${s.name} — ${s.username} / ${s.initialPassword}`).join('\n')}`;
-        }
-        if (data.skippedStudents?.length > 0) msg += `\n\nSkipped (already in section):\n${data.skippedStudents.map(s => `• ${s.name}`).join('\n')}`;
-        if (data.linkedStudents?.length > 0) msg += `\n\nLinked existing accounts:\n${data.linkedStudents.map(s => `• ${s.name} (${s.username})`).join('\n')}`;
-        alert(msg);
-      } else { alert("Error: " + data.error); }
-    } catch (error) { alert("Network error."); }
+      // submitRoster runs onDone itself once nothing is left pending.
+      await submitRoster({ ...req, allowMove: true });
+      setMoveRequest(null);
+    } catch { alert('Network error.'); }
     finally { setIsLoading(false); }
   };
 
@@ -143,35 +202,17 @@ export default function ManageSections() {
   const toggleSection = (id) => setExpandedId(prev => prev === id ? null : id);
 
   const handleAddStudents = async (section) => {
-    const parsed = parseRoster(addStudentsText);
-    if (parsed.length === 0) return alert('Please enter at least one student name.');
-    const badRows = parsed.filter(r => r.birthdayRaw && !r.birthday);
-    if (badRows.length) {
-      return alert(
-        `These birthdays could not be read:\n\n${badRows.map(r => `• ${r.name} — "${r.birthdayRaw}"`).join('\n')}\n\n` +
-        'Use MM/DD/YYYY, for example 03/15/2014.'
-      );
-    }
-    const studentNames = parsed.map(r => ({ name: r.name, birthday: r.birthday }));
+    if (parseRoster(addStudentsText).length === 0) return alert('Please enter at least one student name.');
+    const studentsList = rosterPayload(addStudentsText);
+    if (!studentsList) return;
     setIsAddingStudents(true);
+    setNewAccounts([]);
     try {
-      const user = JSON.parse(localStorage.getItem('user'));
-      const res = await apiFetch(`${API_URL}/api/teacher/sections`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: section.name, teacherId: user.id, studentsList: studentNames })
+      await submitRoster({
+        sectionName: section.name, grade: section.gradeLevel, studentsList, allowMove: false,
+        onDone: () => { setAddStudentsText(''); setEditingSectionId(null); }
       });
-      const data = await res.json();
-      if (data.success) {
-        setAddStudentsText('');
-        setEditingSectionId(null);
-        fetchSections();
-        let msg = data.message || `Added ${data.createdStudents?.length || 0} student(s).`;
-        if (data.skippedStudents?.length > 0) msg += `\n\nSkipped (already in section):\n${data.skippedStudents.map(s => `• ${s.name}`).join('\n')}`;
-        if (data.linkedStudents?.length > 0) msg += `\n\nLinked existing accounts:\n${data.linkedStudents.map(s => `• ${s.name} (${s.username})`).join('\n')}`;
-        alert(msg);
-      } else { alert('Error: ' + data.error); }
-    } catch (e) { alert('Network error.'); }
+    } catch { alert('Network error.'); }
     finally { setIsAddingStudents(false); }
   };
 
@@ -208,10 +249,29 @@ export default function ManageSections() {
         </button>
       </div>
 
+      {notice && (
+        <div className="bg-blue-50 border border-blue-200 text-blue-800 text-sm rounded-xl p-3 mb-4 flex items-start justify-between gap-3">
+          <span>{notice}</span>
+          <button onClick={() => setNotice('')} aria-label="Dismiss" className="text-blue-400 hover:text-blue-600 shrink-0">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
+
+      <StudentCredentials students={newAccounts} onClose={() => setNewAccounts([])} />
+
+      <SectionMoveConfirm
+        moves={moveRequest?.moves}
+        targetSection={moveRequest?.sectionName}
+        busy={isLoading || isAddingStudents}
+        onConfirm={confirmMoves}
+        onCancel={() => { setMoveRequest(null); moveRequest?.onDone?.(); }}
+      />
+
       <div className="mb-6 relative">
         <Search className="w-5 h-5 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
-        <input 
-          type="text" 
+        <input
+          type="text"
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
           placeholder="Search sections by name..." 
@@ -248,16 +308,24 @@ export default function ManageSections() {
             </p>
             <div>
               <div className="flex justify-between items-center mb-1">
-                <label className="block text-sm font-medium text-slate-700">Students — one per line, <span className="font-normal text-slate-500">Name, Birthday</span></label>
+                <label className="block text-sm font-medium text-slate-700">Students — one per line, <span className="font-normal text-slate-500">Last name, First name, Birthday</span></label>
                 <button type="button" onClick={() => fileInputRef.current?.click()} disabled={isExtracting}
                   className="text-xs font-bold text-brand-navy bg-blue-50 hover:bg-blue-100 px-3 py-1.5 rounded-lg flex items-center gap-1 transition-colors disabled:opacity-50">
                   {isExtracting ? 'Extracting...' : <><Upload className="w-3.5 h-3.5" /> Auto-fill from Excel</>}
                 </button>
                 <input type="file" accept=".xlsx,.xls" className="hidden" ref={fileInputRef} onChange={handleFileUpload} />
               </div>
+              {/* Surname first, matching the DepEd School Form 1 the roster is
+                  copied from — and it is what the class list, the gradebook
+                  and every export are sorted by, so a mixed roster sorts by
+                  first name for some learners and surname for others. */}
+              <p className="text-xs font-medium text-brand-navy bg-blue-50 border border-blue-100 rounded-lg px-3 py-2 mb-2">
+                Enter names <span className="font-bold">last name first</span> — e.g. <span className="font-mono">Dela Cruz, Juan</span>.
+                This is how rosters and gradebooks are sorted.
+              </p>
               <textarea required value={studentsText} onChange={(e) => setStudentsText(e.target.value)}
                 rows={6} className="w-full px-4 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-brand-navy outline-none"
-                placeholder={"Juan Dela Cruz, 03/15/2014\nMaria Clara, 07/02/2014\nJose Rizal"} />
+                placeholder={"Dela Cruz, Juan, 03/15/2014\nSantos, Maria Clara, 07/02/2014\nRizal, Jose"} />
 
               {/* Shown before submitting, because the birthday becomes the
                   password — a typo here is a pupil who cannot sign in, and it
@@ -279,7 +347,8 @@ export default function ManageSections() {
               )}
               <p className="text-xs text-slate-500 mt-1">
                 The birthday becomes the pupil&apos;s password (03/15/2014 → <span className="font-mono">03152014</span>). Leave it out and they get
-                a random password, shown here once they&apos;re added. Existing students won&apos;t be duplicated.
+                a random one you must copy down when it appears — it cannot be shown again. Existing students won&apos;t be duplicated;
+                anyone already in another section is listed for you to confirm before they are moved.
               </p>
             </div>
             <div className="flex gap-3">
@@ -381,7 +450,7 @@ export default function ManageSections() {
                         <div className="space-y-3">
                           <div>
                             <div className="flex justify-between items-center mb-1">
-                              <label className="text-xs font-medium text-slate-600">Student Names (One per line)</label>
+                              <label className="text-xs font-medium text-slate-600">Student names — last name first, one per line</label>
                               <button type="button" onClick={() => editFileRef.current?.click()} disabled={isExtractingEdit}
                                 className="text-xs font-bold text-brand-navy bg-white hover:bg-blue-100 px-2.5 py-1 rounded-lg flex items-center gap-1 transition-colors disabled:opacity-50 border border-blue-200">
                                 {isExtractingEdit ? 'Extracting...' : <><Upload className="w-3 h-3" /> Auto-fill</>}
@@ -390,8 +459,12 @@ export default function ManageSections() {
                             </div>
                             <textarea value={addStudentsText} onChange={(e) => setAddStudentsText(e.target.value)}
                               rows={4} className="w-full px-3 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-brand-navy outline-none text-sm"
-                              placeholder={"Juan Dela Cruz, 03/15/2014\nMaria Clara, 07/02/2014"} />
-                            <p className="text-[11px] text-slate-400 mt-1">Existing students won't be duplicated. Default password: student's birthday (MMDDYYYY), or a random code shown after adding if no birthday is given.</p>
+                              placeholder={"Dela Cruz, Juan, 03/15/2014\nSantos, Maria Clara, 07/02/2014"} />
+                            <p className="text-[11px] text-slate-400 mt-1">
+                              Last name first, e.g. <span className="font-mono">Dela Cruz, Juan</span>. Existing students won&apos;t be duplicated, and anyone
+                              already in another section is listed for you to confirm first. Password: the birthday as MMDDYYYY, or a random
+                              code shown once after adding if no birthday is given.
+                            </p>
                           </div>
                           <div className="flex gap-2">
                             <button onClick={() => { setEditingSectionId(null); setAddStudentsText(''); }}

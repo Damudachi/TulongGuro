@@ -250,6 +250,16 @@ const loginRateLimit = [
 ];
 /** Registration creates a School and an admin, so it is worth throttling harder. */
 const registerRateLimit = rateLimit({ windowMs: 60 * 60_000, max: 5, key: clientIp });
+/**
+ * Changing a password takes the current one, so it is a second place a password
+ * can be guessed at. Keyed on the account rather than the address: the caller is
+ * already authenticated, so who they claim to be is known and worth limiting
+ * directly. Generous enough that genuinely mistyping the old password a few
+ * times is not a lockout.
+ */
+const changePasswordRateLimit = rateLimit({
+  windowMs: 15 * 60_000, max: 10, key: r => r.auth?.sub || clientIp(r),
+});
 /** The operator key is a single secret with no lockout behind it. */
 const platformRateLimit = rateLimit({ windowMs: 15 * 60_000, max: 20, key: clientIp });
 
@@ -344,6 +354,7 @@ module.exports = {
   loginRateLimit,
   registerRateLimit,
   platformRateLimit,
+  changePasswordRateLimit,
   // Exported so scripts/verify-route-authorization.js can check every
   // registered route against the same allowlist authorizePath() itself uses,
   // instead of keeping a second copy that can drift out of sync.

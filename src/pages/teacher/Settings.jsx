@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react';
-import { User, Bell, Shield, Save, Lock, Eye, EyeOff } from 'lucide-react';
+import { User, Bell, Shield, Save, Lock, Eye, EyeOff, Loader2 } from 'lucide-react';
 import PageHeader from '../../components/PageHeader';
 import Toggle from '../../components/Toggle';
+import { API_URL, apiFetch, setSession } from '../../config';
 
 /** Read-only account field — these are set by the school admin. */
 function LockedField({ label, value }) {
@@ -26,6 +27,8 @@ export default function Settings() {
   const [passwords, setPasswords] = useState({ current: '', newPass: '', confirm: '' });
   const [showPassword, setShowPassword] = useState(false);
   const [saveMsg, setSaveMsg] = useState('');
+  const [pwError, setPwError] = useState('');
+  const [pwBusy, setPwBusy] = useState(false);
 
   useEffect(() => {
     const stored = JSON.parse(localStorage.getItem('user') || '{}');
@@ -49,18 +52,40 @@ export default function Settings() {
     setTimeout(() => setSaveMsg(''), 2000);
   };
 
-  const handleChangePassword = (e) => {
+  /**
+   * Change the signed-in teacher's password.
+   *
+   * This used to validate the two fields, skip the network entirely and report
+   * "Password updated successfully!" — so a teacher handed a temporary password
+   * by their admin believed they had replaced it while the temporary one stayed
+   * live. It now goes to the server, and only says so when the server agrees.
+   */
+  const handleChangePassword = async (e) => {
     e.preventDefault();
-    if (passwords.newPass !== passwords.confirm) {
-      return alert('New passwords do not match.');
+    setPwError('');
+    if (passwords.newPass !== passwords.confirm) return setPwError('The two new passwords do not match.');
+    if (passwords.newPass.length < 6) return setPwError('Your new password must be at least 6 characters.');
+
+    setPwBusy(true);
+    try {
+      const res = await apiFetch(`${API_URL}/api/auth/change-password`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ currentPassword: passwords.current, newPassword: passwords.newPass }),
+      });
+      const data = await res.json();
+      if (!data.success) { setPwError(data.error || 'That did not work. Please try again.'); return; }
+      // The change ends every other session for this account; the token that
+      // comes back is minted after that cut-off so this browser stays signed in.
+      if (data.token) setSession(JSON.parse(localStorage.getItem('user') || '{}'), data.token);
+      setPasswords({ current: '', newPass: '', confirm: '' });
+      setSaveMsg('Password changed. Any other device you were signed in on has been signed out.');
+      setTimeout(() => setSaveMsg(''), 4000);
+    } catch {
+      setPwError('Network error. Please try again.');
+    } finally {
+      setPwBusy(false);
     }
-    if (passwords.newPass.length < 6) {
-      return alert('Password must be at least 6 characters.');
-    }
-    // In production, this would call an API
-    setSaveMsg('Password updated successfully!');
-    setPasswords({ current: '', newPass: '', confirm: '' });
-    setTimeout(() => setSaveMsg(''), 2000);
   };
 
   const tabs = [
@@ -175,9 +200,17 @@ export default function Settings() {
                       onChange={(e) => setPasswords(p => ({ ...p, confirm: e.target.value }))}
                       className="tg-input" />
                   </div>
-                  <button type="submit" className="tg-btn-primary !py-2.5 !px-5">
-                    <Shield className="w-4 h-4" /> Update Password
+                  {pwError && (
+                    <p role="alert" className="text-sm font-bold text-red-700 bg-red-50 border-2 border-red-200 rounded-2xl px-4 py-3">
+                      {pwError}
+                    </p>
+                  )}
+                  <button type="submit" disabled={pwBusy} className="tg-btn-primary !py-2.5 !px-5 disabled:opacity-50">
+                    {pwBusy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Shield className="w-4 h-4" />} Update Password
                   </button>
+                  <p className="text-xs text-navy-400">
+                    Changing this signs you out on any other device you are still logged in on.
+                  </p>
                 </form>
               </>
             )}

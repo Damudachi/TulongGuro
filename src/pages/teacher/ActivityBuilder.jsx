@@ -239,6 +239,46 @@ export default function ActivityBuilder() {
   const selectedLesson = classLessons.find(l => l.id === selectedLessonId) || null;
   const selectedTopic = topics.find(t => t.id === form.topic) || null;
 
+  /**
+   * Whether to offer the DepEd competency list at all.
+   *
+   * depedTopics.js is the MATATAG Grade 6 English map and nothing else, so on
+   * any other class the options are simply wrong answers. An activity that is
+   * already tagged keeps the list visible regardless, or opening it for an edit
+   * would show a blank field and silently drop the topic on save.
+   */
+  const depedTopicsApply =
+    !!form.topic ||
+    (/grade\s*6/i.test(classMeta?.gradeLevel || '') && /english/i.test(classMeta?.subject || ''));
+
+  // The merged picker holds one value for two different mappings, tagged by
+  // source so a lesson id and a topic id can never be mistaken for each other.
+  const lessonTopicValue = selectedLessonId
+    ? `lesson:${selectedLessonId}`
+    : form.topic ? `topic:${form.topic}` : '';
+
+  /**
+   * An activity is mapped to a lesson or to a topic, never both — picking one
+   * has to clear the other, or the old value stays attached invisibly and keeps
+   * steering the rubric and the AI prompt.
+   */
+  const onLessonTopicChange = (value) => {
+    const [kind, id] = value.split(/:(.*)/s);
+    if (kind === 'lesson') {
+      setSelectedLessonId(id);
+      setForm(prev => {
+        const lesson = classLessons.find(l => l.id === id);
+        return { ...prev, topic: '', ...(lesson?.outputType ? { type: lesson.outputType } : {}) };
+      });
+    } else if (kind === 'topic') {
+      setSelectedLessonId('');
+      setForm(prev => ({ ...prev, topic: id }));
+    } else {
+      setSelectedLessonId('');
+      setForm(prev => ({ ...prev, topic: '' }));
+    }
+  };
+
   // Apply the best available default, re-running whenever a new source loads or
   // the teacher maps the activity to a lesson or topic. Stops the moment the
   // teacher chooses a rubric themselves.
@@ -819,54 +859,58 @@ export default function ActivityBuilder() {
             </div>
           </div>
 
-          {classLessons.length > 0 && (
+          {/* ── LESSON / TOPIC ──
+              One field, two sources. This used to be two required dropdowns
+              sitting next to each other — "Curriculum Lesson / Topic" and
+              "DepEd Topic *" — which read as the same question asked twice.
+              They are not quite: a curriculum lesson comes from the school's
+              own uploaded scope and sequence and carries a rubric, while a
+              DepEd topic is a fixed competency that sharpens the AI's feedback
+              and feeds the topic-breakdown analytics. But only one of them
+              describes any given activity, and the DepEd list only covers
+              Grade 6 English — so requiring it forced a Grade 3 Maths teacher
+              to tag their work with an English competency chosen at random,
+              which then steered the AI's marking towards it. Merged into one
+              optional picker: whichever source actually fits. */}
+          {(classLessons.length > 0 || depedTopicsApply) && (
             <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">Curriculum Lesson / Topic</label>
-              {/* Picking a lesson only records the mapping. The resolver above
-                  applies its rubric — as the highest-priority source — so a
-                  later edit to the topic can no longer overwrite it. */}
-              <select value={selectedLessonId} onChange={e => {
-                const lessonId = e.target.value;
-                setSelectedLessonId(lessonId);
-                const lesson = classLessons.find(l => l.id === lessonId);
-                if (lesson?.outputType) {
-                  setForm(prev => ({ ...prev, type: lesson.outputType }));
-                }
-              }}
+              <label className="block text-sm font-medium text-slate-700 mb-1">
+                Lesson / Topic <span className="font-normal text-slate-400">(optional)</span>
+              </label>
+              <select value={lessonTopicValue} onChange={e => onLessonTopicChange(e.target.value)}
                 className="w-full px-4 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-brand-navy outline-none">
-                <option value="">— Select a lesson from curriculum —</option>
-                {classLessons.map(l => (
-                  <option key={l.id} value={l.id}>
-                    {l.weekNumber ? `Week ${l.weekNumber}: ` : ''}{l.title} ({l.outputType})
-                  </option>
-                ))}
+                <option value="">— Not linked to a lesson —</option>
+                {classLessons.length > 0 && (
+                  <optgroup label="From your school's curriculum">
+                    {classLessons.map(l => (
+                      <option key={l.id} value={`lesson:${l.id}`}>
+                        {l.weekNumber ? `Week ${l.weekNumber}: ` : ''}{l.title} ({l.outputType})
+                      </option>
+                    ))}
+                  </optgroup>
+                )}
+                {depedTopicsApply && topics.length > 0 && (
+                  <optgroup label="DepEd Grade 6 English competencies">
+                    {/* Flattened with the term in the label — optgroups cannot
+                        nest, and the term is what tells two similarly-worded
+                        competencies apart. */}
+                    {topics.map(t => (
+                      <option key={t.id} value={`topic:${t.id}`}>
+                        {t.term ? `Term ${t.term} · ` : ''}{t.name}
+                      </option>
+                    ))}
+                  </optgroup>
+                )}
               </select>
-              <p className="text-xs text-slate-400 mt-1">Selecting a lesson auto-applies its output type and default rubric.</p>
+              <p className="text-xs text-slate-400 mt-1">
+                {selectedLessonId
+                  ? 'Applies this lesson’s output type and default rubric.'
+                  : selectedTopic
+                    ? 'Focuses the AI’s feedback on this competency, and groups the activity under it in analytics.'
+                    : 'Links the activity to a curriculum lesson or a DepEd competency. Leave blank if neither fits.'}
+              </p>
             </div>
           )}
-
-          <div>
-            <label className="block text-sm font-medium text-slate-700 mb-1">DepEd Topic *</label>
-            {/* The topic's recommended rubric is only a fallback — see
-                resolveDefaultRubric. This field is required, so applying it
-                here unconditionally wiped out the curriculum rubric of every
-                teacher who mapped a lesson before filling the form in. */}
-            <select required value={form.topic} onChange={e => {
-                setForm({ ...form, topic: e.target.value });
-              }}
-              className="w-full px-4 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-brand-navy outline-none">
-              <option value="">— Select a topic —</option>
-              {[1, 2, 3].map(term => {
-                const termTopics = topics.filter(t => t.term === term);
-                return termTopics.length > 0 ? (
-                  <optgroup key={term} label={`Term ${term}`}>
-                    {termTopics.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
-                  </optgroup>
-                ) : null;
-              })}
-            </select>
-            <p className="text-xs text-slate-400 mt-1">Used to focus the AI's feedback on this skill. It only suggests a rubric if nothing more specific applies.</p>
-          </div>
 
           <div>
             <label className="block text-sm font-medium text-slate-700 mb-1">

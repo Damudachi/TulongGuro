@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import {
   ArrowLeft, Loader2, Pencil, Trash2, Check, X, KeyRound, UserPlus, UserCog,
@@ -6,6 +6,8 @@ import {
 } from 'lucide-react';
 import { API_URL, apiFetch } from '../../config';
 import { GRADE_LEVELS } from '../../constants/school';
+import StudentCredentials from '../../components/StudentCredentials';
+import SectionMoveConfirm from '../../components/SectionMoveConfirm';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
 
@@ -39,6 +41,19 @@ export default function AdminTeacherDetail() {
   const [addingToSectionId, setAddingToSectionId] = useState(null);
   const [studentsText, setStudentsText] = useState('');
   const [notice, setNotice] = useState('');
+  const [newAccounts, setNewAccounts] = useState([]);
+  const [moveRequest, setMoveRequest] = useState(null);
+  // Reassignment failures (the target teacher already has this shell) are shown
+  // where the control is, not only in the page banner far above it.
+  const [reassignError, setReassignError] = useState('');
+
+  // The banners live at the top of a page that scrolls well past a screenful,
+  // so an error raised by a control near the bottom used to land out of sight —
+  // pressing Delete or Move looked like it had simply done nothing.
+  const bannerRef = useRef(null);
+  useEffect(() => {
+    if (error || notice) bannerRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }, [error, notice]);
 
   const load = useCallback(() => {
     if (!admin.id) return setIsLoading(false);
@@ -90,22 +105,38 @@ export default function AdminTeacherDetail() {
     call(`${API_URL}/api/admin/${admin.id}/classes/${cls.id}`, { method: 'DELETE' });
   };
 
-  const reassignClass = (cls) => {
-    if (!reassignTo || reassignTo === cls.teacherId) return;
-    call(
-      `${API_URL}/api/admin/${admin.id}/classes/${cls.id}`,
-      { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ teacherId: reassignTo }) },
-      (d) => {
-        setReassignClassId(null);
-        setReassignTo('');
-        const r = d.retained;
-        setNotice(
-          `"${d.class.name}" moved to ${d.class.teacher.name}. ` +
-          (r ? `${r.activities} activit${r.activities === 1 ? 'y' : 'ies'} and ${r.submissions} submission(s) ` +
-               `(${r.graded} already graded) came with it — nothing was reset.` : '')
-        );
+  const reassignClass = async (cls) => {
+    if (!reassignTo) return setReassignError('Choose a teacher to move this course shell to.');
+    setReassignError('');
+    setBusy(true);
+    try {
+      const res = await apiFetch(`${API_URL}/api/admin/${admin.id}/classes/${cls.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ teacherId: reassignTo }),
+      });
+      const d = await res.json();
+      if (!d.success) {
+        // Kept next to the dropdown: the reason a move was refused is almost
+        // always "they already have this shell", which is only actionable while
+        // looking at the picker you would change.
+        setReassignError(d.error || 'That course shell could not be moved.');
+        return;
       }
-    );
+      setReassignClassId(null);
+      setReassignTo('');
+      const r = d.retained;
+      setNotice(
+        `"${d.class.name}" moved to ${d.class.teacher.name}. ` +
+        (r ? `${r.activities} activit${r.activities === 1 ? 'y' : 'ies'} and ${r.submissions} submission(s) ` +
+             `(${r.graded} already graded) came with it — nothing was reset.` : '')
+      );
+      load();
+    } catch {
+      setReassignError('Network error. Please try again.');
+    } finally {
+      setBusy(false);
+    }
   };
 
   const saveSection = (section) => call(
@@ -114,19 +145,66 @@ export default function AdminTeacherDetail() {
     () => setEditingSectionId(null)
   );
 
+  /**
+   * A section can only be deleted once nothing hangs off it — the server
+   * refuses otherwise, and rightly so: the students are real accounts and the
+   * classes carry submitted work.
+   *
+   * That refusal used to arrive as a banner at the very top of a page the
+   * admin had scrolled well past, so pressing the bin on a section with
+   * thirty learners in it looked like nothing happened at all. Say what is in
+   * the way, and what to do about it, before making the call.
+   */
   const deleteSection = (section) => {
-    if (!confirm(`Delete the section "${section.name}"?`)) return;
-    call(`${API_URL}/api/admin/${admin.id}/sections/${section.id}`, { method: 'DELETE' });
+    const students = section.students.length;
+    const classes = section._count.classes;
+    if (students > 0 || classes > 0) {
+      const blockers = [
+        students > 0 && `${students} student${students === 1 ? '' : 's'} on its roster`,
+        classes > 0 && `${classes} course shell${classes === 1 ? '' : 's'} using it`,
+      ].filter(Boolean);
+      return alert(
+        `"${section.name}" cannot be deleted yet — it still has ${blockers.join(' and ')}.\n\n` +
+        (students > 0
+          ? 'Remove the students first (open the section and use the bin beside each name). ' +
+            'Anyone who has submitted work keeps their account and is only unassigned.\n'
+          : '') +
+        (classes > 0
+          ? 'Move or delete the course shells that use this section first — they are listed on the teacher pages.\n'
+          : '') +
+        '\nNothing has been changed.'
+      );
+    }
+    if (!confirm(`Delete the empty section "${section.name}"? This cannot be undone.`)) return;
+    call(`${API_URL}/api/admin/${admin.id}/sections/${section.id}`, { method: 'DELETE' },
+      () => setNotice(`Section "${section.name}" was deleted.`));
   };
 
-  const addStudents = (section) => {
-    const studentsList = studentsText.split('\n').map(s => s.trim()).filter(Boolean);
-    if (studentsList.length === 0) return;
-    call(
+  /**
+   * Enrols names into a section. `allowMove` is off first time round so the
+   * server reports anyone already on another roster rather than moving them
+   * silently; confirming replays the identical request with it on.
+   */
+  const addStudents = async (section, { allowMove = false, studentsList } = {}) => {
+    const list = studentsList || studentsText.split('\n').map(s => s.trim()).filter(Boolean);
+    if (list.length === 0) return;
+    const d = await call(
       `${API_URL}/api/admin/${admin.id}/sections/${section.id}/students`,
-      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ studentsList }) },
-      (d) => { setStudentsText(''); setAddingToSectionId(null); setNotice(d.message); }
+      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ studentsList: list, allowMove }) },
     );
+    if (!d?.success) return;
+    // Appended: the confirm-and-replay path runs this twice and the second pass
+    // reports only the moves, so replacing would discard passwords that cannot
+    // be recovered.
+    setNewAccounts(prev => [...prev, ...(d.createdStudents || [])]);
+    setNotice(d.message);
+    if (d.pendingMoves?.length) {
+      setMoveRequest({ section, studentsList: list, moves: d.pendingMoves });
+    } else {
+      setStudentsText('');
+      setAddingToSectionId(null);
+      setMoveRequest(null);
+    }
   };
 
   const removeStudent = (section, student) => {
@@ -160,6 +238,20 @@ export default function AdminTeacherDetail() {
         <ArrowLeft className="w-4 h-4 mr-1" /> Back to Teachers
       </button>
 
+      <div ref={bannerRef} className="scroll-mt-4" />
+
+      <SectionMoveConfirm
+        moves={moveRequest?.moves}
+        targetSection={moveRequest?.section?.name}
+        busy={busy}
+        onConfirm={() => {
+          const req = moveRequest;
+          setMoveRequest(null);
+          addStudents(req.section, { allowMove: true, studentsList: req.studentsList });
+        }}
+        onCancel={() => { setMoveRequest(null); setStudentsText(''); setAddingToSectionId(null); }}
+      />
+
       {error && (
         <div className="bg-red-50 border border-red-200 text-red-700 text-sm rounded-xl p-3 mb-4 flex items-start justify-between gap-3">
           <span>{error}</span>
@@ -190,6 +282,10 @@ export default function AdminTeacherDetail() {
             <Copy className="w-3.5 h-3.5" /> Copy
           </button>
         </div>
+      )}
+
+      {newAccounts.length > 0 && (
+        <StudentCredentials students={newAccounts} onClose={() => setNewAccounts([])} />
       )}
 
       {/* Profile */}
@@ -285,6 +381,7 @@ export default function AdminTeacherDetail() {
                     onClick={() => {
                       setReassignClassId(reassignClassId === cls.id ? null : cls.id);
                       setReassignTo(otherTeachers[0]?.id || '');
+                      setReassignError('');
                     }}
                     disabled={otherTeachers.length === 0}
                     title={otherTeachers.length === 0 ? 'No other teacher in this school to move it to' : 'Move to another teacher'}
@@ -312,9 +409,14 @@ export default function AdminTeacherDetail() {
                       className="text-xs font-bold text-white bg-brand-navy px-3 py-2 rounded-lg hover:bg-blue-900 flex items-center gap-1.5 disabled:opacity-40">
                       {busy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5" />} Move
                     </button>
-                    <button onClick={() => setReassignClassId(null)}
+                    <button onClick={() => { setReassignClassId(null); setReassignError(''); }}
                       className="text-xs font-bold text-slate-500 border border-slate-200 px-3 py-2 rounded-lg hover:bg-white">Cancel</button>
                   </div>
+                  {reassignError && (
+                    <p className="text-[11px] font-medium text-red-700 bg-red-50 border border-red-200 rounded-lg px-2.5 py-2 mt-2 flex items-start gap-1.5">
+                      <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-px" /> {reassignError}
+                    </p>
+                  )}
                   <p className="text-[11px] text-slate-500 mt-2 leading-relaxed">
                     All {cls.activityCount} activit{cls.activityCount === 1 ? 'y' : 'ies'} and{' '}
                     {cls.submissionCount} submission(s) move with it — student progress, scores and released
@@ -390,10 +492,25 @@ export default function AdminTeacherDetail() {
                         title="Edit section" className="p-2 rounded-lg bg-slate-100 text-slate-600 hover:bg-slate-200">
                         <Pencil className="w-4 h-4" />
                       </button>
-                      <button onClick={() => deleteSection(section)} disabled={busy}
-                        title="Delete section" className="p-2 rounded-lg bg-slate-100 text-slate-500 hover:bg-red-100 hover:text-red-600 disabled:opacity-40">
-                        <Trash2 className="w-4 h-4" />
-                      </button>
+                      {(() => {
+                        // Signalled on the control itself, not only when it is
+                        // pressed: a section with a roster or a class attached
+                        // cannot be deleted, and finding that out by clicking a
+                        // bin is the wrong way round.
+                        const blocked = section.students.length > 0 || section._count.classes > 0;
+                        return (
+                          <button onClick={() => deleteSection(section)} disabled={busy}
+                            title={blocked
+                              ? `Still in use — ${section.students.length} student(s) and ${section._count.classes} class(es). Click to see what to clear first.`
+                              : 'Delete section'}
+                            className={cn('p-2 rounded-lg disabled:opacity-40',
+                              blocked
+                                ? 'bg-amber-50 text-amber-600 hover:bg-amber-100'
+                                : 'bg-slate-100 text-slate-500 hover:bg-red-100 hover:text-red-600')}>
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        );
+                      })()}
                     </div>
                   </>
                 )}
@@ -401,15 +518,17 @@ export default function AdminTeacherDetail() {
 
               {addingToSectionId === section.id && (
                 <div className="p-4 bg-blue-50/50 border-b border-blue-100">
-                  <label className="block text-xs font-medium text-slate-600 mb-1">Student names (one per line)</label>
+                  <label className="block text-xs font-medium text-slate-600 mb-1">Student names — last name first, one per line</label>
                   <textarea rows={4} value={studentsText} onChange={e => setStudentsText(e.target.value)}
-                    placeholder={'Juan Dela Cruz\nMaria Clara'}
+                    placeholder={'Dela Cruz, Juan\nSantos, Maria Clara'}
                     className="w-full border border-slate-200 p-2 rounded-lg text-sm outline-none focus:ring-2 focus:ring-brand-navy resize-none" />
                   <p className="text-[11px] text-slate-400 mt-1">
-                    Existing students in this school are moved here instead of duplicated. Default password: student's birthday (MMDDYYYY), or a random code shown after adding if no birthday is given.
+                    Enter names <span className="font-bold text-slate-500">last name first</span> — rosters and gradebooks sort by this.
+                    Anyone already enrolled in another section is listed for you to confirm before being moved.
+                    Password: their birthday as MMDDYYYY, or a random code shown once after adding if there is no birthday on file.
                   </p>
                   <div className="flex gap-2 mt-2">
-                    <button onClick={() => addStudents(section)} disabled={busy || !studentsText.trim()}
+                    <button onClick={() => addStudents(section, {})} disabled={busy || !studentsText.trim()}
                       className="text-xs font-bold text-white bg-brand-navy px-3 py-2 rounded-lg hover:bg-blue-900 flex items-center gap-1.5 disabled:opacity-40">
                       {busy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <UserPlus className="w-3.5 h-3.5" />} Add Students
                     </button>

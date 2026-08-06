@@ -1,7 +1,8 @@
 import { useState } from 'react';
-import { Bell, Shield, Eye, Download, Save } from 'lucide-react';
+import { Bell, Shield, Eye, Download, Save, Loader2, EyeOff } from 'lucide-react';
 import PageHeader from '../../components/PageHeader';
 import Toggle from '../../components/Toggle';
+import { API_URL, apiFetch, setSession } from '../../config';
 
 const NOTIF_KEY = 'studentNotifPrefs';
 const PRIVACY_KEY = 'studentPrivacyPrefs';
@@ -37,6 +38,48 @@ export default function Settings() {
   const [notifications, setNotifications] = useState(() => readPrefs(NOTIF_KEY, DEFAULT_NOTIFS));
   const [privacy, setPrivacy] = useState(() => readPrefs(PRIVACY_KEY, DEFAULT_PRIVACY));
   const [saveMsg, setSaveMsg] = useState('');
+
+  const [passwords, setPasswords] = useState({ current: '', newPass: '', confirm: '' });
+  const [showPassword, setShowPassword] = useState(false);
+  const [pwError, setPwError] = useState('');
+  const [pwBusy, setPwBusy] = useState(false);
+
+  /**
+   * Change the learner's own password.
+   *
+   * This tab used to be a "Change Password" button with no handler at all — so
+   * the credential a pupil is handed on day one, which is their birthday and
+   * therefore known to everyone in the class, could not be changed by them at
+   * any point in the year. The only way out was to ask an admin to reset it,
+   * which sets it back to the same birthday.
+   */
+  const handleChangePassword = async (e) => {
+    e.preventDefault();
+    setPwError('');
+    if (passwords.newPass !== passwords.confirm) return setPwError('The two new passwords do not match.');
+    if (passwords.newPass.length < 6) return setPwError('Your new password must be at least 6 characters.');
+
+    setPwBusy(true);
+    try {
+      const res = await apiFetch(`${API_URL}/api/auth/change-password`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ currentPassword: passwords.current, newPassword: passwords.newPass }),
+      });
+      const data = await res.json();
+      if (!data.success) { setPwError(data.error || 'That did not work. Please try again.'); return; }
+      // Changing a password signs out every other session. The server hands
+      // back a token minted after that cut-off so this browser stays signed in.
+      if (data.token) setSession(JSON.parse(localStorage.getItem('user') || '{}'), data.token);
+      setPasswords({ current: '', newPass: '', confirm: '' });
+      setSaveMsg('Password changed. Use the new one next time you sign in.');
+      setTimeout(() => setSaveMsg(''), 4000);
+    } catch {
+      setPwError('Network error. Please try again.');
+    } finally {
+      setPwBusy(false);
+    }
+  };
 
   const handleSave = () => {
     localStorage.setItem(NOTIF_KEY, JSON.stringify(notifications));
@@ -125,10 +168,57 @@ export default function Settings() {
 
             {activeTab === 'security' && (
               <>
-                <h2 className="font-display text-lg font-extrabold text-navy-700 mb-5">Security</h2>
-                <button type="button" className="tg-btn-ghost !py-2.5 !px-5">
-                  Change Password
-                </button>
+                <h2 className="font-display text-lg font-extrabold text-navy-700 mb-1">Change your password</h2>
+                <p className="text-sm text-navy-500 mb-5">
+                  Your first password was your birthday, which your classmates can guess. Pick one only you know.
+                </p>
+                <form onSubmit={handleChangePassword} className="space-y-4 max-w-sm">
+                  <div>
+                    <label className="tg-label" htmlFor="current-password">Current password</label>
+                    <div className="relative">
+                      <input id="current-password" type={showPassword ? 'text' : 'password'} required
+                        autoComplete="current-password"
+                        value={passwords.current}
+                        onChange={(e) => setPasswords(p => ({ ...p, current: e.target.value }))}
+                        className="tg-input pr-11" />
+                      <button type="button" onClick={() => setShowPassword(v => !v)}
+                        aria-label={showPassword ? 'Hide password' : 'Show password'}
+                        className="absolute right-3 top-1/2 -translate-y-1/2 text-navy-400 hover:text-navy-600">
+                        {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                      </button>
+                    </div>
+                  </div>
+                  <div>
+                    <label className="tg-label" htmlFor="new-password">New password</label>
+                    <input id="new-password" type="password" required minLength={6} autoComplete="new-password"
+                      value={passwords.newPass}
+                      onChange={(e) => setPasswords(p => ({ ...p, newPass: e.target.value }))}
+                      className="tg-input" />
+                    <p className="text-xs text-navy-400 mt-1">At least 6 characters.</p>
+                  </div>
+                  <div>
+                    <label className="tg-label" htmlFor="confirm-password">Confirm new password</label>
+                    <input id="confirm-password" type="password" required autoComplete="new-password"
+                      value={passwords.confirm}
+                      onChange={(e) => setPasswords(p => ({ ...p, confirm: e.target.value }))}
+                      className="tg-input" />
+                  </div>
+                  {pwError && (
+                    <p role="alert" className="text-sm font-bold text-red-700 bg-red-50 border-2 border-red-200 rounded-2xl px-4 py-3">
+                      {pwError}
+                    </p>
+                  )}
+                  <button type="submit" disabled={pwBusy}
+                    className="inline-flex items-center justify-center gap-2 rounded-full py-2.5 px-5 font-bold text-sm
+                               text-white bg-royal-600 shadow-pop hover:bg-royal-700
+                               active:translate-y-1 active:shadow-none transition-all disabled:opacity-50">
+                    {pwBusy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Shield className="w-4 h-4" />}
+                    Update password
+                  </button>
+                  <p className="text-xs text-navy-400">
+                    Changing this signs you out on any other device you are still logged in on.
+                  </p>
+                </form>
               </>
             )}
 

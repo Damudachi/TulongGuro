@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import {
   ArrowLeft, Loader2, Pencil, Trash2, Check, X, UserPlus,
@@ -6,6 +6,8 @@ import {
 } from 'lucide-react';
 import { API_URL, apiFetch } from '../../config';
 import { GRADE_LEVELS } from '../../constants/school';
+import StudentCredentials from '../../components/StudentCredentials';
+import SectionMoveConfirm from '../../components/SectionMoveConfirm';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
 
@@ -29,6 +31,16 @@ export default function AdminSectionDetail() {
   const [form, setForm] = useState({ name: '', gradeLevel: '', teacherId: '' });
   const [addOpen, setAddOpen] = useState(false);
   const [studentsText, setStudentsText] = useState('');
+  const [newAccounts, setNewAccounts] = useState([]);
+  const [moveRequest, setMoveRequest] = useState(null);
+
+  // Both banners sit above a roster that can run to forty rows, so a message
+  // raised by a control near the bottom needs bringing into view — otherwise
+  // the action reads as having done nothing at all.
+  const bannerRef = useRef(null);
+  useEffect(() => {
+    if (error || notice) bannerRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }, [error, notice]);
 
   const load = useCallback(() => {
     if (!admin.id) return setIsLoading(false);
@@ -65,14 +77,30 @@ export default function AdminSectionDetail() {
     () => { setEditing(false); setNotice('Section updated.'); }
   );
 
-  const addStudents = () => {
-    const studentsList = studentsText.split('\n').map(s => s.trim()).filter(Boolean);
-    if (studentsList.length === 0) return;
-    call(
+  /**
+   * Enrols names into this section. `allowMove` stays off on the first attempt
+   * so the server reports anyone already on another roster instead of quietly
+   * moving them; confirming replays the same request with it on.
+   */
+  const addStudents = async ({ allowMove = false, studentsList } = {}) => {
+    const list = studentsList || studentsText.split('\n').map(s => s.trim()).filter(Boolean);
+    if (list.length === 0) return;
+    const d = await call(
       `${API_URL}/api/admin/${admin.id}/sections/${sectionId}/students`,
-      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ studentsList }) },
-      (d) => { setStudentsText(''); setAddOpen(false); setNotice(d.message); }
+      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ studentsList: list, allowMove }) },
     );
+    if (!d?.success) return;
+    // Appended rather than replaced — the confirm-and-replay path runs this
+    // twice, and a generated password is shown once or never.
+    setNewAccounts(prev => [...prev, ...(d.createdStudents || [])]);
+    setNotice(d.message);
+    if (d.pendingMoves?.length) {
+      setMoveRequest({ studentsList: list, moves: d.pendingMoves });
+    } else {
+      setStudentsText('');
+      setAddOpen(false);
+      setMoveRequest(null);
+    }
   };
 
   const resetStudentPassword = (student) => {
@@ -97,8 +125,35 @@ export default function AdminSectionDetail() {
     );
   };
 
+  /**
+   * A section can only go once nothing depends on it — its students are real
+   * accounts and its classes hold submitted work, so the server refuses
+   * otherwise. Name what is in the way and how to clear it before making the
+   * call, rather than letting the refusal land in a banner the admin has
+   * already scrolled past.
+   */
   const deleteSection = async () => {
-    if (!confirm(`Delete the section "${data.section.name}"?`)) return;
+    const students = data.section.students.length;
+    const classes = data.section.classes.length;
+    if (students > 0 || classes > 0) {
+      const blockers = [
+        students > 0 && `${students} student${students === 1 ? '' : 's'} on its roster`,
+        classes > 0 && `${classes} course shell${classes === 1 ? '' : 's'} using it`,
+      ].filter(Boolean);
+      return alert(
+        `"${data.section.name}" cannot be deleted yet — it still has ${blockers.join(' and ')}.\n\n` +
+        (students > 0
+          ? 'Remove the students first, using the bin beside each name in the roster below. Anyone who has ' +
+            'submitted work keeps their account and is only unassigned from this section.\n'
+          : '') +
+        (classes > 0
+          ? 'Move or delete the course shells listed above first — a shell can be reassigned to another ' +
+            'teacher from their teacher page without losing any student work.\n'
+          : '') +
+        '\nNothing has been changed.'
+      );
+    }
+    if (!confirm(`Delete the empty section "${data.section.name}"? This cannot be undone.`)) return;
     const d = await call(`${API_URL}/api/admin/${admin.id}/sections/${sectionId}`, { method: 'DELETE' });
     if (d?.success) navigate('/admin/teachers');
   };
@@ -123,6 +178,20 @@ export default function AdminSectionDetail() {
         <ArrowLeft className="w-4 h-4 mr-1" /> Back
       </button>
 
+      <div ref={bannerRef} className="scroll-mt-4" />
+
+      <SectionMoveConfirm
+        moves={moveRequest?.moves}
+        targetSection={section.name}
+        busy={busy}
+        onConfirm={() => {
+          const req = moveRequest;
+          setMoveRequest(null);
+          addStudents({ allowMove: true, studentsList: req.studentsList });
+        }}
+        onCancel={() => { setMoveRequest(null); setStudentsText(''); setAddOpen(false); }}
+      />
+
       {error && (
         <div className="bg-red-50 border border-red-200 text-red-700 text-sm rounded-xl p-3 mb-4 flex items-start justify-between gap-3">
           <span>{error}</span>
@@ -135,6 +204,8 @@ export default function AdminSectionDetail() {
           <button onClick={() => setNotice('')} className="text-blue-400 hover:text-blue-600 shrink-0"><X className="w-4 h-4" /></button>
         </div>
       )}
+
+      <StudentCredentials students={newAccounts} onClose={() => setNewAccounts([])} />
 
       {/* Header / edit */}
       <div className="bg-white border border-slate-200 rounded-2xl p-5 mb-6">
@@ -198,8 +269,17 @@ export default function AdminSectionDetail() {
                 title="Edit section" className="p-2 rounded-lg bg-slate-100 text-slate-600 hover:bg-slate-200">
                 <Pencil className="w-4 h-4" />
               </button>
-              <button onClick={deleteSection} disabled={busy} title="Delete section"
-                className="p-2 rounded-lg bg-slate-100 text-slate-500 hover:bg-red-100 hover:text-red-600 disabled:opacity-40">
+              {/* Amber rather than neutral while anything still depends on the
+                  section: the delete will be refused, and saying so on the
+                  control beats saying it after the click. */}
+              <button onClick={deleteSection} disabled={busy}
+                title={section.students.length > 0 || section.classes.length > 0
+                  ? `Still in use — ${section.students.length} student(s) and ${section.classes.length} class(es). Click to see what to clear first.`
+                  : 'Delete section'}
+                className={cn('p-2 rounded-lg disabled:opacity-40',
+                  section.students.length > 0 || section.classes.length > 0
+                    ? 'bg-amber-50 text-amber-600 hover:bg-amber-100'
+                    : 'bg-slate-100 text-slate-500 hover:bg-red-100 hover:text-red-600')}>
                 <Trash2 className="w-4 h-4" />
               </button>
             </div>
@@ -223,15 +303,17 @@ export default function AdminSectionDetail() {
       {/* Add students */}
       {addOpen && (
         <div className="bg-blue-50/60 border border-blue-200 rounded-2xl p-4 mb-6">
-          <label className="block text-xs font-medium text-slate-600 mb-1">Student names (one per line)</label>
+          <label className="block text-xs font-medium text-slate-600 mb-1">Student names — last name first, one per line</label>
           <textarea rows={4} value={studentsText} onChange={e => setStudentsText(e.target.value)}
-            placeholder={'Juan Dela Cruz\nMaria Clara'}
+            placeholder={'Dela Cruz, Juan\nSantos, Maria Clara'}
             className="w-full border border-slate-200 p-2 rounded-lg text-sm outline-none focus:ring-2 focus:ring-brand-navy resize-none bg-white" />
           <p className="text-[11px] text-slate-400 mt-1">
-            Existing students in this school are moved here instead of duplicated. Default password: student's birthday (MMDDYYYY), or a random code shown after adding if no birthday is given.
+            Enter names <span className="font-bold text-slate-500">last name first</span> — rosters and gradebooks sort by this.
+            Anyone already enrolled in another section is listed for you to confirm before being moved.
+            Password: their birthday as MMDDYYYY, or a random code shown once after adding if there is no birthday on file.
           </p>
           <div className="flex gap-2 mt-2">
-            <button onClick={addStudents} disabled={busy || !studentsText.trim()}
+            <button onClick={() => addStudents({})} disabled={busy || !studentsText.trim()}
               className="text-xs font-bold text-white bg-brand-navy px-3 py-2 rounded-lg hover:bg-blue-900 flex items-center gap-1.5 disabled:opacity-40">
               {busy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <UserPlus className="w-3.5 h-3.5" />} Add Students
             </button>

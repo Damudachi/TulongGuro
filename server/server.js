@@ -20,7 +20,7 @@ const mammoth = require('mammoth');
 const {
   signToken, authenticate, authorizePath,
   configureRevocation, markRevoked,
-  loginRateLimit, registerRateLimit, platformRateLimit,
+  loginRateLimit, registerRateLimit, platformRateLimit, changePasswordRateLimit,
 } = require('./auth');
 const { getAllTopics, getTopicById, getTopicAIGuidance } = require('./depedTopics');
 const { getAllRubricTemplates, getRubricTemplateById } = require('./rubricTemplates');
@@ -1440,6 +1440,60 @@ app.post('/api/auth/logout', async (req, res) => {
   }
 });
 
+/**
+ * Change your own password.
+ *
+ * Both the teacher and student settings screens had a "Change Password" control
+ * that never reached the server — the teacher form validated the two fields and
+ * showed "Password updated successfully!" without sending anything, and the
+ * student one was a button with no handler at all. So the one credential a
+ * learner is given on day one, which their whole class can guess because it is
+ * their birthday, could not be changed by them at any point. This is that
+ * endpoint.
+ *
+ * Works for every role: the current password is proof of identity, so an admin
+ * is not needed to make the change and no role check is required.
+ *
+ * Changing a password ends every other session for the account — that is the
+ * point of changing it after someone has watched you type the old one. The
+ * caller's own session is kept alive by handing back a token minted after the
+ * revocation mark, so the person doing it is not thrown back to the login page.
+ */
+app.post('/api/auth/change-password', changePasswordRateLimit, async (req, res) => {
+  try {
+    const { currentPassword, newPassword } = req.body || {};
+    if (!currentPassword || !newPassword) {
+      return res.status(400).json({ success: false, error: 'Enter your current password and a new one.' });
+    }
+    if (String(newPassword).length < 6) {
+      return res.status(400).json({ success: false, error: 'Your new password must be at least 6 characters.' });
+    }
+    if (currentPassword === newPassword) {
+      return res.status(400).json({ success: false, error: 'Your new password must be different from the current one.' });
+    }
+
+    const user = await prisma.user.findUnique({ where: { id: req.auth.sub } });
+    if (!user) return res.status(404).json({ success: false, error: 'Account not found.' });
+    if (!(await bcrypt.compare(currentPassword, user.password))) {
+      return res.status(401).json({ success: false, code: 'WRONG_PASSWORD', error: 'That is not your current password.' });
+    }
+
+    const revokedAt = new Date();
+    const updated = await prisma.user.update({
+      where: { id: user.id },
+      data: {
+        password: await bcrypt.hash(newPassword, BCRYPT_SALT_ROUNDS),
+        sessionsValidFrom: revokedAt,
+      }
+    });
+    markRevoked(user.id, revokedAt);
+
+    res.json({ success: true, token: signToken(updated) });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
 app.post('/api/auth/login', loginRateLimit, async (req, res) => {
   try {
     const { username, password, role } = req.body;
@@ -1467,61 +1521,20 @@ app.post('/api/auth/login', loginRateLimit, async (req, res) => {
       });
     }
 
-    // ── Student Sandbox: Auto-seed a demo graded essay on first login ──
-    if (user.role === 'STUDENT') {
-      try {
-        const subCount = await prisma.submission.count({ where: { studentId: user.id } });
-        if (subCount === 0 && user.sectionId) {
-          // Find or create a system-level demo class linked to the student's section
-          let demoClass = await prisma.class.findFirst({
-            where: { name: '[STUDENT-DEMO] Sample Graded Work', sectionId: user.sectionId }
-          });
-          if (!demoClass) {
-            // Need a teacher — find the section's teacher or any teacher
-            const section = await prisma.section.findUnique({ where: { id: user.sectionId } });
-            const teacherId = section?.teacherId || (await prisma.user.findFirst({ where: { role: 'TEACHER' } }))?.id;
-            if (teacherId) {
-              demoClass = await prisma.class.create({
-                data: { name: '[STUDENT-DEMO] Sample Graded Work', gradeLevel: 'Grade 6', subject: 'English', schoolYear: '2024-2025', teacherId, sectionId: user.sectionId }
-              });
-            }
-          }
-          if (demoClass) {
-            let demoActivity = await prisma.activity.findFirst({ where: { classId: demoClass.id } });
-            if (!demoActivity) {
-              demoActivity = await prisma.activity.create({
-                data: { title: 'Sample Essay: My Favorite Place', type: 'Essay', points: 100, classId: demoClass.id, instructions: 'Write about your favorite place.', submissionMode: 'TEACHER_UPLOAD' }
-              });
-            }
-
-            const demoFeedback = JSON.stringify({
-              strengths: "You described your favorite place with a lot of feeling! Your teacher could really picture the scenery.",
-              areasForGrowth: [{ studentQuote: "I go their every summer.", explanation: "The word 'their' should be 'there'. 'Their' shows ownership, 'there' shows a place." }],
-              actionableSteps: ["Practice the difference between 'there', 'their', and 'they're'."],
-              skillExplanations: { vocabulary: "Good use of descriptive words!", punctuation: "Most sentences end with periods.", thematicFlow: "Your ideas connect well.", sentenceStructure: "Try combining short sentences." }
-            });
-
-            await prisma.submission.create({
-              data: {
-                studentId: user.id,
-                activityId: demoActivity.id,
-                imageUrl: '/demo-essay.png',
-                aiScore: 88,
-                hitlScore: 90,
-                aiFeedback: demoFeedback,
-                hitlFeedback: demoFeedback,
-                readingStrategy: "When you see an unfamiliar word, try breaking it into smaller parts (syllables) to sound it out.",
-                rubricData: JSON.stringify({ content: { score: 36, max: 40 }, organization: { score: 27, max: 30 }, grammar: { score: 27, max: 30 } }),
-                skillScores: JSON.stringify({ vocabulary: 22, punctuation: 21, thematicFlow: 23, sentenceStructure: 22 }),
-                status: 'GRADED'
-              }
-            });
-          }
-        }
-      } catch (seedErr) {
-        console.error('Student sandbox seed error:', seedErr);
-      }
-    }
+    // ── Removed: the "[STUDENT-DEMO] Sample Graded Work" auto-seed ──
+    //
+    // A student signing in with no submissions used to have a demo class, a
+    // demo activity and a fake graded essay written into their *real* section.
+    // It was meant as an empty-state tour and behaved as data corruption: the
+    // class appeared on the section's adviser's dashboard and in the admin's
+    // course-shell list as though someone had created it, the fabricated 90%
+    // counted as a real graded submission for that child, and it reappeared for
+    // every new learner enrolled into the section. Nothing distinguished it
+    // from genuine work except a bracketed name.
+    //
+    // Existing rows are left alone deliberately — deleting a class and its
+    // submissions on someone's next login is exactly the kind of unannounced
+    // write this is being removed for. Remove them from the admin console.
 
     // The token is the credential from here on. The user object is still
     // returned because every screen reads name/role/section off it, but it is
@@ -2349,20 +2362,22 @@ app.post('/api/admin/:adminId/sections/:sectionId/students', async (req, res) =>
   try {
     const admin = await requireAdminSchool(req.params.adminId);
     const section = await sectionInSchool(admin, req.params.sectionId);
-    const { studentsList } = req.body;
+    const { studentsList, allowMove } = req.body;
     if (!Array.isArray(studentsList) || studentsList.length === 0) {
       return res.status(400).json({ success: false, error: 'Provide at least one student name.' });
     }
 
     const result = await enrolStudents(section, studentsList, {
       schoolId: admin.schoolId,
-      teacherId: section.teacherId
+      teacherId: section.teacherId,
+      allowMove: !!allowMove
     });
 
     const parts = [];
     if (result.createdStudents.length) parts.push(`${result.createdStudents.length} new account(s) created`);
     if (result.linkedStudents.length) parts.push(`${result.linkedStudents.length} existing account(s) moved here`);
     if (result.skippedStudents.length) parts.push(`${result.skippedStudents.length} already in this section`);
+    if (result.pendingMoves.length) parts.push(`${result.pendingMoves.length} enrolled elsewhere and left alone`);
     res.json({ success: true, ...result, message: parts.join(', ') || 'No changes.' });
   } catch (e) { sendAdminError(res, e); }
 });
@@ -3114,26 +3129,137 @@ function birthdayPassword(date) {
   return `${mm}${dd}${date.getUTCFullYear()}`;
 }
 
-async function enrolStudents(section, studentsList, { schoolId, teacherId }) {
+/**
+ * The short code a school's student IDs are built on — the initials of the
+ * significant words in its name, e.g. "Sampaguita National High School" ->
+ * "SNHS". A one-word name has no initials worth the name, so the first four
+ * letters are used instead ("Tulongguro" -> "TULO").
+ *
+ * Capped at four characters so the finished ID stays short enough for a Grade 1
+ * learner to copy off the board.
+ */
+function schoolIdPrefix(schoolName) {
+  // Filler words carry no identity and would only lengthen the code.
+  const filler = new Set(['of', 'the', 'and', 'de', 'del', 'da', 'las', 'los', 'sa', 'ng', 'para']);
+  const words = String(schoolName || '')
+    .replace(/[^A-Za-z0-9]+/g, ' ')
+    .trim()
+    .split(' ')
+    .filter(w => w && !filler.has(w.toLowerCase()));
+  if (words.length === 0) return 'TG';
+  if (words.length === 1) return words[0].toUpperCase().slice(0, 4);
+  return words.map(w => w[0].toUpperCase()).join('').slice(0, 4);
+}
+
+/**
+ * Issues student IDs for one enrolment run, e.g. SNHS-26-0042.
+ *
+ * ── Why not the section name ──
+ * IDs used to be derived from the section: "Grade 6 - Rizal" -> RIZAL-001. Two
+ * things were wrong with that. The prefix came from `name.split('-')[1]`, but
+ * the create-section form asks for the section name on its own ("Rizal") with
+ * the grade level in a separate field — so there was no dash to split on and
+ * every school on the platform got the SEC-001 fallback. And even when it did
+ * work it encoded where the learner sat on enrolment day: a pupil who moved
+ * from Rizal to Sampaguita kept an ID that named a section they had left, and
+ * the per-section counter meant RIZAL-004 and SAMPA-004 were different children.
+ *
+ * The replacement is school-scoped and permanent: the school's code, the year
+ * the learner was enrolled, and a running number that never restarts. It
+ * survives section changes and grade promotion, so it can be written once in a
+ * record book and stay correct.
+ *
+ * The sequence continues from the highest number already issued under this
+ * prefix rather than from a row count, so deleting a student never re-issues
+ * their ID to somebody else.
+ */
+async function studentIdIssuer(schoolName, fallbackName) {
+  const prefix = schoolIdPrefix(schoolName || fallbackName);
+  const yy = String(new Date().getFullYear()).slice(-2);
+
+  const issued = await prisma.user.findMany({
+    where: { role: 'STUDENT', username: { startsWith: `${prefix}-` } },
+    select: { username: true }
+  });
+  let seq = issued.reduce((max, u) => {
+    const match = /-(\d+)$/.exec(u.username);
+    return match ? Math.max(max, Number(match[1])) : max;
+  }, 0);
+
+  return async function next() {
+    // Usernames are unique platform-wide, so two schools whose initials collide
+    // ("San Isidro" and "Sta. Ines" both give SI) have to be stepped past.
+    for (;;) {
+      seq++;
+      const id = `${prefix}-${yy}-${String(seq).padStart(4, '0')}`;
+      if (!(await prisma.user.findUnique({ where: { username: id } }))) return id;
+    }
+  };
+}
+
+/**
+ * @param {object}  opts
+ * @param {boolean} opts.allowMove  Whether a learner who already belongs to a
+ *   different section may be moved into this one. Off by default: a Section is
+ *   the only one a User can have, so re-homing a name that matches an existing
+ *   account silently empties a colleague's roster. Left off, those names come
+ *   back as `pendingMoves` and nothing is written, so the caller can ask first.
+ */
+async function enrolStudents(section, studentsList, { schoolId, teacherId, allowMove = false }) {
   const createdStudents = [];
   const skippedStudents = [];
   const linkedStudents = [];
+  /** Names that resolve to an account currently in another section. */
+  const pendingMoves = [];
   // A roster entry is either a bare name (how it has always arrived, and how
   // file extraction still produces them) or { name, birthday }. Both are
   // accepted so nothing that previously worked has to change.
   const entries = (studentsList || [])
     .map(entry => (typeof entry === 'string' ? { name: entry, birthday: null } : entry))
     .filter(e => e && typeof e.name === 'string' && e.name.trim());
-  if (entries.length === 0) return { createdStudents, skippedStudents, linkedStudents };
+  if (entries.length === 0) return { createdStudents, skippedStudents, linkedStudents, pendingMoves };
 
   const sectionStudents = await prisma.user.findMany({ where: { sectionId: section.id, role: 'STUDENT' } });
   const sectionNamesSet = new Set(sectionStudents.map(s => s.name.toLowerCase().trim()));
-  let count = sectionStudents.length + 1;
 
-  // Fetched once rather than per name — this used to be an N-query loop.
+  // Fetched once rather than per name — this used to be an N-query loop. The
+  // section is included so a name that already has an account can be reported
+  // with the roster it would be taken off.
+  //
+  // ── Why the `sectionId: null` arm ──
+  // Matching only ran through the section relation, so a learner who *has* an
+  // account but no section right now was invisible here and a second account
+  // was created for them under a fresh id. That is not a hypothetical state:
+  // removing a student who has submitted work deliberately keeps the account
+  // and only unassigns it (see the DELETE .../students/:studentId route), which
+  // is exactly how a learner ends up section-less. Re-enrolling them next term
+  // then split one child across two accounts — the new one empty, the old one
+  // holding every grade they had ever been given, reachable from no roster.
+  //
+  // Reaching those accounts needs a school to scope them to, which is why
+  // students now carry schoolId themselves (set below, and backfilled by
+  // scripts/backfill-student-school.js). Without that scope the only way to
+  // find a detached account is by name alone, and two schools may each have a
+  // Maria Santos — matching across that boundary would hand one school's
+  // pupil, and their whole grade history, to another school's teacher.
   const schoolStudents = await prisma.user.findMany({
-    where: { role: 'STUDENT', section: schoolId ? { schoolId } : { teacherId } }
+    where: {
+      role: 'STUDENT',
+      ...(schoolId
+        // A school scopes both its rostered and its currently-unassigned learners.
+        ? { OR: [{ section: { schoolId } }, { sectionId: null, schoolId }] }
+        // No school to scope by, so only this teacher's own rosters are safe
+        // to match against — a section-less account cannot be attributed to
+        // one teacher rather than another.
+        : { section: { teacherId } }),
+    },
+    include: { section: { select: { id: true, name: true, gradeLevel: true } } }
   });
+
+  const school = schoolId
+    ? await prisma.school.findUnique({ where: { id: schoolId }, select: { name: true } })
+    : null;
+  const nextStudentId = await studentIdIssuer(school?.name, section.name);
 
   for (const entry of entries) {
     const studentName = entry.name;
@@ -3146,19 +3272,43 @@ async function enrolStudents(section, studentsList, { schoolId, teacherId }) {
 
     const existingAccount = schoolStudents.find(s => s.name.toLowerCase().trim() === normalizedName);
     if (existingAccount) {
-      await prisma.user.update({ where: { id: existingAccount.id }, data: { sectionId: section.id } });
-      linkedStudents.push({ name: studentName.trim(), username: existingAccount.username, from: 'existing account' });
+      // Already enrolled somewhere else. A User has exactly one Section, so
+      // adding them here takes them off that roster — which is a decision for
+      // whoever is running the import, not something to do quietly.
+      const currentSection = existingAccount.section;
+      if (currentSection && currentSection.id !== section.id && !allowMove) {
+        pendingMoves.push({
+          name: studentName.trim(),
+          username: existingAccount.username,
+          fromSectionId: currentSection.id,
+          fromSection: currentSection.gradeLevel
+            ? `${currentSection.gradeLevel} — ${currentSection.name}`
+            : currentSection.name,
+        });
+        continue;
+      }
+      await prisma.user.update({
+        where: { id: existingAccount.id },
+        // schoolId is set here too so an account that predates students
+        // carrying one picks it up the first time it is re-enrolled.
+        data: { sectionId: section.id, ...(schoolId ? { schoolId } : {}) }
+      });
+      linkedStudents.push({
+        name: studentName.trim(),
+        username: existingAccount.username,
+        from: currentSection ? currentSection.name : 'no section',
+        // Distinguishes "taken off another roster", which needed confirming,
+        // from "re-attached an account that was not on any roster", which did
+        // not — the second is a repair, and reporting it as a move would send
+        // a teacher looking for a colleague's class that never lost anybody.
+        moved: !!(currentSection && currentSection.id !== section.id),
+        reattached: !currentSection,
+      });
       sectionNamesSet.add(normalizedName);
       continue;
     }
 
-    // Student IDs are derived from the section name, e.g. "Grade 6 - Rizal" -> RIZAL-001
-    const prefix = section.name.split('-')[1]?.trim().toUpperCase().replace(/[^A-Z]/g, '').slice(0, 6) || 'SEC';
-    let studentId = `${prefix}-${String(count).padStart(3, '0')}`;
-    while (await prisma.user.findUnique({ where: { username: studentId } })) {
-      count++;
-      studentId = `${prefix}-${String(count).padStart(3, '0')}`;
-    }
+    const studentId = await nextStudentId();
 
     // The birthday seeds the first password, as MMDDYYYY. A Grade 6 learner
     // remembers their own birthday; a generated string means the teacher spends
@@ -3177,6 +3327,15 @@ async function enrolStudents(section, studentsList, { schoolId, teacherId }) {
         password: passwordHash,
         role: 'STUDENT',
         sectionId: section.id,
+        // Students used to carry no schoolId, inheriting one through their
+        // section. Two things went wrong with that. A learner unassigned from
+        // their section became attributable to no school at all, so
+        // re-enrolling them duplicated the account (see the match query
+        // above). And the school-rejection path revokes sessions with
+        // `updateMany({ where: { schoolId } })` — which matched no students,
+        // so refusing a school signed out its staff and left every pupil's
+        // session live until it expired on its own.
+        schoolId: schoolId || null,
         birthdate
       }
     });
@@ -3184,12 +3343,11 @@ async function enrolStudents(section, studentsList, { schoolId, teacherId }) {
     // Returned in the clear on purpose: it is the credential the teacher has to
     // read out to the pupil, and it is only ever sent back to the teacher who
     // just created the account, in the response to their own request.
-    createdStudents.push({ ...safeUser, initialPassword, passwordSource: birthdate ? 'birthday' : 'default' });
+    createdStudents.push({ ...safeUser, initialPassword, passwordSource: birthdate ? 'birthday' : 'random' });
     sectionNamesSet.add(normalizedName);
-    count++;
   }
 
-  return { createdStudents, skippedStudents, linkedStudents };
+  return { createdStudents, skippedStudents, linkedStudents, pendingMoves };
 }
 
 app.post('/api/teacher/sections', async (req, res) => {
@@ -3198,7 +3356,7 @@ app.post('/api/teacher/sections', async (req, res) => {
     // proved the caller is a teacher; this stops one teacher creating or
     // attributing data under another teacher's id.
     const teacherId = req.auth.sub;
-    const { name, studentsList, gradeLevel } = req.body;
+    const { name, studentsList, gradeLevel, allowMove } = req.body;
     const creator = await prisma.user.findUnique({ where: { id: teacherId } });
     const schoolId = creator?.schoolId || null;
 
@@ -3222,17 +3380,21 @@ app.post('/api/teacher/sections', async (req, res) => {
       });
     }
 
-    const { createdStudents, skippedStudents, linkedStudents } =
-      await enrolStudents(section, studentsList, { schoolId, teacherId });
+    const { createdStudents, skippedStudents, linkedStudents, pendingMoves } =
+      await enrolStudents(section, studentsList, { schoolId, teacherId, allowMove: !!allowMove });
 
     let message = isExisting
       ? `Section "${section.name}" already exists. `
       : `Created section "${section.name}". `;
     if (createdStudents.length > 0) message += `${createdStudents.length} new account(s) created. `;
-    if (linkedStudents.length > 0) message += `${linkedStudents.length} existing account(s) linked. `;
-    if (skippedStudents.length > 0) message += `${skippedStudents.length} already in section.`;
+    if (linkedStudents.length > 0) message += `${linkedStudents.length} existing account(s) moved here. `;
+    if (skippedStudents.length > 0) message += `${skippedStudents.length} already in section. `;
+    if (pendingMoves.length > 0) message += `${pendingMoves.length} already enrolled elsewhere — not added.`;
 
-    res.json({ success: true, section, createdStudents, skippedStudents, linkedStudents, message: message.trim() });
+    res.json({
+      success: true, section, createdStudents, skippedStudents, linkedStudents, pendingMoves,
+      message: message.trim()
+    });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
   }
