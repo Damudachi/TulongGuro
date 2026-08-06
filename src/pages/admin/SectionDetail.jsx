@@ -228,7 +228,7 @@ export default function AdminSectionDetail() {
             placeholder={'Juan Dela Cruz\nMaria Clara'}
             className="w-full border border-slate-200 p-2 rounded-lg text-sm outline-none focus:ring-2 focus:ring-brand-navy resize-none bg-white" />
           <p className="text-[11px] text-slate-400 mt-1">
-            Existing students in this school are moved here instead of duplicated. Default password: <code>password123</code>.
+            Existing students in this school are moved here instead of duplicated. Default password: student's birthday (MMDDYYYY), or a random code shown after adding if no birthday is given.
           </p>
           <div className="flex gap-2 mt-2">
             <button onClick={addStudents} disabled={busy || !studentsText.trim()}

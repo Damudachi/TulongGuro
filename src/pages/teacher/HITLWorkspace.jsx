@@ -885,6 +885,25 @@ export default function HITLWorkspace() {
             </div>
           )}
 
+          {/* Rubric Parse Failed Banner — a rubric genuinely existed for this
+              activity (its own rubric, or its lesson's default) but its JSON
+              could not be read, so grading silently fell through to a lower
+              tier — the topic's recommended template, or the generic DepEd
+              default — instead of what the teacher actually set up. Distinct
+              from an activity simply having no rubric at all, which isn't
+              flagged: that's the fallback ladder working as intended. */}
+          {submission?.rubricParseFailed && (
+            <div className="flex items-start gap-3 p-4 bg-amber-50 border-2 border-amber-300 rounded-xl text-sm">
+              <AlertTriangle className="w-5 h-5 shrink-0 text-amber-600" />
+              <div>
+                <p className="font-bold text-amber-800">Rubric Could Not Be Read</p>
+                <p className="text-amber-700 text-xs mt-0.5">
+                  This activity's rubric could not be read, so the AI graded against a different, less specific rubric instead. Re-save the activity's rubric (or its lesson's default rubric), then re-check this paper.
+                </p>
+              </div>
+            </div>
+          )}
+
           {/* Score/Feedback Mismatch Banner — a rubric criterion scored below
               its band's maximum but the AI's own areasForGrowth didn't name a
               specific, substantive reason why. The prompt tells the model not

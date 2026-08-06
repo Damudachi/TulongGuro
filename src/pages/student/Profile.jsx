@@ -90,11 +90,9 @@ export default function StudentProfile() {
         </div>
       </div>
 
-      {/* ── Default password notice ── */}
+      {/* ── Password help notice ── */}
       <div className="mt-4 p-4 bg-sun-100 border-2 border-sun-200 rounded-2xl text-xs text-navy-700 font-semibold">
-        <strong>Note:</strong> Default password is{' '}
-        <code className="bg-sun-200 px-1.5 py-0.5 rounded font-mono font-bold">password123</code>.
-        Ask your teacher for help if you need to change it.
+        <strong>Note:</strong> Don't know your password? Ask your teacher — they can look it up or reset it for you.
       </div>
     </div>
   );

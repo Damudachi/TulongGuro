@@ -75,11 +75,11 @@ model GradingPolicy {
 }
 
 model User {
-  id              String           @id @default(uuid())
-  username        String           @unique
-  name            String
-  email           String?          @unique
-  password        String
+  id                String           @id @default(uuid())
+  username          String           @unique
+  name              String
+  email             String?          @unique
+  password          String
   /// ADMIN | TEACHER | STUDENT
   ///
   /// Deliberately a plain String, not a Prisma enum. An enum was tried and
@@ -92,7 +92,7 @@ model User {
   /// no rollback path). Authorization drift is guarded instead by the
   /// ownership checks in the route handlers and by
   /// scripts/verify-route-authorization.js.
-  role            String
+  role              String
   /// Sessions issued before this instant are refused.
   ///
   /// Tokens are stateless and carry their own expiry, so without this the only
@@ -110,19 +110,19 @@ model User {
   /// remember it, where a generated string means the teacher re-issues it all
   /// year. It is knowable by classmates, so it is a starting credential rather
   /// than a secret — see the password-change note on the roster screen.
-  birthdate       DateTime?
-  schoolName      String?
-  schoolId        String?
-  createdAt       DateTime         @default(now())
-  sectionId       String?
-  taughtClasses   Class[]          @relation("TeacherClasses")
-  gradingExamples GradingExample[]
-  rubricTemplates RubricTemplate[] @relation("TeacherRubricTemplates")
-  ownedSections   Section[]        @relation("TeacherSections")
-  submissions     Submission[]
-  notifications   Notification[]
-  school          School?          @relation(fields: [schoolId], references: [id])
-  section         Section?         @relation("StudentSection", fields: [sectionId], references: [id])
+  birthdate         DateTime?
+  schoolName        String?
+  schoolId          String?
+  createdAt         DateTime         @default(now())
+  sectionId         String?
+  taughtClasses     Class[]          @relation("TeacherClasses")
+  gradingExamples   GradingExample[]
+  rubricTemplates   RubricTemplate[] @relation("TeacherRubricTemplates")
+  ownedSections     Section[]        @relation("TeacherSections")
+  submissions       Submission[]
+  notifications     Notification[]
+  school            School?          @relation(fields: [schoolId], references: [id])
+  section           Section?         @relation("StudentSection", fields: [sectionId], references: [id])
 }
 
 /// A student-facing notification — "your grade was released," to start.
@@ -257,10 +257,10 @@ model Activity {
 }
 
 model Submission {
-  id               String    @id @default(uuid())
-  activityId       String
-  studentId        String
-  imageUrl         String?
+  id                    String            @id @default(uuid())
+  activityId            String
+  studentId             String
+  imageUrl              String?
   /// Percentage scores, 0–100.
   ///
   /// Float rather than Int because these are stored as a percentage but entered
@@ -271,27 +271,27 @@ model Submission {
   /// analytics or export. Widening the column is what makes points -> percent
   /// -> points lossless. Everything downstream still reads a percentage, and
   /// display sites round; only the stored value gained precision.
-  aiScore          Float?
-  hitlScore        Float?
-  aiFeedback       String?
-  hitlFeedback     String?
-  readingStrategy  String?
-  rubricData       String?
-  skillScores      String?
-  covData          String?
-  attemptCount     Int       @default(1)
+  aiScore               Float?
+  hitlScore             Float?
+  aiFeedback            String?
+  hitlFeedback          String?
+  readingStrategy       String?
+  rubricData            String?
+  skillScores           String?
+  covData               String?
+  attemptCount          Int               @default(1)
   /// Submitted after the activity's deadline but within its late window.
   /// A record, not a penalty: nothing in the grading engine reads this, so a
   /// teacher decides what a late mark is worth. Set per attempt, so a student
   /// who re-submits late after an on-time first attempt is marked late.
-  isLate           Boolean   @default(false)
+  isLate                Boolean           @default(false)
   /// True when the AI graded this without a real gradeLevel on the class —
   /// generateSubmissionFeedback silently defaults to "Grade 6" for curriculum
   /// context, language complexity, and score calibration when Class.gradeLevel
   /// is unset, so a Grade 11 class with that field left blank was graded and
   /// calibrated as if it were Grade 6 with nothing surfaced to the teacher.
   /// This is that surfacing: the HITL workspace shows a banner when true.
-  gradeLevelAssumed Boolean  @default(false)
+  gradeLevelAssumed     Boolean           @default(false)
   /// True when a rubric criterion scored below its band's maximum but the AI's
   /// own areasForGrowth didn't name a substantive, specific reason why — the
   /// exact contradiction GRADING_SYSTEM_INSTRUCTION's SCORE/FEEDBACK
@@ -299,9 +299,19 @@ model Submission {
   /// because the prompt alone has already needed two follow-up fixes for it.
   /// Same treatment as gradeLevelAssumed: never blocks the save, just flags
   /// the paper for the teacher's second look in the HITL workspace.
-  scoreFeedbackMismatch Boolean @default(false)
-  privacyViolation Boolean   @default(false)
-  status           String    @default("PENDING")
+  scoreFeedbackMismatch Boolean           @default(false)
+  /// True when a rubric genuinely existed for this activity — the activity's
+  /// own rubric or its lesson's defaultRubric — but its JSON could not be
+  /// parsed, so grading silently fell through to a lower-priority tier (the
+  /// topic's recommended template, or the hardcoded generic DepEd rubric)
+  /// instead of the rubric the teacher actually authored. Distinct from an
+  /// activity simply having no rubric at all, which is the fallback ladder
+  /// working as designed and not something to flag. Same treatment as
+  /// gradeLevelAssumed: never blocks the save, just tells the teacher in the
+  /// HITL workspace that the paper wasn't graded against what they set up.
+  rubricParseFailed     Boolean           @default(false)
+  privacyViolation      Boolean           @default(false)
+  status                String            @default("PENDING")
   /// When the teacher published this result to the student.
   ///
   /// Separate from status GRADED, which only means the teacher has validated the
@@ -311,15 +321,15 @@ model Submission {
   /// set has been reviewed also stops grades trickling out to some pupils while
   /// their classmates are still waiting. Staff always see the un-released work;
   /// students only ever see rows where this is set.
-  releasedAt       DateTime?
-  retainUntil      DateTime?
-  archivedAt       DateTime?
-  gradedAt         DateTime?
-  createdAt        DateTime  @default(now())
-  updatedAt        DateTime  @updatedAt
-  activity         Activity  @relation(fields: [activityId], references: [id])
-  student          User      @relation(fields: [studentId], references: [id])
-  auditLog         GradingAuditLog[]
+  releasedAt            DateTime?
+  retainUntil           DateTime?
+  archivedAt            DateTime?
+  gradedAt              DateTime?
+  createdAt             DateTime          @default(now())
+  updatedAt             DateTime          @updatedAt
+  activity              Activity          @relation(fields: [activityId], references: [id])
+  student               User              @relation(fields: [studentId], references: [id])
+  auditLog              GradingAuditLog[]
 }
 
 /// Append-only record of what happened to a submission's grade, and when.
@@ -336,16 +346,40 @@ model Submission {
 /// Deliberately minimal: an event name, an actor (null for the AI), and a
 /// score snapshot — not a full feedback-text snapshot, which would duplicate
 /// aiFeedback/hitlFeedback's own history for little audit value.
+///
+/// submissionId is nullable and SetNull on delete, not Cascade, so a purged
+/// submission's history survives the purge instead of being deleted along
+/// with it — a submission being past its legal retention window doesn't mean
+/// a dispute about how it was graded can't still surface later. Because the
+/// row would otherwise become context-free once its submission link is
+/// gone, studentId/activityId/activityTitle/schoolId are captured directly
+/// onto each row at write time (see logGradingEvent) rather than only being
+/// reachable by following the submission relation.
 model GradingAuditLog {
-  id           String     @id @default(uuid())
-  submissionId String
+  id             String      @id @default(uuid())
+  submissionId   String?
   /// AI_GRADED | TEACHER_VALIDATED | RELEASED
-  event        String
+  event          String
   /// The teacher who acted, or null for an AI_GRADED row.
-  actorId      String?
-  score        Float?
-  createdAt    DateTime   @default(now())
-  submission   Submission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+  actorId        String?
+  score          Float?
+  /// Denormalized onto the row (not just reachable via `submission`) so this
+  /// event still identifies who/what it was about after a purge sets
+  /// submissionId to null.
+  studentId      String?
+  activityId     String?
+  activityTitle  String?
+  schoolId       String?
+  /// Only populated on a RELEASED event: the exact WW/PT/QA weights,
+  /// transmutation setting, and passing grade in effect at the moment this
+  /// grade was published to a student, serialized as JSON. GradingPolicy and
+  /// School.useTransmutation are read live everywhere else in the app, so an
+  /// admin correcting them later silently recomputes every previously-
+  /// released grade the next time anyone opens the gradebook — this is the
+  /// one place that still remembers what a parent actually saw on release day.
+  policySnapshot String?
+  createdAt      DateTime    @default(now())
+  submission     Submission? @relation(fields: [submissionId], references: [id], onDelete: SetNull)
 
   @@index([submissionId])
 }

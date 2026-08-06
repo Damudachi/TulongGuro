@@ -35,6 +35,7 @@ const OWNERSHIP_IDIOMS = [
   /teacherOwnsActivity\(/,
   /teacherOwnsClass\(/,
   /requireOwnTemplate\(/,
+  /staffOwnsActivitySchool\(/,
   /\.teacherId\s*!==\s*(req\.auth\.sub|teacherId)/,
   /teacherId:\s*req\.auth\.sub/,
 ];
@@ -89,6 +90,12 @@ const ROUTE_MANIFEST = {
   // Outside /api/teacher/, but the exact same drift risk (no TEACHER_ROUTE_SEGMENTS
   // gate at all) — tracked here rather than widening this script's route scan.
   'GET /api/classes/:classId': { needsCheck: true },
+  // Same drift risk again: no TEACHER_ROUTE_SEGMENTS gate, and until the fix
+  // alongside this manifest entry, no in-handler check either — any staff
+  // account on the platform could read another school's activity/submissions
+  // by id. See staffOwnsActivitySchool().
+  'GET /api/activities/:activityId': { needsCheck: true },
+  'GET /api/activities/:activityId/submissions': { needsCheck: true },
 };
 
 // Ordered list of every `app.METHOD('path', ...)` registered at column 0 —
@@ -106,7 +113,11 @@ function handlerBody(index) {
 }
 
 const TRACKED_PREFIX = '/api/teacher/';
-const TRACKED_EXTRA = new Set(['GET /api/classes/:classId']);
+const TRACKED_EXTRA = new Set([
+  'GET /api/classes/:classId',
+  'GET /api/activities/:activityId',
+  'GET /api/activities/:activityId/submissions',
+]);
 
 let pass = 0, fail = 0;
 const seen = new Set();

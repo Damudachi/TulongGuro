@@ -105,7 +105,9 @@ function skillsForActivity(activity, gradedSubmissions = []) {
 
   const addFromCriteria = (criteria) => {
     for (const c of criteria || []) {
-      if (c?.name) found.add(classifyCriterion(c.name, c.description || ''));
+      if (!c?.name) continue;
+      const skillId = classifyCriterion(c.name, c.description || '');
+      if (skillId) found.add(skillId);
     }
   };
 
@@ -389,6 +391,26 @@ const SUBMISSION_MIME_TYPES = new Set([
 ]);
 const isImageMime = (m) => (m || '').startsWith('image/');
 
+/**
+ * What the generic `upload` instance below may accept: everything
+ * SUBMISSION_MIME_TYPES allows (school logos, curriculum files, activity
+ * reference material, rubric uploads all move through images/PDF/.docx),
+ * plus the two spreadsheet types /api/teacher/extract-students reads via
+ * exceljs.
+ *
+ * Unlike submissionUpload, this instance previously had no fileFilter at
+ * all — any file up to MAX_UPLOAD_BYTES, any content-type, was accepted and
+ * later served back from a public URL (local /uploads or the Supabase public
+ * bucket). Nothing downstream of it can actually use anything outside this
+ * set, so there was no legitimate case being narrowed here, only an
+ * unrestricted stored-file surface being closed.
+ */
+const GENERIC_UPLOAD_MIME_TYPES = new Set([
+  ...SUBMISSION_MIME_TYPES,
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',  // .xlsx
+  'application/vnd.ms-excel'                                            // legacy .xls
+]);
+
 const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, uploadsDir),
   filename: (req, file, cb) => cb(null, safeUploadName(file.originalname))
@@ -399,6 +421,16 @@ const upload = multer({
     fileSize: MAX_UPLOAD_BYTES,
     // +1 for the legacy single-'image' field the teacher upload still accepts.
     files: MAX_SUBMISSION_PAGES + 1
+  },
+  fileFilter: (req, file, cb) => {
+    if (GENERIC_UPLOAD_MIME_TYPES.has((file.mimetype || '').toLowerCase())) return cb(null, true);
+    const err = new Error('That file type is not supported. Please upload a photo, PDF, Word (.docx), or Excel file.');
+    err.name = 'MulterError';
+    // A distinct code, not LIMIT_UNEXPECTED_FILE — that one is a real Multer
+    // limit code the catch-all handler already maps to an unrelated "too many
+    // pages" message, which would silently override this one's actual reason.
+    err.code = 'INVALID_FILE_TYPE';
+    cb(err);
   }
 });
 
@@ -412,7 +444,10 @@ const submissionUpload = multer({
     if (SUBMISSION_MIME_TYPES.has((file.mimetype || '').toLowerCase())) return cb(null, true);
     const err = new Error('Only photos, PDF files, and Word (.docx) documents can be submitted. Older .doc files need to be saved as .docx or PDF first.');
     err.name = 'MulterError';
-    err.code = 'LIMIT_UNEXPECTED_FILE';
+    // Same reasoning as GENERIC_UPLOAD_MIME_TYPES's fileFilter above: a real
+    // Multer error code here would have its message overridden by the
+    // catch-all handler's LIMIT_UNEXPECTED_FILE mapping.
+    err.code = 'INVALID_FILE_TYPE';
     cb(err);
   }
 });
@@ -830,7 +865,7 @@ function hasScoreFeedbackMismatch(raw) {
   return !growth.some(isSubstantive);
 }
 
-function normalisePaperResult(raw, modelId, gradeLevelAssumed = false) {
+function normalisePaperResult(raw, modelId, gradeLevelAssumed = false, rubricParseFailed = false) {
   if (raw?.privacyViolationDetected === true) {
     return { privacyViolation: true, violationType: raw.privacyViolationType || 'name', aiSource: modelId };
   }
@@ -839,6 +874,7 @@ function normalisePaperResult(raw, modelId, gradeLevelAssumed = false) {
     privacyViolation: false,
     aiSource: modelId,
     gradeLevelAssumed,
+    rubricParseFailed,
     scoreFeedbackMismatch: hasScoreFeedbackMismatch(raw)
   };
 }
@@ -2371,7 +2407,7 @@ app.put('/api/admin/:adminId/sections/:sectionId/students/:studentId/password', 
     if (!student || student.sectionId !== section.id || student.role !== 'STUDENT') {
       return res.status(404).json({ success: false, error: 'Student not found in this section.' });
     }
-    const newPassword = student.birthdate ? birthdayPassword(student.birthdate) : DEFAULT_STUDENT_PASSWORD;
+    const newPassword = student.birthdate ? birthdayPassword(student.birthdate) : randomStudentPassword();
     const revokedAt = new Date();
     await prisma.user.update({
       where: { id: student.id },
@@ -2907,58 +2943,81 @@ app.post('/api/teacher/extract-students', upload.single('file'), async (req, res
     let names = [];
     const fs = require('fs');
 
-    // Excel processing
+    // Excel processing — parsed locally, not via Gemini.
+    //
+    // A roster spreadsheet's entire content is student names, i.e. PII by
+    // definition — sending the whole file to an external AI API to have
+    // names extracted from it cut directly against this file's own stated
+    // PII policy (see the header comment). exceljs can already read the
+    // cells directly, so routing it through the model was solving a
+    // structured-data problem with a network call to a third party for no
+    // benefit.
+    //
+    // A photographed-roster path used to exist here too (Gemini OCR on an
+    // uploaded image). It was removed rather than kept as an accepted
+    // exception: reading a photo genuinely needs a vision model, and there
+    // was no way to do that without the same PII exposure this endpoint
+    // exists to avoid for the Excel case. Teachers add students by
+    // spreadsheet or by typing names in.
     if (mime.includes('spreadsheetml.sheet') || mime.includes('ms-excel') || mime.includes('excel')) {
       const ExcelJS = require('exceljs');
       const workbook = new ExcelJS.Workbook();
       await workbook.xlsx.readFile(req.file.path);
       const sheet = workbook.worksheets[0];
-      let rawText = '';
-      if (sheet) {
-        sheet.eachRow((row) => {
-          row.eachCell((cell) => {
-            if (cell.value && typeof cell.value === 'string') {
-              rawText += cell.value.trim() + ' | ';
-            }
-          });
-          rawText += '\n';
+      if (!sheet) {
+        return res.status(422).json({ success: false, error: 'That spreadsheet has no readable sheet.' });
+      }
+
+      const cellText = (cell) => (cell?.value == null ? '' : String(cell.value).trim());
+      // A header names the student, not a relative or the school — "Name",
+      // "Student Name", "Full Name", "Pangalan" all match; "Parent's Name" /
+      // "Guardian Name" are excluded explicitly so those columns aren't
+      // mistaken for the student's own name.
+      const isStudentNameHeader = (h) => {
+        const t = h.toLowerCase();
+        if (!t.includes('name') && !t.includes('pangalan')) return false;
+        return !/(parent|guardian|father|mother|teacher|school|emergency)/.test(t);
+      };
+      const looksLikeDate = (s) => /^\d{1,4}[-/]\d{1,2}[-/]\d{1,4}$/.test(s);
+      const looksNumeric = (s) => /^\d+$/.test(s);
+
+      // The header row is the first row with any non-empty text cell; the
+      // name column(s) are whichever of its cells look like a name header.
+      // Split Last/First/Middle Name columns (a common roster layout) are
+      // supported: every matching column is joined left to right into one name.
+      let headerRowNumber = null;
+      let nameColumns = [];
+      sheet.eachRow((row, rowNumber) => {
+        if (headerRowNumber !== null) return;
+        const texts = [];
+        row.eachCell((cell, colNumber) => texts.push({ colNumber, text: cellText(cell) }));
+        if (texts.some(t => t.text)) {
+          headerRowNumber = rowNumber;
+          nameColumns = texts.filter(t => isStudentNameHeader(t.text)).map(t => t.colNumber);
+        }
+      });
+
+      if (!headerRowNumber || nameColumns.length === 0) {
+        return res.status(422).json({
+          success: false,
+          error: 'Could not find a "Name" column in that spreadsheet. Add a header like "Name" or "Student Name" to the column with student names.'
         });
       }
-      
-      if (!model) return res.status(500).json({ success: false, error: 'Gemini AI is not configured.' });
-      const prompt = "Extract ONLY the full names of the students from the following raw spreadsheet text. DO NOT include any headers, IDs, grades, dates, titles (like 'List of Students' or 'Section A'), or other extraneous text. Return a pure JSON array of strings containing only the names, like [\"Juan Dela Cruz\", \"Maria Clara\"]. Do not add any markdown formatting or conversational text.\n\nText data:\n" + rawText;
-      const result = await generateContentWithFallback(model, prompt);
-      let text = result.response.text().trim();
-      if (text.startsWith('```json')) text = text.replace(/^```json/, '').replace(/```$/, '').trim();
-      if (text.startsWith('```')) text = text.replace(/^```/, '').replace(/```$/, '').trim();
 
-      let parsedNames = [];
-      try { parsedNames = JSON.parse(text); } catch (e) { parsedNames = text.split('\n'); }
-      names = parsedNames.map(n => typeof n === 'string' ? n.trim().replace(/^[-*.\d\s]+/, '') : '').filter(n => n.length > 3);
-    }
-    // Image processing with Gemini
-    else if (mime.startsWith('image/')) {
-      if (!model) return res.status(500).json({ success: false, error: 'Gemini AI is not configured.' });
-      const fileData = fs.readFileSync(req.file.path);
-      
-      const prompt = "Extract ONLY the full names of the students from this image. DO NOT include any headers, IDs, grades, dates, titles, or other extraneous text. Return a pure JSON array of strings containing only the names, like [\"Juan Dela Cruz\", \"Maria Clara\"]. Do not add any markdown formatting or conversational text.";
-      const imagePart = {
-        inlineData: {
-          data: fileData.toString('base64'),
-          mimeType: mime
-        }
-      };
-      
-      const result = await generateContentWithFallback(model, [prompt, imagePart]);
-      let text = result.response.text().trim();
-      if (text.startsWith('```json')) text = text.replace(/^```json/, '').replace(/```$/, '').trim();
-      if (text.startsWith('```')) text = text.replace(/^```/, '').replace(/```$/, '').trim();
-      
-      let parsedNames = [];
-      try { parsedNames = JSON.parse(text); } catch (e) { parsedNames = text.split('\n'); }
-      names = parsedNames.map(n => typeof n === 'string' ? n.trim().replace(/^[-*.\d\s]+/, '') : '').filter(n => n.length > 3);
+      const extracted = [];
+      sheet.eachRow((row, rowNumber) => {
+        if (rowNumber <= headerRowNumber) return;
+        const parts = nameColumns.map(c => cellText(row.getCell(c))).filter(Boolean);
+        if (parts.length === 0) return;
+        const full = parts.join(' ').replace(/\s+/g, ' ').trim();
+        if (full.length > 3 && !looksLikeDate(full) && !looksNumeric(full)) extracted.push(full);
+      });
+      names = extracted;
     } else {
-      return res.status(400).json({ success: false, error: 'Unsupported file type. Please upload Excel or Image files.' });
+      return res.status(400).json({
+        success: false,
+        error: 'Unsupported file type. Please upload an Excel (.xlsx) roster with a "Name" column.'
+      });
     }
 
     // Clean up uploaded file
@@ -2981,8 +3040,21 @@ app.post('/api/teacher/extract-students', upload.single('file'), async (req, res
  *
  * Shared by the teacher roster flow and the admin console.
  */
-/** Password given to a learner enrolled without a birthday on the roster. */
-const DEFAULT_STUDENT_PASSWORD = 'password123';
+/**
+ * Password given to a learner enrolled (or reset) without a birthday on
+ * file, generated fresh per student rather than a single shared literal.
+ *
+ * This used to be one hardcoded string ('password123') issued to every such
+ * student across every school on the platform, forever — guessable on sight
+ * from the source, and correct for every account that shared it. Random and
+ * per-student closes that: a leaked or guessed password now compromises one
+ * account, not every birthdate-less student anywhere. Six digits, matching
+ * the style of birthdayPassword's MMDDYYYY, so it stays something a Grade 1-6
+ * learner can be told once and type on a shared classroom keyboard.
+ */
+function randomStudentPassword() {
+  return String(crypto.randomInt(0, 1_000_000)).padStart(6, '0');
+}
 
 /**
  * Reads a birthday off a roster entry.
@@ -3038,8 +3110,6 @@ async function enrolStudents(section, studentsList, { schoolId, teacherId }) {
     .filter(e => e && typeof e.name === 'string' && e.name.trim());
   if (entries.length === 0) return { createdStudents, skippedStudents, linkedStudents };
 
-  const defaultStudentPassword = await bcrypt.hash(DEFAULT_STUDENT_PASSWORD, BCRYPT_SALT_ROUNDS);
-
   const sectionStudents = await prisma.user.findMany({ where: { sectionId: section.id, role: 'STUDENT' } });
   const sectionNamesSet = new Set(sectionStudents.map(s => s.name.toLowerCase().trim()));
   let count = sectionStudents.length + 1;
@@ -3076,14 +3146,13 @@ async function enrolStudents(section, studentsList, { schoolId, teacherId }) {
 
     // The birthday seeds the first password, as MMDDYYYY. A Grade 6 learner
     // remembers their own birthday; a generated string means the teacher spends
-    // the year re-issuing it. Where no birthday was supplied the old shared
-    // default still applies, and the caller is told which is which so the
-    // roster screen can show the right thing to hand out.
+    // the year re-issuing it. Where no birthday was supplied, a fresh random
+    // password is generated for this student (see randomStudentPassword), and
+    // the caller is told which is which so the roster screen can show the
+    // right thing to hand out.
     const birthdate = parseBirthday(entry.birthday);
-    const initialPassword = birthdate ? birthdayPassword(birthdate) : DEFAULT_STUDENT_PASSWORD;
-    const passwordHash = birthdate
-      ? await bcrypt.hash(initialPassword, BCRYPT_SALT_ROUNDS)
-      : defaultStudentPassword;
+    const initialPassword = birthdate ? birthdayPassword(birthdate) : randomStudentPassword();
+    const passwordHash = await bcrypt.hash(initialPassword, BCRYPT_SALT_ROUNDS);
 
     const user = await prisma.user.create({
       data: {
@@ -3799,7 +3868,13 @@ app.post('/api/teacher/rubric-templates', async (req, res) => {
     const teacherId = req.auth.sub;
     const { name, criteria } = req.body;
     if (!name || !criteria) return res.status(400).json({ success: false, error: 'Missing fields' });
-    
+    // Same check the admin rubric-template route and an activity's own inline
+    // rubric already both enforce — this route was the one path a rubric could
+    // reach the grading prompt without it, silently breaking the "score = sum
+    // of criteria, scaled to 0-100" assumption baked into the grading prompt.
+    const rubricError = validateRubric(criteria);
+    if (rubricError) return res.status(400).json({ success: false, error: rubricError });
+
     const template = await prisma.rubricTemplate.create({
       data: {
         name: String(name),
@@ -3847,6 +3922,8 @@ app.put('/api/teacher/rubric-templates/:id', async (req, res) => {
   try {
     const { name, criteria } = req.body;
     if (!name || !criteria) return res.status(400).json({ success: false, error: 'Missing fields' });
+    const rubricError = validateRubric(criteria);
+    if (rubricError) return res.status(400).json({ success: false, error: rubricError });
     // The owner comes from the session, not the request body. A client-supplied
     // teacherId is just a claim, and the whole point of this check is that the
     // claim might be false.
@@ -3966,16 +4043,44 @@ Rules:
   }
 });
 
-app.get('/api/activities/:activityId', async (req, res) => {
+/**
+ * Confirms the signed-in staff member's school matches the activity's school
+ * before it (or its submissions) are returned.
+ *
+ * Neither /api/activities/:activityId nor its /submissions sibling checked
+ * ownership at all — authorizePath only proves the caller is *a* teacher or
+ * admin, not that they belong to the school this activity lives in, so any
+ * staff account on the platform could read another school's activity details
+ * and full submission roster (student names/usernames/status) by id. Scoped
+ * by school, not by exact teacherId, matching the precedent already set by
+ * /api/submissions/:id — other staff at the same school legitimately need to
+ * open an activity that isn't theirs (a coordinator, a covering teacher).
+ */
+async function staffOwnsActivitySchool(activityId, authSub) {
   const activity = await prisma.activity.findUnique({
-    where: { id: req.params.activityId },
-    include: { class: { select: { id: true, name: true } } }
+    where: { id: activityId },
+    include: { class: { select: { id: true, name: true, section: { select: { schoolId: true } } } } }
   });
-  if (!activity) return res.status(404).json({ success: false, error: 'Activity not found' });
-  res.json({ success: true, activity });
+  if (!activity) return { ok: false, code: 404, error: 'Activity not found' };
+  const activitySchoolId = activity.class?.section?.schoolId;
+  if (activitySchoolId) {
+    const caller = await prisma.user.findUnique({ where: { id: authSub }, select: { schoolId: true } });
+    if (caller?.schoolId !== activitySchoolId) {
+      return { ok: false, code: 403, error: 'You can only view activities from your own school.' };
+    }
+  }
+  return { ok: true, activity };
+}
+
+app.get('/api/activities/:activityId', async (req, res) => {
+  const owned = await staffOwnsActivitySchool(req.params.activityId, req.auth.sub);
+  if (!owned.ok) return res.status(owned.code).json({ success: false, error: owned.error });
+  res.json({ success: true, activity: owned.activity });
 });
 
 app.get('/api/activities/:activityId/submissions', async (req, res) => {
+  const owned = await staffOwnsActivitySchool(req.params.activityId, req.auth.sub);
+  if (!owned.ok) return res.status(owned.code).json({ success: false, error: owned.error });
   const submissions = await prisma.submission.findMany({
     where: { activityId: req.params.activityId },
     include: { student: { select: { id: true, name: true, username: true } } },
@@ -4200,6 +4305,9 @@ async function generateSubmissionFeedback(imagePaths, activityId, studentId) {
     let subjectForPrompt = 'English';
     let classLessonContext = '';
     let activity = null;
+    // Set in tiers 1-2 below when a real rubric existed but its JSON failed
+    // to parse, forcing a silent fall-through to a lower tier.
+    let rubricParseFailed = false;
     if (activityId && activityId !== 'mock-activity-id') {
       activity = await prisma.activity.findUnique({
         where: { id: activityId },
@@ -4219,7 +4327,14 @@ async function generateSubmissionFeedback(imagePaths, activityId, studentId) {
             if (parsed.criteria?.length) {
               rubricContext = formatRubricCriteria(parsed.criteria, '');
             }
-          } catch { }
+          } catch {
+            // A rubric genuinely existed here and couldn't be read — distinct
+            // from the activity simply having none, which falls through the
+            // remaining tiers by design. Surfaced to the teacher via
+            // Submission.rubricParseFailed rather than silently grading
+            // against a lower tier with no sign anything went wrong.
+            rubricParseFailed = true;
+          }
         }
 
         if (activity.classLesson) {
@@ -4233,7 +4348,9 @@ async function generateSubmissionFeedback(imagePaths, activityId, studentId) {
               if (parsedLesson.criteria?.length) {
                 rubricContext = formatRubricCriteria(parsedLesson.criteria, 'from curriculum lesson plan');
               }
-            } catch { }
+            } catch {
+              rubricParseFailed = true;
+            }
           }
         }
 
@@ -4578,7 +4695,7 @@ RULES FOR skillExplanations:
     if (paperCount === 1) {
       const only = (Array.isArray(parsed?.results) ? parsed.results[0] : parsed) || {};
       console.log(`✅ ${modelId} graded: ${only.score} / 100${only.noTextDetected ? ' (NO TEXT DETECTED)' : ''}`);
-      return [normalisePaperResult(only, modelId, gradeLevelAssumed)];
+      return [normalisePaperResult(only, modelId, gradeLevelAssumed, rubricParseFailed)];
     }
 
     // ── Batch alignment guard ────────────────────────────────────────────────
@@ -4603,7 +4720,7 @@ RULES FOR skillExplanations:
     if (ordered.some(e => !e)) throw new BatchAlignmentError('a paper came back with no result');
 
     console.log(`✅ ${modelId} graded ${paperCount} papers: ${ordered.map(r => r.privacyViolationDetected ? 'PII' : r.score).join(', ')}`);
-    return ordered.map(r => normalisePaperResult(r, modelId, gradeLevelAssumed));
+    return ordered.map(r => normalisePaperResult(r, modelId, gradeLevelAssumed, rubricParseFailed));
 }
 
 /**
@@ -4753,6 +4870,7 @@ app.post('/api/teacher/submissions/:id/analyze', async (req, res) => {
         // a cropped copy isn't left with a stale Privacy Act warning.
         privacyViolation: false,
         gradeLevelAssumed: !!aiData.gradeLevelAssumed,
+        rubricParseFailed: !!aiData.rubricParseFailed,
         scoreFeedbackMismatch: !!aiData.scoreFeedbackMismatch,
         gradedAt: new Date(),
         retainUntil: sub.retainUntil ?? await retainUntilForActivity(sub.activityId)
@@ -4875,10 +4993,52 @@ const AUDIT_LOG_FAILURE_ALERT_THRESHOLD = 3;
  * the grading/validate/release flow it is recording: a parent asking about a
  * grade six months from now matters less than a teacher being blocked from
  * grading today because an audit-log write hiccuped.
+ *
+ * Looks up the submission's own context (student, activity, school) rather
+ * than requiring every caller to pass it, and denormalizes it onto the row —
+ * see the schema comment on GradingAuditLog.submissionId for why: a purge
+ * nulls that relation out, and a row with nothing else on it would become
+ * meaningless the moment its submission is gone. On a RELEASED event it also
+ * snapshots the exact grading policy in effect right now — the weights and
+ * transmutation setting a later admin edit could otherwise silently rewrite
+ * out from under this specific, already-published grade.
  */
 async function logGradingEvent(submissionId, event, { actorId = null, score = null } = {}) {
   try {
-    await prisma.gradingAuditLog.create({ data: { submissionId, event, actorId, score } });
+    let context = { studentId: null, activityId: null, activityTitle: null, schoolId: null };
+    let policySnapshot = null;
+    try {
+      const sub = await prisma.submission.findUnique({
+        where: { id: submissionId },
+        select: {
+          studentId: true,
+          activityId: true,
+          activity: {
+            select: {
+              title: true,
+              class: { select: { gradeLevel: true, subject: true, section: { select: { schoolId: true } } } }
+            }
+          }
+        }
+      });
+      if (sub) {
+        const schoolId = sub.activity?.class?.section?.schoolId || null;
+        context = { studentId: sub.studentId, activityId: sub.activityId, activityTitle: sub.activity?.title || null, schoolId };
+        if (event === 'RELEASED' && schoolId) {
+          const [weights, settings] = await Promise.all([
+            gradingPolicyFor(schoolId, sub.activity?.class?.gradeLevel, sub.activity?.class?.subject),
+            gradingSettingsFor(schoolId)
+          ]);
+          policySnapshot = JSON.stringify({ weights, ...settings });
+        }
+      }
+    } catch {
+      // Context is enrichment, not the record itself — a lookup failure here
+      // must not stop the base event (score, actor, event name) from being
+      // written below.
+    }
+
+    await prisma.gradingAuditLog.create({ data: { submissionId, event, actorId, score, ...context, policySnapshot } });
     consecutiveAuditLogFailures = 0;
   } catch (err) {
     consecutiveAuditLogFailures++;
@@ -4941,6 +5101,7 @@ async function persistGradingResult(submissionId, activityId, aiData, existingRe
       status: 'PENDING',
       privacyViolation: false,
       gradeLevelAssumed: !!aiData.gradeLevelAssumed,
+      rubricParseFailed: !!aiData.rubricParseFailed,
       scoreFeedbackMismatch: !!aiData.scoreFeedbackMismatch,
       gradedAt: new Date(),
       retainUntil: existingRetainUntil ?? await retainUntilForActivity(activityId)
@@ -6078,6 +6239,9 @@ function computeSkillProgress(submissions) {
       if (!entry || typeof entry.score !== 'number' || !entry.maxPoints) continue;
       const description = criteriaMap[entry.criterionName] || '';
       const skillId = classifyCriterion(entry.criterionName, description);
+      // No keyword match — don't fold an unclassifiable criterion (e.g.
+      // "Neatness") into Writing & Composition as if it were evidence of it.
+      if (!skillId) continue;
       running[skillId].sum += entry.score;
       running[skillId].max += entry.maxPoints;
       touched.add(skillId);
@@ -6649,6 +6813,7 @@ app.post('/api/teacher/upload', submissionUpload.fields([{ name: 'image', maxCou
           skillScores: JSON.stringify(aiData.skillScores),
           status: 'PENDING',
           gradeLevelAssumed: !!aiData.gradeLevelAssumed,
+          rubricParseFailed: !!aiData.rubricParseFailed,
           scoreFeedbackMismatch: !!aiData.scoreFeedbackMismatch,
           gradedAt: new Date()
         };
@@ -7258,18 +7423,45 @@ app.post('/api/admin/backfill-retention', async (req, res) => {
   }
 });
 
+/**
+ * Both destructive lifecycle routes below used to run unconditionally across
+ * every school on the platform in one call — there was no way to archive or
+ * purge just one school's past-retention grades, only all of them at once,
+ * behind nothing but the single shared PLATFORM_ADMIN_KEY. This resolves the
+ * scope explicitly rather than defaulting to "everyone": pass ?schoolId=<id>
+ * for one school, or the caller must say ?allSchools=true on purpose to run
+ * platform-wide. Failing closed on a missing/ambiguous scope, the same way
+ * AUTH_SECRET and PUBLIC_PATHS elsewhere in this file refuse to guess.
+ */
+function resolveLifecycleScope(req) {
+  const { schoolId, allSchools } = req.query;
+  if (!schoolId && allSchools !== 'true') {
+    const err = new Error(
+      'Pass ?schoolId=<id> to scope this to one school, or ?allSchools=true to run it across every school on the platform on purpose.'
+    );
+    err.status = 400;
+    throw err;
+  }
+  return {
+    where: schoolId ? { activity: { class: { section: { schoolId } } } } : {},
+    scope: schoolId ? { schoolId } : { allSchools: true }
+  };
+}
+
 app.post('/api/admin/archive-grades', async (req, res) => {
   try {
     requirePlatformKey(req);
+    const { where: scopeWhere, scope } = resolveLifecycleScope(req);
     const now = new Date();
     const result = await prisma.submission.updateMany({
       where: {
         retainUntil: { lte: now },
-        archivedAt: null
+        archivedAt: null,
+        ...scopeWhere
       },
       data: { archivedAt: now }
     });
-    res.json({ success: true, archivedCount: result.count });
+    res.json({ success: true, archivedCount: result.count, scope });
   } catch (e) {
     res.status(e.status || 500).json({ success: false, error: e.message });
   }
@@ -7278,15 +7470,17 @@ app.post('/api/admin/archive-grades', async (req, res) => {
 app.delete('/api/admin/purge-grades', async (req, res) => {
   try {
     requirePlatformKey(req);
+    const { where: scopeWhere, scope } = resolveLifecycleScope(req);
     const now = new Date();
     const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
     const result = await prisma.submission.deleteMany({
       where: {
         archivedAt: { not: null },
-        retainUntil: { lte: thirtyDaysAgo }
+        retainUntil: { lte: thirtyDaysAgo },
+        ...scopeWhere
       }
     });
-    res.json({ success: true, purgedCount: result.count });
+    res.json({ success: true, purgedCount: result.count, scope });
   } catch (e) {
     res.status(e.status || 500).json({ success: false, error: e.message });
   }
@@ -7306,7 +7500,10 @@ app.use((err, req, res, next) => {
     const messages = {
       LIMIT_FILE_SIZE: `That photo is larger than ${Math.round(MAX_UPLOAD_BYTES / 1024 / 1024)}MB. Retake it at a lower resolution, or pick a smaller file.`,
       LIMIT_FILE_COUNT: `Only ${MAX_SUBMISSION_PAGES} pages can be uploaded for one student at a time.`,
-      LIMIT_UNEXPECTED_FILE: `Only ${MAX_SUBMISSION_PAGES} pages can be uploaded for one student at a time.`
+      LIMIT_UNEXPECTED_FILE: `Only ${MAX_SUBMISSION_PAGES} pages can be uploaded for one student at a time.`,
+      // Raised by a fileFilter rejecting an unsupported type, not by Multer
+      // itself — err.message already carries the specific, accurate reason.
+      INVALID_FILE_TYPE: err.message
     };
     return res.status(400).json({
       success: false,
@@ -7315,8 +7512,13 @@ app.use((err, req, res, next) => {
     });
   }
   if (!err) return next();
+  // Full detail goes to the server log, where an operator can act on it.
+  // The client gets a generic message — a raw err.message here can carry
+  // Prisma constraint names, file paths, or other internal detail that isn't
+  // any client's business, and this is the last-resort handler that catches
+  // whatever every route-level try/catch didn't.
   console.error('Unhandled error:', err);
-  res.status(500).json({ success: false, error: err.message || 'Something went wrong.' });
+  res.status(500).json({ success: false, error: 'Something went wrong. Please try again.' });
 });
 
 app.listen(port, () => {

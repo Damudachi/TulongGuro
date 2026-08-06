@@ -2,7 +2,12 @@ services:
   - type: web
     name: tulongguro-api
     runtime: node
-    buildCommand: cd server && npm install && npx prisma generate && npx prisma db push
+    # `npm run verify` runs the grading-math, dashboard and route-authorization
+    # checks. Placed before `db push` on purpose: a failure stops the deploy
+    # without having touched the database. All three scripts are pure — no
+    # Prisma client, no DB, no network — so they can only fail on a real
+    # regression, never on a missing env var or an unreachable service.
+    buildCommand: cd server && npm install && npm run verify && npx prisma generate && npx prisma db push
     startCommand: cd server && node server.js
     envVars:
       - key: DATABASE_URL

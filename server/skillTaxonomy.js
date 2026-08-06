@@ -58,12 +58,15 @@ const SKILL_KEYWORDS = {
 
 /**
  * Classifies a rubric criterion into one of the 4 monitored skills based on
- * its name + description text. Falls back to 'writing' (the most general
- * content/organization catch-all) if nothing matches.
+ * its name + description text. Returns null when nothing matches, rather than
+ * guessing 'writing' as a catch-all — a criterion named "Neatness" or "Effort"
+ * with no keyword overlap is not evidence of writing skill, and callers (the
+ * Skill Progress charts) should treat it as unclassified, not silently fold it
+ * into Writing & Composition as if the AI/rubric had actually said so.
  */
 function classifyCriterion(name, description) {
   const text = `${name || ''} ${description || ''}`.toLowerCase();
-  let bestSkill = 'writing';
+  let bestSkill = null;
   let bestScore = 0;
   for (const skillId of Object.keys(SKILL_KEYWORDS)) {
     let score = 0;

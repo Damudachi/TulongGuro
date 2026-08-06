@@ -251,9 +251,9 @@ export default function ManageSections() {
                 <label className="block text-sm font-medium text-slate-700">Students — one per line, <span className="font-normal text-slate-500">Name, Birthday</span></label>
                 <button type="button" onClick={() => fileInputRef.current?.click()} disabled={isExtracting}
                   className="text-xs font-bold text-brand-navy bg-blue-50 hover:bg-blue-100 px-3 py-1.5 rounded-lg flex items-center gap-1 transition-colors disabled:opacity-50">
-                  {isExtracting ? 'Extracting...' : <><Upload className="w-3.5 h-3.5" /> Auto-fill from Excel/Image</>}
+                  {isExtracting ? 'Extracting...' : <><Upload className="w-3.5 h-3.5" /> Auto-fill from Excel</>}
                 </button>
-                <input type="file" accept=".xlsx,.xls,image/*" className="hidden" ref={fileInputRef} onChange={handleFileUpload} />
+                <input type="file" accept=".xlsx,.xls" className="hidden" ref={fileInputRef} onChange={handleFileUpload} />
               </div>
               <textarea required value={studentsText} onChange={(e) => setStudentsText(e.target.value)}
                 rows={6} className="w-full px-4 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-brand-navy outline-none"
@@ -272,14 +272,14 @@ export default function ManageSections() {
                         ? <span className="shrink-0 text-slate-500">password <span className="font-mono font-bold text-brand-slate">{previewPassword(r.birthday)}</span></span>
                         : r.birthdayRaw
                           ? <span className="shrink-0 text-red-600 font-medium">can&apos;t read &ldquo;{r.birthdayRaw}&rdquo;</span>
-                          : <span className="shrink-0 text-amber-600">no birthday — password123</span>}
+                          : <span className="shrink-0 text-amber-600">no birthday — random password</span>}
                     </div>
                   ))}
                 </div>
               )}
               <p className="text-xs text-slate-500 mt-1">
                 The birthday becomes the pupil&apos;s password (03/15/2014 → <span className="font-mono">03152014</span>). Leave it out and they get
-                &lsquo;password123&rsquo;. Existing students won&apos;t be duplicated.
+                a random password, shown here once they&apos;re added. Existing students won&apos;t be duplicated.
               </p>
             </div>
             <div className="flex gap-3">
@@ -386,12 +386,12 @@ export default function ManageSections() {
                                 className="text-xs font-bold text-brand-navy bg-white hover:bg-blue-100 px-2.5 py-1 rounded-lg flex items-center gap-1 transition-colors disabled:opacity-50 border border-blue-200">
                                 {isExtractingEdit ? 'Extracting...' : <><Upload className="w-3 h-3" /> Auto-fill</>}
                               </button>
-                              <input type="file" accept=".xlsx,.xls,image/*" className="hidden" ref={editFileRef} onChange={handleEditFileUpload} />
+                              <input type="file" accept=".xlsx,.xls" className="hidden" ref={editFileRef} onChange={handleEditFileUpload} />
                             </div>
                             <textarea value={addStudentsText} onChange={(e) => setAddStudentsText(e.target.value)}
                               rows={4} className="w-full px-3 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-brand-navy outline-none text-sm"
                               placeholder={"Juan Dela Cruz, 03/15/2014\nMaria Clara, 07/02/2014"} />
-                            <p className="text-[11px] text-slate-400 mt-1">Existing students won't be duplicated. Default password: 'password123'.</p>
+                            <p className="text-[11px] text-slate-400 mt-1">Existing students won't be duplicated. Default password: student's birthday (MMDDYYYY), or a random code shown after adding if no birthday is given.</p>
                           </div>
                           <div className="flex gap-2">
                             <button onClick={() => { setEditingSectionId(null); setAddStudentsText(''); }}
