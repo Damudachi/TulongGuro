@@ -5,6 +5,7 @@ import { API_URL, apiFetch, MAX_SUBMISSION_PAGES } from '../../config';
 import SubmissionImage from '../../components/SubmissionImage';
 import ImageRedactor from '../../components/ImageRedactor';
 import { deadlineInstant, formatDeadline, submissionWindow } from '../../utils/deadlines';
+import { isRasterizable, rasterizeToPageImages } from '../../utils/fileRasterize';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
 
@@ -28,6 +29,7 @@ export default function SubmitWork() {
   const [resubmitMode, setResubmitMode] = useState(false);
   const [redactingFile, setRedactingFile] = useState(null);  // { objectUrl, originalFile, index }
   const [pendingFiles, setPendingFiles] = useState([]);       // files queued for redaction
+  const [isPreparingFiles, setIsPreparingFiles] = useState(false);
   const fileRef = useRef(null);
 
   // Track whether we arrived via a direct link (so "Back" goes to dashboard)
@@ -96,17 +98,33 @@ export default function SubmitWork() {
     }
   };
 
-  const handleFile = (e) => {
+  const handleFile = async (e) => {
     const selectedFiles = Array.from(e.target.files || e.dataTransfer?.files || []);
     if (selectedFiles.length === 0) return;
     setResult(null);
 
-    // Only photographs go through the redactor: it paints over a canvas, and a
-    // PDF or Word file cannot be loaded into one. Typed work is attached
-    // directly — the server's privacy gate still reads it for a name before any
-    // grading happens, so nothing is waved through unchecked.
+    // A PDF or Word file is rendered to page images right here in the browser
+    // first, so it can go through the exact same redaction canvas as a photo
+    // instead of skipping it. Only a file that fails to render (corrupt,
+    // unusual encoding) falls back to being attached as-is — the server's
+    // privacy gate still reads it for a name before any grading happens.
     const images = selectedFiles.filter(f => (f.type || '').startsWith('image/'));
-    const documents = selectedFiles.filter(f => !(f.type || '').startsWith('image/'));
+    const toRasterize = selectedFiles.filter(f => isRasterizable(f));
+    const documents = selectedFiles.filter(f => !(f.type || '').startsWith('image/') && !isRasterizable(f));
+
+    if (toRasterize.length > 0) {
+      setIsPreparingFiles(true);
+      for (const f of toRasterize) {
+        try {
+          const remaining = MAX_SUBMISSION_PAGES - images.length;
+          const pages = await rasterizeToPageImages(f, Math.max(remaining, 1));
+          images.push(...pages);
+        } catch {
+          documents.push(f);
+        }
+      }
+      setIsPreparingFiles(false);
+    }
 
     if (documents.length > 0) {
       setFiles(prev => [...prev, ...documents].slice(0, MAX_SUBMISSION_PAGES));
@@ -114,7 +132,7 @@ export default function SubmitWork() {
     }
     if (images.length === 0) return;
 
-    // Queue photos for PII redaction one at a time
+    // Queue photos (and now, rendered document pages) for PII redaction one at a time
     setPendingFiles(images);
     setRedactingFile({ objectUrl: URL.createObjectURL(images[0]), originalFile: images[0], index: 0 });
   };
@@ -185,6 +203,15 @@ export default function SubmitWork() {
       <Loader2 className="w-6 h-6 animate-spin text-royal-600" />
     </div>
   );
+
+  if (isPreparingFiles) {
+    return (
+      <div className="fixed inset-0 z-[110] flex flex-col items-center justify-center gap-3 bg-navy-900/85 backdrop-blur-sm text-white">
+        <Loader2 className="w-8 h-8 animate-spin" />
+        <p className="text-sm font-bold">Preparing your file for preview…</p>
+      </div>
+    );
+  }
 
   // PII Redaction overlay — appears when files are queued for redaction
   if (redactingFile) {
@@ -530,7 +557,7 @@ export default function SubmitWork() {
                   <div className="p-12 flex flex-col items-center justify-center text-navy-400">
                     <div className="bg-royal-100 p-5 rounded-3xl mb-4"><Camera className="w-8 h-8 text-royal-600" /></div>
                     <p className="font-display font-extrabold text-navy-700 mb-1">Take a photo of your essay</p>
-                    <p className="text-sm font-semibold">or drag &amp; drop an image file</p>
+                    <p className="text-sm font-semibold">or drag &amp; drop an image, PDF, or Word file</p>
                     <div className="mt-4 flex items-center text-royal-700 font-extrabold text-sm">
                       <UploadCloud className="w-4 h-4 mr-1.5" /> Browse Files
                     </div>

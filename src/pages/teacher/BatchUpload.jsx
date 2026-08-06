@@ -5,11 +5,14 @@ import { getQueue, buildJob, enqueue, flushQueue } from '../../utils/offlineQueu
 import { API_URL, apiFetch, MAX_SUBMISSION_PAGES } from '../../config';
 import SubmissionImage from '../../components/SubmissionImage';
 import ImageRedactor from '../../components/ImageRedactor';
+import { isRasterizable, rasterizeToPageImages } from '../../utils/fileRasterize';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
 
-/** Photographs can be previewed and redacted in the browser; a PDF or Word
- *  file can be neither, so the staged tile shows the file instead. */
+/** A PDF or Word file is rendered to page images before staging (see
+ *  handleFilePicked), so by the time a page reaches this check it is almost
+ *  always already an image. This only still applies to the rare file that
+ *  failed to render and fell back to being staged as-is. */
 const isImageFile = (file) => (file?.type || '').startsWith('image/');
 
 const SUBMISSION_STATUS = {
@@ -59,6 +62,7 @@ export default function BatchUpload() {
   // staged page; this is the forced first pass over what was just picked.
   const [pendingRedaction, setPendingRedaction] = useState(null); // { studentId, queue: File[], index, objectUrl }
   const [privacyBlocked, setPrivacyBlocked] = useState(null); // { studentId, message } when the server refused a scan for PII
+  const [preparingFiles, setPreparingFiles] = useState(false); // rendering a picked PDF/Word file to page images, before redaction
   const fileInputRef = useRef(null);
   const cameraInputRef = useRef(null);
   const pendingUploadStudentId = useRef(null);
@@ -162,17 +166,35 @@ export default function BatchUpload() {
     (source === 'camera' ? cameraInputRef : fileInputRef).current?.click();
   };
 
-  const handleFilePicked = (e) => {
+  const handleFilePicked = async (e) => {
     const picked = Array.from(e.target.files || []);
     const targetStudentId = pendingUploadStudentId.current;
     e.target.value = '';
     if (picked.length === 0 || !targetStudentId) return;
 
-    // Documents can't be redacted — a canvas can't load a PDF or .docx — so
-    // they're staged as-is; the server's privacy gate still reads them before
-    // grading. Photos always go through the redactor first, one at a time.
-    const documents = picked.filter(f => !isImageFile(f));
+    // A PDF or Word file is rendered to page images right here in the browser
+    // first, so it can go through the exact same redaction canvas as a photo.
+    // Only a file that fails to render (corrupt, unusual encoding) falls back
+    // to being staged as-is — the server's privacy gate still reads it for a
+    // name before any grading happens.
     const images = picked.filter(isImageFile);
+    const toRasterize = picked.filter(f => isRasterizable(f));
+    const documents = picked.filter(f => !isImageFile(f) && !isRasterizable(f));
+
+    if (toRasterize.length > 0) {
+      setPreparingFiles(true);
+      const existingCount = (stagedByStudentId[targetStudentId]?.pages || []).length;
+      for (const f of toRasterize) {
+        try {
+          const remaining = MAX_PAGES - existingCount - images.length;
+          const pages = await rasterizeToPageImages(f, Math.max(remaining, 1));
+          images.push(...pages);
+        } catch {
+          documents.push(f);
+        }
+      }
+      setPreparingFiles(false);
+    }
 
     if (documents.length > 0) {
       setStagedByStudentId(prev => {
@@ -318,6 +340,14 @@ export default function BatchUpload() {
 
   return (
     <div className="p-4 md:p-8 max-w-5xl mx-auto flex flex-col gap-6 pb-24">
+      {/* Rendering a picked PDF/Word file to page images, before redaction */}
+      {preparingFiles && (
+        <div className="fixed inset-0 z-[110] flex flex-col items-center justify-center gap-3 bg-slate-900/85 backdrop-blur-sm text-white">
+          <Loader2 className="w-8 h-8 animate-spin" />
+          <p className="text-sm font-bold">Preparing the file for preview…</p>
+        </div>
+      )}
+
       {/* PII Redactor Overlay — re-touching an already staged page */}
       {redacting && (
         <ImageRedactor
@@ -524,8 +554,10 @@ export default function BatchUpload() {
                                 </div>
                               )}
                               {/* Redaction paints on a canvas, so it only applies
-                                  to photographs. A typed document is still read
-                                  by the server's privacy gate before grading. */}
+                                  to image pages — which, since PDF/Word are now
+                                  rasterized before staging, is nearly always what's
+                                  here. The rare fallback (rendering failed) is still
+                                  read by the server's privacy gate before grading. */}
                               {isImageFile(page.file) ? (
                                 <button type="button" onClick={() => setRedacting({ studentId: student.id, pageIndex: i })}
                                   title={`Cover the name on page ${i + 1}`}
@@ -552,7 +584,7 @@ export default function BatchUpload() {
                         </div>
                         <p className="text-[11px] text-slate-500 mt-1.5 flex items-start gap-1">
                           <ShieldCheck className="w-3 h-3 mt-0.5 shrink-0 text-slate-400" />
-                          Tap <span className="font-semibold">Cover</span> on any photo to black out the student&apos;s name before uploading. PDF and Word files are checked for names on the server.
+                          Tap <span className="font-semibold">Cover</span> on any page to black out the student&apos;s name before uploading. PDF and Word files are converted to page images so they can be redacted the same way — if a file can&apos;t be converted, it&apos;s checked for names on the server instead.
                         </p>
                       </>
                     ) : (
