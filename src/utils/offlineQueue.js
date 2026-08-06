@@ -52,7 +52,7 @@ function writeQueue(queue) {
 }
 
 function queueBytes(queue) {
-  return queue.reduce((sum, j) => sum + (j.imageData?.length || 0), 0);
+  return queue.reduce((sum, j) => sum + (j.images || []).reduce((s, im) => s + (im.data?.length || 0), 0), 0);
 }
 
 /**
@@ -85,23 +85,34 @@ async function fileToStorableDataUrl(file) {
 }
 
 let jobCounter = 0;
-/** Date.now() alone collided when several pages of one output were queued in the
- *  same millisecond — and removeJob() filters by id, so removing one flushed
- *  page silently dropped its siblings too. */
+/** Date.now() alone can collide when two jobs are queued in the same
+ *  millisecond, and removeJob() filters by id — a collision would make
+ *  flushing one job silently remove another queued job too. */
 function nextJobId() {
   jobCounter += 1;
   return `q_${Date.now()}_${jobCounter}`;
 }
 
 /**
- * Queue an upload for later. Async because the image has to be encoded first.
+ * Queue an upload for later. Async because every image has to be encoded first.
  * Returns the stored job, or null if it could not be persisted.
+ *
+ * All pages of one submission are encoded and stored as a single job — the
+ * server only ever composites pages it receives together in one request, so a
+ * multi-page submission that got split into per-page jobs would flush as
+ * several independent requests, each overwriting the last one's image instead
+ * of being stitched.
  */
 export async function enqueue(job) {
-  const imageData = job.imageFile ? await fileToStorableDataUrl(job.imageFile) : null;
+  const files = job.imageFiles || [];
+  const images = [];
+  for (const file of files) {
+    images.push({ data: await fileToStorableDataUrl(file), filename: file.name || 'queued-upload.jpg' });
+  }
   const queue = getQueue();
 
-  if (imageData && queueBytes(queue) + imageData.length > QUEUE_BUDGET_BYTES) {
+  const bytes = images.reduce((sum, im) => sum + (im.data?.length || 0), 0);
+  if (bytes && queueBytes(queue) + bytes > QUEUE_BUDGET_BYTES) {
     console.warn('[OfflineQueue] Queue is full; refusing new job.');
     return null;
   }
@@ -109,8 +120,7 @@ export async function enqueue(job) {
   const newJob = {
     url: job.url,
     fields: job.fields || {},
-    filename: job.filename || job.imageFile?.name || 'queued-upload.jpg',
-    imageData,
+    images,
     id: nextJobId(),
     queuedAt: new Date().toISOString(),
     retries: 0,
@@ -118,7 +128,7 @@ export async function enqueue(job) {
 
   queue.push(newJob);
   if (!writeQueue(queue)) return null;
-  console.log(`[OfflineQueue] Queued job ${newJob.id}. Total: ${queue.length}`);
+  console.log(`[OfflineQueue] Queued job ${newJob.id} (${images.length} page(s)). Total jobs: ${queue.length}`);
   return newJob;
 }
 
@@ -148,7 +158,11 @@ function dataUrlToBlob(dataUrl) {
 }
 
 /**
- * Flush all queued uploads. Returns { succeeded, failed, dropped } counts.
+ * Flush all queued uploads. Returns { succeeded, failed, dropped, droppedReasons }
+ * — droppedReasons is one { id, reason } per dropped job, since "0 succeeded, 0
+ * failed" for a queue that was actually fully dropped (the server permanently
+ * rejected every job — a submission released elsewhere in the meantime, say)
+ * reads as nothing happened unless the caller surfaces this list too.
  *
  * Strictly sequential, and deliberately so: a flush is exactly the burst that
  * trips Gemini's per-minute limit — thirty photos hitting the API the instant
@@ -157,21 +171,38 @@ function dataUrlToBlob(dataUrl) {
  *
  * @param {Function} onProgress - called with (job, index, total) after each attempt
  */
+// Guards against two flushes racing over the same localStorage queue — e.g. a
+// leaked 'online' listener (see initOfflineQueueListener) firing a second
+// auto-flush while a manual "Flush queue" click is still mid-run. Both would
+// read the same jobs, and whichever removeJob() call lands second would be
+// acting on an id that's already gone.
+let flushInFlight = null;
+
 export async function flushQueue(onProgress) {
+  if (flushInFlight) return flushInFlight;
+  flushInFlight = flushQueueInternal(onProgress).finally(() => { flushInFlight = null; });
+  return flushInFlight;
+}
+
+async function flushQueueInternal(onProgress) {
   const queue = getQueue();
-  if (!queue.length) return { succeeded: 0, failed: 0, dropped: 0 };
+  if (!queue.length) return { succeeded: 0, failed: 0, dropped: 0, droppedReasons: [] };
 
   let succeeded = 0;
   let failed = 0;
   let dropped = 0;
+  const droppedReasons = [];
 
   for (let i = 0; i < queue.length; i++) {
     const job = queue[i];
     try {
       const fd = new FormData();
-      if (job.imageData) {
-        fd.append('image', dataUrlToBlob(job.imageData), job.filename || 'queued-upload.jpg');
-      }
+      // Every page goes in the same request under the same 'images' field the
+      // online upload uses, so the server stitches them into one composite
+      // image exactly as it would for a live, connected upload.
+      (job.images || []).forEach(im => {
+        fd.append('images', dataUrlToBlob(im.data), im.filename || 'queued-upload.jpg');
+      });
       Object.entries(job.fields || {}).forEach(([k, v]) => fd.append(k, v));
 
       // Replayed long after the original attempt, so it re-reads the token
@@ -187,6 +218,7 @@ export async function flushQueue(onProgress) {
         try { reason = (await res.json()).error || reason; } catch { /* keep status */ }
         removeJob(job.id);
         dropped++;
+        droppedReasons.push({ id: job.id, reason });
         console.warn(`[OfflineQueue] Dropped job ${job.id} — server rejected it: ${reason}`);
         onProgress?.(job, i, queue.length);
         continue;
@@ -205,26 +237,33 @@ export async function flushQueue(onProgress) {
     onProgress?.(job, i, queue.length);
   }
 
-  return { succeeded, failed, dropped };
+  return { succeeded, failed, dropped, droppedReasons };
 }
 
 /**
- * Describe an upload for enqueue(). The File is kept as-is here and encoded by
- * enqueue(), so nothing needs revoking and nothing leaks if the job is never
- * queued.
+ * Describe an upload for enqueue(). The Files are kept as-is here and encoded
+ * by enqueue(), so nothing needs revoking and nothing leaks if the job is
+ * never queued. Accepts either one File or an array — a multi-page submission
+ * passes every page so they're queued and later flushed together.
  */
-export function buildJob(url, fields, imageFile) {
-  return { url, fields, imageFile, filename: imageFile?.name };
+export function buildJob(url, fields, imageFiles) {
+  const files = Array.isArray(imageFiles) ? imageFiles : (imageFiles ? [imageFiles] : []);
+  return { url, fields, imageFiles: files };
 }
 
 /**
- * Set up automatic queue flush when the browser comes back online.
- * Call this once at app startup.
+ * Set up automatic queue flush when the browser comes back online. Returns an
+ * unsubscribe function — call it from whatever effect calls this, or every
+ * remount (React StrictMode in dev, a logout/login cycle in production) leaves
+ * the old 'online' listener attached on top of the new one, so a single
+ * reconnect fires N concurrent flushes over the same queue.
  */
 export function initOfflineQueueListener(onFlush) {
-  window.addEventListener('online', async () => {
+  const handler = async () => {
     console.log('[OfflineQueue] Back online — flushing queue...');
     const result = await flushQueue();
     onFlush?.(result);
-  });
+  };
+  window.addEventListener('online', handler);
+  return () => window.removeEventListener('online', handler);
 }

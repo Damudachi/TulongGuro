@@ -344,4 +344,9 @@ module.exports = {
   loginRateLimit,
   registerRateLimit,
   platformRateLimit,
+  // Exported so scripts/verify-route-authorization.js can check every
+  // registered route against the same allowlist authorizePath() itself uses,
+  // instead of keeping a second copy that can drift out of sync.
+  TEACHER_ROUTE_SEGMENTS,
+  STUDENT_ROUTE_SEGMENTS,
 };

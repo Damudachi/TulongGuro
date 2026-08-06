@@ -8,7 +8,8 @@
     "start": "node server.js",
     "verify:grading": "node scripts/verify-grading.js",
     "verify:dashboard": "node scripts/verify-dashboard.js",
-    "verify": "npm run verify:grading && npm run verify:dashboard",
+    "verify:routes": "node scripts/verify-route-authorization.js",
+    "verify": "npm run verify:grading && npm run verify:dashboard && npm run verify:routes",
     "report:grades": "node scripts/grade-migration-report.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },

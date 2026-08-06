@@ -217,6 +217,15 @@ export default function OutputDetails() {
         </div>
       </div>
 
+      {/* AI Disclosure — BP-5: nothing previously told the student or parent
+          receiving this grade that AI was involved in preparing it. */}
+      <div className="flex items-start gap-2.5 bg-sky-50 border border-sky-100 rounded-2xl p-4 mb-4 text-sky-800">
+        <Sparkles className="w-4 h-4 mt-0.5 shrink-0" />
+        <p className="text-xs leading-relaxed">
+          This feedback was prepared with AI assistance and reviewed by your teacher before being shown to you.
+        </p>
+      </div>
+
       {/* ✅ Strengths — Always visible */}
       {feedback?.strengths && (
         <div className="bg-white rounded-2xl border border-slate-200 p-6 mb-4 shadow-sm">

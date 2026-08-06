@@ -190,10 +190,19 @@ function descriptorBands(passing = PASSING_GRADE) {
   ]);
 }
 
-/** Which descriptor band a percentage falls into. Null for ungraded. */
+/**
+ * Which descriptor band a percentage falls into. Null for ungraded.
+ *
+ * Rounds before comparing, the same way computeGrade's isPassing does
+ * (Math.round(final) >= passing) — without this, a grade like 74.6 against a
+ * passing line of 75 is isPassing: true but bands as "Did Not Meet
+ * Expectations", because isPassing rounds first and this didn't. Every
+ * current caller happens to round before calling this, which is exactly the
+ * kind of caller discipline that shouldn't be load-bearing.
+ */
 function bandKeyFor(value, passing = PASSING_GRADE) {
   if (value === null || value === undefined) return null;
-  const band = descriptorBands(passing).find(b => value >= b.min);
+  const band = descriptorBands(passing).find(b => Math.round(value) >= b.min);
   return band ? band.key : null;
 }
 
@@ -256,7 +265,14 @@ function starsFor(submissions, passing = PASSING_GRADE) {
   }, 0);
 }
 
-/** The average the app shows today: a plain mean of each activity's percent. */
+/**
+ * The old averaging method: a plain, unweighted mean of each activity's
+ * percent — no longer live anywhere in the app (computeGrade's points-weighted
+ * average replaced it). Kept only as the "before" side of the fairness-fix
+ * regression test in scripts/verify-grading.js and the historical comparison
+ * in scripts/grade-migration-report.js; not a fallback path, so don't wire it
+ * back into a route on the assumption it's an equivalent, simpler average.
+ */
 function legacyAverage(graded) {
   const valid = (graded || []).filter(g => typeof g.percent === 'number');
   if (valid.length === 0) return null;

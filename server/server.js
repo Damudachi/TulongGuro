@@ -701,6 +701,12 @@ if (aiConfigured) {
   if (aiApiKeys.length === 1) {
     console.log('   note: one credential in use. Quota is metered per project, so a key from a second project doubles the daily budget.');
   }
+  // Fires once shortly after boot (so a restart doesn't wait out the rest of
+  // an hour for its first run) and is then checked hourly — a cheap no-op on
+  // every check except the first one after the calendar day actually turns
+  // over, since runDailyQuotaSelfCheck skips out early otherwise.
+  setTimeout(() => runDailyQuotaSelfCheck().catch(() => {}), 60 * 1000);
+  setInterval(() => runDailyQuotaSelfCheck().catch(() => {}), 60 * 60 * 1000);
 } else {
   console.log('⚠ Gemini AI disabled: set GEMINI_API_KEY (or GEMINI_API_KEY1) in server/.env to enable AI features');
 }
@@ -783,11 +789,58 @@ function maskUnreleasedForStudent(sub, auth) {
   };
 }
 
+// Boilerplate the prompt explicitly forbids next to a sub-max score (see
+// GRADING_SYSTEM_INSTRUCTION's SCORE/FEEDBACK CONSISTENCY section) — present
+// anyway often enough that it's worth catching in code, not just in the prompt.
+const GENERIC_GROWTH_PHRASES = [
+  /keep up the good work/i,
+  /review (it|this) once more/i,
+  /^good job\.?$/i,
+  /^well done\.?$/i,
+  /keep practicing/i,
+  /nothing (much )?to improve/i,
+];
+
+/**
+ * A cheap, code-side re-check of the rule GRADING_SYSTEM_INSTRUCTION already
+ * states in the prompt: a sub-max rubric score must be explained by a real,
+ * specific shortcoming. The prompt alone isn't a guarantee the model followed
+ * it — this exact bug class has already needed two prompt-tuning fixes
+ * (b915605, 60c5c52) instead of a code-level check. Not exhaustive (it can't
+ * verify an explanation is *true*, only that one was actually given), but it
+ * catches the two failure modes those fixes were chasing: no growth item at
+ * all, or one that's too generic/short to explain the lost points.
+ */
+function hasScoreFeedbackMismatch(raw) {
+  if (raw?.noTextDetected) return false;
+  const rubricScores = Array.isArray(raw?.rubricScores) ? raw.rubricScores : [];
+  const belowMax = rubricScores.some(r => {
+    const score = Number(r?.score), max = Number(r?.maxPoints);
+    return Number.isFinite(score) && Number.isFinite(max) && score < max;
+  });
+  if (!belowMax) return false;
+
+  const growth = Array.isArray(raw?.areasForGrowth) ? raw.areasForGrowth : [];
+  const isSubstantive = (item) => {
+    const explanation = (item?.explanation || '').trim();
+    const quote = (item?.studentQuote || '').trim();
+    if (explanation.length < 10 || quote.length === 0) return false;
+    return !GENERIC_GROWTH_PHRASES.some(re => re.test(explanation));
+  };
+  return !growth.some(isSubstantive);
+}
+
 function normalisePaperResult(raw, modelId, gradeLevelAssumed = false) {
   if (raw?.privacyViolationDetected === true) {
     return { privacyViolation: true, violationType: raw.privacyViolationType || 'name', aiSource: modelId };
   }
-  return { ...raw, privacyViolation: false, aiSource: modelId, gradeLevelAssumed };
+  return {
+    ...raw,
+    privacyViolation: false,
+    aiSource: modelId,
+    gradeLevelAssumed,
+    scoreFeedbackMismatch: hasScoreFeedbackMismatch(raw)
+  };
 }
 
 /**
@@ -1066,6 +1119,43 @@ function gradingCapacitySnapshot() {
     queueDepth: geminiQueueDepth(),
     models
   };
+}
+
+/**
+ * The daily-budget constant (AI_DAILY_BUDGET_PER_MODEL) has already drifted
+ * twice — 20 -> 250 -> 20 — discoverable only by hitting the real ceiling and
+ * reading a live 429 body, since Google exposes no quota-remaining API. This
+ * is what makes that discovery automatic instead of accidental: once a real
+ * calendar day, on just the first pool bucket (a canary, not a real grading
+ * call — keeping this "low-cost" per the fix means not spending the whole
+ * pool on it), send the cheapest possible request and log whatever
+ * quota-error metadata comes back, so a tier change surfaces as a log line
+ * the same day instead of a mystery stall someone has to debug later.
+ */
+let lastQuotaSelfCheckDay = null;
+async function runDailyQuotaSelfCheck() {
+  if (!gradingPool.length) return;
+  rollPoolDayIfNeeded();
+  const today = gradingPoolDay;
+  if (today === lastQuotaSelfCheckDay) return;
+  lastQuotaSelfCheckDay = today;
+
+  const entry = gradingPool[0];
+  try {
+    await entry.model.generateContent('Reply with exactly one word: OK');
+    // Counted against the tracked budget so gradingCapacitySnapshot's
+    // teacher-facing "checks left today" stays honest about the one unit
+    // this just spent.
+    entry.used++;
+    console.log(`✅ Quota self-check (${entry.label}): responded normally today.`);
+  } catch (err) {
+    const cls = classifyAiError(err);
+    if (cls.quota) {
+      console.error(`🚨 Quota self-check (${entry.label}) hit a quota error before any real grading ran today — the configured daily budget (AI_DAILY_BUDGET_PER_MODEL=${AI_DAILY_BUDGET_PER_MODEL}) may no longer match what Google actually grants this project/tier. Full error: ${cls.message}`);
+    } else {
+      console.log(`⚠ Quota self-check (${entry.label}) failed for a non-quota reason: ${cls.message.slice(0, 200)}`);
+    }
+  }
 }
 
 // ─────────────────────────────────────────
@@ -2264,6 +2354,37 @@ app.delete('/api/admin/:adminId/sections/:sectionId/students/:studentId', async 
   } catch (e) { sendAdminError(res, e); }
 });
 
+/**
+ * Reset a student's password back to their birthdate (MMDDYYYY) — the same
+ * credential enrolStudents would have given them, so this is "give them their
+ * password back," not "hand out a new secret." Falls back to the shared
+ * default for a roster entry with no birthday on file. BP-3: this was the
+ * only piece of the "reset to birthdate" story that didn't already exist —
+ * the equivalent for teachers (PUT .../teachers/:teacherId/password) already
+ * did.
+ */
+app.put('/api/admin/:adminId/sections/:sectionId/students/:studentId/password', async (req, res) => {
+  try {
+    const admin = await requireAdminSchool(req.params.adminId);
+    const section = await sectionInSchool(admin, req.params.sectionId);
+    const student = await prisma.user.findUnique({ where: { id: req.params.studentId } });
+    if (!student || student.sectionId !== section.id || student.role !== 'STUDENT') {
+      return res.status(404).json({ success: false, error: 'Student not found in this section.' });
+    }
+    const newPassword = student.birthdate ? birthdayPassword(student.birthdate) : DEFAULT_STUDENT_PASSWORD;
+    const revokedAt = new Date();
+    await prisma.user.update({
+      where: { id: student.id },
+      data: {
+        password: await bcrypt.hash(newPassword, BCRYPT_SALT_ROUNDS),
+        sessionsValidFrom: revokedAt,
+      }
+    });
+    markRevoked(student.id, revokedAt);
+    res.json({ success: true, password: newPassword, source: student.birthdate ? 'birthday' : 'default' });
+  } catch (e) { sendAdminError(res, e); }
+});
+
 /** Delete a section, once nothing depends on it. */
 app.delete('/api/admin/:adminId/sections/:sectionId', async (req, res) => {
   try {
@@ -2672,10 +2793,16 @@ app.post('/api/teacher/quick-setup', async (req, res) => {
     if (!teacherId || !sectionName || !subject || !gradeLevel) {
       return res.status(400).json({ success: false, error: 'Missing required fields' });
     }
+    // Without this, a section created through onboarding never gets a
+    // schoolId at all (unlike POST /api/teacher/sections, which already sets
+    // it) — leaving every submission under it exempt from the same-school
+    // scoping GET /api/submissions/:id now enforces.
+    const creator = await prisma.user.findUnique({ where: { id: teacherId }, select: { schoolId: true } });
+    const schoolId = creator?.schoolId || null;
 
     const result = await prisma.$transaction(async (tx) => {
       const section = await tx.section.create({
-        data: { name: sectionName.trim(), teacherId }
+        data: { name: sectionName.trim(), teacherId, schoolId }
       });
       const cls = await tx.class.create({
         data: {
@@ -2708,6 +2835,9 @@ app.delete('/api/teacher/demo-data/:classId', async (req, res) => {
       include: { activities: { include: { submissions: true } }, section: true }
     });
     if (!cls) return res.status(404).json({ success: false, error: 'Class not found' });
+    if (cls.teacherId !== req.auth.sub) {
+      return res.status(403).json({ success: false, error: 'You can only delete demo data from your own classes.' });
+    }
 
     // Delete in FK-safe order: Submissions → Activities → Class → Demo Student → Section
     await prisma.$transaction(async (tx) => {
@@ -3196,6 +3326,9 @@ RULES:
 
 app.post('/api/teacher/classes/:id/parse-curriculum', async (req, res) => {
   try {
+    const owned = await teacherOwnsClass(req.params.id, req.auth.sub);
+    if (!owned.ok) return res.status(owned.code).json({ success: false, error: owned.error });
+
     const classRecord = await prisma.class.findUnique({
       where: { id: req.params.id },
       select: { id: true, curriculumFile: true, subject: true, gradeLevel: true }
@@ -3240,6 +3373,9 @@ app.post('/api/teacher/classes/:id/parse-curriculum', async (req, res) => {
 // Get lessons for a class
 app.get('/api/teacher/classes/:id/lessons', async (req, res) => {
   try {
+    const owned = await teacherOwnsClass(req.params.id, req.auth.sub);
+    if (!owned.ok) return res.status(owned.code).json({ success: false, error: owned.error });
+
     const lessons = await prisma.classLesson.findMany({
       where: { classId: req.params.id },
       orderBy: [{ weekNumber: 'asc' }, { createdAt: 'asc' }]
@@ -3268,6 +3404,14 @@ app.get('/api/classes/:classId', async (req, res) => {
       }
     }
   });
+  if (!classData) return res.status(404).json({ success: false, error: 'Class not found.' });
+  // Every caller of this route is a teacher-facing screen (Batch Upload, Class
+  // Hub, Score Entry, Activity Builder) opening a class they teach — nothing
+  // reads it cross-class today, so unlike /api/submissions/:id there is no
+  // legitimate "staff may open any" case here to preserve.
+  if (req.auth.role === 'TEACHER' && classData.teacherId !== req.auth.sub) {
+    return res.status(403).json({ success: false, error: 'You can only view your own classes.' });
+  }
   res.json({ success: true, classData });
 });
 
@@ -3296,11 +3440,9 @@ app.post('/api/teacher/activities/:activityId/scores', async (req, res) => {
       return res.status(400).json({ success: false, error: 'scores must be an array.' });
     }
 
-    const activity = await prisma.activity.findUnique({
-      where: { id: activityId },
-      select: { id: true, points: true, submissionMode: true }
-    });
-    if (!activity) return res.status(404).json({ success: false, error: 'Activity not found' });
+    const owned = await teacherOwnsActivity(activityId, req.auth.sub);
+    if (!owned.ok) return res.status(owned.code).json({ success: false, error: owned.error });
+    const activity = owned.activity;
     if (activity.submissionMode !== 'MANUAL_SCORE') {
       return res.status(400).json({
         success: false,
@@ -3555,6 +3697,9 @@ app.post('/api/teacher/activities', (req, res, next) => {
 // Update activity details (deadline, instructions)
 app.put('/api/teacher/activities/:activityId', async (req, res) => {
   try {
+    const owned = await teacherOwnsActivity(req.params.activityId, req.auth.sub);
+    if (!owned.ok) return res.status(owned.code).json({ success: false, error: owned.error });
+
     const { title, type, points, topic, deadline, lateUntil, instructions, submissionMode, maxAttempts, rubric } = req.body;
 
     if (rubric !== undefined) {
@@ -3601,7 +3746,9 @@ app.put('/api/teacher/activities/:activityId', async (req, res) => {
 app.delete('/api/teacher/activities/:activityId', async (req, res) => {
   try {
     const { activityId } = req.params;
-    
+    const owned = await teacherOwnsActivity(activityId, req.auth.sub);
+    if (!owned.ok) return res.status(owned.code).json({ success: false, error: owned.error });
+
     const subCount = await prisma.submission.count({ where: { activityId } });
     if (subCount > 0) {
       return res.status(400).json({ success: false, error: 'Cannot delete activity. Students have already uploaded submissions.' });
@@ -4171,25 +4318,45 @@ async function generateSubmissionFeedback(imagePaths, activityId, studentId) {
         const actForSection = await prisma.activity.findUnique({ where: { id: activityId }, include: { class: { select: { sectionId: true } } } });
         const sectionId = actForSection?.class?.sectionId;
         if (sectionId) {
-          const recentGraded = await prisma.submission.findMany({
-            where: {
-              status: 'GRADED',
-              activity: { class: { sectionId } }
-            },
-            orderBy: { updatedAt: 'desc' },
-            take: 3,
-            select: {
-              hitlScore: true,
-              hitlFeedback: true,
-              student: { select: { name: true } },
-              activity: { select: { title: true, type: true } }
-            }
-          });
+          const [recentGraded, roster] = await Promise.all([
+            prisma.submission.findMany({
+              where: {
+                status: 'GRADED',
+                activity: { class: { sectionId } }
+              },
+              orderBy: { updatedAt: 'desc' },
+              take: 3,
+              select: {
+                hitlScore: true,
+                hitlFeedback: true,
+                activity: { select: { title: true, type: true } }
+              }
+            }),
+            // The whole section's roster, not just the 3 sampled students — a
+            // teacher can type any enrolled name into feedback ("see me about
+            // this, Juan" while grading someone else's paper), and this block
+            // is sent to Gemini as background context for a *different*
+            // student's grading call. The image-based privacy gate never sees
+            // this text at all, so scrubbing has to happen here.
+            prisma.section.findUnique({ where: { id: sectionId }, select: { students: { select: { name: true } } } })
+          ]);
           if (recentGraded.length > 0) {
+            const nameTokens = new Set();
+            (roster?.students || []).forEach(s => {
+              (s.name || '').split(/\s+/).forEach(tok => { if (tok.length >= 3) nameTokens.add(tok); });
+            });
+            const scrubNames = (text) => {
+              let out = text;
+              for (const tok of nameTokens) {
+                out = out.replace(new RegExp(`\\b${tok.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'gi'), '[student]');
+              }
+              return out;
+            };
             sectionContext = '\n\nSECTION CONTEXT — Recent teacher-approved work from this section (use as baseline for this section\'s level):\n' +
               recentGraded.map((s, i) => {
                 let fb = s.hitlFeedback || '';
                 try { const p = JSON.parse(fb); fb = p.strengths || fb; } catch {}
+                fb = scrubNames(fb);
                 return `Student ${i + 1}: Score ${s.hitlScore}/100 for "${s.activity?.title}" — Feedback: "${fb.slice(0, 150)}..."`;
               }).join('\n');
           }
@@ -4458,8 +4625,12 @@ async function gradeSingleSubmission(imagePath, activityId, studentId) {
  *
  * Shared by the teacher's review screen and the student's own results page, so
  * the ownership check lives here rather than in the path rules: a student may
- * only open their own, staff may open any. Without it a student could page
- * through classmates' work and feedback by changing the id in the URL.
+ * only open their own, staff may open any *within their own school*. Without
+ * the student check, a student could page through classmates' work and
+ * feedback by changing the id in the URL; without the school check, staff at
+ * one school could do the same across every other school on the platform —
+ * every other model in the app enforces that isolation, this read path used
+ * not to.
  */
 app.get('/api/submissions/:id', async (req, res) => {
   const sub = await prisma.submission.findUnique({
@@ -4471,12 +4642,29 @@ app.get('/api/submissions/:id', async (req, res) => {
     // may have nothing to do with what the activity was set to measure.
     include: {
       student: true,
-      activity: { include: { class: true, classLesson: { select: { title: true, defaultRubric: true } } } }
+      activity: {
+        include: {
+          class: { include: { section: { select: { schoolId: true } } } },
+          classLesson: { select: { title: true, defaultRubric: true } }
+        }
+      }
     }
   });
   if (!sub) return res.status(404).json({ success: false, error: 'Submission not found.' });
   if (req.auth.role === 'STUDENT' && sub.studentId !== req.auth.sub) {
     return res.status(403).json({ success: false, code: 'FORBIDDEN', error: 'You can only see your own work.' });
+  }
+  if (req.auth.role !== 'STUDENT') {
+    const submissionSchoolId = sub.activity?.class?.section?.schoolId;
+    if (submissionSchoolId) {
+      const caller = await prisma.user.findUnique({ where: { id: req.auth.sub }, select: { schoolId: true } });
+      // An unaffiliated staff account (no school yet) falls back to seeing
+      // only its own work, same as the sections endpoint — nothing leaks
+      // between accounts that aren't tied to a school at all.
+      if (caller?.schoolId !== submissionSchoolId) {
+        return res.status(403).json({ success: false, code: 'FORBIDDEN', error: 'You can only view submissions from your own school.' });
+      }
+    }
   }
   // Validated but not yet published. The student's own row exists and they may
   // know it does, so this is a "not ready" answer rather than a 403 — the paper
@@ -4495,8 +4683,14 @@ app.get('/api/submissions/:id', async (req, res) => {
 // Trigger AI grading on an existing PENDING submission
 app.post('/api/teacher/submissions/:id/analyze', async (req, res) => {
   try {
-    const sub = await prisma.submission.findUnique({ where: { id: req.params.id } });
+    const sub = await prisma.submission.findUnique({
+      where: { id: req.params.id },
+      include: { activity: { include: { class: { select: { teacherId: true } } } } }
+    });
     if (!sub) return res.status(404).json({ error: 'Submission not found' });
+    if (sub.activity?.class?.teacherId !== req.auth.sub) {
+      return res.status(403).json({ success: false, error: 'You can only check papers for your own classes.' });
+    }
     // Blocking on aiScore !== null used to also block the one case a teacher
     // most needs this for: a blurry or illegible photo that came back scored 0
     // with no readable text found. The real line is validation, not "has an AI
@@ -4559,6 +4753,7 @@ app.post('/api/teacher/submissions/:id/analyze', async (req, res) => {
         // a cropped copy isn't left with a stale Privacy Act warning.
         privacyViolation: false,
         gradeLevelAssumed: !!aiData.gradeLevelAssumed,
+        scoreFeedbackMismatch: !!aiData.scoreFeedbackMismatch,
         gradedAt: new Date(),
         retainUntil: sub.retainUntil ?? await retainUntilForActivity(sub.activityId)
       },
@@ -4644,9 +4839,16 @@ const AI_BATCH_SIZE = Math.max(1, Number(process.env.AI_BATCH_SIZE || 1));
 
 /** In-memory job registry. Checking a class set takes minutes — far longer than
  *  a teacher's phone will hold a request open on school wifi — so the work is a
- *  job the client polls, not a response it waits on. */
+ *  job the client polls, not a response it waits on.
+ *
+ *  Being in-memory, a redeploy mid-batch silently drops every running job —
+ *  the next poll just 404s. SERVER_BOOT_ID exists so that 404 can tell the two
+ *  causes apart: the frontend remembers the boot id current when it started
+ *  the job, and if a later poll's boot id has changed, the server was
+ *  restarted underneath the job rather than the job simply being unknown. */
 const aiJobs = new Map();
 const AI_JOB_TTL_MS = 60 * 60 * 1000;
+const SERVER_BOOT_ID = crypto.randomUUID();
 
 function pruneAiJobs() {
   const cutoff = Date.now() - AI_JOB_TTL_MS;
@@ -4659,6 +4861,14 @@ function setJobItem(job, submissionId, state, extra = {}) {
   job.items.set(submissionId, { submissionId, state, ...extra });
 }
 
+// Consecutive logGradingEvent failures since the last success. A single
+// failure is usually a blip (a momentary connection hiccup); a run of them
+// means the audit log itself — the table meant to let a disputed grade be
+// reconstructed months later — is silently losing completeness while grading
+// keeps sailing through, and nothing else in this codebase would ever notice.
+let consecutiveAuditLogFailures = 0;
+const AUDIT_LOG_FAILURE_ALERT_THRESHOLD = 3;
+
 /**
  * Best-effort append to a submission's grade-of-record audit trail — see
  * GradingAuditLog in schema.prisma for why this exists. Never allowed to break
@@ -4669,16 +4879,55 @@ function setJobItem(job, submissionId, state, extra = {}) {
 async function logGradingEvent(submissionId, event, { actorId = null, score = null } = {}) {
   try {
     await prisma.gradingAuditLog.create({ data: { submissionId, event, actorId, score } });
+    consecutiveAuditLogFailures = 0;
   } catch (err) {
-    console.log(`⚠ Could not record grading audit log (${event} on ${submissionId}): ${err.message?.slice(0, 100)}`);
+    consecutiveAuditLogFailures++;
+    const message = `Could not record grading audit log (${event} on ${submissionId}): ${err.message?.slice(0, 100)}`;
+    // console.error rather than console.log once this is no longer an
+    // isolated blip — most hosting/log platforms (this one included, via
+    // Render's log-based alerting) treat stderr output as the signal worth
+    // paging on, where a console.log line is easy to scroll past unnoticed.
+    if (consecutiveAuditLogFailures >= AUDIT_LOG_FAILURE_ALERT_THRESHOLD) {
+      console.error(`🚨 ${message} (${consecutiveAuditLogFailures} consecutive audit-log write failures — GradingAuditLog may be losing completeness)`);
+    } else {
+      console.log(`⚠ ${message}`);
+    }
   }
 }
 
-/** Write one paper's AI result onto its submission. Shared by the single-paper
- *  analyze endpoint and the batch runner so both record the identical shape. */
+/**
+ * Best-effort in-app notification — same treatment as logGradingEvent: never
+ * allowed to break the flow (a release, say) that triggers it. This is BP-1's
+ * minimal starting point: grades, deadlines, and releases were entirely
+ * silent outside the app before this, with nothing surfacing a released grade
+ * except the student happening to open it.
+ */
+async function createNotification(userId, { type, title, body = null, link = null }) {
+  try {
+    await prisma.notification.create({ data: { userId, type, title, body, link } });
+  } catch (err) {
+    console.log(`⚠ Could not create notification (${type} for ${userId}): ${err.message?.slice(0, 100)}`);
+  }
+}
+
+/**
+ * Write one paper's AI result onto its submission. Shared by the single-paper
+ * analyze endpoint and the batch runner so both record the identical shape.
+ *
+ * Scoped with `status: 'PENDING'` in the where clause rather than a plain
+ * `update()` by id: a batch job snapshots its queue at start and can run for
+ * minutes, so a teacher can validate a paper (flipping it to GRADED) while
+ * this exact submission is still mid-batch. Without the status guard, the
+ * batch result lands after the validation and silently reverts a teacher's
+ * approved grade back to PENDING — the paper then drops out of "release all"
+ * with no error, since that only pulls status: 'GRADED'. Scoping the update
+ * makes a late result a no-op instead: `count === 0` means someone already
+ * validated this paper, so the caller reports it as superseded rather than
+ * pretending the write happened.
+ */
 async function persistGradingResult(submissionId, activityId, aiData, existingRetainUntil) {
-  const updated = await prisma.submission.update({
-    where: { id: submissionId },
+  const result = await prisma.submission.updateMany({
+    where: { id: submissionId, status: 'PENDING' },
     data: {
       aiScore: aiData.score,
       aiFeedback: JSON.stringify({
@@ -4692,12 +4941,14 @@ async function persistGradingResult(submissionId, activityId, aiData, existingRe
       status: 'PENDING',
       privacyViolation: false,
       gradeLevelAssumed: !!aiData.gradeLevelAssumed,
+      scoreFeedbackMismatch: !!aiData.scoreFeedbackMismatch,
       gradedAt: new Date(),
       retainUntil: existingRetainUntil ?? await retainUntilForActivity(activityId)
     }
   });
+  if (result.count === 0) return { superseded: true };
   await logGradingEvent(submissionId, 'AI_GRADED', { score: aiData.score });
-  return updated;
+  return { superseded: false };
 }
 
 async function applyBatchResult(job, sub, result) {
@@ -4717,7 +4968,12 @@ async function applyBatchResult(job, sub, result) {
       error: 'Identifying information was detected on this paper, so it was not graded.'
     });
   }
-  await persistGradingResult(sub.id, job.activityId, result, sub.retainUntil);
+  const { superseded } = await persistGradingResult(sub.id, job.activityId, result, sub.retainUntil);
+  if (superseded) {
+    return setJobItem(job, sub.id, 'superseded', {
+      error: 'A teacher validated this paper while the AI check was still running, so the AI result was discarded — the teacher\'s grade stands.'
+    });
+  }
   setJobItem(job, sub.id, 'done', { score: result.score });
 }
 
@@ -4808,13 +5064,15 @@ function serialiseJob(job) {
     flagged: count('flagged'),
     failed: count('failed'),
     skipped: count('skipped'),
+    superseded: count('superseded'),
     pending: count('pending'),
     realignments: job.realignments,
     stoppedReason: job.stoppedReason || null,
     stoppedMessage: job.stoppedMessage || null,
     batchSize: AI_BATCH_SIZE,
     items,
-    capacity: gradingCapacitySnapshot()
+    capacity: gradingCapacitySnapshot(),
+    bootId: SERVER_BOOT_ID
   };
 }
 
@@ -4829,6 +5087,16 @@ async function teacherOwnsActivity(activityId, teacherId) {
     return { ok: false, code: 403, error: 'You can only check papers for your own classes.' };
   }
   return { ok: true, activity };
+}
+
+/** Ensures the signed-in teacher owns the class they are acting on. */
+async function teacherOwnsClass(classId, teacherId) {
+  const cls = await prisma.class.findUnique({ where: { id: classId }, select: { id: true, teacherId: true } });
+  if (!cls) return { ok: false, code: 404, error: 'Class not found.' };
+  if (cls.teacherId !== teacherId) {
+    return { ok: false, code: 403, error: 'You can only manage your own classes.' };
+  }
+  return { ok: true, class: cls };
 }
 
 /** What one "AI-check all" press would cost, so the teacher can see it before
@@ -4913,14 +5181,17 @@ app.post('/api/teacher/activities/:activityId/ai-check', async (req, res) => {
 
 app.get('/api/teacher/ai-jobs/:jobId', (req, res) => {
   const job = aiJobs.get(req.params.jobId);
-  if (!job) return res.status(404).json({ success: false, error: 'That AI check is no longer available.' });
+  // bootId rides along even on a 404 — it's the only way the frontend can
+  // tell "the server restarted mid-batch" apart from "this job id was never
+  // real," since a restarted server has literally nothing left of the job.
+  if (!job) return res.status(404).json({ success: false, error: 'That AI check is no longer available.', bootId: SERVER_BOOT_ID });
   if (job.teacherId !== req.auth.sub) return res.status(403).json({ success: false, error: 'That AI check belongs to another teacher.' });
   res.json({ success: true, ...serialiseJob(job) });
 });
 
 app.delete('/api/teacher/ai-jobs/:jobId', (req, res) => {
   const job = aiJobs.get(req.params.jobId);
-  if (!job) return res.status(404).json({ success: false, error: 'That AI check is no longer available.' });
+  if (!job) return res.status(404).json({ success: false, error: 'That AI check is no longer available.', bootId: SERVER_BOOT_ID });
   if (job.teacherId !== req.auth.sub) return res.status(403).json({ success: false, error: 'That AI check belongs to another teacher.' });
   job.cancelled = true;
   res.json({ success: true, ...serialiseJob(job) });
@@ -4965,13 +5236,19 @@ app.post('/api/teacher/activities/:activityId/release', async (req, res) => {
       // class a set of marks no human ever approved, which is the exact thing
       // the human-in-the-loop design exists to prevent.
       where: { activityId: req.params.activityId, status: 'GRADED', releasedAt: null },
-      select: { id: true, hitlScore: true }
+      select: { id: true, hitlScore: true, studentId: true }
     });
     const result = await prisma.submission.updateMany({
       where: { id: { in: toRelease.map(s => s.id) } },
       data: { releasedAt: new Date() }
     });
     await Promise.all(toRelease.map(s => logGradingEvent(s.id, 'RELEASED', { actorId: req.auth.sub, score: s.hitlScore })));
+    await Promise.all(toRelease.map(s => createNotification(s.studentId, {
+      type: 'GRADE_RELEASED',
+      title: 'Your grade is ready',
+      body: `Your work for "${owned.activity.title}" has been graded.`,
+      link: `/student/output/${s.id}`
+    })));
     res.json({ success: true, released: result.count });
   } catch (e) {
     console.error('release error:', e);
@@ -5003,6 +5280,12 @@ app.post('/api/teacher/submissions/:id/release', async (req, res) => {
     // on an already-released paper is a no-op, not a second release event.
     if (!wasAlreadyReleased) {
       await logGradingEvent(sub.id, 'RELEASED', { actorId: req.auth.sub, score: sub.hitlScore });
+      await createNotification(sub.studentId, {
+        type: 'GRADE_RELEASED',
+        title: 'Your grade is ready',
+        body: `Your work for "${sub.activity?.title || 'an activity'}" has been graded.`,
+        link: `/student/output/${sub.id}`
+      });
     }
     res.json({ success: true, submission: updated });
   } catch (e) {
@@ -5155,6 +5438,10 @@ app.put('/api/teacher/submissions/:id/grade', async (req, res) => {
       where: { id: req.params.id },
       include: { activity: { include: { class: true } } }
     });
+    if (!sub) return res.status(404).json({ success: false, error: 'Submission not found.' });
+    if (sub.activity?.class?.teacherId !== teacherId) {
+      return res.status(403).json({ success: false, error: 'You can only grade papers from your own classes.' });
+    }
 
     const updated = await prisma.submission.update({
       where: { id: req.params.id },
@@ -5231,20 +5518,21 @@ app.get('/api/teacher/:teacherId/analytics', async (req, res) => {
             // skill filter — the rubric is what says what an activity measures.
             rubric: true,
             classLesson: { select: { defaultRubric: true } },
+            // Subject + gradeLevel drive workingAverageAcrossSubjects' per-subject
+            // weighting below — without this, a teacher handling more than one
+            // subject for a section (the norm for a self-contained K-3/K-6
+            // homeroom) had every student's average computed under whichever
+            // class happened to be classes[0], silently wrong for every other
+            // subject they teach.
+            class: { select: { subject: true, gradeLevel: true } },
           }
         }
       }
     });
 
-    // One policy per teacher view. Classes here share a subject in practice;
-    // where they don't, the DepEd defaults for each subject are close enough
-    // for a cross-class overview, and per-class grades use the real policy.
     const teacherRecord = await prisma.user.findUnique({
       where: { id: req.params.teacherId }, select: { schoolId: true }
     });
-    const analyticsPolicy = await gradingPolicyFor(
-      teacherRecord?.schoolId, classes[0]?.gradeLevel, classes[0]?.subject
-    );
     const { passingGrade } = await gradingSettingsFor(teacherRecord?.schoolId);
 
     const byStudent = new Map();
@@ -5298,10 +5586,11 @@ app.get('/api/teacher/:teacherId/analytics', async (req, res) => {
       const percents = subs.map(s => s.hitlScore ?? s.aiScore ?? 0);
       const pointsEarned = subs.reduce((sum, s) => sum + ((s.hitlScore ?? s.aiScore ?? 0) / 100) * (s.activity?.points || 100), 0);
       const pointsPossible = subs.reduce((sum, s) => sum + (s.activity?.points || 100), 0);
-      // Points-weighted, so a 50-point activity no longer counts as much as a
-      // 100-point one. `percents` is kept for the sparkline, which is a history
-      // of individual scores rather than an average.
-      const avgPercent = workingAverage(subs, analyticsPolicy);
+      // Each subject weighted under its own DepEd policy, then averaged — same
+      // function the student dashboard/gradebook/export already use. `percents`
+      // is kept for the sparkline, which is a history of individual scores
+      // rather than an average.
+      const { average: avgPercent } = await workingAverageAcrossSubjects(subs, teacherRecord?.schoolId);
 
       const skillHistory = subs
         .filter(s => s.skillScores)
@@ -5407,8 +5696,11 @@ app.get('/api/teacher/:teacherId/analytics', async (req, res) => {
         bandDefs,
         // So the UI labels bands and at-risk copy with the school's own
         // threshold instead of a hard-coded 75.
-        passingGrade,
-        gradingWeights: analyticsPolicy
+        passingGrade
+        // gradingWeights was dropped here: it used to report one policy
+        // (classes[0]'s) for the whole view, which stopped meaning anything
+        // once each student's average is computed per-subject below — and the
+        // frontend never read this field anyway.
       },
       // The sidebar badge reads this. It was never emitted, so the teacher's
       // early-warning count silently sat at zero however many students were
@@ -5570,6 +5862,43 @@ function computeBadges(submissions, passingGrade) {
 
   return defs.map(b => ({ ...b, earned: b.progress >= b.target, passingGrade }));
 }
+
+// ─────────────────────────────────────────
+// NOTIFICATIONS (BP-1)
+// ─────────────────────────────────────────
+// Always scoped to the caller's own id (req.auth.sub), never a path/body
+// param — there is nothing here for authorizePath to check, by design: no id
+// in the URL means no id to get wrong.
+app.get('/api/notifications', async (req, res) => {
+  const [notifications, unreadCount] = await Promise.all([
+    prisma.notification.findMany({
+      where: { userId: req.auth.sub },
+      orderBy: { createdAt: 'desc' },
+      take: 30
+    }),
+    prisma.notification.count({ where: { userId: req.auth.sub, readAt: null } })
+  ]);
+  res.json({ success: true, notifications, unreadCount });
+});
+
+app.post('/api/notifications/read-all', async (req, res) => {
+  await prisma.notification.updateMany({
+    where: { userId: req.auth.sub, readAt: null },
+    data: { readAt: new Date() }
+  });
+  res.json({ success: true });
+});
+
+app.post('/api/notifications/:id/read', async (req, res) => {
+  // updateMany (not update) so a notification id belonging to someone else
+  // just matches zero rows instead of leaking a 404-vs-403 distinction, or
+  // worse, updating it — the where clause is the whole ownership check.
+  await prisma.notification.updateMany({
+    where: { id: req.params.id, userId: req.auth.sub },
+    data: { readAt: new Date() }
+  });
+  res.json({ success: true });
+});
 
 // ─────────────────────────────────────────
 // STUDENT ROUTES
@@ -6262,6 +6591,8 @@ app.post('/api/teacher/upload', submissionUpload.fields([{ name: 'image', maxCou
     if (!studentId || studentId === 'mock-student-id') {
       return res.status(400).json({ success: false, error: 'Please assign a student before grading. A student must be selected.' });
     }
+    const owned = await teacherOwnsActivity(activityId, req.auth.sub);
+    if (!owned.ok) return res.status(owned.code).json({ success: false, error: owned.error });
 
     // Checked before any upload/grading work runs, not after: a released
     // result is already in front of the student, so silently replacing the
@@ -6297,6 +6628,7 @@ app.post('/api/teacher/upload', submissionUpload.fields([{ name: 'image', maxCou
         rubricData: null,
         skillScores: null,
         gradeLevelAssumed: false,
+        scoreFeedbackMismatch: false,
         gradedAt: null
       };
     } else {
@@ -6317,6 +6649,7 @@ app.post('/api/teacher/upload', submissionUpload.fields([{ name: 'image', maxCou
           skillScores: JSON.stringify(aiData.skillScores),
           status: 'PENDING',
           gradeLevelAssumed: !!aiData.gradeLevelAssumed,
+          scoreFeedbackMismatch: !!aiData.scoreFeedbackMismatch,
           gradedAt: new Date()
         };
       } catch (aiErr) {
@@ -6334,6 +6667,7 @@ app.post('/api/teacher/upload', submissionUpload.fields([{ name: 'image', maxCou
           rubricData: null,
           skillScores: null,
           gradeLevelAssumed: false,
+          scoreFeedbackMismatch: false,
           gradedAt: null
         };
       }

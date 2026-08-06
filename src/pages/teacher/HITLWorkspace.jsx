@@ -885,6 +885,24 @@ export default function HITLWorkspace() {
             </div>
           )}
 
+          {/* Score/Feedback Mismatch Banner — a rubric criterion scored below
+              its band's maximum but the AI's own areasForGrowth didn't name a
+              specific, substantive reason why. The prompt tells the model not
+              to let this happen; this is the code-side check for when it does
+              anyway, so the contradiction surfaces here instead of shipping
+              silently to a student. */}
+          {submission?.scoreFeedbackMismatch && (
+            <div className="flex items-start gap-3 p-4 bg-amber-50 border-2 border-amber-300 rounded-xl text-sm">
+              <AlertTriangle className="w-5 h-5 shrink-0 text-amber-600" />
+              <div>
+                <p className="font-bold text-amber-800">Score and Feedback May Not Match</p>
+                <p className="text-amber-700 text-xs mt-0.5">
+                  A rubric criterion was scored below full marks, but the AI's feedback doesn't clearly explain why. Double-check the score and feedback agree before validating.
+                </p>
+              </div>
+            </div>
+          )}
+
           {/* No Text Detected Banner */}
           {submission?.aiScore === 0 && !submission?.aiFeedback?.includes('⚠') && !submission?.privacyViolation && (
             <div className="flex items-start gap-3 p-4 bg-amber-50 border-2 border-amber-300 rounded-xl text-sm">

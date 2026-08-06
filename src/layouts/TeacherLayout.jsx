@@ -38,10 +38,22 @@ export default function TeacherLayout() {
     const goOffline = () => setOnlineStatus(false);
     window.addEventListener('online', goOnline);
     window.addEventListener('offline', goOffline);
-    initOfflineQueueListener(({ succeeded }) => {
-      if (succeeded > 0) setQueueCount(getQueue().length);
+    const unsubscribeOfflineQueue = initOfflineQueueListener(({ succeeded, dropped, droppedReasons }) => {
+      if (succeeded > 0 || dropped > 0) setQueueCount(getQueue().length);
+      // Dropped jobs are removed from the queue same as succeeded ones, so
+      // without this a fully-dropped auto-flush (e.g. a submission released
+      // elsewhere while this device was offline) vanishes silently — the
+      // queue badge just goes down with no explanation of what happened.
+      if (dropped > 0) {
+        const reasons = [...new Set((droppedReasons || []).map(d => d.reason))];
+        alert(`${dropped} queued upload${dropped > 1 ? 's' : ''} could not be saved:\n${reasons.map(r => `• ${r}`).join('\n')}`);
+      }
     });
-    return () => { window.removeEventListener('online', goOnline); window.removeEventListener('offline', goOffline); };
+    return () => {
+      window.removeEventListener('online', goOnline);
+      window.removeEventListener('offline', goOffline);
+      unsubscribeOfflineQueue();
+    };
   }, []);
 
   const navItems = [

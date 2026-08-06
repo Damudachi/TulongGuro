@@ -74,14 +74,23 @@ model GradingPolicy {
   @@unique([schoolId, gradeLevel, subject])
 }
 
+/// The only three roles a User can hold. Kept as a Prisma enum rather than a
+/// free-text column so an unrecognised value fails at the database/client
+/// boundary instead of silently falling through authorizePath()'s if-chain,
+/// which is keyed on these exact strings.
+enum Role {
+  ADMIN
+  TEACHER
+  STUDENT
+}
+
 model User {
   id              String           @id @default(uuid())
   username        String           @unique
   name            String
   email           String?          @unique
   password        String
-  /// ADMIN | TEACHER | STUDENT
-  role            String
+  role            Role
   /// Sessions issued before this instant are refused.
   ///
   /// Tokens are stateless and carry their own expiry, so without this the only
@@ -109,8 +118,34 @@ model User {
   rubricTemplates RubricTemplate[] @relation("TeacherRubricTemplates")
   ownedSections   Section[]        @relation("TeacherSections")
   submissions     Submission[]
+  notifications   Notification[]
   school          School?          @relation(fields: [schoolId], references: [id])
   section         Section?         @relation("StudentSection", fields: [sectionId], references: [id])
+}
+
+/// A student-facing notification — "your grade was released," to start.
+/// Deliberately minimal (BP-1): one flat table, no channels or preferences.
+/// The gap this closes is that grades, deadlines, and releases were entirely
+/// silent outside the app; it is not meant to become a notification platform.
+model Notification {
+  id        String    @id @default(uuid())
+  userId    String
+  /// e.g. "GRADE_RELEASED" — a caller-defined tag, not a Prisma enum, since
+  /// the set of notification types is expected to grow ad hoc as more events
+  /// start notifying (deadlines, etc.) and each addition shouldn't need a
+  /// schema migration the way User.role's fixed three values warranted one.
+  type      String
+  title     String
+  body      String?
+  /// Where the app should navigate to when this notification is opened —
+  /// e.g. the released activity's review page. Optional: not every
+  /// notification type will have somewhere to go.
+  link      String?
+  readAt    DateTime?
+  createdAt DateTime  @default(now())
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, readAt])
 }
 
 model Section {
@@ -255,6 +290,14 @@ model Submission {
   /// calibrated as if it were Grade 6 with nothing surfaced to the teacher.
   /// This is that surfacing: the HITL workspace shows a banner when true.
   gradeLevelAssumed Boolean  @default(false)
+  /// True when a rubric criterion scored below its band's maximum but the AI's
+  /// own areasForGrowth didn't name a substantive, specific reason why — the
+  /// exact contradiction GRADING_SYSTEM_INSTRUCTION's SCORE/FEEDBACK
+  /// CONSISTENCY section tells the model to avoid, checked here in code
+  /// because the prompt alone has already needed two follow-up fixes for it.
+  /// Same treatment as gradeLevelAssumed: never blocks the save, just flags
+  /// the paper for the teacher's second look in the HITL workspace.
+  scoreFeedbackMismatch Boolean @default(false)
   privacyViolation Boolean   @default(false)
   status           String    @default("PENDING")
   /// When the teacher published this result to the student.

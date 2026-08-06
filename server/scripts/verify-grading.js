@@ -3,7 +3,7 @@
  * transmutation table, row by row, plus the fairness rule that motivated the
  * change. Run after any edit to grading.js:  node scripts/verify-grading.js
  */
-const { transmute, componentPercentage, computeGrade, legacyAverage } = require('../grading');
+const { transmute, componentPercentage, computeGrade, legacyAverage, bandKeyFor } = require('../grading');
 
 // [initialGradeLowerBound, initialGradeUpperBound, expectedTransmutedGrade]
 const TABLE = [
@@ -53,6 +53,13 @@ check('WW-only reports missing PT and QA', wwOnly.missingComponents.join(','), '
 console.log('Unknown component falls back to Written Work:');
 const legacy = computeGrade([{ percent: 70, points: 100, component: undefined }], { WW: 30, PT: 50, QA: 20 });
 check('uncategorised activity still grades', legacy.initialGrade, 70);
+
+console.log('isPassing and bandKeyFor cannot disagree (GR-2 — both round before comparing):');
+// 74.6 rounds to 75, which is passing at a threshold of 75 — bandKeyFor must
+// agree, not band it as "Did Not Meet Expectations" on the raw, unrounded value.
+const borderline = computeGrade([{ percent: 74.6, points: 100, component: 'WW' }], { WW: 100, PT: 0, QA: 0 }, { transmute: false });
+check('borderline 74.6 vs passing=75 is passing', borderline.isPassing, true);
+check('borderline 74.6 vs passing=75 bands as passing', bandKeyFor(74.6, 75) !== 'failing', true);
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import {
   ArrowLeft, Loader2, Pencil, Trash2, Check, X, UserPlus,
-  BookOpen, Users, GraduationCap, AlertTriangle,
+  BookOpen, Users, GraduationCap, AlertTriangle, KeyRound,
 } from 'lucide-react';
 import { API_URL, apiFetch } from '../../config';
 import { GRADE_LEVELS } from '../../constants/school';
@@ -72,6 +72,19 @@ export default function AdminSectionDetail() {
       `${API_URL}/api/admin/${admin.id}/sections/${sectionId}/students`,
       { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ studentsList }) },
       (d) => { setStudentsText(''); setAddOpen(false); setNotice(d.message); }
+    );
+  };
+
+  const resetStudentPassword = (student) => {
+    if (!confirm(`Reset ${student.name}'s password to their birthdate? Their current password stops working immediately.`)) return;
+    call(
+      `${API_URL}/api/admin/${admin.id}/sections/${sectionId}/students/${student.id}/password`,
+      { method: 'PUT' },
+      (d) => setNotice(
+        `${student.name}'s new password is ${d.password}` +
+        (d.source === 'default' ? ' (no birthday on file, so the shared default was used).' : '.') +
+        ' Share it with them now.'
+      )
     );
   };
 
@@ -281,6 +294,10 @@ export default function AdminSectionDetail() {
                   <AlertTriangle className="w-3 h-3" /> {s._count.submissions} submitted
                 </span>
               )}
+              <button onClick={() => resetStudentPassword(s)} disabled={busy} title="Reset password to birthdate"
+                className="p-1.5 rounded-md text-slate-300 hover:text-brand-navy hover:bg-blue-50 opacity-0 group-hover:opacity-100 transition-opacity shrink-0 disabled:opacity-30">
+                <KeyRound className="w-3.5 h-3.5" />
+              </button>
               <button onClick={() => removeStudent(s)} disabled={busy} title="Remove from section"
                 className="p-1.5 rounded-md text-slate-300 hover:text-red-500 hover:bg-red-50 opacity-0 group-hover:opacity-100 transition-opacity shrink-0 disabled:opacity-30">
                 <Trash2 className="w-3.5 h-3.5" />

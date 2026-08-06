@@ -5,6 +5,8 @@ import { clsx } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 import { useState, useEffect } from 'react';
 import { logout } from '../config';
+import NotificationBell from '../components/NotificationBell';
+import { initOfflineQueueListener } from '../utils/offlineQueue';
 
 function cn(...inputs) {
   return twMerge(clsx(inputs));
@@ -16,6 +18,23 @@ export default function StudentLayout() {
   const location = useLocation();
   const [expandedSubjects, setExpandedSubjects] = useState(location.pathname.startsWith('/student/subjects'));
   const user = JSON.parse(localStorage.getItem('user') || '{}');
+
+  // OQ-4: a submission queued offline (SubmitWork.jsx) only ever drains if
+  // something calls flushQueue() on reconnect — this is that something, the
+  // student-side counterpart to TeacherLayout's listener.
+  useEffect(() => {
+    const unsubscribe = initOfflineQueueListener(({ dropped, droppedReasons }) => {
+      // Dropped (not just failed) means the server permanently rejected it —
+      // e.g. the deadline passed while offline. Silence here would mean the
+      // work is simply gone with no explanation, the exact failure OQ-2 fixed
+      // for teachers.
+      if (dropped > 0) {
+        const reasons = [...new Set((droppedReasons || []).map(d => d.reason))];
+        alert(`${dropped} saved submission${dropped > 1 ? 's' : ''} could not be uploaded:\n${reasons.map(r => `• ${r}`).join('\n')}`);
+      }
+    });
+    return unsubscribe;
+  }, []);
 
   useEffect(() => {
     if (location.pathname.startsWith('/student/subjects')) {
@@ -68,6 +87,7 @@ export default function StudentLayout() {
 
   return (
     <div className="min-h-screen bg-cream-100 flex flex-col pb-24 md:pb-0 md:flex-row">
+      <NotificationBell />
       {/* ── Desktop sidebar ── */}
       <nav className="hidden md:flex flex-col w-64 bg-royal-900 shrink-0 rounded-r-[2rem] overflow-hidden">
         <Link to="/student/dashboard" className="flex items-center gap-3 px-5 py-6">

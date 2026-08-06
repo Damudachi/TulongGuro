@@ -6,6 +6,7 @@ import SubmissionImage from '../../components/SubmissionImage';
 import ImageRedactor from '../../components/ImageRedactor';
 import { deadlineInstant, formatDeadline, submissionWindow } from '../../utils/deadlines';
 import { isRasterizable, rasterizeToPageImages } from '../../utils/fileRasterize';
+import { enqueue, buildJob } from '../../utils/offlineQueue';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
 
@@ -105,12 +106,14 @@ export default function SubmitWork() {
 
     // A PDF or Word file is rendered to page images right here in the browser
     // first, so it can go through the exact same redaction canvas as a photo
-    // instead of skipping it. Only a file that fails to render (corrupt,
-    // unusual encoding) falls back to being attached as-is — the server's
-    // privacy gate still reads it for a name before any grading happens.
+    // instead of skipping it. A file that fails to render (corrupt,
+    // password-protected, unusual encoding) is refused rather than attached
+    // as-is — attaching it un-rendered would skip the redaction canvas
+    // entirely and rely solely on the server's prompt-based privacy gate.
     const images = selectedFiles.filter(f => (f.type || '').startsWith('image/'));
     const toRasterize = selectedFiles.filter(f => isRasterizable(f));
     const documents = selectedFiles.filter(f => !(f.type || '').startsWith('image/') && !isRasterizable(f));
+    const failedToRender = [];
 
     if (toRasterize.length > 0) {
       setIsPreparingFiles(true);
@@ -120,10 +123,14 @@ export default function SubmitWork() {
           const pages = await rasterizeToPageImages(f, Math.max(remaining, 1));
           images.push(...pages);
         } catch {
-          documents.push(f);
+          failedToRender.push(f.name);
         }
       }
       setIsPreparingFiles(false);
+    }
+
+    if (failedToRender.length > 0) {
+      alert(`Couldn't open ${failedToRender.length > 1 ? 'these files' : 'this file'} to check it for your name before uploading, so ${failedToRender.length > 1 ? "they weren't" : "it wasn't"} added:\n${failedToRender.map(n => `• ${n}`).join('\n')}\n\nThe file may be corrupted or password-protected. Try saving it as a PDF or a photo and try again.`);
     }
 
     if (documents.length > 0) {
@@ -174,8 +181,27 @@ export default function SubmitWork() {
     if (!privacyConfirmed) return;
     if (files.length === 0 || !selected) return;
     setIsSubmitting(true);
+
+    const user = JSON.parse(localStorage.getItem('user') || '{}');
+
+    // All pages queue as one job, carried and flushed together — same
+    // reasoning as the teacher batch-upload flow's offline path (OQ-1): the
+    // server only stitches pages it receives together in one request, so
+    // splitting a multi-page submission into separate queued jobs would flush
+    // as separate requests that each overwrite the last one's image.
+    const queueOffline = async () => {
+      const job = await enqueue(buildJob(`${API_URL}/api/student/submit`, { studentId: user.id, activityId: selected.id }, files));
+      setIsSubmitting(false);
+      if (!job) {
+        alert('Could not save this for later — this device has run out of offline storage. Please reconnect and submit now instead.');
+        return;
+      }
+      setResult({ queued: true });
+    };
+
+    if (!navigator.onLine) return queueOffline();
+
     try {
-      const user = JSON.parse(localStorage.getItem('user') || '{}');
       const formData = new FormData();
       files.forEach(f => formData.append('images', f));
       formData.append('studentId', user.id);
@@ -192,6 +218,10 @@ export default function SubmitWork() {
         alert('Submission failed: ' + (data.error || 'Unknown error'));
       }
     } catch (e) {
+      // Only a genuine network failure falls back to the offline queue — a
+      // server that answered and said no must not be retried behind the
+      // student's back.
+      if (!navigator.onLine) return queueOffline();
       alert('Network error. Please try again.');
     } finally {
       setIsSubmitting(false);
@@ -296,10 +326,16 @@ export default function SubmitWork() {
     return (
       <div className="p-4 md:p-8 max-w-3xl mx-auto pb-24">
         <div className="space-y-4">
-          <div className="bg-aqua-600 text-white px-6 py-8 rounded-3xl text-center">
+          <div className={cn('text-white px-6 py-8 rounded-3xl text-center', result.queued ? 'bg-sun-600' : 'bg-aqua-600')}>
             <CheckCircle2 className="w-14 h-14 mx-auto mb-3" />
-            <h2 className="font-display text-2xl font-extrabold mb-1.5">Output Submitted!</h2>
-            <p className="text-aqua-100 text-sm">Your essay has been received and is now awaiting teacher review.</p>
+            <h2 className="font-display text-2xl font-extrabold mb-1.5">
+              {result.queued ? 'Saved — Will Upload When Online' : 'Output Submitted!'}
+            </h2>
+            <p className={cn('text-sm', result.queued ? 'text-sun-100' : 'text-aqua-100')}>
+              {result.queued
+                ? "You're offline right now, so this was saved on your device. It'll upload automatically once you're back online — keep this app open or come back to it later."
+                : 'Your essay has been received and is now awaiting teacher review.'}
+            </p>
           </div>
 
           <div className="flex flex-col sm:flex-row gap-3">

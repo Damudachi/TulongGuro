@@ -120,7 +120,23 @@ export default function BatchUpload() {
       apiFetch(`${API_URL}/api/teacher/ai-jobs/${aiJob.jobId}`)
         .then(r => r.json())
         .then(d => {
-          if (!d.success) return;
+          if (!d.success) {
+            // The job vanished server-side — either it genuinely doesn't
+            // exist, or the server redeployed mid-batch and every in-memory
+            // job (this one included) was lost with it. Without this, the
+            // teacher was left on a spinner polling forever: state stayed
+            // 'running' since nothing here ever changed it. bootId (present
+            // even on this 404) tells the two apart.
+            const restarted = d.bootId && aiJob.bootId && d.bootId !== aiJob.bootId;
+            setAiJob(prev => prev && {
+              ...prev,
+              state: 'finished',
+              stoppedMessage: restarted
+                ? 'The server restarted while this check was running. Papers already checked were saved; anything still in progress was not — check the roster and re-run if needed.'
+                : (d.error || 'This AI check is no longer available.')
+            });
+            return;
+          }
           setAiJob(d);
           if (d.state !== 'running') {
             refreshAiPlan();
@@ -174,12 +190,15 @@ export default function BatchUpload() {
 
     // A PDF or Word file is rendered to page images right here in the browser
     // first, so it can go through the exact same redaction canvas as a photo.
-    // Only a file that fails to render (corrupt, unusual encoding) falls back
-    // to being staged as-is — the server's privacy gate still reads it for a
-    // name before any grading happens.
+    // A file that fails to render (corrupt, password-protected, unusual
+    // encoding) is refused rather than staged as-is: staging it un-rendered
+    // would skip ImageRedactor entirely and rely solely on the server's
+    // prompt-based privacy gate, which is exactly the guarantee rasterizing
+    // exists to give every PDF/Word submission in the first place.
     const images = picked.filter(isImageFile);
     const toRasterize = picked.filter(f => isRasterizable(f));
     const documents = picked.filter(f => !isImageFile(f) && !isRasterizable(f));
+    const failedToRender = [];
 
     if (toRasterize.length > 0) {
       setPreparingFiles(true);
@@ -190,10 +209,14 @@ export default function BatchUpload() {
           const pages = await rasterizeToPageImages(f, Math.max(remaining, 1));
           images.push(...pages);
         } catch {
-          documents.push(f);
+          failedToRender.push(f.name);
         }
       }
       setPreparingFiles(false);
+    }
+
+    if (failedToRender.length > 0) {
+      alert(`Couldn't render ${failedToRender.length > 1 ? 'these files' : 'this file'} for redaction, so ${failedToRender.length > 1 ? "they weren't" : "it wasn't"} added:\n${failedToRender.map(n => `• ${n}`).join('\n')}\n\nThe file may be corrupted or password-protected. Try converting it to a PDF or image and upload again.`);
     }
 
     if (documents.length > 0) {
@@ -279,18 +302,15 @@ export default function BatchUpload() {
     setUploadingStudentId(studentId);
 
     const queueOffline = async () => {
-      // The offline queue carries one image per job, so multi-page outputs are
-      // queued as separate pages and re-stitched server-side on flush.
-      // Sequential because enqueue() encodes each photo and checks the shared
-      // storage budget — running them together can overshoot it.
-      let queued = 0;
-      for (const p of pages) {
-        const job = await enqueue(buildJob(`${API_URL}/api/teacher/upload`, { studentId, activityId, skipGrading: 'true' }, p.file));
-        if (job) queued++;
-      }
+      // All staged pages are queued as one job, carried and flushed together —
+      // matching the online path, which POSTs every page in a single multipart
+      // request so the server can stitch them into one composite image.
+      // Queuing them as separate jobs would flush as separate requests, each
+      // overwriting the submission's image instead of being combined.
+      const job = await enqueue(buildJob(`${API_URL}/api/teacher/upload`, { studentId, activityId, skipGrading: 'true' }, pages.map(p => p.file)));
       setQueuedCount(getQueue().length);
-      if (queued < pages.length) {
-        alert(`Only ${queued} of ${pages.length} page(s) could be saved for later — this device has run out of offline storage. Please reconnect and upload the rest.`);
+      if (!job) {
+        alert(`Could not save these ${pages.length} page(s) for later — this device has run out of offline storage. Please reconnect and upload now instead.`);
       }
       cancelStaged(studentId);
       setUploadingStudentId(null);
@@ -335,7 +355,16 @@ export default function BatchUpload() {
     const result = await flushQueue();
     setQueuedCount(getQueue().length);
     setIsFlushing(false);
-    alert(`Queue flushed: ${result.succeeded} succeeded, ${result.failed} failed`);
+    // A queue that was entirely dropped (every job permanently rejected by the
+    // server — e.g. released elsewhere while offline) reports "0 succeeded, 0
+    // failed" without this, which reads as nothing happened at all.
+    let message = `Queue flushed: ${result.succeeded} succeeded, ${result.failed} failed`;
+    if (result.dropped > 0) {
+      message += `, ${result.dropped} could not be saved`;
+      const reasons = [...new Set(result.droppedReasons.map(d => d.reason))];
+      message += `:\n${reasons.map(r => `• ${r}`).join('\n')}`;
+    }
+    alert(message);
   };
 
   return (
@@ -688,12 +717,12 @@ export default function BatchUpload() {
                 <Loader2 className="w-5 h-5 animate-spin text-brand-navy shrink-0" />
                 <div className="flex-1 min-w-0">
                   <p className="text-sm font-bold text-brand-slate">
-                    Checking {aiJob.done + aiJob.flagged + aiJob.failed} of {aiJob.total} papers…
+                    Checking {aiJob.done + aiJob.flagged + aiJob.failed + aiJob.superseded} of {aiJob.total} papers…
                   </p>
                   <div className="mt-1.5 h-1.5 w-full rounded-full bg-slate-200 overflow-hidden">
                     <div
                       className="h-full bg-brand-navy transition-all duration-500"
-                      style={{ width: `${Math.round(((aiJob.done + aiJob.flagged + aiJob.failed) / Math.max(aiJob.total, 1)) * 100)}%` }}
+                      style={{ width: `${Math.round(((aiJob.done + aiJob.flagged + aiJob.failed + aiJob.superseded) / Math.max(aiJob.total, 1)) * 100)}%` }}
                     />
                   </div>
                   <p className="text-[11px] text-slate-500 mt-1">
@@ -710,6 +739,7 @@ export default function BatchUpload() {
                     {aiJob.done} checked
                     {aiJob.flagged > 0 && <span className="text-orange-600"> · {aiJob.flagged} flagged for a name on the paper</span>}
                     {aiJob.failed > 0 && <span className="text-red-600"> · {aiJob.failed} failed</span>}
+                    {aiJob.superseded > 0 && <span className="text-slate-500"> · {aiJob.superseded} already validated by a teacher, AI result discarded</span>}
                     {aiJob.skipped > 0 && <span className="text-amber-600"> · {aiJob.skipped} not reached</span>}
                   </p>
                   {aiJob.stoppedMessage && (
