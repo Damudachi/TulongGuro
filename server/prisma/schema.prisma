@@ -74,23 +74,25 @@ model GradingPolicy {
   @@unique([schoolId, gradeLevel, subject])
 }
 
-/// The only three roles a User can hold. Kept as a Prisma enum rather than a
-/// free-text column so an unrecognised value fails at the database/client
-/// boundary instead of silently falling through authorizePath()'s if-chain,
-/// which is keyed on these exact strings.
-enum Role {
-  ADMIN
-  TEACHER
-  STUDENT
-}
-
 model User {
   id              String           @id @default(uuid())
   username        String           @unique
   name            String
   email           String?          @unique
   password        String
-  role            Role
+  /// ADMIN | TEACHER | STUDENT
+  ///
+  /// Deliberately a plain String, not a Prisma enum. An enum was tried and
+  /// reverted: this is a plain-JavaScript codebase with no TypeScript, so the
+  /// "compile-time safety" an enum is usually reached for does not exist here
+  /// — it would only add a database-level constraint, and every write to this
+  /// column is already a server-controlled literal, never user input. That is
+  /// not worth a type-changing ALTER on the live User table in a project with
+  /// no migration history (schema changes ship via `prisma db push`, which has
+  /// no rollback path). Authorization drift is guarded instead by the
+  /// ownership checks in the route handlers and by
+  /// scripts/verify-route-authorization.js.
+  role            String
   /// Sessions issued before this instant are refused.
   ///
   /// Tokens are stateless and carry their own expiry, so without this the only
