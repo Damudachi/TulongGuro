@@ -49,6 +49,45 @@ function rubricTypeOf(rubric, criteria) {
 }
 
 /**
+ * A range-rubric band's point value, as a number.
+ *
+ * Rubrics extracted from an uploaded image/PDF store this correctly as a plain
+ * number (`score: 30`, with the human-readable "27-30" kept separately in
+ * `range`). Rubrics generated from an uploaded curriculum document used to
+ * store the range text itself in `score` (e.g. `"36-40"`) — `Number()` on that
+ * is `NaN`, which `?? 0`/`|| 0` then silently turned into a real 0. That
+ * doesn't just misdisplay a number: every criterion normalizes to 0 points, the
+ * rubric's total reads as 0, and activity creation is refused with "the rubric
+ * criteria add up to zero" for a curriculum rubric that was never actually
+ * empty. The backend prompt that generates these was fixed to stop doing this
+ * on new uploads, but rubrics already saved with the old shape still need to
+ * resolve to a real number here.
+ */
+function bandScoreNumber(score) {
+  const direct = Number(score);
+  if (!Number.isNaN(direct)) return direct;
+  // Falls back to the last number in the string — a range's upper bound, so
+  // "36-40" resolves to 40, matching what "the top of this band" means.
+  const matches = String(score ?? '').match(/\d+(\.\d+)?/g);
+  return matches?.length ? Number(matches[matches.length - 1]) : 0;
+}
+
+/**
+ * A range rubric's real per-criterion point value comes from its bands, not
+ * the (often hidden, sometimes stale) top-level `points` field — this is what
+ * actually gets saved and is what validation must check. A no-op for standard
+ * rubrics, which are weighted directly.
+ */
+function normalizeRangeCriteria(criteria, rubricType, defaultBands) {
+  if (rubricType !== 'range') return criteria;
+  return criteria.map(c => {
+    const bands = c.bands?.length ? c.bands : defaultBands;
+    const top = Math.max(...bands.map(b => bandScoreNumber(b.score)), 0);
+    return { ...c, bands, points: top };
+  });
+}
+
+/**
  * Which rubric a new activity should start from, most specific source first.
  *
  * The curriculum outranks the built-ins deliberately. A rubric that came from
@@ -353,7 +392,12 @@ export default function ActivityBuilder() {
   };
 
   const activeCriteria = (rubricMode === 'upload' && extractedCriteria) ? extractedCriteria : rubricCriteria;
-  const totalPercentage = activeCriteria.reduce((s, c) => s + (c.points || 0), 0);
+  // Runs the same range-band normalization that will actually be saved, so the
+  // "Total Weight" preview and the submit-time validation both check the real
+  // value rather than a raw, hidden points field that range mode never asks
+  // the teacher to fill in themselves.
+  const totalPercentage = normalizeRangeCriteria(activeCriteria, rubricType, DEFAULT_RANGE_BANDS)
+    .reduce((s, c) => s + (c.points || 0), 0);
 
   /**
    * What one criterion is worth in this activity's own points.
@@ -521,16 +565,12 @@ export default function ActivityBuilder() {
    * (the AI prompt, the review sliders, the saved percentage) needs a maximum
    * per criterion, so derive it from the highest band. Without this a range
    * rubric reached the review screen with a total of 0 and scored every
-   * submission at 0%.
+   * submission at 0%. Delegates to normalizeRangeCriteria so this and
+   * totalPercentage above can never drift apart on what "the total" means —
+   * that drift is exactly what let a curriculum rubric's real weight go
+   * unnoticed by validation while the save path already computed it correctly.
    */
-  const normalizeCriteria = (criteria) => {
-    if (rubricType !== 'range') return criteria;
-    return criteria.map(c => {
-      const bands = c.bands?.length ? c.bands : DEFAULT_RANGE_BANDS;
-      const top = Math.max(...bands.map(b => Number(b.score) || 0), 0);
-      return { ...c, bands, points: top };
-    });
-  };
+  const normalizeCriteria = (criteria) => normalizeRangeCriteria(criteria, rubricType, DEFAULT_RANGE_BANDS);
 
   const handleSubmit = async (e) => {
     e.preventDefault();

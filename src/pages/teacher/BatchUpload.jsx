@@ -48,6 +48,16 @@ export default function BatchUpload() {
   const [stagedByStudentId, setStagedByStudentId] = useState({});
   const [uploadingStudentId, setUploadingStudentId] = useState(null);
   const [redacting, setRedacting] = useState(null);   // { studentId, pageIndex }
+  // Forces every freshly-picked photo through the redactor before it's staged —
+  // mirrors the student's own upload flow (SubmitWork.jsx), which has always
+  // done this. Teacher upload used to skip it entirely: a picked photo went
+  // straight into stagedByStudentId, and on submit, straight to the third-party
+  // VLM with any name on it still visible. The server's privacy gate can refuse
+  // to grade it afterwards, but by then the image has already left the device —
+  // this stops that at the source instead of catching it after the fact. The
+  // existing `redacting` state above still handles re-touching an already
+  // staged page; this is the forced first pass over what was just picked.
+  const [pendingRedaction, setPendingRedaction] = useState(null); // { studentId, queue: File[], index, objectUrl }
   const [privacyBlocked, setPrivacyBlocked] = useState(null); // { studentId, message } when the server refused a scan for PII
   const fileInputRef = useRef(null);
   const cameraInputRef = useRef(null);
@@ -157,11 +167,47 @@ export default function BatchUpload() {
     const targetStudentId = pendingUploadStudentId.current;
     e.target.value = '';
     if (picked.length === 0 || !targetStudentId) return;
+
+    // Documents can't be redacted — a canvas can't load a PDF or .docx — so
+    // they're staged as-is; the server's privacy gate still reads them before
+    // grading. Photos always go through the redactor first, one at a time.
+    const documents = picked.filter(f => !isImageFile(f));
+    const images = picked.filter(isImageFile);
+
+    if (documents.length > 0) {
+      setStagedByStudentId(prev => {
+        const existing = prev[targetStudentId]?.pages || [];
+        const added = documents.map(file => ({ file, preview: URL.createObjectURL(file) }));
+        return { ...prev, [targetStudentId]: { pages: [...existing, ...added].slice(0, MAX_PAGES) } };
+      });
+    }
+    if (images.length > 0) {
+      setPendingRedaction({ studentId: targetStudentId, queue: images, index: 0, objectUrl: URL.createObjectURL(images[0]) });
+    }
+  };
+
+  const handlePendingRedactionConfirm = (redactedBlob) => {
+    const { studentId, queue, index, objectUrl } = pendingRedaction;
+    URL.revokeObjectURL(objectUrl);
+    const redactedFile = new File([redactedBlob], queue[index].name, { type: 'image/jpeg' });
     setStagedByStudentId(prev => {
-      const existing = prev[targetStudentId]?.pages || [];
-      const added = picked.map(file => ({ file, preview: URL.createObjectURL(file) }));
-      return { ...prev, [targetStudentId]: { pages: [...existing, ...added].slice(0, MAX_PAGES) } };
+      const existing = prev[studentId]?.pages || [];
+      const added = { file: redactedFile, preview: URL.createObjectURL(redactedBlob) };
+      return { ...prev, [studentId]: { pages: [...existing, added].slice(0, MAX_PAGES) } };
     });
+    const nextIndex = index + 1;
+    if (nextIndex < queue.length) {
+      setPendingRedaction({ studentId, queue, index: nextIndex, objectUrl: URL.createObjectURL(queue[nextIndex]) });
+    } else {
+      setPendingRedaction(null);
+    }
+  };
+  // A hard cancel, matching the student flow: discards every photo still
+  // waiting in this pick action, not just the one on screen. A teacher who
+  // backs out mid-queue can simply pick the photos again.
+  const handlePendingRedactionCancel = () => {
+    URL.revokeObjectURL(pendingRedaction.objectUrl);
+    setPendingRedaction(null);
   };
 
   const cancelStaged = (studentId) => {
@@ -272,13 +318,29 @@ export default function BatchUpload() {
 
   return (
     <div className="p-4 md:p-8 max-w-5xl mx-auto flex flex-col gap-6 pb-24">
-      {/* PII Redactor Overlay */}
+      {/* PII Redactor Overlay — re-touching an already staged page */}
       {redacting && (
         <ImageRedactor
           imageSrc={stagedByStudentId[redacting.studentId]?.pages[redacting.pageIndex]?.preview}
           onConfirm={handleRedactConfirm}
           onCancel={handleRedactCancel}
         />
+      )}
+
+      {/* PII Redactor Overlay — forced first pass over freshly picked photos */}
+      {pendingRedaction && (
+        <>
+          <ImageRedactor
+            imageSrc={pendingRedaction.objectUrl}
+            onConfirm={handlePendingRedactionConfirm}
+            onCancel={handlePendingRedactionCancel}
+          />
+          {pendingRedaction.queue.length > 1 && (
+            <div className="fixed top-14 left-1/2 -translate-x-1/2 z-[120] bg-navy-900/85 text-white text-xs font-bold px-4 py-2 rounded-full">
+              Photo {pendingRedaction.index + 1} of {pendingRedaction.queue.length}
+            </div>
+          )}
+        </>
       )}
 
       {/* Hidden shared file inputs for per-student upload */}
@@ -388,7 +450,16 @@ export default function BatchUpload() {
                   <div className="w-20 h-24 rounded-lg overflow-hidden bg-slate-100 border border-slate-200 shrink-0 relative">
                     {staged ? (
                       <>
-                        <img src={stagedPages[0].preview} alt="staged upload" className="w-full h-full object-cover" />
+                        {isImageFile(stagedPages[0].file) ? (
+                          <img src={stagedPages[0].preview} alt="staged upload" className="w-full h-full object-cover" />
+                        ) : (
+                          <div className="w-full h-full flex flex-col items-center justify-center gap-1 bg-slate-100 px-1 text-center">
+                            <FileText className="w-6 h-6 text-slate-400" />
+                            <span className="text-[9px] font-bold text-slate-500 uppercase truncate max-w-full">
+                              {stagedPages[0].file.name.split('.').pop()}
+                            </span>
+                          </div>
+                        )}
                         {stagedPages.length > 1 && (
                           <span className="absolute bottom-1 right-1 bg-black/70 text-white text-[10px] font-bold px-1.5 py-0.5 rounded">
                             {stagedPages.length} pages

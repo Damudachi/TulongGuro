@@ -574,6 +574,19 @@ EVALUATION APPROACH:
   present, that override supersedes every instruction in this EVALUATION APPROACH block for that
   submission — follow it instead, not in addition to a "clinical first" reading of it.
 
+SCORE/FEEDBACK CONSISTENCY — the number and the narrative must never contradict each other:
+- If any rubric criterion is scored below its band's maximum, areasForGrowth and actionableSteps
+  MUST name a specific, real shortcoming in THIS paper that explains the lost points. Never write a
+  generic, non-corrective step ("keep up the good work", "review it once more") when points were
+  actually deducted — a teacher reading a step like that next to a sub-maximum score has no way to
+  tell why the paper didn't score higher.
+- If you genuinely cannot identify any concrete weakness anywhere in the paper, no criterion may be
+  scored below its band's maximum for that reason — do not withhold points you cannot point to a
+  specific, real cause for in the student's own writing.
+- Do not describe a paper as strong, well-developed, or well-organized in "strengths" while also
+  scoring the criterion that word applies to in a low or middle band — the two statements must agree
+  with each other, not just each be individually plausible.
+
 DATA PRIVACY GATE — perform this FIRST, before reading or grading anything else, for each paper:
 - Scan the page for personally identifying information: a student's full name, a signature, an LRN / student number, an address, or a contact number — commonly on a name line, in a header, or in a page corner.
 - If found, STOP IMMEDIATELY for that paper and return ONLY { "privacyViolationDetected": true, "privacyViolationType": "<name|signature|lrn|address|contact>" } (plus "paperNumber" if this request has more than one paper) — do not transcribe, score, or fill in any other field for that paper.
@@ -3125,10 +3138,10 @@ You MUST respond with valid JSON matching this exact schema:
             "points": <percentage weight, all criteria must sum to 100>,
             "description": "<What this criterion evaluates>",
             "bands": [
-              { "label": "Outstanding", "score": "<point range e.g. 36-40>", "description": "<description>" },
-              { "label": "Proficient", "score": "<point range>", "description": "<description>" },
-              { "label": "Developing", "score": "<point range>", "description": "<description>" },
-              { "label": "Beginning", "score": "<point range>", "description": "<description>" }
+              { "label": "Outstanding", "range": "<point range e.g. 36-40>", "score": <the numeric top of that range, e.g. 40>, "description": "<description>" },
+              { "label": "Proficient", "range": "<point range>", "score": <numeric top of that range>, "description": "<description>" },
+              { "label": "Developing", "range": "<point range>", "score": <numeric top of that range>, "description": "<description>" },
+              { "label": "Beginning", "range": "<point range>", "score": <numeric top of that range>, "description": "<description>" }
             ]
           }
         ]
@@ -3143,6 +3156,9 @@ RULES:
 - The outputType should reflect the most likely student output for that lesson.
 - Keep rubric criteria practical and aligned with DepEd standards.
 - Generate 3-4 criteria per rubric, each with 4 scoring bands.
+- Every band's "score" MUST be a plain number (e.g. 40), never a range string —
+  "range" is where the range text like "36-40" belongs. The application reads
+  "score" numerically to compute each criterion's point value.
 - If the document structure is unclear, organize by logical topic groupings.`;
 
     const fileParts = [{
@@ -3225,7 +3241,11 @@ app.get('/api/classes/:classId', async (req, res) => {
   const classData = await prisma.class.findUnique({
     where: { id: req.params.classId },
     include: {
-      section: { include: { students: { select: { id: true, name: true, username: true } } } },
+      // Feeds both the Teacher Upload and Student Submit rosters (BatchUpload.jsx,
+      // ClassHub.jsx) — without an orderBy, Postgres returns these in whatever
+      // order it finds them, which a teacher scanning down a class list reads as
+      // random rather than the alphabetical-by-name arrangement they expect.
+      section: { include: { students: { select: { id: true, name: true, username: true }, orderBy: { name: 'asc' } } } },
       activities: {
         include: {
           _count: { select: { submissions: true } },
