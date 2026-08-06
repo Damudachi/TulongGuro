@@ -4497,7 +4497,19 @@ app.post('/api/teacher/submissions/:id/analyze', async (req, res) => {
   try {
     const sub = await prisma.submission.findUnique({ where: { id: req.params.id } });
     if (!sub) return res.status(404).json({ error: 'Submission not found' });
-    if (sub.aiScore !== null) return res.status(400).json({ error: 'Already analyzed by AI' });
+    // Blocking on aiScore !== null used to also block the one case a teacher
+    // most needs this for: a blurry or illegible photo that came back scored 0
+    // with no readable text found. The real line is validation, not "has an AI
+    // opinion already" — anything still PENDING can be re-checked as many
+    // times as it takes (after replacing the photo, after quota resets, etc.);
+    // once the teacher has clicked Validate the grade is theirs to edit
+    // directly, not the AI's to silently overwrite.
+    if (sub.status !== 'PENDING') {
+      return res.status(400).json({
+        success: false,
+        error: 'This submission has already been validated by a teacher. Replace the photo or edit the assessment directly instead of re-running the AI check.'
+      });
+    }
 
     // imageUrl is either a local /uploads/... path or a Supabase Storage URL.
     // Submissions uploaded before storage moved to Supabase point at a disk that
@@ -6251,6 +6263,17 @@ app.post('/api/teacher/upload', submissionUpload.fields([{ name: 'image', maxCou
       return res.status(400).json({ success: false, error: 'Please assign a student before grading. A student must be selected.' });
     }
 
+    // Checked before any upload/grading work runs, not after: a released
+    // result is already in front of the student, so silently replacing the
+    // photo underneath it — and flipping status back to PENDING — would
+    // desync what the student sees from what is now on file. Caught here
+    // instead of spending an upload and a grading request on a request that
+    // was always going to be refused.
+    const existingForRelease = await prisma.submission.findFirst({ where: { studentId, activityId }, select: { releasedAt: true } });
+    if (existingForRelease?.releasedAt) {
+      return res.status(400).json({ success: false, error: 'This submission has already been released to the student, so the photo can\'t be replaced here.' });
+    }
+
     // 1) Photos are stitched and optimised; a PDF or Word file is stored as-is.
     const prepared = await prepareSubmissionUpload(imageFiles);
     const processedPath = prepared.path;
@@ -6336,7 +6359,16 @@ app.post('/api/teacher/upload', submissionUpload.fields([{ name: 'image', maxCou
         where: { id: existing.id },
         // isLate reflects this attempt, not the first one — the same rule
         // /api/student/submit applies on resubmission.
-        data: { ...submissionData, isLate, retainUntil: existing.retainUntil ?? await retainUntilForActivity(activityId) }
+        data: {
+          ...submissionData, isLate, retainUntil: existing.retainUntil ?? await retainUntilForActivity(activityId),
+          // A replaced photo was scored (by the AI, and by any teacher who had
+          // already validated it) against a DIFFERENT paper. That grade must
+          // not survive attached to this one — it belongs in the "ready for AI
+          // checking" queue like any fresh upload, not sitting there stale.
+          hitlScore: null,
+          hitlFeedback: null,
+          readingStrategy: submissionData.readingStrategy || null,
+        }
       });
     } else {
       submission = await prisma.submission.create({

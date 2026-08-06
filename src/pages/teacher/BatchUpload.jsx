@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
-import { ArrowLeft, UploadCloud, X, Loader2, Wifi, WifiOff, ShieldCheck, Info, FileText, Camera, Sparkles, Plus, CheckCircle2, AlertTriangle, ClipboardCheck } from 'lucide-react';
+import { ArrowLeft, UploadCloud, X, Loader2, Wifi, WifiOff, ShieldCheck, Info, FileText, Camera, Sparkles, Plus, CheckCircle2, AlertTriangle, ClipboardCheck, RefreshCw } from 'lucide-react';
 import { getQueue, buildJob, enqueue, flushQueue } from '../../utils/offlineQueue';
 import { API_URL, apiFetch, MAX_SUBMISSION_PAGES } from '../../config';
 import SubmissionImage from '../../components/SubmissionImage';
@@ -602,17 +602,34 @@ export default function BatchUpload() {
                   </div>
 
                   {/* In student-submit mode a pupil who has already handed work
-                      in is only reviewed — the teacher must not overwrite it. A
-                      pupil with nothing in yet still gets the upload controls,
-                      because not every learner in a DepEd classroom has a device
-                      and the ones who don't cannot be left unable to submit. */}
+                      in is normally just reviewed — a genuine self-submission
+                      isn't the teacher's to overwrite. But once it's picked up
+                      here (whether the pupil submitted it or a teacher scanned
+                      it in on their behalf), a wrong file is still fixable up
+                      until it's released: Replace stages a new photo through
+                      the exact same redact-then-confirm flow as a first upload.
+                      Once released to the student, it's locked — see the
+                      matching guard in /api/teacher/upload. */}
                   {isStudentSubmitMode && sub?.id ? (
-                    <div className="flex flex-col items-center gap-1 shrink-0">
+                    <div className="flex flex-col items-center gap-1.5 shrink-0">
                       <Link to={`/teacher/review/${sub.id}`}
-                        className="text-xs bg-brand-navy text-white px-3 py-1.5 rounded-md font-medium hover:bg-blue-900">
+                        className="text-xs bg-brand-navy text-white px-3 py-1.5 rounded-md font-medium hover:bg-blue-900 w-full text-center">
                         Review
                       </Link>
                       {grade !== null && <span className="text-xs font-bold text-brand-slate">{grade}/{maxPoints}</span>}
+                      {!sub.releasedAt && (
+                        <button type="button"
+                          onClick={() => {
+                            if (sub.status === 'GRADED' && !window.confirm('This paper has already been validated. Replacing it will clear that grade so the new photo can be checked fresh. Continue?')) return;
+                            triggerFilePick(student.id);
+                          }}
+                          disabled={!piiConfirmed}
+                          title={!piiConfirmed ? 'Confirm the privacy checkbox above first' : 'Wrong file, or too blurry to read? Upload a replacement.'}
+                          className={cn('text-[11px] font-medium flex items-center gap-1',
+                            piiConfirmed ? 'text-slate-500 hover:text-brand-navy' : 'text-slate-300 cursor-not-allowed')}>
+                          <RefreshCw className="w-3 h-3" /> Replace
+                        </button>
+                      )}
                     </div>
                   ) : staged ? (
                     <div className="flex flex-col items-end gap-1.5 shrink-0">

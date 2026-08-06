@@ -1,8 +1,10 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
-import { ArrowLeft, Check, Edit2, Info, Sparkles, X, Send, Bot, Loader2, CheckCircle2, ChevronDown, Plus, Trash2, AlertTriangle, SkipForward, Send as SendIcon } from 'lucide-react';
+import { ArrowLeft, Check, Edit2, Info, Sparkles, X, Send, Bot, Loader2, CheckCircle2, ChevronDown, Plus, Trash2, AlertTriangle, SkipForward, Send as SendIcon, RefreshCw } from 'lucide-react';
 import { API_URL, apiFetch } from '../../config';
 import SubmissionImage from '../../components/SubmissionImage';
+import ImageRedactor from '../../components/ImageRedactor';
+import { isRasterizable, rasterizeToPageImages } from '../../utils/fileRasterize';
 import { ONBOARDING, hasSeenOnboarding, markOnboardingSeen } from '../../utils/onboarding';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
@@ -107,6 +109,17 @@ export default function HITLWorkspace() {
   const [showTooltip, setShowTooltip] = useState(false);
   const [showCelebration, setShowCelebration] = useState(false);
   const chatEndRef = useRef(null);
+
+  // ── Replace Photo ──
+  // A wrong or too-blurry-to-read upload used to be a dead end: the "No
+  // Readable Text Detected" banner told the teacher to "re-upload a clearer
+  // photo", but nothing on this screen actually let them. Picked files go
+  // through the same redaction/rasterization pipeline as a fresh upload, one
+  // page at a time, before replacing the submission and re-grading it.
+  const [isPreparingReplace, setIsPreparingReplace] = useState(false);
+  const [replaceQueue, setReplaceQueue] = useState(null); // { files: File[], index, objectUrl, ready: File[] }
+  const [isReplacing, setIsReplacing] = useState(false);
+  const replaceFileInputRef = useRef(null);
 
   useEffect(() => {
     if (!hasSeenOnboarding(ONBOARDING.TEACHER_COPILOT_TIP)) {
@@ -581,6 +594,104 @@ export default function HITLWorkspace() {
     }
   };
 
+  // ── Replace Photo ──
+  const triggerReplacePhoto = () => replaceFileInputRef.current?.click();
+
+  const handleReplaceFilePicked = async (e) => {
+    const picked = Array.from(e.target.files || []);
+    e.target.value = '';
+    if (picked.length === 0 || !submission) return;
+
+    // Replacing clears the server's own record of this validation (see the
+    // /api/teacher/upload note on why) — ask first so a teacher who validated
+    // moments ago isn't surprised to see it gone.
+    if (submission.status === 'GRADED') {
+      const proceed = window.confirm('This paper has already been validated. Replacing the photo will clear that grade so the new photo can be checked fresh. Continue?');
+      if (!proceed) return;
+    }
+
+    const images = picked.filter(f => (f.type || '').startsWith('image/'));
+    const toRasterize = picked.filter(f => isRasterizable(f));
+
+    if (toRasterize.length > 0) {
+      setIsPreparingReplace(true);
+      for (const f of toRasterize) {
+        try {
+          const pages = await rasterizeToPageImages(f, 12);
+          images.push(...pages);
+        } catch {
+          alert(`Couldn't render "${f.name}" for preview. Try a photo instead, or a different file.`);
+        }
+      }
+      setIsPreparingReplace(false);
+    }
+    if (images.length === 0) return;
+
+    setReplaceQueue({ files: images, index: 0, objectUrl: URL.createObjectURL(images[0]), ready: [] });
+  };
+
+  const uploadReplacementPhoto = async (files) => {
+    setIsReplacing(true);
+    try {
+      const formData = new FormData();
+      files.forEach(f => formData.append('images', f));
+      formData.append('studentId', submission.studentId);
+      formData.append('activityId', submission.activityId);
+      const res = await apiFetch(`${API_URL}/api/teacher/upload`, { method: 'POST', body: formData });
+      const data = await res.json();
+      if (data.success && data.submission) {
+        const sub = { ...submission, ...data.submission, activity: data.submission.activity || submission?.activity, student: data.submission.student || submission?.student };
+        setSubmission(sub);
+        setIsApproved(false);
+        setIsEditingAssessment(false);
+
+        const parsedAi = parseStructuredFeedback(sub.aiFeedback);
+        setStructuredFeedback(parsedAi || { ...EMPTY_STRUCTURED, strengths: sub.aiFeedback || '' });
+        setIsStructured(true);
+        setReadingStrategy(sub.readingStrategy || '');
+        setCovData(null);
+        if (sub.rubricData && sub.rubricData !== '[]') {
+          try {
+            const rd = JSON.parse(sub.rubricData);
+            if (Array.isArray(rd)) {
+              const initialScores = {};
+              rd.forEach(r => initialScores[r.criterionName] = r.score);
+              setScores(initialScores);
+              setDynamicRubric(rd);
+            }
+          } catch { /* fall through to the cleared state below */ }
+        } else {
+          setDynamicRubric(null);
+          setScores({});
+        }
+      } else {
+        alert(data.error || 'Could not replace the photo.');
+      }
+    } catch {
+      alert('Network error while replacing the photo.');
+    } finally {
+      setIsReplacing(false);
+    }
+  };
+
+  const handleReplaceRedactConfirm = (redactedBlob) => {
+    const { files, index, objectUrl, ready } = replaceQueue;
+    URL.revokeObjectURL(objectUrl);
+    const redactedFile = new File([redactedBlob], files[index].name, { type: 'image/jpeg' });
+    const nextReady = [...ready, redactedFile];
+    const nextIndex = index + 1;
+    if (nextIndex < files.length) {
+      setReplaceQueue({ files, index: nextIndex, objectUrl: URL.createObjectURL(files[nextIndex]), ready: nextReady });
+    } else {
+      setReplaceQueue(null);
+      uploadReplacementPhoto(nextReady);
+    }
+  };
+  const handleReplaceRedactCancel = () => {
+    URL.revokeObjectURL(replaceQueue.objectUrl);
+    setReplaceQueue(null);
+  };
+
   if (isLoading) return <div className="flex items-center justify-center h-64 text-slate-400"><Loader2 className="w-6 h-6 animate-spin mr-2" />Loading submission...</div>;
 
   const activity = submission?.activity;
@@ -646,7 +757,47 @@ export default function HITLWorkspace() {
               <span className="text-xs">Upload image to see here</span>
             </div>
           )}
+          {/* Fixes the wrong-file / too-blurry-to-read case: picks a new photo
+              (or PDF/Word, rasterized the same way a fresh upload is), redacts
+              it, then replaces this submission and re-grades it. Disabled once
+              released — see the matching server-side guard. */}
+          {submission && (
+            <button
+              type="button"
+              onClick={triggerReplacePhoto}
+              disabled={isReplacing || isPreparingReplace || !!submission.releasedAt}
+              title={submission.releasedAt ? 'Already released to the student — can\'t be replaced here.' : 'Wrong file, or too blurry to read? Upload a replacement.'}
+              className="absolute top-2 right-2 bg-white/95 hover:bg-white disabled:opacity-60 disabled:cursor-not-allowed text-slate-700 text-xs font-bold px-3 py-1.5 rounded-lg shadow-md flex items-center gap-1.5 backdrop-blur-sm transition-colors"
+            >
+              {isReplacing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
+              {isReplacing ? 'Replacing…' : 'Replace Photo'}
+            </button>
+          )}
         </div>
+        <input ref={replaceFileInputRef} type="file"
+          accept="image/*,application/pdf,.pdf,.docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+          multiple className="hidden" onChange={handleReplaceFilePicked} />
+
+        {isPreparingReplace && (
+          <div className="fixed inset-0 z-[110] flex flex-col items-center justify-center gap-3 bg-slate-900/85 backdrop-blur-sm text-white">
+            <Loader2 className="w-8 h-8 animate-spin" />
+            <p className="text-sm font-bold">Preparing the file for preview…</p>
+          </div>
+        )}
+        {replaceQueue && (
+          <>
+            <ImageRedactor
+              imageSrc={replaceQueue.objectUrl}
+              onConfirm={handleReplaceRedactConfirm}
+              onCancel={handleReplaceRedactCancel}
+            />
+            {replaceQueue.files.length > 1 && (
+              <div className="fixed top-14 left-1/2 -translate-x-1/2 z-[120] bg-navy-900/85 text-white text-xs font-bold px-4 py-2 rounded-full">
+                Photo {replaceQueue.index + 1} of {replaceQueue.files.length}
+              </div>
+            )}
+          </>
+        )}
         {submission && (
           <div className="mt-3 p-3 bg-white rounded-lg border border-slate-200 text-xs text-slate-500">
             <p className="font-semibold text-brand-slate">{submission.student?.name}</p>
@@ -738,12 +889,19 @@ export default function HITLWorkspace() {
           {submission?.aiScore === 0 && !submission?.aiFeedback?.includes('⚠') && !submission?.privacyViolation && (
             <div className="flex items-start gap-3 p-4 bg-amber-50 border-2 border-amber-300 rounded-xl text-sm">
               <span className="text-xl shrink-0">📄</span>
-              <div>
+              <div className="flex-1">
                 <p className="font-bold text-amber-800">No Readable Text Detected</p>
                 <p className="text-amber-700 text-xs mt-0.5">
                   {structuredFeedback?.strengths || submission?.aiFeedback || 'The AI could not find readable handwritten or printed text in this image. The image may be blank, contain only drawings, or be too blurry.'}
                 </p>
-                <p className="text-amber-600 text-xs mt-1 font-medium">You can re-upload a clearer photo or grade manually.</p>
+                <p className="text-amber-600 text-xs mt-1 font-medium">Replace it with a clearer photo (top-left), or try checking this one again — a re-crop or better lighting is sometimes all it takes.</p>
+                {submission.status === 'PENDING' && (
+                  <button onClick={handleAnalyze} disabled={isAnalyzing}
+                    className="mt-2 text-xs font-bold text-amber-800 bg-amber-100 hover:bg-amber-200 px-3 py-1.5 rounded-lg transition-colors flex items-center gap-1.5 disabled:opacity-60">
+                    {isAnalyzing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
+                    {isAnalyzing ? 'Checking again…' : 'Check Again'}
+                  </button>
+                )}
               </div>
             </div>
           )}
