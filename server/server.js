@@ -2585,6 +2585,23 @@ app.post('/api/admin/:adminId/curriculums', upload.single('curriculumFile'), asy
       });
     }
 
+    // Parsed from the local temp file BEFORE it goes to cloud storage.
+    // uploadToCloud deletes that same local file once it's safely in Supabase
+    // (production only — see its own comment on why), so parsing had to run
+    // after it used to fail every time in production with "Curriculum file
+    // not found on disk": the file it was told to read had already been
+    // removed by the very upload call two lines above it.
+    let parseWarning = null;
+    let rubricReport = { saved: 0, merged: 0, skipped: [], names: [] };
+    let lessons = [];
+    if (req.file) {
+      try {
+        lessons = await extractLessonsFromCurriculum(req.file.path, subject, gradeLevel);
+      } catch (parseErr) {
+        parseWarning = 'Curriculum file could not be parsed: ' + parseErr.message;
+      }
+    }
+
     const sourceFile = req.file
       ? await uploadToCloud(req.file.path, req.file.filename, { folder: 'curriculum', contentType: req.file.mimetype })
       : null;
@@ -2593,11 +2610,8 @@ app.post('/api/admin/:adminId/curriculums', upload.single('curriculumFile'), asy
       data: { schoolId: admin.schoolId, gradeLevel, subject, title: title.trim(), description: description || null, sourceFile }
     });
 
-    let parseWarning = null;
-    let rubricReport = { saved: 0, merged: 0, skipped: [], names: [] };
-    if (req.file) {
+    if (req.file && !parseWarning) {
       try {
-        const lessons = await extractLessonsFromCurriculum(req.file.path, subject, gradeLevel);
         if (lessons.length) {
           await prisma.curriculumLesson.createMany({
             data: lessons.map(l => ({
@@ -2613,8 +2627,10 @@ app.post('/api/admin/:adminId/curriculums', upload.single('curriculumFile'), asy
         } else {
           parseWarning = 'No lessons could be extracted from that file. You can still add them by hand.';
         }
-      } catch (parseErr) {
-        parseWarning = 'Curriculum file could not be parsed: ' + parseErr.message;
+      } catch (saveErr) {
+        // Parsing itself already succeeded by this point (that failure mode
+        // is caught above, before upload) — this is a save failure instead.
+        parseWarning = 'The parsed lessons could not be saved: ' + saveErr.message;
       }
     }
 
@@ -3405,8 +3421,24 @@ app.post('/api/teacher/classes/:id/parse-curriculum', async (req, res) => {
     if (!classRecord) return res.status(404).json({ success: false, error: 'Class not found' });
     if (!classRecord.curriculumFile) return res.status(400).json({ success: false, error: 'No curriculum file uploaded for this class' });
 
-    const filePath = path.join(__dirname, classRecord.curriculumFile);
-    const lessons = await extractLessonsFromCurriculum(filePath, classRecord.subject, classRecord.gradeLevel);
+    // classRecord.curriculumFile is a Supabase public URL whenever cloud
+    // storage is configured (uploadToCloud returns one), not a path under
+    // this server — path.join(__dirname, ...) on a URL never resolves to a
+    // real file. resolveLocalImagePath already handles both shapes: it
+    // downloads a remote URL to a temp file, or resolves a local path
+    // directly, the same way submission images are read for grading.
+    let filePath, isTemp;
+    try {
+      ({ path: filePath, isTemp } = await resolveLocalImagePath(classRecord.curriculumFile));
+    } catch {
+      return res.status(409).json({ success: false, error: 'The curriculum file for this class is no longer available in storage.' });
+    }
+    let lessons;
+    try {
+      lessons = await extractLessonsFromCurriculum(filePath, classRecord.subject, classRecord.gradeLevel);
+    } finally {
+      if (isTemp) { try { fs.unlinkSync(filePath); } catch {} }
+    }
 
     if (lessons.length === 0) {
       return res.json({ success: true, lessons: [], message: 'No lessons found in the document.' });
