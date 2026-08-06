@@ -71,7 +71,7 @@ export default function PageHeader({
  * Deliberately plain — dashboards stack many of these, so decoration here
  * reads as noise.
  */
-export function StatTile({ label, value, icon: Icon, tone = 'text-navy-700', className }) {
+export function StatTile({ label, value, icon: Icon, tone = 'text-navy-700', className, hint }) {
   return (
     <div className={cn('bg-white rounded-2xl border-2 border-cream-200 px-4 py-3.5 min-w-0', className)}>
       <div className="flex items-center gap-1.5 mb-1">
@@ -79,6 +79,9 @@ export function StatTile({ label, value, icon: Icon, tone = 'text-navy-700', cla
         <p className="text-[10px] uppercase tracking-wider font-extrabold text-navy-400 truncate">{label}</p>
       </div>
       <p className={cn('font-display text-2xl font-extrabold leading-none truncate', tone)}>{value}</p>
+      {/* Optional caption for a value that isn't the full picture yet — e.g. an
+          average computed from only some of a student's subjects. */}
+      {hint && <p className="text-[10px] font-semibold text-navy-400 mt-1 truncate">{hint}</p>}
     </div>
   );
 }

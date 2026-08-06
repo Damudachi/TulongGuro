@@ -76,6 +76,12 @@ export default function StudentDashboard() {
   const submissions = data?.submissions || [];
   const stars = data?.stars || 0;
   const avgGrade = data?.avgGrade || 0;
+  // Flags when the average above only reflects some of the student's subjects
+  // (the rest have no graded work yet) — without this, that average renders
+  // identically to a genuine across-all-subjects one.
+  const avgGradePartial = data?.avgGradePartial || false;
+  const avgGradeSubjectsIncluded = data?.avgGradeSubjectsIncluded || 0;
+  const avgGradeSubjectsTotal = data?.avgGradeSubjectsTotal || 0;
   const upcomingDeadlines = data?.upcomingDeadlines || [];
   const pendingSubmissions = data?.pendingSubmissions || [];
   const latestStrategy = data?.latestStrategy || null;
@@ -152,7 +158,8 @@ export default function StudentDashboard() {
       <div className="tg-stat-row grid-cols-3 mb-6">
         <StatTile label="Stars" value={stars} icon={Star} tone="text-sun-700" className="shrink-0 w-32 md:w-auto" />
         <StatTile label="Graded" value={submissions.length} icon={CheckCircle2} tone="text-royal-600" className="shrink-0 w-32 md:w-auto" />
-        <StatTile label="Overall" value={avgGrade > 0 ? `${avgGrade}%` : '—'} icon={Award} tone="text-aqua-700" className="shrink-0 w-32 md:w-auto" />
+        <StatTile label="Overall" value={avgGrade > 0 ? `${avgGrade}%` : '—'} icon={Award} tone="text-aqua-700" className="shrink-0 w-32 md:w-auto"
+          hint={avgGradePartial ? `${avgGradeSubjectsIncluded} of ${avgGradeSubjectsTotal} subjects` : undefined} />
       </div>
 
       {/* ── Reading strategy tip ── */}

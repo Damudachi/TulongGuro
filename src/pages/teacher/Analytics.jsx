@@ -189,6 +189,14 @@ export default function Analytics() {
                       <p className="text-[11px] font-bold uppercase tracking-wider text-royal-600 mb-1">Average</p>
                       <p className="text-3xl font-extrabold text-royal-700">{pct(studentData.avgScore)}%</p>
                       {band && <span className={cn('inline-block mt-1.5 text-[11px] font-bold px-2 py-0.5 rounded-full', band.chip)}>{band.emoji} {band.short}</span>}
+                      {/* Flags an average that only covers some of this student's
+                          subjects with this teacher — otherwise it renders
+                          identically to one covering all of them. */}
+                      {studentData.avgScorePartial && (
+                        <p className="text-[11px] text-royal-500 mt-1.5">
+                          Based on {studentData.avgScoreSubjectsIncluded} of {studentData.avgScoreSubjectsTotal} subjects — the rest have no graded work yet
+                        </p>
+                      )}
                     </div>
                     <div className="bg-aqua-50 rounded-2xl p-4">
                       <p className="text-[11px] font-bold uppercase tracking-wider text-aqua-700 mb-1">Points earned</p>

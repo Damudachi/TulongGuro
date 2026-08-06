@@ -248,6 +248,13 @@ model Submission {
   /// teacher decides what a late mark is worth. Set per attempt, so a student
   /// who re-submits late after an on-time first attempt is marked late.
   isLate           Boolean   @default(false)
+  /// True when the AI graded this without a real gradeLevel on the class —
+  /// generateSubmissionFeedback silently defaults to "Grade 6" for curriculum
+  /// context, language complexity, and score calibration when Class.gradeLevel
+  /// is unset, so a Grade 11 class with that field left blank was graded and
+  /// calibrated as if it were Grade 6 with nothing surfaced to the teacher.
+  /// This is that surfacing: the HITL workspace shows a banner when true.
+  gradeLevelAssumed Boolean  @default(false)
   privacyViolation Boolean   @default(false)
   status           String    @default("PENDING")
   /// When the teacher published this result to the student.
@@ -267,6 +274,35 @@ model Submission {
   updatedAt        DateTime  @updatedAt
   activity         Activity  @relation(fields: [activityId], references: [id])
   student          User      @relation(fields: [studentId], references: [id])
+  auditLog         GradingAuditLog[]
+}
+
+/// Append-only record of what happened to a submission's grade, and when.
+///
+/// aiScore/hitlScore/releasedAt only ever show the CURRENT state — a teacher
+/// can validate, then re-open and revise, then release, and nothing is left
+/// behind showing what the AI originally said or when a human first signed
+/// off on it. Standard LMS practice treats an AI-suggested score as a draft
+/// until a human of record approves it (this app already does that correctly
+/// via status GRADED gating release and analytics); this table is what lets
+/// that approval be reconstructed later, e.g. if a parent or DepEd disputes a
+/// grade months after the fact.
+///
+/// Deliberately minimal: an event name, an actor (null for the AI), and a
+/// score snapshot — not a full feedback-text snapshot, which would duplicate
+/// aiFeedback/hitlFeedback's own history for little audit value.
+model GradingAuditLog {
+  id           String     @id @default(uuid())
+  submissionId String
+  /// AI_GRADED | TEACHER_VALIDATED | RELEASED
+  event        String
+  /// The teacher who acted, or null for an AI_GRADED row.
+  actorId      String?
+  score        Float?
+  createdAt    DateTime   @default(now())
+  submission   Submission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+
+  @@index([submissionId])
 }
 
 model GradingExample {

@@ -338,9 +338,18 @@ export default function HITLWorkspace() {
         body: JSON.stringify({ currentFeedback: feedbackText, prompt: msg, isStructured })
       });
       const data = await res.json();
-      setChatHistory(prev => [...prev, { role: 'ai', text: data.refinedFeedback, isStructuredResponse: data.isStructured }]);
+      // refineFailed means the AI never actually ran — the server falls back to
+      // returning the original text unchanged rather than failing the request.
+      // Showing that as a normal AI reply used to be indistinguishable from the
+      // AI genuinely deciding your wording didn't need to change, and it came
+      // with an "Apply" button that would silently reapply the identical text.
+      if (data.refineFailed) {
+        setChatHistory(prev => [...prev, { role: 'ai', failed: true, text: data.refineFailedReason || "The AI Co-Pilot couldn't make this change right now." }]);
+      } else {
+        setChatHistory(prev => [...prev, { role: 'ai', text: data.refinedFeedback, isStructuredResponse: data.isStructured }]);
+      }
     } catch {
-      setChatHistory(prev => [...prev, { role: 'ai', text: 'Error reaching AI. Please check your connection.' }]);
+      setChatHistory(prev => [...prev, { role: 'ai', failed: true, text: 'Error reaching AI. Please check your connection.' }]);
     } finally {
       setIsChatLoading(false);
     }
@@ -703,6 +712,23 @@ export default function HITLWorkspace() {
                 <p className="font-bold text-orange-800">Privacy Act Warning</p>
                 <p className="text-orange-700 text-xs mt-0.5">
                   The AI detected a student name written on this scanned paper. Please remind the student to omit their name on future submissions to comply with the Data Privacy Act.
+                </p>
+              </div>
+            </div>
+          )}
+
+          {/* Grade Level Assumed Banner — this class has no gradeLevel set, so the
+              AI silently calibrated its curriculum context, language complexity,
+              and score expectations for Grade 6 by default. Surfaced here rather
+              than left silent, since it isn't just a label — it can shift what
+              counts as a good score for this student. */}
+          {submission?.gradeLevelAssumed && (
+            <div className="flex items-start gap-3 p-4 bg-amber-50 border-2 border-amber-300 rounded-xl text-sm">
+              <AlertTriangle className="w-5 h-5 shrink-0 text-amber-600" />
+              <div>
+                <p className="font-bold text-amber-800">Grade Level Not Set</p>
+                <p className="text-amber-700 text-xs mt-0.5">
+                  This class has no grade level set, so the AI graded this against Grade 6 expectations by default. Set the class's grade level, then re-check this paper if that doesn't match the actual grade.
                 </p>
               </div>
             </div>
@@ -1182,15 +1208,20 @@ export default function HITLWorkspace() {
           {chatHistory.map((msg, idx) => (
             <div key={idx} className={cn('flex flex-col max-w-[85%]', msg.role === 'user' ? 'ml-auto items-end' : 'mr-auto items-start')}>
               {msg.role === 'ai' && (
-                <div className="flex items-center text-xs text-slate-500 mb-1 ml-1 font-bold">
-                  <Bot className="w-3.5 h-3.5 mr-1" /> AI Assistant
+                <div className={cn('flex items-center text-xs mb-1 ml-1 font-bold', msg.failed ? 'text-amber-600' : 'text-slate-500')}>
+                  {msg.failed ? <AlertTriangle className="w-3.5 h-3.5 mr-1" /> : <Bot className="w-3.5 h-3.5 mr-1" />}
+                  {msg.failed ? 'AI Assistant — couldn\'t run' : 'AI Assistant'}
                 </div>
               )}
               <div className={cn('p-3 rounded-2xl text-sm shadow-sm',
-                msg.role === 'user' ? 'bg-brand-navy text-white rounded-br-none' : 'bg-white border border-slate-200 text-slate-700 rounded-bl-none')}>
+                msg.role === 'user' ? 'bg-brand-navy text-white rounded-br-none'
+                  : msg.failed ? 'bg-amber-50 border border-amber-200 text-amber-800 rounded-bl-none'
+                  : 'bg-white border border-slate-200 text-slate-700 rounded-bl-none')}>
                 {msg.text}
               </div>
-              {msg.role === 'ai' && idx > 0 && (
+              {/* No "Apply" action when the AI never actually produced anything —
+                  that button used to reapply the untouched original text. */}
+              {msg.role === 'ai' && idx > 0 && !msg.failed && (
                 <button onClick={() => applyFeedback(msg.text, msg.isStructuredResponse)}
                   className="mt-2 text-xs font-bold text-brand-green flex items-center bg-green-50 px-3 py-1.5 rounded-full hover:bg-green-100 transition-colors border border-green-200">
                   <Check className="w-3.5 h-3.5 mr-1" /> Apply to Feedback

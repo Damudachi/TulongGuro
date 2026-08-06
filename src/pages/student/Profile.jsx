@@ -26,6 +26,9 @@ export default function StudentProfile() {
   const submissions = data?.submissions || [];
   const stars = data?.stars || 0;
   const avgGrade = data?.avgGrade || 0;
+  const avgGradePartial = data?.avgGradePartial || false;
+  const avgGradeSubjectsIncluded = data?.avgGradeSubjectsIncluded || 0;
+  const avgGradeSubjectsTotal = data?.avgGradeSubjectsTotal || 0;
 
   const valueFor = (key) =>
     key === 'section' ? (student.section?.name || '—') : (student[key] || '—');
@@ -74,12 +77,14 @@ export default function StudentProfile() {
         <div className="grid grid-cols-3 gap-3 text-center">
           {[
             { value: submissions.length, label: 'Outputs', tone: 'text-royal-600' },
-            { value: avgGrade > 0 ? `${avgGrade}%` : '—', label: 'Average', tone: 'text-aqua-700' },
+            { value: avgGrade > 0 ? `${avgGrade}%` : '—', label: 'Average', tone: 'text-aqua-700',
+              hint: avgGradePartial ? `${avgGradeSubjectsIncluded} of ${avgGradeSubjectsTotal} subjects` : null },
             { value: stars, label: 'Stars', tone: 'text-sun-700' },
           ].map(stat => (
             <div key={stat.label} className="bg-cream-100 rounded-2xl py-4">
               <p className={`font-display text-3xl font-extrabold ${stat.tone}`}>{stat.value}</p>
               <p className="text-xs font-bold text-navy-500 mt-1">{stat.label}</p>
+              {stat.hint && <p className="text-[10px] font-semibold text-navy-400 mt-0.5">{stat.hint}</p>}
             </div>
           ))}
         </div>
