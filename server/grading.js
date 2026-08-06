@@ -171,14 +171,24 @@ function clampScore(raw) {
  * (analytics, the student dashboard, release) filtered on GRADED in its own
  * query; the one place a number leaves the system did not.
  *
+ * An excused activity is excluded too. computeGrade already drops a component
+ * with nothing graded and renormalises the remaining weights, so an excused
+ * paper simply does not enter the calculation — which is what "excused" means,
+ * as opposed to a zero.
+ *
  * Deliberately NOT gated on `releasedAt`. Release controls what the student
  * can see, not whether the mark is real — a teacher exporting their own record
  * before publishing to the class is doing something normal.
  *
- * @param {{status?: string, archivedAt?: Date|null}|null|undefined} sub
+ * @param {{status?: string, archivedAt?: Date|null, excusedAt?: Date|null}|null|undefined} sub
  */
 function countsAsGrade(sub) {
-  return !!sub && !sub.archivedAt && sub.status === 'GRADED';
+  return !!sub && !sub.archivedAt && !sub.excusedAt && sub.status === 'GRADED';
+}
+
+/** Whether a teacher has excused this student from the activity. */
+function isExcused(sub) {
+  return !!sub?.excusedAt;
 }
 
 /**
@@ -427,6 +437,7 @@ module.exports = {
   parseScore,
   clampScore,
   countsAsGrade,
+  isExcused,
   gradePercentOf,
   weightGroupForSubject,
   defaultPolicyFor,

@@ -489,29 +489,41 @@ export default function Analytics() {
           )}
 
           {/* ── Writing skills across the class ── */}
-          {Object.values(classAvgSkills).some(v => v > 0) && (
+          {Object.values(classAvgSkills).some(v => typeof v === 'number' && v > 0) && (
             <div className="bg-white border-2 border-navy-700/10 rounded-3xl p-5 shadow-pop">
               <h2 className="text-sm font-extrabold text-navy-700 flex items-center gap-2 mb-4">
                 <Sparkles className="w-4 h-4 text-lilac-500" /> Writing skills across the class
               </h2>
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                 {Object.entries(SKILL_LABELS).map(([key, label]) => {
-                  const v = classAvgSkills[key] || 0;
+                  // null means no activity in this class measured the skill —
+                  // a set of Maths worksheets has no punctuation average. Said
+                  // rather than drawn as an empty bar, which reads as "the
+                  // class scored nothing" instead of "nothing measured this".
+                  const v = classAvgSkills[key];
+                  const measured = typeof v === 'number';
                   return (
                     <div key={key}>
                       <div className="flex justify-between items-baseline mb-1">
                         <span className="text-xs font-bold text-slate-600">{label}</span>
-                        <span className="text-xs font-extrabold text-navy-800">{v}<span className="text-slate-400">/25</span></span>
+                        {measured
+                          ? <span className="text-xs font-extrabold text-navy-800">{v}<span className="text-slate-400">/25</span></span>
+                          : <span className="text-[10px] font-bold text-slate-400">not measured</span>}
                       </div>
                       <div className="h-2 bg-slate-100 rounded-full overflow-hidden">
-                        <div className="h-full bg-lilac-400 rounded-full transition-all"
-                          style={{ width: `${Math.min(100, (v / 25) * 100)}%` }} />
+                        {measured && (
+                          <div className="h-full bg-lilac-400 rounded-full transition-all"
+                            style={{ width: `${Math.min(100, (v / 25) * 100)}%` }} />
+                        )}
                       </div>
                     </div>
                   );
                 })}
               </div>
-              <p className="text-[11px] text-slate-400 mt-3">Each skill is scored out of 25 by the AI when it reads a submission.</p>
+              <p className="text-[11px] text-slate-400 mt-3">
+                Scored out of 25 by the AI when it reads a submission, for activities whose rubric assesses
+                writing or language. Activities measuring anything else are left out rather than guessed at.
+              </p>
             </div>
           )}
 

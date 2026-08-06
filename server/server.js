@@ -157,6 +157,12 @@ function skillsForActivity(activity, gradedSubmissions = []) {
 /** Submission rows -> the shape grading.js expects. */
 function toGradeEntries(subs) {
   return (subs || [])
+    // An excused activity is not a grade and not a zero — it leaves the
+    // calculation entirely, and computeGrade renormalises the remaining
+    // component weights around it. Every caller of this function feeds an
+    // average, so filtering here is what keeps a student who missed a
+    // quarterly assessment through illness from being marked down for it.
+    .filter(s => !grading.isExcused(s))
     .map(s => ({
       percent: s.hitlScore ?? s.aiScore ?? null,
       points: s.activity?.points || 100,
@@ -1841,11 +1847,13 @@ app.get('/api/admin/:adminId/analytics', async (req, res) => {
     // — each subject under its own DepEd weights, then averaged. A student
     // with nothing graded anywhere lands in notGraded, which is why this walks
     // the roster rather than the submissions.
+    const generalAverages = [];
     for (const st of allStudents.values()) {
       const { average } = await workingAverageAcrossSubjects(
         byStudent.get(st.id) || [], admin.schoolId, policyFor
       );
       schoolBands[bandOf(average)]++;
+      if (average !== null) generalAverages.push(average);
     }
 
     const bySubject = [...subjectTotals.entries()].map(([subject, avgs]) => ({
@@ -1855,8 +1863,20 @@ app.get('/api/admin/:adminId/analytics', async (req, res) => {
       atRiskCount: avgs.filter(a => a < passingGrade).length,
     })).sort((a, b) => (a.average ?? 101) - (b.average ?? 101));
 
-    const allAverages = classSummaries.filter(c => c.classAverage !== null).map(c => c.classAverage);
     atRisk.sort((a, b) => a.average - b.average);
+
+    // ── School average: the average student, not the average class ──
+    // This used to be the unweighted mean of every class's average, so a
+    // five-pupil remedial group moved the school figure exactly as much as a
+    // fifty-pupil section. Splitting one section into two, or running a small
+    // catch-up class, changed the headline number without a single grade
+    // changing. Averaging the per-student general averages computed above
+    // gives every learner one vote and keeps this consistent with the band
+    // distribution directly beside it — the two now describe the same
+    // population the same way.
+    const schoolAverage = generalAverages.length
+      ? Math.round(generalAverages.reduce((a, b) => a + b, 0) / generalAverages.length)
+      : null;
 
     res.json({
       success: true,
@@ -1866,8 +1886,7 @@ app.get('/api/admin/:adminId/analytics', async (req, res) => {
         // Same collection the band distribution below counts, so the headline
         // and the bar under it describe the same population.
         studentCount: allStudents.size,
-        schoolAverage: allAverages.length
-          ? Math.round(allAverages.reduce((a, b) => a + b, 0) / allAverages.length) : null,
+        schoolAverage,
         atRiskCount: atRisk.length,
         bands: schoolBands,
         // The rungs that exist at this passing grade, so the admin spread bar
@@ -4635,6 +4654,10 @@ async function generateSubmissionFeedback(imagePaths, activityId, studentId) {
     // Set in tiers 1-2 below when a real rubric existed but its JSON failed
     // to parse, forcing a silent fall-through to a lower tier.
     let rubricParseFailed = false;
+    // The criteria actually in force, whichever tier supplied them. Null means
+    // the hardcoded generic essay rubric above — which is itself a writing
+    // rubric, hence the default below.
+    let resolvedCriteria = null;
     if (activityId && activityId !== 'mock-activity-id') {
       activity = await prisma.activity.findUnique({
         where: { id: activityId },
@@ -4653,6 +4676,7 @@ async function generateSubmissionFeedback(imagePaths, activityId, studentId) {
             const parsed = JSON.parse(activity.rubric);
             if (parsed.criteria?.length) {
               rubricContext = formatRubricCriteria(parsed.criteria, '');
+              resolvedCriteria = parsed.criteria;
             }
           } catch {
             // A rubric genuinely existed here and couldn't be read — distinct
@@ -4674,6 +4698,7 @@ async function generateSubmissionFeedback(imagePaths, activityId, studentId) {
               const parsedLesson = JSON.parse(cl.defaultRubric);
               if (parsedLesson.criteria?.length) {
                 rubricContext = formatRubricCriteria(parsedLesson.criteria, 'from curriculum lesson plan');
+                resolvedCriteria = parsedLesson.criteria;
               }
             } catch {
               rubricParseFailed = true;
@@ -4688,6 +4713,7 @@ async function generateSubmissionFeedback(imagePaths, activityId, studentId) {
             const recommended = getRubricTemplateById(topicInfo.recommendedRubricId);
             if (recommended?.criteria?.length) {
               rubricContext = formatRubricCriteria(recommended.criteria, `recommended for topic "${topicInfo.name}"`);
+              resolvedCriteria = recommended.criteria;
             }
           }
         }
@@ -4814,6 +4840,28 @@ async function generateSubmissionFeedback(imagePaths, activityId, studentId) {
       topicGuidance = getTopicAIGuidance(activity.topic);
     }
 
+    // ── Do the four AI skill scores mean anything for this paper? ──
+    // vocabulary / punctuation / thematicFlow / sentenceStructure are
+    // English-composition dimensions, hardcoded in the schema below. They were
+    // requested on every grading call regardless of subject, so a Grade 4
+    // Maths worksheet came back with a punctuation score out of 25 — invented,
+    // because the model will always produce a number when the schema demands
+    // one — and that number was then averaged into the student's skill chart
+    // and the class skill averages and drawn as measurement.
+    //
+    // The rubric is what says what an activity assesses, so the same
+    // classifier the curriculum-skill charts already trust decides this:
+    // if any criterion reads as writing or language, the four apply. A null
+    // resolvedCriteria means the generic DepEd essay rubric is in force, which
+    // is a writing rubric, so they apply then too.
+    //
+    // Note this is deliberately NOT gated on the subject field. A Filipino or
+    // Araling Panlipunan essay is still composition, and subject is free text.
+    const skillScoresApply = !resolvedCriteria || resolvedCriteria.some(c => {
+      const skill = classifyCriterion(c?.name || '', c?.description || '');
+      return skill === 'writing' || skill === 'language';
+    });
+
     // 5) Build the prompt — includes no-text detection + pedagogical tutor persona
     // Get grade level from activity context for age-appropriate feedback
     let gradeLevelForPrompt = 'Grade 6';
@@ -4935,20 +4983,20 @@ Each object in "results":
   "actionableSteps": [
     "<A concrete, bite-sized task the student can do to improve. e.g., 'Rewrite your second sentence using a transition word such as However or Furthermore to connect your ideas.'>" 
   ],
-  "skillExplanations": {
+${skillScoresApply ? `  "skillExplanations": {
     "vocabulary": "<1 sentence explaining why you gave this vocabulary score>",
     "punctuation": "<1 sentence explaining why you gave this punctuation score>",
     "thematicFlow": "<1 sentence explaining why you gave this thematic flow score>",
     "sentenceStructure": "<1 sentence explaining why you gave this sentence structure score>"
   },
-  "readingStrategy": "<Personalized 2-sentence reading strategy directly connected to the weaknesses above. Or 'N/A' if no text found.>",
-  "noTextDetected": <true if image has no readable text, false otherwise>,
+` : ''}  "readingStrategy": "<Personalized 2-sentence reading strategy directly connected to the weaknesses above. Or 'N/A' if no text found.>",
+  "noTextDetected": <true if image has no readable text, false otherwise>${skillScoresApply ? `,
   "skillScores": {
     "vocabulary": <0-25>,
     "punctuation": <0-25>,
     "thematicFlow": <0-25>,
     "sentenceStructure": <0-25>
-  }
+  }` : ''}
 }
 
 RULES FOR areasForGrowth:
@@ -4961,9 +5009,10 @@ RULES FOR actionableSteps:
 - Each step must be something the student can do in 5 minutes or less.
 - Be specific: "Rewrite your opening sentence to include the word 'dahil'" is better than "Work on your transitions."
 
-RULES FOR skillExplanations:
+${skillScoresApply ? `RULES FOR skillExplanations:
 - Each explanation should reference specific evidence from the essay.
-- Keep each to 1 sentence.`;
+- Keep each to 1 sentence.` : `NOTE ON SKILL SCORES:
+- This activity's rubric does not assess writing or language, so do NOT return skillScores or skillExplanations. Score only against the criteria given above.`}`;
 
     // ── Execute ──────────────────────────────────────────────────────────────
     // A "[PAPER n]" text marker is interleaved before each image. Anchoring on a
@@ -5190,7 +5239,11 @@ app.post('/api/teacher/submissions/:id/analyze', async (req, res) => {
         aiFeedback: aiFeedbackStr,
         readingStrategy: aiData.readingStrategy,
         rubricData: JSON.stringify(aiData.rubricScores || []),
-        skillScores: JSON.stringify(aiData.skillScores),
+        // null, not undefined, when the rubric doesn't assess writing or
+        // language: JSON.stringify(undefined) IS undefined, which Prisma reads
+        // as "leave this column alone" — so a re-check of a paper that had
+        // skill scores before would silently keep the stale ones.
+        skillScores: aiData.skillScores ? JSON.stringify(aiData.skillScores) : null,
         status: 'PENDING',
         // A clean re-check clears any earlier flag, so a teacher who re-uploads
         // a cropped copy isn't left with a stale Privacy Act warning.
@@ -5301,6 +5354,16 @@ function pruneAiJobs() {
     if (job.finishedAt && job.finishedAt < cutoff) aiJobs.delete(id);
   }
 }
+
+// Swept on a timer as well as at the end of each run. Pruning only from
+// runAiCheckJob's happy path meant a job that crashed was marked finished by
+// the caller's .catch but never swept, and on a server where no further batch
+// is ever started nothing would sweep it — the map only ever grew. An hourly
+// pass costs nothing and makes the cleanup independent of whether the thing
+// that fills the map keeps running. unref() so it never holds the process
+// open on shutdown, matching the sweeper in auth.js.
+const aiJobSweeper = setInterval(pruneAiJobs, AI_JOB_TTL_MS);
+if (typeof aiJobSweeper.unref === 'function') aiJobSweeper.unref();
 
 function setJobItem(job, submissionId, state, extra = {}) {
   job.items.set(submissionId, { submissionId, state, ...extra });
@@ -5424,7 +5487,11 @@ async function persistGradingResult(submissionId, activityId, aiData, existingRe
       }),
       readingStrategy: aiData.readingStrategy,
       rubricData: JSON.stringify(aiData.rubricScores || []),
-      skillScores: JSON.stringify(aiData.skillScores),
+      // null, not undefined, when the rubric doesn't assess writing or
+      // language: JSON.stringify(undefined) IS undefined, which Prisma reads
+      // as "leave this column alone" — so a re-check of a paper that had
+      // skill scores before would silently keep the stale ones.
+      skillScores: aiData.skillScores ? JSON.stringify(aiData.skillScores) : null,
       status: 'PENDING',
       privacyViolation: false,
       gradeLevelAssumed: !!aiData.gradeLevelAssumed,
@@ -5472,6 +5539,32 @@ async function runAiCheckJob(job) {
     chunks.push(job.queue.slice(i, i + AI_BATCH_SIZE));
   }
 
+  // Finalisation runs in a finally, not at the end of the happy path. An
+  // unexpected throw used to escape to the caller's .catch, which set
+  // finishedAt but left every unreached paper sitting in 'pending' — so the
+  // teacher's poll showed a finished job with papers apparently still in
+  // progress, forever — and never ran pruneAiJobs, so the entry stayed in the
+  // map. Whatever happens, the job now ends in a state the client can read.
+  try {
+    await runAiCheckChunks(job, chunks);
+  } finally {
+    // Anything never reached — because the pool ran dry, the job was
+    // cancelled, or the run threw — is explicitly skipped, not failed.
+    // Nothing was written for these.
+    for (const sub of job.queue) {
+      if (job.items.get(sub.id)?.state === 'pending') {
+        setJobItem(job, sub.id, 'skipped', {
+          error: job.stoppedMessage || 'Not checked — the run stopped before reaching this paper.'
+        });
+      }
+    }
+    job.finishedAt = Date.now();
+    job.state = job.cancelled ? 'cancelled' : 'finished';
+    pruneAiJobs();
+  }
+}
+
+async function runAiCheckChunks(job, chunks) {
   for (const chunk of chunks) {
     if (job.cancelled) break;
 
@@ -5527,18 +5620,6 @@ async function runAiCheckJob(job) {
     }
   }
 
-  // Anything never reached — because the pool ran dry or the job was cancelled
-  // — is explicitly skipped, not failed. Nothing was written for these.
-  for (const sub of job.queue) {
-    if (job.items.get(sub.id)?.state === 'pending') {
-      setJobItem(job, sub.id, 'skipped', {
-        error: job.stoppedMessage || 'Not checked — the run stopped before reaching this paper.'
-      });
-    }
-  }
-  job.finishedAt = Date.now();
-  job.state = job.cancelled ? 'cancelled' : 'finished';
-  pruneAiJobs();
 }
 
 function serialiseJob(job) {
@@ -5655,9 +5736,10 @@ app.post('/api/teacher/activities/:activityId/ai-check', async (req, res) => {
     // Deliberately not awaited: the response goes back now and the run
     // continues behind it.
     runAiCheckJob(job).catch(err => {
+      // runAiCheckJob finalises itself in a finally, so the job is already
+      // marked finished and its unreached papers already skipped by the time
+      // this runs. All that is left is to record why.
       console.error('AI check job crashed:', err);
-      job.state = 'finished';
-      job.finishedAt = Date.now();
       job.stoppedMessage = err.message;
     });
 
@@ -5777,6 +5859,69 @@ app.post('/api/teacher/submissions/:id/release', async (req, res) => {
       });
     }
     res.json({ success: true, submission: updated });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+/**
+ * Excuse a student from an activity, or take the excusal back.
+ *
+ * Creates the Submission row if the student never handed anything in, which is
+ * the common case — a pupil off sick has no submission to flag. The row exists
+ * purely to carry the excusal, so it stays PENDING with no score.
+ *
+ * Excusing does not delete or hide anything. If the student had already
+ * submitted and been marked, the score stays on the row and simply stops
+ * counting; un-excusing brings it back. That matters because "excused" is a
+ * decision a teacher can reverse once a doctor's note turns out not to exist,
+ * and a destructive implementation would make that reversal impossible.
+ */
+app.post('/api/teacher/submissions/excuse', async (req, res) => {
+  try {
+    const { activityId, studentId, excused = true, reason } = req.body || {};
+    if (!activityId || !studentId) {
+      return res.status(400).json({ success: false, error: 'activityId and studentId are required.' });
+    }
+    const owned = await teacherOwnsActivity(activityId, req.auth.sub);
+    if (!owned.ok) return res.status(owned.code).json({ success: false, error: owned.error });
+
+    // The student must actually be on this activity's roster — otherwise this
+    // would happily create submission rows for any user id on the platform.
+    const activity = await prisma.activity.findUnique({
+      where: { id: activityId },
+      select: { class: { select: { sectionId: true } } }
+    });
+    const student = await prisma.user.findUnique({
+      where: { id: studentId }, select: { id: true, sectionId: true, role: true }
+    });
+    if (!student || student.role !== 'STUDENT' || student.sectionId !== activity?.class?.sectionId) {
+      return res.status(404).json({ success: false, error: 'That student is not in this activity\'s section.' });
+    }
+
+    const existing = await prisma.submission.findFirst({ where: { activityId, studentId } });
+    const data = excused
+      ? { excusedAt: new Date(), excusedReason: (reason || '').trim() || null }
+      : { excusedAt: null, excusedReason: null };
+
+    let submission;
+    if (existing) {
+      submission = await prisma.submission.update({ where: { id: existing.id }, data });
+    } else if (excused) {
+      submission = await prisma.submission.create({
+        data: {
+          studentId, activityId, status: 'PENDING', attemptCount: 0,
+          retainUntil: await retainUntilForActivity(activityId),
+          ...data,
+        }
+      });
+    } else {
+      // Un-excusing something that was never excused: nothing to do, and
+      // creating an empty row would turn a no-op into a MISSING record.
+      return res.json({ success: true, submission: null });
+    }
+
+    res.json({ success: true, submission });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
   }
@@ -6192,8 +6337,11 @@ app.get('/api/teacher/:teacherId/analytics', async (req, res) => {
 
     const classAvgSkills = {};
     AI_SKILLS.forEach(skill => {
-      const vals = studentTrends.map(st => st.skillScores?.[skill] || 0).filter(v => v > 0);
-      classAvgSkills[skill] = vals.length ? Math.round(vals.reduce((a, b) => a + b, 0) / vals.length) : 0;
+      const vals = studentTrends.map(st => st.skillScores?.[skill]).filter(v => typeof v === 'number' && v > 0);
+      // null, not 0, when no activity in this class measured the skill —
+      // a class of Maths worksheets has no punctuation average, and a 0
+      // would say it does and that the class scored nothing.
+      classAvgSkills[skill] = vals.length ? Math.round(vals.reduce((a, b) => a + b, 0) / vals.length) : null;
     });
 
     // How the class is spread, for an at-a-glance bar. Bucketed by the shared
@@ -6301,8 +6449,12 @@ app.get('/api/teacher/student/:studentId/analytics', async (req, res) => {
 
     const avgSkills = {};
     AI_SKILLS.forEach(skill => {
-      const vals = skillHistory.map(h => h[skill] || 0).filter(v => v > 0);
-      avgSkills[skill] = vals.length ? Math.round(vals.reduce((a, b) => a + b, 0) / vals.length) : 0;
+      const vals = skillHistory.map(h => h[skill]).filter(v => typeof v === 'number' && v > 0);
+      // null, not 0, when nothing measured this skill. Activities whose
+      // rubric doesn't assess writing or language no longer carry skill
+      // scores at all, so a 0 here would draw an empty bar that reads as
+      // "this student scored nothing" rather than "not measured".
+      avgSkills[skill] = vals.length ? Math.round(vals.reduce((a, b) => a + b, 0) / vals.length) : null;
     });
 
     res.json({
@@ -6462,8 +6614,10 @@ app.get('/api/student/:studentId/dashboard', async (req, res) => {
       try { return JSON.parse(s.skillScores); } catch { return null; }
     }).filter(Boolean);
     AI_SKILLS.forEach(skill => {
-      const vals = skillTrend.map(h => h[skill] || 0).filter(v => v > 0);
-      avgSkills[skill] = vals.length ? Math.round(vals.reduce((a, b) => a + b, 0) / vals.length) : 0;
+      const vals = skillTrend.map(h => h[skill]).filter(v => typeof v === 'number' && v > 0);
+      // null, not 0 — see the note on the student analytics copy: an
+      // unmeasured skill must not render as a zero score.
+      avgSkills[skill] = vals.length ? Math.round(vals.reduce((a, b) => a + b, 0) / vals.length) : null;
     });
 
     // Extract latestStrategy from the most recent graded submission
@@ -6770,7 +6924,10 @@ app.get('/api/teacher/:teacherId/student/:studentId/gradebook', async (req, res)
         class: { select: { name: true } },
         submissions: {
           where: { studentId },
-          select: { id: true, hitlScore: true, aiScore: true, status: true, createdAt: true, isLate: true }
+          select: {
+            id: true, hitlScore: true, aiScore: true, status: true, createdAt: true,
+            isLate: true, excusedAt: true, excusedReason: true
+          }
         }
       },
       orderBy: { deadline: 'asc' }
@@ -6797,7 +6954,13 @@ app.get('/api/teacher/:teacherId/student/:studentId/gradebook', async (req, res)
       // Reading the stored flag also means this screen says the same thing the
       // student was told when they pressed submit.
       let status;
-      if (sub) {
+      if (grading.isExcused(sub)) {
+        // Wins over LATE and MISSING both: a pupil excused from an activity
+        // did not hand it in late and is not missing it, and showing either
+        // would put a mark against their name for something the teacher has
+        // already decided does not count.
+        status = 'EXCUSED';
+      } else if (sub) {
         status = sub.isLate ? 'LATE' : 'DONE';
       } else if (isPastDeadline(a.deadline)) {
         status = 'MISSING';
@@ -6805,7 +6968,7 @@ app.get('/api/teacher/:teacherId/student/:studentId/gradebook', async (req, res)
         status = 'UPCOMING';
       }
 
-      const percentage = sub ? (sub.hitlScore ?? sub.aiScore ?? null) : null;
+      const percentage = grading.isExcused(sub) ? null : (sub ? (sub.hitlScore ?? sub.aiScore ?? null) : null);
       const grade = percentage !== null ? Math.round((percentage / 100) * (a.points || 100)) : null;
 
       return {
@@ -6816,7 +6979,8 @@ app.get('/api/teacher/:teacherId/student/:studentId/gradebook', async (req, res)
         status,
         grade,
         totalScore: a.points || 100,
-        submissionId: sub?.id || null
+        submissionId: sub?.id || null,
+        excusedReason: sub?.excusedReason || null
       };
     });
 
@@ -7195,7 +7359,11 @@ app.post('/api/teacher/upload', submissionUpload.fields([{ name: 'image', maxCou
           aiFeedback: aiFeedbackStr,
           readingStrategy: aiData.readingStrategy,
           rubricData: JSON.stringify(aiData.rubricScores || []),
-          skillScores: JSON.stringify(aiData.skillScores),
+          // null, not undefined, when the rubric doesn't assess writing or
+          // language: JSON.stringify(undefined) IS undefined, which Prisma
+          // reads as "leave this column alone" — so a re-check of a paper that
+          // had skill scores before would silently keep the stale ones.
+          skillScores: aiData.skillScores ? JSON.stringify(aiData.skillScores) : null,
           status: 'PENDING',
           gradeLevelAssumed: !!aiData.gradeLevelAssumed,
           rubricParseFailed: !!aiData.rubricParseFailed,
@@ -7467,8 +7635,10 @@ app.get('/api/student/:studentId/analytics', async (req, res) => {
     // Skill averages
     const avgSkills = {};
     AI_SKILLS.forEach(skill => {
-      const vals = skillTrend.map(h => h[skill] || 0).filter(v => v > 0);
-      avgSkills[skill] = vals.length ? Math.round(vals.reduce((a, b) => a + b, 0) / vals.length) : 0;
+      const vals = skillTrend.map(h => h[skill]).filter(v => typeof v === 'number' && v > 0);
+      // null, not 0 — see the note on the student analytics copy: an
+      // unmeasured skill must not render as a zero score.
+      avgSkills[skill] = vals.length ? Math.round(vals.reduce((a, b) => a + b, 0) / vals.length) : null;
     });
 
     res.json({
@@ -7518,7 +7688,7 @@ app.get('/api/teacher/:teacherId/gradebook/export', async (req, res) => {
         include: {
           section: { include: { students: { select: { id: true, name: true, username: true }, orderBy: { name: 'asc' } } } },
           activities: {
-            include: { submissions: { select: { studentId: true, aiScore: true, hitlScore: true, status: true, archivedAt: true } } },
+            include: { submissions: { select: { studentId: true, aiScore: true, hitlScore: true, status: true, archivedAt: true, excusedAt: true } } },
             orderBy: { createdAt: 'asc' }
           }
         }
@@ -7569,6 +7739,13 @@ app.get('/api/teacher/:teacherId/gradebook/export', async (req, res) => {
           // record. With "AI-check all" able to score a whole set in one press,
           // a teacher who exported before reviewing shipped a section's worth
           // of unapproved machine marks.
+          // Excused is a decision, not an omission, so it is printed rather
+          // than left blank — and it is not "unreviewed", which would put the
+          // sheet's INCOMPLETE warning up for work nobody is waiting on.
+          if (grading.isExcused(sub)) {
+            row[act.id] = 'Excused';
+            continue;
+          }
           if (sub && !grading.countsAsGrade(sub)) unreviewedCount++;
           const score = grading.gradePercentOf(sub);
           row[act.id] = score === null ? null : Math.round(score * 10) / 10;
@@ -7605,7 +7782,7 @@ app.get('/api/teacher/:teacherId/gradebook/export', async (req, res) => {
           name: cls.name,
           unreviewedCount,
           gradedCells: rows.reduce(
-            (n, row) => n + Object.keys(row).filter(k => k !== 'name' && k !== 'username' && k !== 'average' && row[k] !== null).length,
+            (n, row) => n + Object.keys(row).filter(k => typeof row[k] === 'number').length,
             0
           ),
         })),
@@ -7699,7 +7876,9 @@ app.get('/api/teacher/:teacherId/gradebook/export', async (req, res) => {
         // Class average row
         const avgRow = ['CLASS AVERAGE'];
         for (const act of activities) {
-          const scores = rows.map(r => r[act.id]).filter(s => s !== null);
+          // Numbers only: an excused cell holds the string 'Excused', and
+          // reduce() on a mixed array would concatenate rather than add.
+          const scores = rows.map(r => r[act.id]).filter(s => typeof s === 'number');
           avgRow.push(scores.length > 0 ? Math.round(scores.reduce((a, b) => a + b, 0) / scores.length) : '—');
         }
         const allAvgs = rows.map(r => r.average).filter(a => a !== null);
@@ -7770,7 +7949,9 @@ app.get('/api/teacher/:teacherId/gradebook/export', async (req, res) => {
         // Class average
         const avgVals = ['CLASS AVERAGE'];
         for (const act of activities) {
-          const scores = rows.map(r => r[act.id]).filter(s => s !== null);
+          // Numbers only: an excused cell holds the string 'Excused', and
+          // reduce() on a mixed array would concatenate rather than add.
+          const scores = rows.map(r => r[act.id]).filter(s => typeof s === 'number');
           avgVals.push(scores.length > 0 ? Math.round(scores.reduce((a, b) => a + b, 0) / scores.length) : '');
         }
         const allAvgs = rows.map(r => r.average).filter(a => a !== null);
@@ -7999,5 +8180,22 @@ app.use((err, req, res, next) => {
 
 app.listen(port, () => {
   console.log(`TulongGuro API running on port ${port}`);
+  // ── This process assumes it is the only one ──
+  // Three pieces of state live in memory here with no shared store behind
+  // them, and each fails differently and silently once a second instance
+  // exists. Said at boot because render.yaml's numInstances is easy to raise
+  // months from now by someone who has never read that file's comments, and
+  // none of these failures announce themselves:
+  //
+  //   • aiJobs — a batch started on one instance is invisible to any other, so
+  //     a poll routed elsewhere 404s while the run is still burning quota.
+  //   • the login and change-password rate-limit buckets in auth.js — the
+  //     effective limit multiplies by the instance count.
+  //   • gradingPool[].used — each instance believes it owns the whole daily
+  //     AI budget and spends its way into 429s.
+  console.log(
+    '   single-instance: AI job registry, rate limits and AI quota counters are in-process. ' +
+    'Scaling past one instance needs them moved to a shared store first (see render.yaml).'
+  );
   verifyStorage();
 });

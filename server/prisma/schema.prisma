@@ -328,6 +328,24 @@ model Submission {
   /// look at the rubric breakdown rather than trusting the total.
   scoreOutOfRange       Boolean           @default(false)
   privacyViolation      Boolean           @default(false)
+  /// Set when a teacher excuses a student from this activity — illness, a
+  /// school representation, a family emergency.
+  ///
+  /// Standard in every LMS and previously absent here, which left a teacher
+  /// two bad options: leave the row MISSING, which reads as delinquent and
+  /// pulls nothing into the average, or invent a mark. The grading engine was
+  /// already ready for this — computeGrade drops a component with nothing
+  /// graded and renormalises the remaining weights — so an excused activity
+  /// simply does not enter the calculation, exactly like one not yet set.
+  ///
+  /// Distinct from archivedAt, which is a retention/lifecycle concern: an
+  /// excused activity is a live pedagogical decision about one student, and
+  /// stays visible to them and to staff as "Excused" rather than disappearing.
+  excusedAt             DateTime?
+  /// Why, in the teacher's words. Shown to the student, so it is a note to
+  /// them rather than an internal code — and recorded because "excused" with
+  /// no reason is exactly the kind of adjustment a parent asks about later.
+  excusedReason         String?
   status                String            @default("PENDING")
   /// When the teacher published this result to the student.
   ///
