@@ -8,7 +8,6 @@
 const express = require('express');
 const cors = require('cors');
 const multer = require('multer');
-const { PrismaClient } = require('@prisma/client');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const { createClient } = require('@supabase/supabase-js');
 const bcrypt = require('bcryptjs');
@@ -44,7 +43,10 @@ const grading = require('./grading');
 require('dotenv').config({ path: path.join(__dirname, '.env') });
 
 const app = express();
-const prisma = new PrismaClient();
+// The client itself lives in db.js so a test can swap it before any route
+// runs — see the note there. Constructing it here bound the route table to
+// DATABASE_URL at import time, and that URL is production.
+const prisma = require('./db');
 const port = process.env.PORT || 3000;
 
 const BCRYPT_SALT_ROUNDS = 10;
@@ -803,8 +805,15 @@ if (aiConfigured) {
   // an hour for its first run) and is then checked hourly — a cheap no-op on
   // every check except the first one after the calendar day actually turns
   // over, since runDailyQuotaSelfCheck skips out early otherwise.
-  setTimeout(() => runDailyQuotaSelfCheck().catch(() => {}), 60 * 1000);
-  setInterval(() => runDailyQuotaSelfCheck().catch(() => {}), 60 * 60 * 1000);
+  //
+  // Both unref'd, like the AI job sweeper: a quota check is never a reason to
+  // keep the process alive. The one-shot mattered most — a 60s timer held a
+  // shutting-down process open, and it held the *test* runner open for a minute
+  // once the route tests began importing this module.
+  const quotaKick = setTimeout(() => runDailyQuotaSelfCheck().catch(() => {}), 60 * 1000);
+  const quotaHourly = setInterval(() => runDailyQuotaSelfCheck().catch(() => {}), 60 * 60 * 1000);
+  if (typeof quotaKick.unref === 'function') quotaKick.unref();
+  if (typeof quotaHourly.unref === 'function') quotaHourly.unref();
 } else {
   console.log('⚠ Gemini AI disabled: set GEMINI_API_KEY (or GEMINI_API_KEY1) in server/.env to enable AI features');
 }
@@ -8178,24 +8187,37 @@ app.use((err, req, res, next) => {
   res.status(500).json({ success: false, error: 'Something went wrong. Please try again.' });
 });
 
-app.listen(port, () => {
-  console.log(`TulongGuro API running on port ${port}`);
-  // ── This process assumes it is the only one ──
-  // Three pieces of state live in memory here with no shared store behind
-  // them, and each fails differently and silently once a second instance
-  // exists. Said at boot because render.yaml's numInstances is easy to raise
-  // months from now by someone who has never read that file's comments, and
-  // none of these failures announce themselves:
-  //
-  //   • aiJobs — a batch started on one instance is invisible to any other, so
-  //     a poll routed elsewhere 404s while the run is still burning quota.
-  //   • the login and change-password rate-limit buckets in auth.js — the
-  //     effective limit multiplies by the instance count.
-  //   • gradingPool[].used — each instance believes it owns the whole daily
-  //     AI budget and spends its way into 429s.
-  console.log(
-    '   single-instance: AI job registry, rate limits and AI quota counters are in-process. ' +
-    'Scaling past one instance needs them moved to a shared store first (see render.yaml).'
-  );
-  verifyStorage();
-});
+// Only bind a port when this file is the process entrypoint (`node server.js`,
+// which is what Render's start command runs). Required so the route table can
+// be mounted in-process by a test: importing this module used to start a real
+// listener, and — because `prisma` was constructed at module load against
+// DATABASE_URL — the only way to exercise a route was to point it at
+// production. The route-wiring tests swap the client through db.js and drive
+// the app on an ephemeral port instead.
+if (require.main === module) startServer();
+
+function startServer() {
+  return app.listen(port, () => {
+    console.log(`TulongGuro API running on port ${port}`);
+    // ── This process assumes it is the only one ──
+    // Three pieces of state live in memory here with no shared store behind
+    // them, and each fails differently and silently once a second instance
+    // exists. Said at boot because render.yaml's numInstances is easy to raise
+    // months from now by someone who has never read that file's comments, and
+    // none of these failures announce themselves:
+    //
+    //   • aiJobs — a batch started on one instance is invisible to any other, so
+    //     a poll routed elsewhere 404s while the run is still burning quota.
+    //   • the login and change-password rate-limit buckets in auth.js — the
+    //     effective limit multiplies by the instance count.
+    //   • gradingPool[].used — each instance believes it owns the whole daily
+    //     AI budget and spends its way into 429s.
+    console.log(
+      '   single-instance: AI job registry, rate limits and AI quota counters are in-process. ' +
+      'Scaling past one instance needs them moved to a shared store first (see render.yaml).'
+    );
+    verifyStorage();
+  });
+}
+
+module.exports = { app, startServer };
