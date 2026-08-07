@@ -22,6 +22,7 @@ const {
   loginRateLimit, registerRateLimit, platformRateLimit, changePasswordRateLimit,
 } = require('./auth');
 const { classSchoolId, staffMayAccess } = require('./access');
+const { currentSchoolYear, isCurrentSchoolYear, compareSchoolYearsDesc } = require('./schoolYear');
 const { getAllTopics, getTopicById, getTopicAIGuidance } = require('./depedTopics');
 const { getAllRubricTemplates, getRubricTemplateById } = require('./rubricTemplates');
 // Two distinct taxonomies coexist and are easy to confuse, so name them apart:
@@ -3220,10 +3221,25 @@ app.get('/api/teacher/:teacherId/sections', async (req, res) => {
     },
     orderBy: [{ gradeLevel: 'asc' }, { name: 'asc' }]
   });
+
+  // Newest school year first, then the existing grade/name order within each.
+  // Sorted here rather than in the query because an unrecognised or missing
+  // year has to float to the top, which no SQL ORDER BY on the raw column
+  // would do — see compareSchoolYearsDesc.
+  const ordered = [...sections].sort((a, b) => compareSchoolYearsDesc(a.schoolYear, b.schoolYear));
+
   // `isOwn` lets the UI show which sections this teacher may edit.
+  // `isArchived` is advisory: the whole list is still returned, and the client
+  // decides what to show. Filtering here would leave a teacher no way to reach
+  // last year's rosters at all, and last year's marks are still records.
   res.json({
     success: true,
-    sections: sections.map(s => ({ ...s, isOwn: s.teacherId === req.params.teacherId }))
+    currentSchoolYear: currentSchoolYear(),
+    sections: ordered.map(s => ({
+      ...s,
+      isOwn: s.teacherId === req.params.teacherId,
+      isArchived: !isCurrentSchoolYear(s.schoolYear),
+    }))
   });
 });
 
@@ -3695,27 +3711,56 @@ app.post('/api/teacher/sections', async (req, res) => {
     // proved the caller is a teacher; this stops one teacher creating or
     // attributing data under another teacher's id.
     const teacherId = req.auth.sub;
-    const { name, studentsList, gradeLevel, allowMove } = req.body;
+    const { name, studentsList, gradeLevel, allowMove, schoolYear } = req.body;
     const creator = await prisma.user.findUnique({ where: { id: teacherId } });
     const schoolId = creator?.schoolId || null;
+    const targetYear = typeof schoolYear === 'string' && schoolYear.trim()
+      ? schoolYear.trim()
+      : currentSchoolYear();
 
     // 1) Reuse an existing section with this name from the same school (or from
     //    this teacher when they have no school). Scoped so two schools can both
     //    have a "Grade 6 - Sampaguita" without sharing one section record.
+    //
+    // Scoped by year as well, which is the point of storing one: schools reuse
+    // block names every year, so matching on name alone meant that next June,
+    // creating "Grade 6 - Sampaguita" would silently reopen *last* year's
+    // section and enrol the new intake into the leaving class's roster,
+    // alongside their grades. Sections carrying a NULL year still match, so a
+    // roster created before this column existed is reused rather than
+    // duplicated the first time it is touched.
     let section = await prisma.section.findFirst({
-      where: schoolId ? { name: name.trim(), schoolId } : { name: name.trim(), teacherId }
+      where: {
+        name: name.trim(),
+        ...(schoolId ? { schoolId } : { teacherId }),
+        OR: [{ schoolYear: targetYear }, { schoolYear: null }],
+      }
     });
     let isExisting = false;
 
     if (section) {
       isExisting = true;
-      // Backfill grade level if the section predates the field.
-      if (gradeLevel && !section.gradeLevel) {
-        section = await prisma.section.update({ where: { id: section.id }, data: { gradeLevel } });
+      // Backfill grade level and school year if the section predates either
+      // field. Only ever fills a blank — an existing year is left alone, since
+      // overwriting it would move a whole roster between years as a side
+      // effect of adding one learner to it.
+      const backfill = {};
+      if (gradeLevel && !section.gradeLevel) backfill.gradeLevel = gradeLevel;
+      if (!section.schoolYear) backfill.schoolYear = targetYear;
+      if (Object.keys(backfill).length) {
+        section = await prisma.section.update({ where: { id: section.id }, data: backfill });
       }
     } else {
       section = await prisma.section.create({
-        data: { name: name.trim(), teacherId, schoolId, gradeLevel: gradeLevel || null }
+        data: {
+          name: name.trim(), teacherId, schoolId, gradeLevel: gradeLevel || null,
+          // Stamped at creation rather than left to be inferred later: a
+          // section carries forward across years otherwise, and last year's
+          // rosters end up sitting beside this year's with nothing telling
+          // them apart. The caller may name a year (a teacher setting up next
+          // June's blocks in April); otherwise it is the one in progress.
+          schoolYear: targetYear,
+        }
       });
     }
 
@@ -6832,7 +6877,19 @@ app.get('/api/student/:studentId/dashboard', async (req, res) => {
     // Average" can say when it's actually only covering some of them — a
     // student graded in 1 of 5 subjects used to see the exact same number as
     // one graded across all 5.
-    const avgGradeSubjectsTotal = new Set((student?.section?.classes || []).map(c => c.subject).filter(Boolean)).size;
+    //
+    // Subjects they already have graded work in are unioned in, because the
+    // average counts those whether or not the class is in their current
+    // section. Counting only the current section let a transferred learner
+    // reach subjectsIncluded > subjectsTotal, and the note built from these
+    // two numbers then read "covering 3 of 2 subjects".
+    const subjectsGradedIn = new Set(
+      submissions.map(s => s.activity?.class?.subject).filter(Boolean)
+    );
+    const avgGradeSubjectsTotal = new Set([
+      ...(student?.section?.classes || []).map(c => c.subject).filter(Boolean),
+      ...subjectsGradedIn,
+    ]).size;
     const { passingGrade } = await gradingSettingsFor(schoolIdForStudent);
     const stars = grading.starsFor(submissions, passingGrade);
     const badges = computeBadges(submissions, passingGrade);
@@ -7147,10 +7204,41 @@ app.get('/api/teacher/:teacherId/student/:studentId/gradebook', async (req, res)
     });
     if (!student) return res.status(404).json({ success: false, error: 'Student not found' });
 
+    // ── Which of this teacher's activities to show ──
+    //
+    // Their current section's, *plus* any class of this teacher's where the
+    // student already has work. A User has exactly one Section, so moving a
+    // learner between sections repoints that single field — and this query
+    // used to read `sectionId: student.sectionId` alone, meaning the moment a
+    // learner transferred, every mark their previous teacher had personally
+    // given them dropped out of that teacher's view. The submissions were
+    // never deleted and kept counting toward the learner's average; they were
+    // simply unreachable by the person who awarded them.
+    //
+    // Still scoped by `teacherId` throughout, so this widens what a teacher
+    // sees of their *own* classes and grants no access to anyone else's.
+    const classesWithWork = await prisma.submission.findMany({
+      where: { studentId, activity: { class: { teacherId } } },
+      select: { activity: { select: { classId: true } } },
+      distinct: ['activityId'],
+    });
+    const classIdsWithWork = [...new Set(classesWithWork.map(s => s.activity.classId))];
+
     const activities = await prisma.activity.findMany({
-      where: { class: { teacherId, sectionId: student.sectionId } },
+      where: {
+        class: {
+          teacherId,
+          OR: [
+            ...(student.sectionId ? [{ sectionId: student.sectionId }] : []),
+            ...(classIdsWithWork.length ? [{ id: { in: classIdsWithWork } }] : []),
+          ],
+        },
+      },
       include: {
-        class: { select: { name: true } },
+        // sectionId comes along so the client can mark work the learner did
+        // before they transferred, rather than showing it as if it belonged to
+        // the section they are in now.
+        class: { select: { name: true, sectionId: true } },
         submissions: {
           where: { studentId },
           select: {
@@ -7209,11 +7297,23 @@ app.get('/api/teacher/:teacherId/student/:studentId/gradebook', async (req, res)
         grade,
         totalScore: a.points || 100,
         submissionId: sub?.id || null,
-        excusedReason: sub?.excusedReason || null
+        excusedReason: sub?.excusedReason || null,
+        // Work from a class the learner is no longer rostered into. Flagged so
+        // the screen can say "from a previous section" instead of implying
+        // they are still enrolled in it — and so an activity they were never
+        // present for is not read as MISSING against them.
+        fromPreviousSection: !!student.sectionId && a.class?.sectionId !== student.sectionId,
       };
     });
 
-    res.json({ success: true, student, rows });
+    // A previous section's activity that the learner has no submission for is
+    // dropped rather than shown as MISSING. Without a record of when they
+    // transferred there is no way to tell "did not hand it in" from "had
+    // already left before it was set", and inventing a missing mark against a
+    // child for the second is the worse error. Work they actually did is kept.
+    const visibleRows = rows.filter(r => !(r.fromPreviousSection && !r.submissionId));
+
+    res.json({ success: true, student, rows: visibleRows });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
   }
@@ -7293,12 +7393,56 @@ app.get('/api/student/:studentId/subjects', async (req, res) => {
     const submissionByActivity = {};
     mySubmissions.forEach(s => { submissionByActivity[s.activityId] = maskUnreleasedForStudent(s, req.auth); });
 
+    // ── Subjects from a section the learner has left ──
+    //
+    // The list above is their *current* section's classes. A User has exactly
+    // one Section, so a learner who transfers mid-year loses every earlier
+    // subject from this page — while workingAverageAcrossSubjects keeps
+    // counting that work, because it groups whatever submissions belong to the
+    // student regardless of section. The General Average therefore covered
+    // subjects the page would not show, and the dashboard's "covering N of M
+    // subjects" note could read "3 of 2".
+    //
+    // Their own graded work is theirs to see, so the fix is to show it rather
+    // than to stop counting it.
+    const currentClassIds = new Set((student?.section?.classes || []).map(c => c.id));
+    const priorClassIds = [...new Set(
+      mySubmissions.length
+        ? (await prisma.activity.findMany({
+            where: { id: { in: mySubmissions.map(s => s.activityId) } },
+            select: { classId: true },
+          })).map(a => a.classId)
+        : []
+    )].filter(id => !currentClassIds.has(id));
+
+    const priorClasses = priorClassIds.length
+      ? await prisma.class.findMany({
+          where: { id: { in: priorClassIds } },
+          include: {
+            teacher: { select: { name: true } },
+            activities: { orderBy: { createdAt: 'desc' } },
+          },
+        })
+      : [];
+
+    // Only the activities they actually have work for. The rest of a class
+    // they have left is not theirs to browse, and an activity set after they
+    // transferred is not something they failed to do.
+    const visibleClasses = [
+      ...(student?.section?.classes || []),
+      ...priorClasses.map(cls => ({
+        ...cls,
+        activities: cls.activities.filter(a => submissionByActivity[a.id]),
+        isPreviousSection: true,
+      })),
+    ];
+
     // The student's screens colour and label scores, so they need the same
     // threshold and the same component weights the teacher's gradebook uses.
     const schoolId = student?.section?.schoolId ?? student?.schoolId ?? null;
     const { passingGrade } = await gradingSettingsFor(schoolId);
     const policyByClass = new Map();
-    for (const cls of student?.section?.classes || []) {
+    for (const cls of visibleClasses) {
       policyByClass.set(cls.id, await gradingPolicyFor(schoolId, cls.gradeLevel, cls.subject));
     }
 
@@ -7315,7 +7459,7 @@ app.get('/api/student/:studentId/subjects', async (req, res) => {
       }
     };
 
-    const subjects = (student?.section?.classes || []).map(cls => {
+    const subjects = visibleClasses.map(cls => {
       const activities = cls.activities.map(a => {
         const sub = submissionByActivity[a.id];
         let submission = null;
@@ -7367,6 +7511,8 @@ app.get('/api/student/:studentId/subjects', async (req, res) => {
         gradeLevel: cls.gradeLevel,
         schoolYear: cls.schoolYear,
         teacherName: cls.teacher?.name || '',
+        // So the screen can label it rather than implying current enrolment.
+        isPreviousSection: !!cls.isPreviousSection,
         activityCount: activities.length,
         gradedCount: gradedEntries.length,
         overallGrade: workingAverage(

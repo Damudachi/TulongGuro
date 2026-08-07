@@ -155,6 +155,12 @@ model Section {
   name       String
   /// Sections are segmented by grade level so a school roster stays navigable.
   gradeLevel String?
+  /// The school year this section belongs to, e.g. "2026-2027". Nullable so
+  /// the column could be added without a write to every existing row, and so
+  /// a section whose year cannot be established is never hidden — unknown is
+  /// treated as current, because filtering away a roster nobody can find again
+  /// is worse than showing one extra.
+  schoolYear String?
   teacherId  String
   schoolId   String?
   createdAt  DateTime @default(now())

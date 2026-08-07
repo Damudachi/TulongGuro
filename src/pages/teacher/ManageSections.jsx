@@ -33,6 +33,10 @@ export default function ManageSections() {
   // time on purpose — this is read out loud to one child at a keyboard.
   const [resetResult, setResetResult] = useState(null);
   const [resettingId, setResettingId] = useState(null);
+  // Past school years are collapsed by default; the server flags them rather
+  // than withholding them, so this is purely a view toggle.
+  const [showArchived, setShowArchived] = useState(false);
+  const archivedCount = sections.filter(s => s.isArchived).length;
 
   useEffect(() => { fetchSections(); }, []);
 
@@ -281,15 +285,32 @@ export default function ManageSections() {
         onCancel={() => { setMoveRequest(null); moveRequest?.onDone?.(); }}
       />
 
-      <div className="mb-6 relative">
-        <Search className="w-5 h-5 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
-        <input
-          type="text"
-          value={searchQuery}
-          onChange={(e) => setSearchQuery(e.target.value)}
-          placeholder="Search sections by name..." 
-          className="w-full pl-10 pr-4 py-2.5 bg-white border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-brand-navy outline-none shadow-sm"
-        />
+      <div className="mb-6 flex flex-col sm:flex-row gap-3">
+        <div className="relative flex-1">
+          <Search className="w-5 h-5 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+          <input
+            type="text"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="Search sections by name..."
+            className="w-full pl-10 pr-4 py-2.5 bg-white border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-brand-navy outline-none shadow-sm"
+          />
+        </div>
+        {/* Only offered when there is something to reveal, so the control does
+            not imply hidden sections to a teacher in their first year. */}
+        {archivedCount > 0 && (
+          <button
+            type="button"
+            onClick={() => setShowArchived(v => !v)}
+            className={`shrink-0 px-4 py-2.5 rounded-xl text-sm font-medium border shadow-sm transition-colors ${
+              showArchived
+                ? 'bg-brand-navy text-white border-brand-navy'
+                : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
+            }`}
+          >
+            {showArchived ? 'Hide' : 'Show'} past years ({archivedCount})
+          </button>
+        )}
       </div>
 
       {/* Collapsible Create Form */}
@@ -362,7 +383,13 @@ export default function ManageSections() {
       {/* Sections List */}
       <div className="space-y-3">
         {(() => {
-          const filteredSections = sections.filter(s => s.name.toLowerCase().includes(searchQuery.toLowerCase()));
+          // Past school years are folded away rather than dropped. A section
+          // that has ended is still a record — its gradebook and feedback are
+          // last year's marks — so "hidden" here means out of the way by
+          // default, never unreachable.
+          const filteredSections = sections
+            .filter(s => s.name.toLowerCase().includes(searchQuery.toLowerCase()))
+            .filter(s => showArchived || !s.isArchived);
           
           if (sections.length === 0) {
             return (
@@ -418,6 +445,13 @@ export default function ManageSections() {
                         {section.isOwn === false && (
                           <span className="text-[10px] font-bold text-slate-500 bg-slate-100 px-2 py-0.5 rounded-full">
                             {section.teacher?.name || 'Colleague'}
+                          </span>
+                        )}
+                        {/* Named, not just dimmed: a teacher looking at two
+                            same-named blocks needs to know which year each is. */}
+                        {section.isArchived && (
+                          <span className="text-[10px] font-bold text-amber-700 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-full">
+                            {section.schoolYear || 'past year'}
                           </span>
                         )}
                       </h3>

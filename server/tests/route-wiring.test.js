@@ -437,6 +437,87 @@ describe('POST /api/auth/login accepts a student ID that is punctuated different
   });
 });
 
+// ───────────────────────────────────────────────────────────────────
+// A learner who has moved between sections
+// ───────────────────────────────────────────────────────────────────
+
+describe("GET /api/teacher/:teacherId/student/:studentId/gradebook after a transfer", () => {
+  const STUDENT = 'student-1';
+  const NEW_SECTION = 'section-new';
+  const OLD_CLASS = 'class-old';
+
+  const activity = (id, classId, sectionId, withSubmission, deadline = null) => ({
+    id,
+    title: `Activity ${id}`,
+    points: 100,
+    deadline,
+    class: { name: 'Class', sectionId },
+    submissions: withSubmission
+      ? [{ id: `sub-${id}`, hitlScore: 88, aiScore: 80, status: 'GRADED', createdAt: new Date(), isLate: false, excusedAt: null, excusedReason: null }]
+      : [],
+  });
+
+  const arm = (activities) => {
+    // A User has exactly one Section, so the student now reports only the new one.
+    prismaFake.user.findUnique.mockResolvedValue({
+      id: STUDENT, name: 'Juan', username: 'AS-26-0001', sectionId: NEW_SECTION, sessionsValidFrom: null,
+    });
+    prismaFake.submission.findMany.mockResolvedValue([{ activity: { classId: OLD_CLASS } }]);
+    prismaFake.activity.findMany.mockResolvedValue(activities);
+  };
+
+  const fetchRows = async () => {
+    const res = await call('GET', `/api/teacher/${T1}/student/${STUDENT}/gradebook`, { token: tokenFor({ id: T1 }) });
+    expect(res.status).toBe(200);
+    return (await res.json()).rows;
+  };
+
+  it('still shows work the learner did in a section they have left', async () => {
+    // The defect: this query keyed on the student's *current* sectionId, so a
+    // transfer made every mark their previous teacher gave them vanish from
+    // that teacher's view — while it kept counting toward the average.
+    arm([activity('a-old', OLD_CLASS, 'section-old', true)]);
+
+    const rows = await fetchRows();
+    expect(rows).toHaveLength(1);
+    expect(rows[0].activityId).toBe('a-old');
+    expect(rows[0].grade).toBe(88);
+    expect(rows[0].fromPreviousSection).toBe(true);
+  });
+
+  it('does not invent a MISSING mark for work set after they left', async () => {
+    // No submission, previous section: indistinguishable from "had already
+    // transferred", so it is dropped rather than held against them.
+    arm([
+      activity('a-old', OLD_CLASS, 'section-old', true),
+      activity('a-old-unsubmitted', OLD_CLASS, 'section-old', false),
+    ]);
+
+    const rows = await fetchRows();
+    expect(rows.map(r => r.activityId)).toEqual(['a-old']);
+  });
+
+  it('keeps MISSING for the section they are actually in', async () => {
+    // The filter must not swallow genuine missing work in the current section.
+    // Deadline well past, so this is unambiguously not-handed-in.
+    arm([activity('a-current', 'class-new', NEW_SECTION, false, '2020-01-01')]);
+
+    const rows = await fetchRows();
+    expect(rows).toHaveLength(1);
+    expect(rows[0].fromPreviousSection).toBe(false);
+    expect(rows[0].status).toBe('MISSING');
+  });
+
+  it('asks only for classes this teacher owns', async () => {
+    // Widening the view must not widen whose work it can reach.
+    arm([activity('a-old', OLD_CLASS, 'section-old', true)]);
+    await fetchRows();
+
+    expect(prismaFake.submission.findMany.mock.calls[0][0].where.activity.class.teacherId).toBe(T1);
+    expect(prismaFake.activity.findMany.mock.calls[0][0].where.class.teacherId).toBe(T1);
+  });
+});
+
 describe('the session gate itself', () => {
   it('401s without a token', async () => {
     const res = await call('GET', `/api/activities/${ACTIVITY}`);
