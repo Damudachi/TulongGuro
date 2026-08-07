@@ -79,6 +79,36 @@ export default function ManageSections() {
   useEffect(() => { fetchSections(); }, []);
 
   /**
+   * Fix a misspelt name. The student ID is their login and is left alone —
+   * see the route's comment.
+   */
+  const renameStudent = async (sectionId, student) => {
+    const name = prompt(
+      `Correct the spelling of this learner's name.\n\nTheir Student ID (${student.username}) will not change, so they sign in exactly as before.`,
+      student.name
+    );
+    if (name === null) return;                       // cancelled
+    const trimmed = name.trim();
+    if (!trimmed || trimmed === student.name) return;
+
+    try {
+      const res = await apiFetch(
+        `${API_URL}/api/teacher/sections/${sectionId}/students/${student.id}`,
+        {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: trimmed }),
+        }
+      );
+      const data = await res.json();
+      if (data.success) fetchSections();
+      else alert('Could not rename: ' + (data.error || 'unknown error'));
+    } catch {
+      alert('Cannot reach the server. Check your connection and try again.');
+    }
+  };
+
+  /**
    * Give one learner a new password, in front of them.
    *
    * Confirmed first because it ends their current session: a learner who is
@@ -322,28 +352,44 @@ export default function ManageSections() {
           <h2 className="text-lg font-bold text-brand-slate mb-4 flex items-center">
             <Plus className="w-5 h-5 mr-2 text-brand-navy" /> New Section
           </h2>
-          <form onSubmit={handleCreate} className="space-y-4">
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-              <div className="sm:col-span-2">
-                <label className="block text-sm font-medium text-slate-700 mb-1">Section Name</label>
-                <input type="text" required value={name} onChange={(e) => setName(e.target.value)}
-                  className="w-full px-4 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-brand-navy outline-none"
-                  placeholder="e.g. Rizal" />
+          {/* Two columns, separated and numbered: naming the section and
+              listing forty learners are different jobs, and running them
+              together down one page made the roster box look like one more
+              field on the same form. Stacks on a narrow screen, where a
+              divider would be meaningless. */}
+          <form onSubmit={handleCreate} className="space-y-5">
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+
+              {/* ── Column 1: the section itself ── */}
+              <div className="space-y-4 lg:border-r lg:border-slate-200 lg:pr-6">
+                <p className="text-xs font-extrabold uppercase tracking-wider text-brand-navy">
+                  Step 1 · About the section
+                </p>
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Section Name</label>
+                  <input type="text" required value={name} onChange={(e) => setName(e.target.value)}
+                    className="w-full px-4 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-brand-navy outline-none"
+                    placeholder="e.g. Rizal" />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Grade Level *</label>
+                  <select required value={gradeLevel} onChange={(e) => setGradeLevel(e.target.value)}
+                    className="w-full px-4 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-brand-navy outline-none">
+                    <option value="">-- Select --</option>
+                    {GRADE_LEVELS.map(g => <option key={g} value={g}>{g}</option>)}
+                  </select>
+                </div>
+                <p className="text-xs text-slate-400">
+                  Sections are shared with everyone at your school and grouped by grade level. If this
+                  section already exists, students will be added to it.
+                </p>
               </div>
-              <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1">Grade Level *</label>
-                <select required value={gradeLevel} onChange={(e) => setGradeLevel(e.target.value)}
-                  className="w-full px-4 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-brand-navy outline-none">
-                  <option value="">-- Select --</option>
-                  {GRADE_LEVELS.map(g => <option key={g} value={g}>{g}</option>)}
-                </select>
-              </div>
-            </div>
-            <p className="text-xs text-slate-400 -mt-2">
-              Sections are shared with everyone at your school and grouped by grade level. If this
-              section already exists, students will be added to it.
-            </p>
-            <div>
+
+              {/* ── Column 2: who is in it ── */}
+              <div className="space-y-2">
+                <p className="text-xs font-extrabold uppercase tracking-wider text-brand-navy">
+                  Step 2 · Who is in it
+                </p>
               <div className="flex justify-between items-center mb-1">
                 <label className="block text-sm font-medium text-slate-700">Students — one per line, <span className="font-normal text-slate-500">Last name, First name, Birthday</span></label>
                 <button type="button" onClick={() => fileInputRef.current?.click()} disabled={isExtracting}
@@ -405,7 +451,9 @@ export default function ManageSections() {
                 a random one you must copy down when it appears — it cannot be shown again. Existing students won&apos;t be duplicated;
                 anyone already in another section is listed for you to confirm before they are moved.
               </p>
+              </div>
             </div>
+
             <div className="flex gap-3">
               <button type="button" onClick={() => setShowForm(false)}
                 className="flex-1 py-2.5 border border-slate-200 text-slate-600 rounded-lg font-medium hover:bg-slate-50">Cancel</button>
@@ -556,6 +604,14 @@ export default function ManageSections() {
                                 </p>
                               )}
                             </div>
+                            <button
+                              type="button"
+                              onClick={() => renameStudent(section.id, s)}
+                              className="shrink-0 text-[11px] font-bold text-brand-navy border border-slate-200 bg-white px-2.5 py-1.5 rounded-lg hover:bg-slate-50 flex items-center gap-1"
+                              title={`Correct ${s.name}'s spelling`}
+                            >
+                              <Pencil className="w-3 h-3" /> Rename
+                            </button>
                             <button
                               type="button"
                               onClick={() => resetStudentPassword(section.id, s)}

@@ -2580,6 +2580,35 @@ app.delete('/api/admin/:adminId/sections/:sectionId/students/:studentId', async 
 });
 
 /**
+ * Correct the spelling of a learner's name.
+ *
+ * A misspelling entered once on a roster follows the child through the class
+ * list, the gradebook, every export and their report card, and the only way
+ * out was to delete the account — which, for anyone who had submitted work,
+ * is refused, and rightly so.
+ *
+ * The **username is deliberately untouched**. It is the learner's student ID
+ * and their login; regenerating it from a corrected name would lock them out,
+ * which is the same reason existing IDs were left alone when the format
+ * changed. This renames the person, not the credential.
+ */
+app.put('/api/admin/:adminId/sections/:sectionId/students/:studentId', async (req, res) => {
+  try {
+    const admin = await requireAdminSchool(req.params.adminId);
+    const section = await sectionInSchool(admin, req.params.sectionId);
+    const student = await prisma.user.findUnique({ where: { id: req.params.studentId } });
+    if (!student || student.sectionId !== section.id || student.role !== 'STUDENT') {
+      return res.status(404).json({ success: false, error: 'Student not found in this section.' });
+    }
+    const name = String(req.body?.name ?? '').trim();
+    if (!name) return res.status(400).json({ success: false, error: 'A name is required.' });
+
+    const updated = await prisma.user.update({ where: { id: student.id }, data: { name } });
+    res.json({ success: true, student: { id: updated.id, name: updated.name, username: updated.username } });
+  } catch (e) { sendAdminError(res, e); }
+});
+
+/**
  * Reset a student's password back to their birthdate (MMDDYYYY) — the same
  * credential enrolStudents would have given them, so this is "give them their
  * password back," not "hand out a new secret." Falls back to the shared
@@ -2950,6 +2979,21 @@ app.post('/api/admin/:adminId/rubrics', async (req, res) => {
     if (total !== 100) {
       return res.status(400).json({ success: false, error: `Criteria weights must total 100%. They currently total ${total}%.` });
     }
+    // School-wide names must be unique within the school — the rubric picker
+    // shows names, so two identical ones cannot be told apart when choosing.
+    // See the matching guard on the teacher route.
+    const clash = await prisma.rubricTemplate.findFirst({
+      where: { schoolId: admin.schoolId, name: { equals: name.trim(), mode: 'insensitive' } },
+      select: { id: true, name: true },
+    });
+    if (clash) {
+      return res.status(409).json({
+        success: false,
+        code: 'DUPLICATE_RUBRIC_NAME',
+        error: `This school already has a rubric called "${clash.name}". Give this one a different name, or edit the existing one.`,
+      });
+    }
+
     const rubric = await prisma.rubricTemplate.create({
       data: {
         name: name.trim(),
@@ -3583,6 +3627,33 @@ async function enrolStudents(section, studentsList, { schoolId, teacherId, allow
  * existing session for that account is revoked — a forgotten password is
  * indistinguishable from a shared one.
  */
+/**
+ * Correct the spelling of a learner's name, for the teacher who advises them.
+ * Same rules as the admin route above — the username is the login and is left
+ * alone. The teacher is the one holding the class list, so they are usually
+ * the one who spots the typo.
+ */
+app.put('/api/teacher/sections/:sectionId/students/:studentId', async (req, res) => {
+  try {
+    const section = await prisma.section.findUnique({ where: { id: req.params.sectionId } });
+    if (!section) return res.status(404).json({ success: false, error: 'Section not found.' });
+    if (section.teacherId !== req.auth.sub) {
+      return res.status(403).json({ success: false, error: 'You can only edit learners in your own sections.' });
+    }
+    const student = await prisma.user.findUnique({ where: { id: req.params.studentId } });
+    if (!student || student.sectionId !== section.id || student.role !== 'STUDENT') {
+      return res.status(404).json({ success: false, error: 'Student not found in this section.' });
+    }
+    const name = String(req.body?.name ?? '').trim();
+    if (!name) return res.status(400).json({ success: false, error: 'A name is required.' });
+
+    const updated = await prisma.user.update({ where: { id: student.id }, data: { name } });
+    res.json({ success: true, student: { id: updated.id, name: updated.name, username: updated.username } });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
 app.put('/api/teacher/sections/:sectionId/students/:studentId/password', async (req, res) => {
   try {
     const section = await prisma.section.findUnique({ where: { id: req.params.sectionId } });
@@ -4337,9 +4408,29 @@ app.post('/api/teacher/rubric-templates', async (req, res) => {
     const rubricError = validateRubric(criteria);
     if (rubricError) return res.status(400).json({ success: false, error: rubricError });
 
+    // One name, one rubric. Nothing stopped a second template being saved
+    // under a name already in use, and the rubric picker shows names — so two
+    // identically-named entries are indistinguishable at the point of choosing
+    // one, and saving the same curriculum-derived rubric twice quietly built up
+    // duplicates. Compared case-insensitively and trimmed, because "Essay" and
+    // "essay " are the same rubric to the person reading the list.
+    const cleanName = String(name).trim();
+    if (!cleanName) return res.status(400).json({ success: false, error: 'A rubric name is required.' });
+    const clash = await prisma.rubricTemplate.findFirst({
+      where: { teacherId: String(teacherId), name: { equals: cleanName, mode: 'insensitive' } },
+      select: { id: true, name: true },
+    });
+    if (clash) {
+      return res.status(409).json({
+        success: false,
+        code: 'DUPLICATE_RUBRIC_NAME',
+        error: `You already have a rubric called "${clash.name}". Give this one a different name, or edit the existing one.`,
+      });
+    }
+
     const template = await prisma.rubricTemplate.create({
       data: {
-        name: String(name),
+        name: cleanName,
         criteria: typeof criteria === 'string' ? criteria : JSON.stringify(criteria),
         teacherId: String(teacherId)
       }

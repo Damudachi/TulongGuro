@@ -1035,7 +1035,14 @@ export default function ActivityBuilder() {
           )}
         </div>
 
-        {/* ── RUBRIC ── */}
+        {/* ── RUBRIC ──
+            Hidden for MANUAL_SCORE ("Score only"): the teacher types the marks
+            in themselves and no paper is ever read, so there is nothing for a
+            rubric to be applied to. Leaving it on screen asked for a decision
+            that changes nothing and implied the AI would be marking against
+            it. The whole panel goes rather than being disabled — a greyed-out
+            section still reads as something you have failed to fill in. */}
+        {form.submissionMode !== 'MANUAL_SCORE' ? (
         <div className="bg-white p-6 rounded-xl border border-slate-200">
           <h2 className="text-base font-bold text-brand-slate mb-3">Grading Rubric</h2>
 
@@ -1293,6 +1300,18 @@ export default function ActivityBuilder() {
           </>
           )}
         </div>
+        ) : (
+          // Said rather than silently omitted: a panel that disappears when a
+          // mode is picked looks like a bug unless the reason is on screen.
+          <div className="bg-white p-6 rounded-xl border border-slate-200">
+            <h2 className="text-base font-bold text-brand-slate mb-1">Grading Rubric</h2>
+            <p className="text-sm text-slate-500">
+              Not needed for <span className="font-semibold">Score only</span> — you enter the marks yourself,
+              so there is no paper for the AI to read and nothing to grade against. Pick another submission
+              mode above if you want AI checking and feedback.
+            </p>
+          </div>
+        )}
 
         {/* Save as Template Modal */}
         {showSaveTemplateModal && (

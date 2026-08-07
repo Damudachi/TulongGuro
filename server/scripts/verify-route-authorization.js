@@ -56,6 +56,7 @@ const ROUTE_MANIFEST = {
   'GET /api/teacher/:teacherId/sections': { needsCheck: false, note: 'authorizePath: seg[2] is the teacherId itself' },
   'POST /api/teacher/extract-students': { needsCheck: false, note: 'stateless file->names extraction, no resource id' },
   'POST /api/teacher/sections': { needsCheck: false, note: 'creates a new section for the caller' },
+  'PUT /api/teacher/sections/:sectionId/students/:studentId': { needsCheck: true },
   'PUT /api/teacher/sections/:sectionId/students/:studentId/password': { needsCheck: true },
   'GET /api/teacher/:teacherId/classes': { needsCheck: false, note: 'authorizePath: seg[2] is the teacherId itself' },
   'POST /api/teacher/classes': { needsCheck: false, note: 'creates a new class for the caller' },

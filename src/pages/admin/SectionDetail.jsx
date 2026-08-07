@@ -116,6 +116,25 @@ export default function AdminSectionDetail() {
     );
   };
 
+  /**
+   * Fix a misspelt name. The student ID is their login, so it is deliberately
+   * left as it is — see the route's comment.
+   */
+  const renameStudent = (student) => {
+    const name = prompt(
+      `Correct the spelling of this learner's name.\n\nTheir Student ID (${student.username}) will not change, so they sign in exactly as before.`,
+      student.name
+    );
+    if (name === null) return;
+    const trimmed = name.trim();
+    if (!trimmed || trimmed === student.name) return;
+    call(
+      `${API_URL}/api/admin/${admin.id}/sections/${sectionId}/students/${student.id}`,
+      { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: trimmed }) },
+      () => setNotice(`Renamed to ${trimmed}.`)
+    );
+  };
+
   const removeStudent = (student) => {
     if (!confirm(`Remove ${student.name} from ${data.section.name}?`)) return;
     call(
@@ -376,6 +395,10 @@ export default function AdminSectionDetail() {
                   <AlertTriangle className="w-3 h-3" /> {s._count.submissions} submitted
                 </span>
               )}
+              <button onClick={() => renameStudent(s)} disabled={busy} title="Correct the spelling of this name"
+                className="p-1.5 rounded-md text-slate-300 hover:text-brand-navy hover:bg-blue-50 opacity-0 group-hover:opacity-100 transition-opacity shrink-0 disabled:opacity-30">
+                <Pencil className="w-3.5 h-3.5" />
+              </button>
               <button onClick={() => resetStudentPassword(s)} disabled={busy} title="Reset password to birthdate"
                 className="p-1.5 rounded-md text-slate-300 hover:text-brand-navy hover:bg-blue-50 opacity-0 group-hover:opacity-100 transition-opacity shrink-0 disabled:opacity-30">
                 <KeyRound className="w-3.5 h-3.5" />
