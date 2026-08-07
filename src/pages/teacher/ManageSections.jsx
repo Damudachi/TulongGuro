@@ -1,67 +1,25 @@
 import { useState, useEffect, useRef } from 'react';
-import { Users, Plus, ChevronDown, X, Upload, Pencil, UserPlus, Loader2, Search, KeyRound } from 'lucide-react';
+import { Users, Plus, ChevronDown, X, Pencil, UserPlus, Loader2, Search, KeyRound } from 'lucide-react';
 import { API_URL, apiFetch } from '../../config';
 import { GRADE_LEVELS } from '../../constants/school';
 import StudentCredentials from '../../components/StudentCredentials';
 import SectionMoveConfirm from '../../components/SectionMoveConfirm';
-
-/**
- * Reads one roster line: "Juan Dela Cruz, 03/15/2014".
- *
- * The birthday is optional and becomes the pupil's first password, so an
- * unreadable one is surfaced to the teacher rather than quietly dropped — a
- * misparsed date is an account the learner cannot sign in to. Splits on the
- * LAST comma so names containing one ("Dela Cruz, Juan") still work.
- */
-function parseRoster(text) {
-  return (text || '').split('\n').map(line => line.trim()).filter(Boolean).map(line => {
-    const cut = line.lastIndexOf(',');
-    const looksDated = cut > 0 && /\d/.test(line.slice(cut + 1));
-    const name = (looksDated ? line.slice(0, cut) : line).trim();
-    const birthdayRaw = looksDated ? line.slice(cut + 1).trim() : '';
-    return { name, birthdayRaw, birthday: birthdayRaw && isReadableDate(birthdayRaw) ? birthdayRaw : null };
-  }).filter(r => r.name);
-}
-
-/** Mirrors the server's parseBirthday: MM/DD/YYYY or YYYY-MM-DD, real dates only. */
-function isReadableDate(text) {
-  let y, m, d;
-  let match = /^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$/.exec(text);
-  if (match) { [, y, m, d] = match; }
-  else {
-    match = /^(\d{1,2})[-/](\d{1,2})[-/](\d{4})$/.exec(text);
-    if (match) { [, m, d, y] = match; }
-  }
-  if (!match) return false;
-  y = Number(y); m = Number(m); d = Number(d);
-  if (m < 1 || m > 12 || d < 1 || d > 31) return false;
-  const date = new Date(Date.UTC(y, m - 1, d));
-  if (date.getUTCFullYear() !== y || date.getUTCMonth() !== m - 1 || date.getUTCDate() !== d) return false;
-  return y >= 1950 && date.getTime() <= Date.now();
-}
-
-/** The password the pupil will be given: their birthday as MMDDYYYY. */
-function previewPassword(raw) {
-  if (!isReadableDate(raw)) return null;
-  let y, m, d;
-  let match = /^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$/.exec(raw);
-  if (match) { [, y, m, d] = match; } else { [, m, d, y] = /^(\d{1,2})[-/](\d{1,2})[-/](\d{4})$/.exec(raw); }
-  return `${String(Number(m)).padStart(2, '0')}${String(Number(d)).padStart(2, '0')}${y}`;
-}
+import RosterEditor from '../../components/RosterEditor';
+import { parseRosterLines, isFilledRow, rosterPayload, emptyRoster, withBlankRow } from '../../utils/roster';
 
 export default function ManageSections() {
   const [sections, setSections] = useState([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [name, setName] = useState('');
   const [gradeLevel, setGradeLevel] = useState('');
-  const [studentsText, setStudentsText] = useState('');
+  const [studentRows, setStudentRows] = useState(emptyRoster);
   const [isLoading, setIsLoading] = useState(false);
   const [expandedId, setExpandedId] = useState(null);
   const [showForm, setShowForm] = useState(false);
   const [isExtracting, setIsExtracting] = useState(false);
   const fileInputRef = useRef(null);
   const [editingSectionId, setEditingSectionId] = useState(null);
-  const [addStudentsText, setAddStudentsText] = useState('');
+  const [addStudentRows, setAddStudentRows] = useState(emptyRoster);
   const [isAddingStudents, setIsAddingStudents] = useState(false);
   const [isExtractingEdit, setIsExtractingEdit] = useState(false);
   const editFileRef = useRef(null);
@@ -151,23 +109,8 @@ export default function ManageSections() {
     } catch (e) { console.error(e); }
   };
 
-  /**
-   * Reads the roster box, refusing unreadable birthdays.
-   * Returns the payload rows, or null when the teacher has been asked to fix
-   * something first.
-   */
-  const rosterPayload = (text) => {
-    const parsed = parseRoster(text);
-    const badRows = parsed.filter(r => r.birthdayRaw && !r.birthday);
-    if (badRows.length) {
-      alert(
-        `These birthdays could not be read:\n\n${badRows.map(r => `• ${r.name} — "${r.birthdayRaw}"`).join('\n')}\n\n` +
-        'Use MM/DD/YYYY, for example 03/15/2014.'
-      );
-      return null;
-    }
-    return parsed.map(r => ({ name: r.name, birthday: r.birthday }));
-  };
+  /** Rows to send, or null once the teacher has been asked to fix a date. */
+  const payloadFrom = (rows) => rosterPayload(rows, alert);
 
   /**
    * The one call both "create a section" and "add students" make.
@@ -212,14 +155,15 @@ export default function ManageSections() {
 
   const handleCreate = async (e) => {
     e.preventDefault();
-    const studentsList = rosterPayload(studentsText);
+    const studentsList = payloadFrom(studentRows);
     if (!studentsList) return;
+    if (!studentsList.length) return alert('Please add at least one learner.');
     setIsLoading(true);
     setNewAccounts([]);
     try {
       await submitRoster({
         sectionName: name, grade: gradeLevel, studentsList, allowMove: false,
-        onDone: () => { setName(''); setGradeLevel(''); setStudentsText(''); setShowForm(false); }
+        onDone: () => { setName(''); setGradeLevel(''); setStudentRows(emptyRoster()); setShowForm(false); }
       });
     } catch { alert('Network error.'); }
     finally { setIsLoading(false); }
@@ -253,8 +197,10 @@ export default function ManageSections() {
       });
       const data = await res.json();
       if (data.success && data.names) {
-        const newNames = data.names.join('\n');
-        setStudentsText(prev => prev ? prev + '\n' + newNames : newNames);
+        // Appended to whatever is already typed, and re-parsed so an extracted
+        // "Name, 03/15/2014" still lands in two columns.
+        const extracted = parseRosterLines(data.names.join('\n'));
+        setStudentRows(prev => withBlankRow([...prev.filter(isFilledRow), ...extracted]));
       } else {
         alert("Extraction failed: " + data.error);
       }
@@ -269,15 +215,15 @@ export default function ManageSections() {
   const toggleSection = (id) => setExpandedId(prev => prev === id ? null : id);
 
   const handleAddStudents = async (section) => {
-    if (parseRoster(addStudentsText).length === 0) return alert('Please enter at least one student name.');
-    const studentsList = rosterPayload(addStudentsText);
+    const studentsList = payloadFrom(addStudentRows);
     if (!studentsList) return;
+    if (!studentsList.length) return alert('Please enter at least one student name.');
     setIsAddingStudents(true);
     setNewAccounts([]);
     try {
       await submitRoster({
         sectionName: section.name, grade: section.gradeLevel, studentsList, allowMove: false,
-        onDone: () => { setAddStudentsText(''); setEditingSectionId(null); }
+        onDone: () => { setAddStudentRows(emptyRoster()); setEditingSectionId(null); }
       });
     } catch { alert('Network error.'); }
     finally { setIsAddingStudents(false); }
@@ -293,8 +239,8 @@ export default function ManageSections() {
       const res = await apiFetch(`${API_URL}/api/teacher/extract-students`, { method: 'POST', body: formData });
       const data = await res.json();
       if (data.success && data.names) {
-        const newNames = data.names.join('\n');
-        setAddStudentsText(prev => prev ? prev + '\n' + newNames : newNames);
+        const extracted = parseRosterLines(data.names.join('\n'));
+        setAddStudentRows(prev => withBlankRow([...prev.filter(isFilledRow), ...extracted]));
       } else { alert('Extraction failed: ' + data.error); }
     } catch (error) { alert('Network error during extraction.'); }
     finally {
@@ -390,67 +336,14 @@ export default function ManageSections() {
                 <p className="text-xs font-extrabold uppercase tracking-wider text-brand-navy">
                   Step 2 · Who is in it
                 </p>
-              <div className="flex justify-between items-center mb-1">
-                <label className="block text-sm font-medium text-slate-700">Students — one per line, <span className="font-normal text-slate-500">Last name, First name, Birthday</span></label>
-                <button type="button" onClick={() => fileInputRef.current?.click()} disabled={isExtracting}
-                  className="text-xs font-bold text-brand-navy bg-blue-50 hover:bg-blue-100 px-3 py-1.5 rounded-lg flex items-center gap-1 transition-colors disabled:opacity-50">
-                  {isExtracting ? 'Extracting...' : <><Upload className="w-3.5 h-3.5" /> Auto-fill from Excel</>}
-                </button>
-                <input type="file" accept=".xlsx,.xls" className="hidden" ref={fileInputRef} onChange={handleFileUpload} />
-              </div>
-              {/* Surname first, matching the DepEd School Form 1 the roster is
-                  copied from — and it is what the class list, the gradebook
-                  and every export are sorted by, so a mixed roster sorts by
-                  first name for some learners and surname for others. */}
-              <p className="text-xs font-medium text-brand-navy bg-blue-50 border border-blue-100 rounded-lg px-3 py-2 mb-2">
-                Enter names <span className="font-bold">last name first</span> — e.g. <span className="font-mono">Dela Cruz, Juan</span>.
-                This is how rosters and gradebooks are sorted.
-              </p>
-              <textarea required value={studentsText} onChange={(e) => setStudentsText(e.target.value)}
-                rows={6} className="w-full px-4 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-brand-navy outline-none"
-                placeholder={"Dela Cruz, Juan, 03/15/2014\nSantos, Maria Clara, 07/02/2014\nRizal, Jose"} />
-
-              {/* Shown before submitting, because the birthday becomes the
-                  password — a typo here is a pupil who cannot sign in, and it
-                  is far cheaper to catch it while the class list is still on
-                  screen than after fifty accounts exist. */}
-              {studentsText.trim() && (
-                <div className="mt-2 rounded-lg border border-slate-200 bg-slate-50 divide-y divide-slate-200 max-h-44 overflow-y-auto">
-                  {parseRoster(studentsText).map((r, i) => (
-                    <div key={i} className="flex items-center justify-between gap-3 px-3 py-1.5 text-xs">
-                      <span className="font-medium text-brand-slate truncate">{r.name}</span>
-                      {r.birthday
-                        ? <span className="shrink-0 text-slate-500">password <span className="font-mono font-bold text-brand-slate">{previewPassword(r.birthday)}</span></span>
-                        : r.birthdayRaw
-                          ? <span className="shrink-0 text-red-600 font-medium">can&apos;t read &ldquo;{r.birthdayRaw}&rdquo;</span>
-                          : <span className="shrink-0 text-amber-600">no birthday — random password</span>}
-                    </div>
-                  ))}
-                </div>
-              )}
-              {/* The per-row preview above already marks each learner, but a
-                  forty-name roster scrolls — and the count is the decision.
-                  A random six-digit password for a Grade 3 pupil is a reset
-                  waiting to happen, and the birthday is usually already on the
-                  School Form the roster was copied from. */}
-              {(() => {
-                const rows = parseRoster(studentsText);
-                const randomCount = rows.filter(r => !r.birthday && !r.birthdayRaw).length;
-                if (!randomCount) return null;
-                return (
-                  <div className="mt-2 text-xs font-medium text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
-                    <span className="font-bold">{randomCount} of {rows.length}</span> {randomCount === 1 ? 'learner has' : 'learners have'} no
-                    birthday, so {randomCount === 1 ? 'their password' : 'their passwords'} will be random digits shown only once.
-                    Adding birthdays gives them a password they can remember — and one you can work out again later.
-                  </div>
-                );
-              })()}
-
-              <p className="text-xs text-slate-500 mt-1">
-                The birthday becomes the pupil&apos;s password (03/15/2014 → <span className="font-mono">03152014</span>). Leave it out and they get
-                a random one you must copy down when it appears — it cannot be shown again. Existing students won&apos;t be duplicated;
-                anyone already in another section is listed for you to confirm before they are moved.
-              </p>
+                <RosterEditor
+                  rows={studentRows}
+                  onChange={setStudentRows}
+                  onPickFile={() => fileInputRef.current?.click()}
+                  isExtracting={isExtracting}
+                  fileRef={fileInputRef}
+                  onFileChange={handleFileUpload}
+                />
               </div>
             </div>
 
@@ -532,7 +425,7 @@ export default function ManageSections() {
                     </div>
                   </button>
                   <div className="flex items-center gap-2">
-                    <button onClick={(e) => { e.stopPropagation(); setEditingSectionId(prev => prev === section.id ? null : section.id); setAddStudentsText(''); if (expandedId !== section.id) setExpandedId(section.id); }}
+                    <button onClick={(e) => { e.stopPropagation(); setEditingSectionId(prev => prev === section.id ? null : section.id); setAddStudentRows(emptyRoster()); if (expandedId !== section.id) setExpandedId(section.id); }}
                       className={`p-2 rounded-lg transition-colors ${editingSectionId === section.id ? 'bg-brand-navy text-white' : 'text-slate-400 hover:text-brand-navy hover:bg-blue-50'}`}
                       title="Add students to this section">
                       <Pencil className="w-4 h-4" />
@@ -551,28 +444,18 @@ export default function ManageSections() {
                           <UserPlus className="w-4 h-4" /> Add Students to {section.name}
                         </h4>
                         <div className="space-y-3">
-                          <div>
-                            <div className="flex justify-between items-center mb-1">
-                              <label className="text-xs font-medium text-slate-600">Student names — last name first, one per line</label>
-                              <button type="button" onClick={() => editFileRef.current?.click()} disabled={isExtractingEdit}
-                                className="text-xs font-bold text-brand-navy bg-white hover:bg-blue-100 px-2.5 py-1 rounded-lg flex items-center gap-1 transition-colors disabled:opacity-50 border border-blue-200">
-                                {isExtractingEdit ? 'Extracting...' : <><Upload className="w-3 h-3" /> Auto-fill</>}
-                              </button>
-                              <input type="file" accept=".xlsx,.xls" className="hidden" ref={editFileRef} onChange={handleEditFileUpload} />
-                            </div>
-                            <textarea value={addStudentsText} onChange={(e) => setAddStudentsText(e.target.value)}
-                              rows={4} className="w-full px-3 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-brand-navy outline-none text-sm"
-                              placeholder={"Dela Cruz, Juan, 03/15/2014\nSantos, Maria Clara, 07/02/2014"} />
-                            <p className="text-[11px] text-slate-400 mt-1">
-                              Last name first, e.g. <span className="font-mono">Dela Cruz, Juan</span>. Existing students won&apos;t be duplicated, and anyone
-                              already in another section is listed for you to confirm first. Password: the birthday as MMDDYYYY, or a random
-                              code shown once after adding if no birthday is given.
-                            </p>
-                          </div>
+                          <RosterEditor
+                            rows={addStudentRows}
+                            onChange={setAddStudentRows}
+                            onPickFile={() => editFileRef.current?.click()}
+                            isExtracting={isExtractingEdit}
+                            fileRef={editFileRef}
+                            onFileChange={handleEditFileUpload}
+                          />
                           <div className="flex gap-2">
-                            <button onClick={() => { setEditingSectionId(null); setAddStudentsText(''); }}
+                            <button onClick={() => { setEditingSectionId(null); setAddStudentRows(emptyRoster()); }}
                               className="flex-1 py-2 border border-slate-200 text-slate-600 rounded-lg text-sm font-medium hover:bg-white">Cancel</button>
-                            <button onClick={() => handleAddStudents(section)} disabled={isAddingStudents || !addStudentsText.trim()}
+                            <button onClick={() => handleAddStudents(section)} disabled={isAddingStudents || !addStudentRows.some(isFilledRow)}
                               className="flex-1 py-2 bg-brand-navy text-white rounded-lg text-sm font-medium hover:bg-blue-900 transition-colors disabled:opacity-50 flex items-center justify-center gap-2">
                               {isAddingStudents ? <><Loader2 className="w-4 h-4 animate-spin" /> Adding...</> : <><UserPlus className="w-4 h-4" /> Add Students</>}
                             </button>
