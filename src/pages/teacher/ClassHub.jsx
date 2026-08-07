@@ -151,12 +151,17 @@ export default function ClassHub() {
         </div>
       </div>
 
-      {/* Demo Data Banner */}
+      {/* Left-over sandbox from the removed auto-seed. Nothing creates these
+          any more, so this banner exists only to get the remaining ones
+          cleared — hence "left over" rather than an invitation to explore. */}
       {classData.name.includes('[DEMO]') && (
         <div className="mb-6 bg-amber-50 border-2 border-amber-200 rounded-xl p-4 flex items-center justify-between">
           <div>
-            <p className="font-bold text-amber-800 text-sm">🧪 This is a Demo Class</p>
-            <p className="text-xs text-amber-600">Explore the AI grading workflow here. When you're ready for real data, delete this sandbox.</p>
+            <p className="font-bold text-amber-800 text-sm">🧪 Left-over sample class</p>
+            <p className="text-xs text-amber-600">
+              An older version of TulongGuro created this automatically. It holds no real learner work — the
+              &ldquo;Demo Student&rdquo; and its marks are made up. Safe to delete.
+            </p>
           </div>
           <button
             onClick={async () => {

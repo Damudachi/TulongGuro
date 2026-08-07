@@ -16,7 +16,12 @@ const ROLES = {
     label: 'Student', icon: GraduationCap,
     accent: 'text-aqua-700', chip: 'bg-aqua-500', panel: 'bg-aqua-600',
     button: 'bg-aqua-600 hover:bg-aqua-700 text-white',
-    idLabel: 'Student ID', idPlaceholder: 'Enter your ID (e.g. RIZAL-001)', idType: 'text',
+    // Placeholder matches the ID format actually issued now (<SCHOOL>-<YY>-<NNNN>).
+    // The server accepts it in any case and with the dashes left out, so a child
+    // copying it off a printed slip does not get "Invalid credentials" for
+    // punctuation.
+    idLabel: 'Student ID', idPlaceholder: 'e.g. AS-26-0001', idType: 'text',
+    idHint: 'Capital letters and dashes do not matter — as-26-0001 works too.',
     home: '/student/dashboard',
     blurb: 'Check your feedback, awards, and what’s due next.',
   },
@@ -167,6 +172,9 @@ export default function Login() {
                 value={identifier}
                 onChange={(e) => setIdentifier(e.target.value)}
               />
+              {cfg.idHint && (
+                <p className="mt-1.5 text-xs text-navy-400 font-semibold">{cfg.idHint}</p>
+              )}
             </div>
 
             <div>

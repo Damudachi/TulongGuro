@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { Users, Plus, ChevronDown, X, Upload, Pencil, UserPlus, Loader2, Search } from 'lucide-react';
+import { Users, Plus, ChevronDown, X, Upload, Pencil, UserPlus, Loader2, Search, KeyRound } from 'lucide-react';
 import { API_URL, apiFetch } from '../../config';
 import { GRADE_LEVELS } from '../../constants/school';
 import StudentCredentials from '../../components/StudentCredentials';
@@ -71,8 +71,45 @@ export default function ManageSections() {
   // Set when the server refused to re-home names already enrolled elsewhere.
   // Holds everything needed to replay the same request with allowMove.
   const [moveRequest, setMoveRequest] = useState(null);
+  // The learner whose password was last reset, and what it now is. One at a
+  // time on purpose — this is read out loud to one child at a keyboard.
+  const [resetResult, setResetResult] = useState(null);
+  const [resettingId, setResettingId] = useState(null);
 
   useEffect(() => { fetchSections(); }, []);
+
+  /**
+   * Give one learner a new password, in front of them.
+   *
+   * Confirmed first because it ends their current session: a learner who is
+   * signed in on another machine is signed out by this, which is the right
+   * behaviour for a forgotten password and a surprise for anything else.
+   */
+  const resetStudentPassword = async (sectionId, student) => {
+    if (!confirm(
+      `Give ${student.name} a new password?\n\n`
+      + 'They will be signed out everywhere, and you will need to read the new password to them.'
+    )) return;
+
+    setResettingId(student.id);
+    setResetResult(null);
+    try {
+      const res = await apiFetch(
+        `${API_URL}/api/teacher/sections/${sectionId}/students/${student.id}/password`,
+        { method: 'PUT' }
+      );
+      const data = await res.json();
+      if (data.success) {
+        setResetResult({ id: student.id, password: data.password, source: data.passwordSource });
+      } else {
+        alert('Could not reset the password: ' + (data.error || 'unknown error'));
+      }
+    } catch {
+      alert('Cannot reach the server. Check your connection and try again.');
+    } finally {
+      setResettingId(null);
+    }
+  };
 
   const fetchSections = async () => {
     try {
@@ -345,6 +382,24 @@ export default function ManageSections() {
                   ))}
                 </div>
               )}
+              {/* The per-row preview above already marks each learner, but a
+                  forty-name roster scrolls — and the count is the decision.
+                  A random six-digit password for a Grade 3 pupil is a reset
+                  waiting to happen, and the birthday is usually already on the
+                  School Form the roster was copied from. */}
+              {(() => {
+                const rows = parseRoster(studentsText);
+                const randomCount = rows.filter(r => !r.birthday && !r.birthdayRaw).length;
+                if (!randomCount) return null;
+                return (
+                  <div className="mt-2 text-xs font-medium text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                    <span className="font-bold">{randomCount} of {rows.length}</span> {randomCount === 1 ? 'learner has' : 'learners have'} no
+                    birthday, so {randomCount === 1 ? 'their password' : 'their passwords'} will be random digits shown only once.
+                    Adding birthdays gives them a password they can remember — and one you can work out again later.
+                  </div>
+                );
+              })()}
+
               <p className="text-xs text-slate-500 mt-1">
                 The birthday becomes the pupil&apos;s password (03/15/2014 → <span className="font-mono">03152014</span>). Leave it out and they get
                 a random one you must copy down when it appears — it cannot be shown again. Existing students won&apos;t be duplicated;
@@ -490,7 +545,27 @@ export default function ManageSections() {
                             <div className="flex-1 min-w-0">
                               <p className="text-sm font-medium text-brand-slate truncate">{s.name}</p>
                               <p className="text-[11px] text-slate-400 font-mono">ID: {s.username}</p>
+                              {/* Shown inline and left on screen until the next
+                                  reset: the teacher has to read it out to the
+                                  learner, and a toast that fades is exactly the
+                                  mistake the old window.alert made. */}
+                              {resetResult?.id === s.id && (
+                                <p className="mt-1 text-[11px] font-bold text-green-700 bg-green-50 border border-green-200 rounded px-2 py-1 inline-block">
+                                  New password: <span className="font-mono select-all">{resetResult.password}</span>
+                                  {resetResult.source === 'birthday' ? ' (their birthday)' : ' — write this down, it is random'}
+                                </p>
+                              )}
                             </div>
+                            <button
+                              type="button"
+                              onClick={() => resetStudentPassword(section.id, s)}
+                              disabled={resettingId === s.id}
+                              className="shrink-0 text-[11px] font-bold text-brand-navy border border-slate-200 bg-white px-2.5 py-1.5 rounded-lg hover:bg-slate-50 disabled:opacity-50 flex items-center gap-1"
+                              title={`Reset ${s.name}'s password`}
+                            >
+                              <KeyRound className="w-3 h-3" />
+                              {resettingId === s.id ? 'Resetting…' : 'Reset password'}
+                            </button>
                           </div>
                         ))}
                       </div>

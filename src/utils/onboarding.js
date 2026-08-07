@@ -38,9 +38,25 @@ export function markAllOnboardingSeen(names) {
   names.forEach(markOnboardingSeen);
 }
 
+/**
+ * Undoes markOnboardingSeen, so a dismissed step can be brought back.
+ *
+ * Every flag here used to be one-way: dismissing the teacher walkthrough — a
+ * "Dismiss" link sitting next to "Next", easy to hit by accident — hid it for
+ * good, with no affordance anywhere to reopen it.
+ */
+export function clearOnboardingSeen(name) {
+  const key = flagKey(name);
+  if (key) localStorage.removeItem(key);
+}
+
 export const ONBOARDING = {
-  TEACHER_WELCOME: 'teacher-welcome',
-  TEACHER_WALKTHROUGH: 'teacher-walkthrough',
+  // Whether the teacher has *hidden* the setup checklist — not whether they
+  // have finished it. How far through setup they are is derived from their own
+  // rows by GET /api/teacher/:id/setup-status, because a browser flag is a
+  // property of the device: the old walkthrough restarted itself on the other
+  // staff-room computer and, once dismissed, could never be got back.
+  TEACHER_SETUP_HIDDEN: 'teacher-setup-hidden',
   TEACHER_COPILOT_TIP: 'teacher-copilot-tip',
   STUDENT_WELCOME: 'student-welcome',
 };

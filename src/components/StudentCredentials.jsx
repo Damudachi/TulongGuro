@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { X, Copy, Check, KeyRound } from 'lucide-react';
+import { X, Copy, Check, KeyRound, Printer } from 'lucide-react';
 
 /**
  * The sign-in details for a batch of freshly created student accounts.
@@ -15,7 +15,64 @@ import { X, Copy, Check, KeyRound } from 'lucide-react';
  *
  * Stays on screen until dismissed, selectable, and copies as tab-separated rows
  * so it pastes straight into Excel or a class record sheet.
+ *
+ * "Print slips" is the path that actually gets these into children's hands.
+ * The table is for the teacher's records; a Grade 3 learner needs their own ID
+ * and password in front of them at a shared computer, in type they can read,
+ * and copying forty rows out by hand is where that went wrong. The slips print
+ * one card per learner, cut apart, and carry the same "capitals and dashes do
+ * not matter" reassurance the login screen gives.
  */
+
+/** Opens a print-ready sheet of one cut-out slip per learner. */
+function printSlips(students) {
+  const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => (
+    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]
+  ));
+
+  const cards = students.map((s) => `
+    <div class="slip">
+      <div class="brand">TulongGuro &middot; Sign-in details</div>
+      <div class="name">${esc(s.name)}</div>
+      <div class="row"><span class="lbl">Student ID</span><span class="val">${esc(s.username)}</span></div>
+      <div class="row"><span class="lbl">Password</span><span class="val">${esc(s.initialPassword)}</span></div>
+      <div class="note">Capital letters and dashes do not matter.<br/>Keep this slip safe.</div>
+    </div>
+  `).join('');
+
+  // A detached window rather than print-CSS on the dashboard: the teacher is
+  // printing a handout, not the page they are looking at, and this keeps the
+  // app's layout out of it entirely.
+  const w = window.open('', '_blank');
+  if (!w) {
+    alert('Your browser blocked the print window. Allow pop-ups for this site and try again.');
+    return;
+  }
+  w.document.write(`<!doctype html>
+<html><head><meta charset="utf-8"/><title>Student sign-in slips</title>
+<style>
+  @page { margin: 12mm; }
+  body { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; margin: 0; }
+  .sheet { display: grid; grid-template-columns: 1fr 1fr; gap: 6mm; }
+  .slip {
+    border: 1.5px dashed #94a3b8; border-radius: 4mm; padding: 5mm;
+    break-inside: avoid; page-break-inside: avoid;
+  }
+  .brand { font-size: 8pt; letter-spacing: .08em; text-transform: uppercase; color: #64748b; }
+  .name { font-size: 13pt; font-weight: 700; margin: 2mm 0 3mm; color: #0f172a; }
+  .row { display: flex; align-items: baseline; gap: 3mm; margin-bottom: 1.5mm; }
+  .lbl { font-size: 8.5pt; color: #64748b; width: 22mm; flex: none; }
+  /* Large and monospaced: these are read character by character by someone
+     who cannot touch-type, often at arm's length on a shared monitor. */
+  .val { font-family: "Courier New", monospace; font-size: 15pt; font-weight: 700; letter-spacing: .06em; color: #0f172a; }
+  .note { margin-top: 3mm; font-size: 7.5pt; color: #64748b; line-height: 1.4; }
+</style></head>
+<body><div class="sheet">${cards}</div></body></html>`);
+  w.document.close();
+  w.focus();
+  w.print();
+}
+
 export default function StudentCredentials({ students, onClose }) {
   const [copied, setCopied] = useState(false);
   if (!students?.length) return null;
@@ -81,10 +138,18 @@ export default function StudentCredentials({ students, onClose }) {
         </table>
       </div>
 
-      <button onClick={copy}
-        className="mt-3 text-xs font-bold text-green-700 bg-white border border-green-200 px-3 py-1.5 rounded-lg hover:bg-green-100 flex items-center gap-1.5">
-        {copied ? <><Check className="w-3.5 h-3.5" /> Copied</> : <><Copy className="w-3.5 h-3.5" /> Copy all (pastes into Excel)</>}
-      </button>
+      <div className="mt-3 flex flex-wrap gap-2">
+        {/* Printing first: it is the one that ends with a learner able to sign
+            in, and the copy is for the teacher's own records. */}
+        <button onClick={() => printSlips(students)}
+          className="text-xs font-bold text-white bg-green-700 px-3 py-1.5 rounded-lg hover:bg-green-800 flex items-center gap-1.5">
+          <Printer className="w-3.5 h-3.5" /> Print slips (one per learner)
+        </button>
+        <button onClick={copy}
+          className="text-xs font-bold text-green-700 bg-white border border-green-200 px-3 py-1.5 rounded-lg hover:bg-green-100 flex items-center gap-1.5">
+          {copied ? <><Check className="w-3.5 h-3.5" /> Copied</> : <><Copy className="w-3.5 h-3.5" /> Copy all (pastes into Excel)</>}
+        </button>
+      </div>
     </div>
   );
 }

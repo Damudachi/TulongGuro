@@ -9,26 +9,27 @@ import { ONBOARDING, hasSeenOnboarding, markOnboardingSeen } from '../../utils/o
 import SchoolBadge from '../../components/SchoolBadge';
 import { StatTile } from '../../components/PageHeader';
 
-const WELCOME_STEPS = [
-  {
-    icon: Award,
-    tone: 'bg-aqua-100 text-aqua-700',
-    title: 'Welcome to TulongGuro! 🎉',
-    body: 'TulongGuro uses AI to help your teacher grade faster, but your teacher always makes the final decision.',
-  },
-  {
-    icon: Send,
-    tone: 'bg-royal-100 text-royal-600',
-    title: 'Submitting Your Work 📤',
-    body: 'Some activities you upload yourself. For others your teacher submits the paper for you — each activity tells you which.',
-  },
-  {
-    icon: Lightbulb,
-    tone: 'bg-sun-100 text-sun-700',
-    title: 'Reading Strategies 💡',
-    body: 'Look out for the yellow cards — these are personalized reading tips just for you, to help you improve.',
-  },
-];
+/**
+ * Shown once, the first time a learner has a grade to actually look at.
+ *
+ * This was three modal steps fired on first sign-in — in front of an empty
+ * dashboard, before the child had submitted anything. "Look out for the yellow
+ * cards" means nothing when there are no cards, and a nine-year-old facing a
+ * three-step carousel on a screen they have just fought their way into taps
+ * through it to make it go away. Held back until `submissions` is non-empty
+ * (the dashboard only ever receives *released* work) so every sentence below
+ * describes something visible behind the modal, and cut to one screen.
+ */
+const WELCOME = {
+  icon: Award,
+  tone: 'bg-aqua-100 text-aqua-700',
+  title: 'Your first grade is ready! 🎉',
+  points: [
+    { icon: CheckCircle2, text: 'A computer helps your teacher mark faster — but your teacher checks everything and decides your grade.' },
+    { icon: Lightbulb, text: 'The yellow cards are reading tips written just for you. They tell you what to practise next.' },
+    { icon: Star, text: 'You earn stars for good work. Tap any activity to see what you did well.' },
+  ],
+};
 
 /** Empty-state block shared by the three feed sections. */
 function EmptyState({ icon: Icon, title, hint }) {
@@ -46,7 +47,6 @@ export default function StudentDashboard() {
   const [data, setData] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
   const [showWelcome, setShowWelcome] = useState(false);
-  const [welcomeStep, setWelcomeStep] = useState(0);
 
   const dismissWelcome = () => {
     markOnboardingSeen(ONBOARDING.STUDENT_WELCOME);
@@ -54,14 +54,18 @@ export default function StudentDashboard() {
   };
 
   useEffect(() => {
-    if (!hasSeenOnboarding(ONBOARDING.STUDENT_WELCOME)) {
-      setShowWelcome(true);
-    }
     const user = JSON.parse(localStorage.getItem('user') || '{}');
     if (!user.id) return setIsLoading(false);
     apiFetch(`${API_URL}/api/student/${user.id}/dashboard`)
       .then(r => r.json())
-      .then(d => { if (d.success) setData(d); })
+      .then(d => {
+        if (!d.success) return;
+        setData(d);
+        // Only once there is released work to point at — see WELCOME.
+        if (d.submissions?.length > 0 && !hasSeenOnboarding(ONBOARDING.STUDENT_WELCOME)) {
+          setShowWelcome(true);
+        }
+      })
       .finally(() => setIsLoading(false));
   }, []);
 
@@ -93,53 +97,39 @@ export default function StudentDashboard() {
       ? `/student/submit?activityId=${activityId}`
       : `/student/activity/${activityId}`;
 
-  const WelcomeIcon = WELCOME_STEPS[welcomeStep].icon;
+  const WelcomeIcon = WELCOME.icon;
 
   return (
     <div className="tg-page pt-4 md:pt-8 max-w-4xl mx-auto">
-      {/* ── Onboarding welcome modal ── */}
+      {/* ── Onboarding welcome — one screen, once, after the first grade ── */}
       {showWelcome && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-navy-900/50 backdrop-blur-sm">
           <div className="bg-white rounded-[2rem] w-full max-w-md overflow-hidden shadow-card-lg animate-pop-in">
-            <div className="p-8 text-center relative">
-              <button onClick={dismissWelcome}
-                className="absolute top-5 right-6 text-xs font-bold text-navy-400 hover:text-navy-600 transition-colors">
-                Skip
-              </button>
-
-              <div className={`w-20 h-20 rounded-3xl flex items-center justify-center mx-auto mb-6 ${WELCOME_STEPS[welcomeStep].tone}`}>
+            <div className="p-8 text-center">
+              <div className={`w-20 h-20 rounded-3xl flex items-center justify-center mx-auto mb-6 ${WELCOME.tone}`}>
                 <WelcomeIcon className="w-10 h-10" />
               </div>
-              <p className="text-xs font-extrabold uppercase tracking-wider text-navy-400 mb-2">
-                Step {welcomeStep + 1} of {WELCOME_STEPS.length}
-              </p>
-              <h2 className="font-display text-2xl font-extrabold text-navy-700 mb-3">{WELCOME_STEPS[welcomeStep].title}</h2>
-              <p className="text-navy-600 leading-relaxed">{WELCOME_STEPS[welcomeStep].body}</p>
+              <h2 className="font-display text-2xl font-extrabold text-navy-700 mb-5">{WELCOME.title}</h2>
 
-              <div className="mt-10 flex flex-col gap-4">
-                <div className="flex justify-center gap-2 mb-2">
-                  {WELCOME_STEPS.map((_, step) => (
-                    <div key={step} className={`h-2 rounded-full transition-all ${welcomeStep === step ? 'w-8 bg-royal-500' : 'w-2 bg-cream-300'}`} />
-                  ))}
-                </div>
-                <div className="flex gap-3">
-                  {welcomeStep > 0 && (
-                    <button onClick={() => setWelcomeStep(s => s - 1)} className="tg-btn-ghost flex-1">
-                      Back
-                    </button>
-                  )}
-                  <button
-                    onClick={() => {
-                      if (welcomeStep < WELCOME_STEPS.length - 1) setWelcomeStep(s => s + 1);
-                      else dismissWelcome();
-                    }}
-                    className="flex-1 rounded-full py-3.5 font-bold text-sm text-white bg-royal-600 shadow-pop
-                               hover:bg-royal-700 active:translate-y-1 active:shadow-none transition-all"
-                  >
-                    {welcomeStep < WELCOME_STEPS.length - 1 ? 'Next' : "Let's Go!"}
-                  </button>
-                </div>
-              </div>
+              <ul className="space-y-4 text-left">
+                {WELCOME.points.map((point) => (
+                  <li key={point.text} className="flex items-start gap-3">
+                    <point.icon className="w-5 h-5 text-royal-500 shrink-0 mt-0.5" aria-hidden="true" />
+                    <span className="text-navy-600 leading-relaxed text-sm">{point.text}</span>
+                  </li>
+                ))}
+              </ul>
+
+              {/* One button, no "Skip" competing with it: there is nothing to
+                  skip past on a single screen, and two dismissals is one more
+                  decision than this needs. */}
+              <button
+                onClick={dismissWelcome}
+                className="mt-8 w-full rounded-full py-3.5 font-bold text-sm text-white bg-royal-600 shadow-pop
+                           hover:bg-royal-700 active:translate-y-1 active:shadow-none transition-all"
+              >
+                See my grade
+              </button>
             </div>
           </div>
         </div>

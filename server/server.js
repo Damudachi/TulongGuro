@@ -1349,48 +1349,28 @@ app.post('/api/auth/register', registerRateLimit, (req, res, next) => {
   }
 });
 
-/** Seeds the demo sandbox class the teacher walkthrough refers to. */
-async function seedDemoSandbox(user) {
-    try {
-      // schoolId is deliberately left null: the sandbox is personal scratch
-      // space, so it stays out of the school-wide section list colleagues see.
-      const demoSection = await prisma.section.create({
-        data: { name: 'Grade 6 - Demo Section', gradeLevel: 'Grade 6', teacherId: user.id }
-      });
-      const demoStudentPassword = await bcrypt.hash('password', BCRYPT_SALT_ROUNDS);
-      const demoStudent = await prisma.user.create({
-        data: { name: 'Demo Student', username: `DEMO-${Date.now()}`, password: demoStudentPassword, role: 'STUDENT', sectionId: demoSection.id }
-      });
-      const demoClass = await prisma.class.create({
-        data: { name: '[DEMO] Sandbox Demo Class', gradeLevel: 'Grade 6', subject: 'English', schoolYear: '2024-2025', teacherId: user.id, sectionId: demoSection.id }
-      });
-      const demoActivity = await prisma.activity.create({
-        data: { title: 'Demo Activity: The Boy Who Cried Wolf', type: 'Essay', points: 100, classId: demoClass.id, instructions: 'Write a short summary.', submissionMode: 'TEACHER_UPLOAD' }
-      });
-      
-      const aiFeedbackObj = JSON.stringify({
-        strengths: "Great job completing your first assignment! You summarized the story well.",
-        areasForGrowth: [{ studentQuote: "He was cry wolf.", explanation: "Make sure to use the correct past tense: 'He cried wolf'." }],
-        actionableSteps: ["Review your verb tenses."],
-        skillExplanations: { vocabulary: "Good basic words.", punctuation: "Mostly correct.", thematicFlow: "Easy to follow.", sentenceStructure: "A bit choppy." }
-      });
-
-      await prisma.submission.create({
-        data: {
-          studentId: demoStudent.id,
-          activityId: demoActivity.id,
-          imageUrl: '/demo-essay.png',
-          aiScore: 85,
-          aiFeedback: aiFeedbackObj,
-          rubricData: JSON.stringify({ content: { score: 35, max: 40 }, organization: { score: 25, max: 30 }, grammar: { score: 25, max: 30 } }),
-          skillScores: JSON.stringify({ vocabulary: 20, punctuation: 20, thematicFlow: 20, sentenceStructure: 20 }),
-          status: 'PENDING_REVIEW' // Leave it pending so the teacher can try the HITL Workspace
-        }
-      });
-    } catch (seedErr) {
-      console.error('Failed to seed demo class:', seedErr);
-    }
-}
+// ── Removed: seedDemoSandbox ──
+// Every teacher an admin created used to be given a sandbox: a Section, a real
+// STUDENT account, a Class, an Activity and a Submission carrying a fabricated
+// aiScore of 85. It was deleted for three reasons, in ascending order of how
+// much they matter:
+//
+//   • It cleaned up after itself only if the teacher did it. The walkthrough's
+//     last step asked them to. The "[STUDENT-DEMO]" rows that outlived their
+//     own auto-seed are what that instruction is worth in practice.
+//   • The demo student's password was the literal string 'password', under a
+//     username of DEMO-<epoch ms>. A working login, once per teacher.
+//   • It created that student with no schoolId, so every teacher added undid
+//     the backfill that gave every student a school. Measured on 7 Aug 2026:
+//     0 students without a school at 09:58 UTC, 2 by 10:30 — both seeded, each
+//     one second after a new teacher. Those accounts sit outside the tenancy
+//     rules that key on schoolId, including session revocation on school
+//     rejection.
+//
+// Onboarding now walks a teacher through their own first class instead; the AI
+// feedback the sandbox existed to preview is a static example in the frontend,
+// which cannot be validated into a real grade. DELETE /api/teacher/demo-data
+// stays so teachers can clear sandboxes seeded before this change.
 
 // ─────────────────────────────────────────
 // PLATFORM OPERATOR — school approval
@@ -1580,10 +1560,44 @@ app.post('/api/auth/login', loginRateLimit, async (req, res) => {
   try {
     const { username, password, role } = req.body;
     // Include related section data so clients receive up-to-date section info on login
-    const user = await prisma.user.findFirst({
-      where: { username, role },
+    let user = await prisma.user.findFirst({
+      where: { username: typeof username === 'string' ? username.trim() : username, role },
       include: { section: true, school: true }
     });
+
+    // ── Second chance for a student ID typed the way a child types it ──
+    //
+    // A student's username is their ID: AS-26-0001. Nothing else on the login
+    // screen is like that — teachers and admins sign in with an email — and an
+    // eight-year-old copying it off a slip of paper produces "as-26-0001",
+    // "AS 26 0001" or "as260001" about as often as the canonical form. Every
+    // one of those used to be "Invalid credentials", which reads as *the
+    // password is wrong* and sends the child to a teacher for a reset they did
+    // not need.
+    //
+    // Only for students, only after an exact match has failed, and only when
+    // the relaxed form identifies exactly one account — an ambiguous match is
+    // treated as no match rather than guessing which child signed in. The
+    // password is still checked normally below, so this widens how the account
+    // is *named*, never what proves it is yours.
+    if (!user && role === 'STUDENT' && typeof username === 'string') {
+      const normalized = username.replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
+      if (normalized) {
+        const matches = await prisma.$queryRaw`
+          SELECT id FROM "User"
+          WHERE role = 'STUDENT'
+            AND upper(regexp_replace(username, '[^a-zA-Z0-9]', '', 'g')) = ${normalized}
+          LIMIT 2
+        `;
+        if (matches.length === 1) {
+          user = await prisma.user.findUnique({
+            where: { id: matches[0].id },
+            include: { section: true, school: true }
+          });
+        }
+      }
+    }
+
     if (!user || !(await bcrypt.compare(password, user.password))) {
       return res.status(401).json({ success: false, error: 'Invalid credentials' });
     }
@@ -2142,10 +2156,6 @@ app.post('/api/admin/:adminId/teachers', async (req, res) => {
         schoolName: admin.school?.name || admin.schoolName
       }
     });
-    // Give them the same sandbox a self-registered teacher used to get, so the
-    // onboarding walkthrough has something to point at.
-    await seedDemoSandbox(teacher);
-
     const { password: _pw, ...safeTeacher } = teacher;
     res.json({ success: true, teacher: safeTeacher });
   } catch (e) { sendAdminError(res, e); }
@@ -2188,13 +2198,38 @@ app.delete('/api/admin/:adminId/teachers/:teacherId', async (req, res) => {
     if (!teacher || teacher.schoolId !== admin.schoolId) {
       return res.status(404).json({ success: false, error: 'Teacher not found in your school.' });
     }
-    // Real classes carry student submissions; only the seeded demo is disposable.
+    // Real classes carry student submissions; a sandbox seeded by the old
+    // auto-seed is disposable. The [DEMO] exclusion is legacy-only now that
+    // nothing creates those — it can go once the last sandbox is cleared.
     const realClasses = await prisma.class.count({
       where: { teacherId: teacher.id, NOT: { name: { contains: '[DEMO]' } } }
     });
     if (realClasses > 0) {
       return res.status(400).json({ success: false, error: 'This teacher still has classes. Reassign or delete them first.' });
     }
+
+    // Below, every student in every section this teacher owns is deleted along
+    // with them. That was survivable while the only such students were seeded
+    // "Demo Student" rows — but a teacher's first real action is now building a
+    // section and its roster, and a roster can exist for weeks before the first
+    // class does. Without this guard, removing a teacher who had got that far
+    // would silently delete real children's accounts, and their grades with
+    // them, while reporting success.
+    const realStudents = await prisma.user.count({
+      where: {
+        role: 'STUDENT',
+        section: { teacherId: teacher.id },
+        NOT: { username: { startsWith: 'DEMO-' } },
+      },
+    });
+    if (realStudents > 0) {
+      return res.status(400).json({
+        success: false,
+        error: `This teacher's block sections still hold ${realStudents} student account(s). `
+          + 'Move those students to another section before removing the teacher.',
+      });
+    }
+
     await prisma.rubricTemplate.deleteMany({ where: { teacherId: teacher.id } });
     await prisma.gradingExample.deleteMany({ where: { teacherId: teacher.id } });
     const demoClasses = await prisma.class.findMany({ where: { teacherId: teacher.id }, select: { id: true } });
@@ -2987,6 +3022,49 @@ app.get('/api/teacher/:teacherId/curriculum-suggestion', async (req, res) => {
 });
 
 // ─────────────────────────────────────────
+// ONBOARDING: how far through first-time setup this teacher actually is
+// ─────────────────────────────────────────
+/**
+ * Each flag is derived from rows that exist, not from a stored "step" and not
+ * from a browser flag.
+ *
+ * Onboarding state used to live entirely in localStorage, which made it a
+ * property of the device rather than of the teacher: signing in on the other
+ * computer in the staff room started the tour again, and dismissing it once —
+ * easy to do by accident on a banner with a "Dismiss" link — hid it forever
+ * with no way back. Deriving it means the checklist is correct on any device,
+ * survives a cleared browser, and cannot disagree with what the teacher can
+ * plainly see on their own dashboard.
+ *
+ * Six counts rather than six existence checks: the numbers let the UI say
+ * "3 students enrolled" instead of a bare tick, which is what makes a
+ * checklist read as a description of your class rather than a quiz you passed.
+ */
+app.get('/api/teacher/:teacherId/setup-status', async (req, res) => {
+  try {
+    // authorizePath has already proved seg[2] is the caller's own id.
+    const teacherId = req.params.teacherId;
+    const ofThisTeacher = { activity: { class: { teacherId } } };
+
+    const [sections, students, classes, activities, graded, released] = await Promise.all([
+      prisma.section.count({ where: { teacherId } }),
+      prisma.user.count({ where: { role: 'STUDENT', section: { teacherId } } }),
+      prisma.class.count({ where: { teacherId } }),
+      prisma.activity.count({ where: { class: { teacherId } } }),
+      prisma.submission.count({ where: { ...ofThisTeacher, status: 'GRADED' } }),
+      prisma.submission.count({ where: { ...ofThisTeacher, releasedAt: { not: null } } }),
+    ]);
+
+    res.json({
+      success: true,
+      setup: { sections, students, classes, activities, graded, released },
+    });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// ─────────────────────────────────────────
 // ONBOARDING: Quick Setup (creates Section + Class in one shot)
 // ─────────────────────────────────────────
 app.post('/api/teacher/quick-setup', async (req, res) => {
@@ -3488,6 +3566,57 @@ async function enrolStudents(section, studentsList, { schoolId, teacherId, allow
 
   return { createdStudents, skippedStudents, linkedStudents, pendingMoves };
 }
+
+/**
+ * Reset one learner's password, for the teacher who advises their section.
+ *
+ * The same reset already existed for admins. That was the wrong shape for the
+ * situation it is actually needed in: a child at a shared classroom computer
+ * who cannot sign in, in front of the person who enrolled them. Routing that
+ * through an admin — one per school, not in the room — meant the learner sat
+ * out the lesson, and it is why a random six-digit password is worse than it
+ * looks. The teacher who owns the roster can now do it in one click and read
+ * the new password straight off the screen.
+ *
+ * Reuses the admin route's rules exactly: birthday when the roster has one so
+ * the learner gets something memorable back, random otherwise, and every
+ * existing session for that account is revoked — a forgotten password is
+ * indistinguishable from a shared one.
+ */
+app.put('/api/teacher/sections/:sectionId/students/:studentId/password', async (req, res) => {
+  try {
+    const section = await prisma.section.findUnique({ where: { id: req.params.sectionId } });
+    if (!section) return res.status(404).json({ success: false, error: 'Section not found.' });
+    if (section.teacherId !== req.auth.sub) {
+      return res.status(403).json({ success: false, error: 'You can only reset passwords for your own sections.' });
+    }
+
+    const student = await prisma.user.findUnique({ where: { id: req.params.studentId } });
+    if (!student || student.sectionId !== section.id || student.role !== 'STUDENT') {
+      return res.status(404).json({ success: false, error: 'Student not found in this section.' });
+    }
+
+    const newPassword = student.birthdate ? birthdayPassword(student.birthdate) : randomStudentPassword();
+    const revokedAt = new Date();
+    await prisma.user.update({
+      where: { id: student.id },
+      data: {
+        password: await bcrypt.hash(newPassword, BCRYPT_SALT_ROUNDS),
+        sessionsValidFrom: revokedAt,
+      },
+    });
+    markRevoked(student.id, revokedAt);
+
+    res.json({
+      success: true,
+      password: newPassword,
+      passwordSource: student.birthdate ? 'birthday' : 'random',
+      student: { id: student.id, name: student.name, username: student.username },
+    });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
 
 app.post('/api/teacher/sections', async (req, res) => {
   try {

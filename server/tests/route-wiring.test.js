@@ -57,6 +57,8 @@ function makePrismaFake() {
     return model;
   };
 
+  const rawQuery = vi.fn().mockResolvedValue([]);
+
   const fake = new Proxy({}, {
     get(_target, prop) {
       if (typeof prop !== 'string') return undefined;
@@ -64,6 +66,11 @@ function makePrismaFake() {
       if (prop === '$transaction') {
         return (arg) => (typeof arg === 'function' ? arg(fake) : Promise.all(arg));
       }
+      // $queryRaw is a tagged template returning rows, not a model namespace,
+      // so it is held apart from `models` — the reset loop below walks those
+      // expecting an object of methods. The login route reads `.length` off
+      // the result, hence the array default.
+      if (prop === '$queryRaw') return rawQuery;
       if (prop.startsWith('$')) return () => Promise.resolve(undefined);
       if (!models.has(prop)) models.set(prop, makeModel());
       return models.get(prop);
@@ -78,12 +85,13 @@ function makePrismaFake() {
         model[method].mockReset().mockResolvedValue(value);
       }
     }
+    rawQuery.mockReset().mockResolvedValue([]);
   };
 
-  return { fake, reset };
+  return { fake, reset, rawQuery };
 }
 
-const { fake: prismaFake, reset: resetPrisma } = makePrismaFake();
+const { fake: prismaFake, reset: resetPrisma, rawQuery } = makePrismaFake();
 
 // Set before server.js loads: auth.js must sign with the key we mint against,
 // and server.js pulls in dotenv, which does not overwrite an already-set
@@ -333,6 +341,99 @@ describe("P8: staff cannot read another tenant's work", () => {
     prismaFake.activity.findUnique.mockResolvedValue(null);
     const res = await call('GET', `/api/activities/${ACTIVITY}`, { token: tokenFor({ id: T1 }) });
     expect(res.status).toBe(404);
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────
+// Student IDs typed the way a child types them
+// ───────────────────────────────────────────────────────────────────
+
+describe('POST /api/auth/login accepts a student ID that is punctuated differently', () => {
+  const bcrypt = require('bcryptjs');
+  const PASSWORD = '03152014';
+  let hashed;
+
+  const studentRow = () => ({
+    id: 'student-1',
+    name: 'Juan Dela Cruz',
+    username: 'AS-26-0001',
+    role: 'STUDENT',
+    password: hashed,
+    sessionsValidFrom: null,
+    section: null,
+    school: null,
+  });
+
+  const login = (username, password = PASSWORD, role = 'STUDENT') =>
+    call('POST', '/api/auth/login', { body: { username, password, role } });
+
+  beforeAll(async () => { hashed = await bcrypt.hash(PASSWORD, 4); });
+
+  it('signs in on the exact ID without needing the relaxed lookup', async () => {
+    prismaFake.user.findFirst.mockResolvedValue(studentRow());
+
+    const res = await login('AS-26-0001');
+    expect(res.status).toBe(200);
+    // The exact match short-circuits, so the fallback query never runs.
+    expect(rawQuery).not.toHaveBeenCalled();
+  });
+
+  it('trims stray whitespace, which a copy-paste off a slip carries', async () => {
+    prismaFake.user.findFirst.mockResolvedValue(studentRow());
+
+    await login('  AS-26-0001  ');
+    expect(prismaFake.user.findFirst.mock.calls[0][0].where.username).toBe('AS-26-0001');
+  });
+
+  for (const typed of ['as-26-0001', 'AS 26 0001', 'as260001', 'AS260001']) {
+    it(`signs in when the ID is typed as "${typed}"`, async () => {
+      // Exact lookup misses; the normalised one finds exactly one account.
+      prismaFake.user.findFirst.mockResolvedValue(null);
+      rawQuery.mockResolvedValue([{ id: 'student-1' }]);
+      prismaFake.user.findUnique.mockResolvedValue(studentRow());
+
+      const res = await login(typed);
+      expect(res.status).toBe(200);
+    });
+  }
+
+  it('still refuses the wrong password on a relaxed match', async () => {
+    // The relaxed lookup widens how the account is *named*, never what proves
+    // it is yours. This is the assertion that keeps it that way.
+    prismaFake.user.findFirst.mockResolvedValue(null);
+    rawQuery.mockResolvedValue([{ id: 'student-1' }]);
+    prismaFake.user.findUnique.mockResolvedValue(studentRow());
+
+    const res = await login('as260001', 'not-the-password');
+    expect(res.status).toBe(401);
+  });
+
+  it('refuses rather than guessing when two IDs normalise the same way', async () => {
+    prismaFake.user.findFirst.mockResolvedValue(null);
+    rawQuery.mockResolvedValue([{ id: 'student-1' }, { id: 'student-2' }]);
+
+    const res = await login('as260001');
+    expect(res.status).toBe(401);
+    // Critically, it must not have gone on to load either candidate.
+    expect(prismaFake.user.findUnique).not.toHaveBeenCalled();
+  });
+
+  it('does not relax anything for a teacher', async () => {
+    // Teachers sign in with an email; there is no punctuation ambiguity to
+    // forgive, and widening the lookup for them would be unearned.
+    prismaFake.user.findFirst.mockResolvedValue(null);
+
+    const res = await login('teacher@deped.gov.ph', 'whatever', 'TEACHER');
+    expect(res.status).toBe(401);
+    expect(rawQuery).not.toHaveBeenCalled();
+  });
+
+  it('does not run the fallback on an empty or punctuation-only ID', async () => {
+    prismaFake.user.findFirst.mockResolvedValue(null);
+
+    const res = await login('---');
+    expect(res.status).toBe(401);
+    expect(rawQuery).not.toHaveBeenCalled();
   });
 });
 

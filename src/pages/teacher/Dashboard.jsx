@@ -1,18 +1,18 @@
 import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
-import { Plus, Users, FileText, BookOpen, Filter, ChevronRight, Loader2, UploadCloud, X, Sparkles } from 'lucide-react';
+import { Plus, FileText, Filter, ChevronRight, Loader2, UploadCloud, X, Sparkles } from 'lucide-react';
 import { API_URL, apiFetch } from '../../config';
-import { ONBOARDING, hasSeenOnboarding, markOnboardingSeen, markAllOnboardingSeen } from '../../utils/onboarding';
+import { ONBOARDING, hasSeenOnboarding, markOnboardingSeen, clearOnboardingSeen } from '../../utils/onboarding';
 import { GRADE_LEVELS, SUBJECTS, SCHOOL_YEARS, DEFAULT_SCHOOL_YEAR } from '../../constants/school';
 import SchoolBadge from '../../components/SchoolBadge';
 import FolderCard from '../../components/FolderCard';
 import EarlyWarningPanel from '../../components/EarlyWarningPanel';
+import SetupChecklist from '../../components/SetupChecklist';
+import ExampleFeedback from '../../components/ExampleFeedback';
+import { buildSteps } from '../../utils/setupSteps';
 import { tintFor } from '../../constants/folderTints';
 
 const WIZARD_STEPS = ['Class', 'Section', 'Curriculum', 'Confirm'];
-
-/** A class seeded purely for onboarding — not a real class the teacher made. */
-const isDemoClass = (cls) => cls.name.includes('[DEMO]');
 
 /**
  * Looks up the school curriculum the admin published for this grade + subject.
@@ -436,18 +436,23 @@ export default function TeacherDashboard() {
   const [useModalCurriculum, setUseModalCurriculum] = useState(true);
   const [filters, setFilters] = useState({ gradeLevel: '', subject: '' });
   const [isLoading, setIsLoading] = useState(true);
-  const [showWalkthrough, setShowWalkthrough] = useState(() => !hasSeenOnboarding(ONBOARDING.TEACHER_WALKTHROUGH));
-  const [walkthroughStep, setWalkthroughStep] = useState(0);
-  const [showWelcomeModal, setShowWelcomeModal] = useState(() => !hasSeenOnboarding(ONBOARDING.TEACHER_WELCOME));
+  const [setup, setSetup] = useState(null);
+  const [setupHidden, setSetupHidden] = useState(() => hasSeenOnboarding(ONBOARDING.TEACHER_SETUP_HIDDEN));
+  // Set when the teacher asks for the guide back, so it reappears even once
+  // every step is ticked — otherwise "Setup guide" would do nothing visible.
+  const [setupForced, setSetupForced] = useState(false);
+  const [showExample, setShowExample] = useState(false);
 
-  const dismissWelcome = () => {
-    markOnboardingSeen(ONBOARDING.TEACHER_WELCOME);
-    setShowWelcomeModal(false);
+  const hideSetup = () => {
+    markOnboardingSeen(ONBOARDING.TEACHER_SETUP_HIDDEN);
+    setSetupHidden(true);
+    setSetupForced(false);
   };
 
-  const dismissWalkthrough = () => {
-    markOnboardingSeen(ONBOARDING.TEACHER_WALKTHROUGH);
-    setShowWalkthrough(false);
+  const reopenSetup = () => {
+    clearOnboardingSeen(ONBOARDING.TEACHER_SETUP_HIDDEN);
+    setSetupHidden(false);
+    setSetupForced(true);
   };
 
   // Suggest the school curriculum as soon as grade level + subject are chosen.
@@ -459,20 +464,14 @@ export default function TeacherDashboard() {
     if (!user.id) return setIsLoading(false);
     Promise.all([
       apiFetch(`${API_URL}/api/teacher/${user.id}/classes`).then(r => r.json()),
-      apiFetch(`${API_URL}/api/teacher/${user.id}/sections`).then(r => r.json())
-    ]).then(([clsData, secData]) => {
-      if (clsData.success) {
-        setClasses(clsData.classes);
-        // Skip onboarding only for accounts that have done real work. Every new
-        // teacher is seeded with a [DEMO] class, so counting it here suppressed
-        // onboarding for exactly the people who needed it.
-        if (clsData.classes.some(c => !isDemoClass(c))) {
-          setShowWelcomeModal(false);
-          setShowWalkthrough(false);
-          markAllOnboardingSeen([ONBOARDING.TEACHER_WELCOME, ONBOARDING.TEACHER_WALKTHROUGH]);
-        }
-      }
+      apiFetch(`${API_URL}/api/teacher/${user.id}/sections`).then(r => r.json()),
+      apiFetch(`${API_URL}/api/teacher/${user.id}/setup-status`).then(r => r.json())
+    ]).then(([clsData, secData, setupData]) => {
+      if (clsData.success) setClasses(clsData.classes);
       if (secData.success) setSections(secData.sections);
+      // Whether the checklist appears is decided by these counts, not by a
+      // stored step — see the note in SetupChecklist.
+      if (setupData.success) setSetup(setupData.setup);
     }).finally(() => setIsLoading(false));
   }, []);
 
@@ -538,36 +537,19 @@ export default function TeacherDashboard() {
 
   if (isLoading) return <div className="flex items-center justify-center h-64 text-slate-400 animate-pulse">Loading...</div>;
 
-  const hasDemo = classes.some(c => c.name.includes('[DEMO]'));
-
   const filteredClasses = classes.filter((cls) => {
     if (filters.gradeLevel && cls.gradeLevel !== filters.gradeLevel) return false;
     if (filters.subject && cls.subject !== filters.subject) return false;
     return true;
   });
 
-  const walkthroughSteps = [
-    {
-      emoji: '👋',
-      title: 'Welcome, Teacher!',
-      text: 'We\'ve set up a Demo Class for you so you can experience TulongGuro\'s AI grading right away — no setup needed.',
-    },
-    {
-      emoji: '📝',
-      title: 'Step 1 of 3: Open the Demo Class',
-      text: 'Click on the "[DEMO] Sandbox Demo Class" card below. Inside, you\'ll find a pre-loaded essay from a "Demo Student" waiting for your review.',
-    },
-    {
-      emoji: '🤖',
-      title: 'Step 2 of 3: Try the Teacher Review Workspace',
-      text: 'Click "Review" on any graded essay to see the AI feedback and edit it before the student sees it. You\'ll see the AI\'s suggested score, feedback, and a scanned essay. Adjust anything you want — the AI is your co-pilot, not the final judge.',
-    },
-    {
-      emoji: '✅',
-      title: 'Step 3 of 3: You\'re Ready!',
-      text: 'Once you\'re comfortable, delete the Demo Class and create your own using the quick setup wizard. Add your real students and start grading!',
-    },
-  ];
+  // Finished setup takes the checklist away on its own — there is nothing left
+  // for it to ask. It stays reachable from the header either way, so a teacher
+  // who hid it, or who comes back next term to set up a new section, can open
+  // it again. The old walkthrough had no way back once dismissed.
+  const setupSteps = setup ? buildSteps(setup) : [];
+  const setupComplete = setupSteps.length > 0 && setupSteps.every((s) => s.done);
+  const showSetup = !!setup && (setupForced || (!setupHidden && !setupComplete));
 
   return (
     <div className="p-4 md:p-8 max-w-6xl mx-auto">
@@ -577,57 +559,35 @@ export default function TeacherDashboard() {
           <h1 className="text-2xl font-bold text-brand-slate">Assigned Classes</h1>
           <p className="text-slate-500 text-sm">Manage your subjects and block sections</p>
         </div>
-        <Link to="/teacher/sections" className="bg-brand-navy text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-900 shadow-md">
-          Manage Block Sections
-        </Link>
+        <div className="flex items-center gap-2">
+          {/* Always available, so hiding the checklist is never a one-way door
+              and a teacher setting up a new section next term can get the
+              guidance back. */}
+          {setup && !showSetup && (
+            <button
+              onClick={reopenSetup}
+              className="text-sm font-medium text-brand-navy bg-white border border-slate-200 px-3 py-2 rounded-lg hover:bg-slate-50"
+            >
+              Setup guide
+            </button>
+          )}
+          <Link to="/teacher/sections" className="bg-brand-navy text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-900 shadow-md">
+            Manage Block Sections
+          </Link>
+        </div>
       </div>
 
       {/* Students at risk, surfaced before the class list rather than waiting
           to be found on the Analytics page. */}
       <EarlyWarningPanel />
 
-      {/* Interactive Walkthrough Banner — only after the welcome modal is
-          dismissed, so the teacher never faces two onboarding flows at once. */}
-      {hasDemo && showWalkthrough && !showWelcomeModal && (
-        <div className="mb-6 bg-gradient-to-r from-blue-50 to-indigo-50 border-2 border-blue-200 rounded-2xl overflow-hidden shadow-sm">
-          <div className="p-5">
-            <div className="flex items-start gap-4">
-              <div className="w-12 h-12 bg-brand-navy/10 rounded-xl flex items-center justify-center text-2xl shrink-0">
-                {walkthroughSteps[walkthroughStep].emoji}
-              </div>
-              <div className="flex-1 min-w-0">
-                <h3 className="font-bold text-brand-slate text-base mb-1">{walkthroughSteps[walkthroughStep].title}</h3>
-                <p className="text-sm text-slate-600 leading-relaxed">{walkthroughSteps[walkthroughStep].text}</p>
-              </div>
-              <button onClick={dismissWalkthrough} className="text-slate-400 hover:text-slate-600 text-xs font-medium shrink-0">
-                Dismiss
-              </button>
-            </div>
-            <div className="flex items-center justify-between mt-4 pt-3 border-t border-blue-200/50">
-              <div className="flex gap-1.5">
-                {walkthroughSteps.map((_, i) => (
-                  <div key={i} className={`h-1.5 rounded-full transition-all ${walkthroughStep === i ? 'w-6 bg-brand-navy' : 'w-1.5 bg-slate-300'}`} />
-                ))}
-              </div>
-              <div className="flex gap-2">
-                {walkthroughStep > 0 && (
-                  <button onClick={() => setWalkthroughStep(s => s - 1)} className="text-xs font-medium text-slate-500 hover:text-slate-700 px-3 py-1.5 rounded-lg hover:bg-white transition-colors">Back</button>
-                )}
-                {walkthroughStep < walkthroughSteps.length - 1 ? (
-                  <button onClick={() => setWalkthroughStep(s => s + 1)} className="text-xs font-bold text-white bg-brand-navy px-4 py-1.5 rounded-lg hover:bg-blue-900 transition-colors flex items-center gap-1">
-                    Next <ChevronRight className="w-3 h-3" />
-                  </button>
-                ) : (
-                  <button onClick={dismissWalkthrough}
-                    className="text-xs font-bold text-white bg-brand-green px-4 py-1.5 rounded-lg hover:bg-emerald-600 transition-colors"
-                  >
-                    Got it! Let's go 🚀
-                  </button>
-                )}
-              </div>
-            </div>
-          </div>
-        </div>
+      {showSetup && (
+        <SetupChecklist
+          setup={setup}
+          onCreateClass={() => setIsModalOpen(true)}
+          onSeeExample={() => setShowExample(true)}
+          onDismiss={hideSetup}
+        />
       )}
 
       {classes.length > 4 && (
@@ -854,49 +814,13 @@ export default function TeacherDashboard() {
         </div>
       )}
 
-      {/* Teacher Onboarding Modal */}
-      {showWelcomeModal && (
-        <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl w-full max-w-lg shadow-2xl p-6 text-center">
-            <div className="w-16 h-16 bg-blue-100 rounded-full flex items-center justify-center mx-auto mb-4">
-              <span className="text-3xl">👋</span>
-            </div>
-            <h2 className="text-2xl font-bold text-brand-slate mb-2">Welcome to TulongGuro!</h2>
-            <p className="text-slate-600 mb-6">
-              Your AI teaching assistant is ready! Here is what you can do:
-            </p>
-            <div className="space-y-4 text-left mb-8">
-              <div className="flex items-start gap-3">
-                <div className="p-2 bg-blue-50 rounded-lg"><BookOpen className="w-5 h-5 text-brand-navy" /></div>
-                <div>
-                  <h3 className="font-bold text-brand-slate">Create Activities</h3>
-                  <p className="text-xs text-slate-500">Make assignments and rubrics for your classes.</p>
-                </div>
-              </div>
-              <div className="flex items-start gap-3">
-                <div className="p-2 bg-green-50 rounded-lg"><UploadCloud className="w-5 h-5 text-brand-green" /></div>
-                <div>
-                  <h3 className="font-bold text-brand-slate">Scan & Grade Papers</h3>
-                  <p className="text-xs text-slate-500">Upload photos of student essays for instant grading.</p>
-                </div>
-              </div>
-              <div className="flex items-start gap-3">
-                <div className="p-2 bg-purple-50 rounded-lg"><Users className="w-5 h-5 text-purple-600" /></div>
-                <div>
-                  <h3 className="font-bold text-brand-slate">Teacher Review</h3>
-                  <p className="text-xs text-slate-500">Check the AI's feedback and refine it before sending it to students.</p>
-                </div>
-              </div>
-            </div>
-            <button
-              onClick={dismissWelcome}
-              className="w-full py-3 bg-brand-navy text-white font-bold rounded-xl hover:bg-blue-900 transition-colors"
-            >
-              Get Started
-            </button>
-          </div>
-        </div>
-      )}
+      {/* The welcome modal that used to sit here is gone. It listed three
+          things the product does, in front of a teacher who had not yet asked
+          — and it was the second onboarding flow competing with the tour
+          behind it. The checklist above says the same things at the point each
+          one becomes the next thing to do. */}
+
+      {showExample && <ExampleFeedback onClose={() => setShowExample(false)} />}
     </div>
   );
 }
