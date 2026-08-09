@@ -394,6 +394,20 @@ They stay in the sending teacher's historical averages but leave their at-risk
 list. The average is a record of what happened; `needsSupport` is an action list,
 and a departed student is no longer that teacher's to act on.
 
+**This requires no code, and adding some makes it wrong.** Teacher analytics
+already satisfies it structurally: `graded` is scoped by the activity's class
+rather than by current enrolment, so a departed student's marks keep feeding the
+class average, while `uniqueStudents` is built from the live roster
+(`section.students`), so they are already absent from `studentTrends` and
+`needsSupport`.
+
+An explicit `transferredOut` flag cannot work here and must not be added. A
+genuinely departed student is not in `uniqueStudents` to be flagged; the only
+learners such a flag can match are those who left **and came back**, who are
+currently enrolled — so it would drop a present, possibly struggling child off
+their own teacher's action list. This was implemented, caught in review, and
+removed.
+
 ### Migration safety
 
 One new table plus two nullable columns — additive only, no backfill, no writes to

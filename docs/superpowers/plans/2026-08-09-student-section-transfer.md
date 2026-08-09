@@ -1447,7 +1447,27 @@ git commit -m "feat: export a transferred student's whole subject history, not a
 
 **Interfaces:**
 - Consumes: `carriedOverForClass`.
-- Produces: `studentTrends[].transferredOut: boolean`; `needsSupport` excludes transferred-out students.
+- Produces: no new response fields.
+
+> **CORRECTED IN REVIEW — this task's Step 4 as originally written was wrong twice.**
+>
+> 1. **Pooling must skip the teacher's own classes.** `graded` is scoped
+>    `activity.classId IN classIds` across ALL the teacher's classes, so where one
+>    teacher takes the subject in both the old and new section, those submissions are
+>    already in `byStudent` and pooling them again double-counts — corrupting
+>    `avgPercent`, the class average, the bands and the at-risk flag. Skip carried
+>    submissions whose `activity.classId` is in `classIds`, as Task 6 does.
+>
+> 2. **The `transferredOut` flag must NOT be added.** It cannot be correct here:
+>    `uniqueStudents` comes from `section.students` (the live roster), so a departed
+>    student is never in it to flag, and the only learners the flag can match are
+>    those who left *and came back* — dropping a currently-enrolled, possibly
+>    struggling child off their own teacher's action list. The requirement is already
+>    satisfied structurally; see the spec's "Transferred-out students" section.
+>
+> Also required: `CARRIED_OVER_SELECT` must gain `subject: true` and `gradeLevel: true`
+> on its `class` select, because `workingAverageAcrossSubjects` keys per-subject
+> grouping on exactly those. Without them carried work becomes a phantom extra subject.
 
 - [ ] **Step 1: Write the failing test**
 
