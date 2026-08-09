@@ -3535,7 +3535,7 @@ async function recordTransfer(tx, { studentId, fromSectionId, toSectionId, actor
 async function excusePreArrival(tx, { studentId, sectionId, transferId, transferredAt, fromSectionLabel }) {
   const activities = await tx.activity.findMany({
     where: { class: { sectionId } },
-    select: { id: true, createdAt: true, deadline: true },
+    select: { id: true, createdAt: true, deadline: true, class: { select: { schoolYear: true } } },
   });
   if (activities.length === 0) return 0;
 
@@ -3549,14 +3549,23 @@ async function excusePreArrival(tx, { studentId, sectionId, transferId, transfer
   );
   if (toExcuse.length === 0) return 0;
 
+  // Retention is keyed to the school year the work belongs to, not to whether
+  // any work exists — computeRetainUntil reads only activity.class.schoolYear.
+  // An excused row with retainUntil left null would be invisible to
+  // /api/admin/retention-report and never auto-archived or purged, so it is
+  // computed here from the schoolYear already fetched above (one lookup per
+  // activity, not per row) rather than left unset.
+  const retainUntilByActivity = new Map(
+    activities.map(a => [a.id, computeRetainUntil(a.class?.schoolYear)])
+  );
+
   const reason = transfers.transferExcuseReason(fromSectionLabel, transferredAt);
-  // createMany rather than a loop: this can be a whole quarter of activities,
-  // and retainUntil is not set because an excused row holds no learner work to
-  // retain — nothing was submitted.
+  // createMany rather than a loop: this can be a whole quarter of activities.
   const { count } = await tx.submission.createMany({
     data: toExcuse.map(activityId => ({
       studentId, activityId, status: 'PENDING', attemptCount: 0,
       excusedAt: transferredAt, excusedReason: reason, transferId,
+      retainUntil: retainUntilByActivity.get(activityId) || null,
     })),
   });
   return count;
@@ -3698,33 +3707,40 @@ async function enrolStudents(section, studentsList, { schoolId, teacherId, actor
     const initialPassword = birthdate ? birthdayPassword(birthdate) : randomStudentPassword();
     const passwordHash = await bcrypt.hash(initialPassword, BCRYPT_SALT_ROUNDS);
 
-    const user = await prisma.user.create({
-      data: {
-        name: studentName.trim(),
-        username: studentId,
-        password: passwordHash,
-        role: 'STUDENT',
-        sectionId: section.id,
-        // Students used to carry no schoolId, inheriting one through their
-        // section. Two things went wrong with that. A learner unassigned from
-        // their section became attributable to no school at all, so
-        // re-enrolling them duplicated the account (see the match query
-        // above). And the school-rejection path revokes sessions with
-        // `updateMany({ where: { schoolId } })` — which matched no students,
-        // so refusing a school signed out its staff and left every pupil's
-        // session live until it expired on its own.
-        schoolId: schoolId || null,
-        birthdate
-      }
-    });
-    await prisma.$transaction(async (tx) => {
+    // The account and the transfer record it implies land together or not at
+    // all — creating the user outside the transaction that follows left a
+    // window where the student was on the roster with no transfer row and no
+    // excusals, which is the exact MISSING-work bug this whole task exists to
+    // prevent. bcrypt above stays outside: it is deliberately slow and must
+    // not hold a transaction open.
+    const user = await prisma.$transaction(async (tx) => {
+      const created = await tx.user.create({
+        data: {
+          name: studentName.trim(),
+          username: studentId,
+          password: passwordHash,
+          role: 'STUDENT',
+          sectionId: section.id,
+          // Students used to carry no schoolId, inheriting one through their
+          // section. Two things went wrong with that. A learner unassigned from
+          // their section became attributable to no school at all, so
+          // re-enrolling them duplicated the account (see the match query
+          // above). And the school-rejection path revokes sessions with
+          // `updateMany({ where: { schoolId } })` — which matched no students,
+          // so refusing a school signed out its staff and left every pupil's
+          // session live until it expired on its own.
+          schoolId: schoolId || null,
+          birthdate
+        }
+      });
       const transfer = await recordTransfer(tx, {
-        studentId: user.id, fromSectionId: null, toSectionId: section.id, actorId, schoolId,
+        studentId: created.id, fromSectionId: null, toSectionId: section.id, actorId, schoolId,
       });
       await excusePreArrival(tx, {
-        studentId: user.id, sectionId: section.id, transferId: transfer.id,
+        studentId: created.id, sectionId: section.id, transferId: transfer.id,
         transferredAt: transfer.transferredAt, fromSectionLabel: null,
       });
+      return created;
     });
     const { password: _pw, ...safeUser } = user;
     // Returned in the clear on purpose: it is the credential the teacher has to
