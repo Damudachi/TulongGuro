@@ -7434,8 +7434,19 @@ app.get('/api/teacher/:teacherId/section/:sectionId/skill-progress', async (req,
       where: {
         status: 'GRADED',
         rubricData: { not: null },
-        student: { sectionId },
-        activity: { class: { teacherId, sectionId } }
+        // Scoped by the activity's section alone, deliberately.
+        //
+        // There used to be a `student: { sectionId }` filter alongside this.
+        // The two were redundant — a submission on this section's activity can
+        // only have been made by someone enrolled here at the time — and only
+        // one of them was correct. The student filter re-tested enrolment
+        // against *now*, so the moment a learner transferred out, every point
+        // they had contributed vanished from this section's timeline and the
+        // section's past silently changed shape.
+        //
+        // Auto-excused transfer rows carry no rubricData, so they are already
+        // excluded by the filter above.
+        activity: { class: { teacherId, sectionId } },
       },
       include: { activity: { select: SKILL_PROGRESS_ACTIVITY_SELECT } }
     });

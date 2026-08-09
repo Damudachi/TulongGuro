@@ -1159,3 +1159,30 @@ describe('GET /api/teacher/:teacherId/analytics and a transferred student', () =
     expect(trend.avgPercent).toBe(75); // (60 + 90) / 2, points-weighted, single WW component — 80 would mean the 90 counted twice
   });
 });
+
+describe('a section\'s skill-progress timeline is stable when a student leaves', () => {
+  const SECTION = 'sec-a';
+  const url = `/api/teacher/${T1}/section/${SECTION}/skill-progress`;
+
+  const query = async () => {
+    await call('GET', url, { token: tokenFor({ id: T1, schoolId: SCHOOL_A }) });
+    return prismaFake.submission.findMany.mock.calls[0][0].where;
+  };
+
+  it('scopes by the activity\'s section, never by where the student is now', async () => {
+    const where = await query();
+
+    // A submission on this section's activity can only have come from someone
+    // enrolled here at the time. `student: { sectionId }` re-tested enrolment
+    // against *now*, which is what erased a departed learner's work from the
+    // section's past.
+    expect(where.activity).toEqual({ class: { teacherId: T1, sectionId: SECTION } });
+    expect(where.student).toBeUndefined();
+  });
+
+  it('still excludes auto-excused transfer rows, which carry no rubric', async () => {
+    const where = await query();
+    expect(where.rubricData).toEqual({ not: null });
+    expect(where.status).toBe('GRADED');
+  });
+});
