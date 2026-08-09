@@ -756,4 +756,94 @@ describe('a transferred student\'s exported grade uses their whole subject histo
     expect(merged.finalGrade).toBe(72);           // (80*30 + 60*20) / 50
     expect(merged.finalGrade).not.toBe(partial.finalGrade);
   });
+
+  it('an unreviewed carried submission does not inflate the grade and does increment the unreviewed count', async () => {
+    const CLASS_ID = 'class-transfer-export-new';
+    const OLD_CLASS_ID = 'class-transfer-export-old';
+    const SECTION_NEW = 'sec-transfer-export-new';
+    const SECTION_OLD = 'sec-transfer-export-old';
+    const STUDENT = 'student-transfer-export';
+    const OWN_ACTIVITY = 'act-transfer-export-ww';
+    const CARRIED_ACTIVITY = 'act-transfer-export-qa';
+
+    prismaFake.class.findFirst.mockResolvedValue({ id: CLASS_ID });
+
+    const classRow = {
+      id: CLASS_ID,
+      name: 'Science 6',
+      subject: 'Science',
+      gradeLevel: 'Grade 6',
+      schoolYear: '2026-2027',
+      sectionId: SECTION_NEW,
+      section: {
+        id: SECTION_NEW, name: 'Masipag', gradeLevel: 'Grade 6', schoolId: null,
+        students: [{ id: STUDENT, name: 'Maria Clara', username: 'maria' }],
+      },
+      activities: [{
+        id: OWN_ACTIVITY, title: 'Written Work 1', points: 100, component: 'WW', createdAt: '2026-06-01T00:00:00Z',
+        submissions: [{ studentId: STUDENT, aiScore: null, hitlScore: 80, status: 'GRADED', archivedAt: null, excusedAt: null }],
+      }],
+    };
+    // Both the main sheet-build query and carriedOverForClass's own lookup of
+    // the target class hit class.findUnique with the same id — one fixture
+    // answers both, since it is a superset of what either call reads.
+    prismaFake.class.findUnique.mockImplementation(({ where }) => (
+      where.id === CLASS_ID ? Promise.resolve(classRow) : Promise.resolve(null)
+    ));
+    prismaFake.sectionTransfer.findMany.mockResolvedValue([
+      { studentId: STUDENT, fromSectionId: SECTION_OLD },
+    ]);
+    prismaFake.class.findMany.mockImplementation(({ where }) => (
+      where.sectionId?.in?.includes(SECTION_OLD)
+        ? Promise.resolve([{ id: OLD_CLASS_ID, subject: 'Science', gradeLevel: 'Grade 6', schoolYear: '2026-2027' }])
+        : Promise.resolve([])
+    ));
+    // The AI scored her old-section Quarterly Assessment, but the sending
+    // teacher never validated it before she moved — status stays short of
+    // GRADED. This is exactly the row the review found silently vanishing:
+    // dropped from the grade (correctly) and from the unreviewed count
+    // (incorrectly, before this fix).
+    prismaFake.submission.findMany.mockResolvedValue([{
+      id: 'sub-carried-qa', studentId: STUDENT, activityId: CARRIED_ACTIVITY, status: 'SUBMITTED',
+      hitlScore: null, aiScore: 90, hitlFeedback: null, aiFeedback: null,
+      archivedAt: null, excusedAt: null, excusedReason: null, isLate: false,
+      gradedAt: null, releasedAt: null,
+      activity: {
+        id: CARRIED_ACTIVITY, title: 'Quarterly Assessment', points: 100, component: 'QA',
+        deadline: '2026-05-01T00:00:00Z', classId: OLD_CLASS_ID,
+        class: { id: OLD_CLASS_ID, name: 'Science 6 (Old)', section: { id: SECTION_OLD, name: 'Masaya', gradeLevel: 'Grade 6' } },
+      },
+    }]);
+
+    const csvRes = await call('GET', `/api/teacher/${T1}/gradebook/export?classId=${CLASS_ID}&format=csv`, {
+      token: tokenFor({ id: T1 }),
+    });
+    const csv = await csvRes.text();
+    const lines = csv.split('\n');
+
+    // (a) The unreviewed carried QA does not contribute to the computed
+    // grade: Written Work alone renormalises to the full average, exactly as
+    // if the carried column had never existed.
+    const dataLine = lines.find(l => l.startsWith('"Maria Clara"'));
+    expect(dataLine).toBeDefined();
+    const cells = dataLine.split(',');
+    expect(cells[cells.length - 1]).toBe('80%'); // average: WW only, QA never counted
+    expect(cells[cells.length - 2]).toBe('');    // carried cell: blank, not a score
+
+    // The notice names the previous section and says the work is unvalidated
+    // — the receiving teacher cannot validate it herself.
+    const notice = lines.find(l => l.startsWith('# Carried over:'));
+    expect(notice).toContain('1 of those carried submission(s) not yet validated');
+    expect(notice).toContain('Grade 6 — Masaya');
+
+    // (b) It increments the same unreviewedCount the amber Incomplete:/
+    // # INCOMPLETE: banner is driven by — checked via preflight, where the
+    // route exposes the count directly instead of a rendered notice string.
+    const preflightRes = await call('GET', `/api/teacher/${T1}/gradebook/export?classId=${CLASS_ID}&preflight=1`, {
+      token: tokenFor({ id: T1 }),
+    });
+    const preflight = await preflightRes.json();
+    expect(preflight.classes[0].unreviewedCount).toBe(1);
+    expect(preflight.totalUnreviewed).toBe(1);
+  });
 });

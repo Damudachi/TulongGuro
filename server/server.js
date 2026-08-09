@@ -8399,6 +8399,13 @@ app.get('/api/teacher/:teacherId/gradebook/export', async (req, res) => {
       // looks identical to "never submitted", and a teacher exporting halfway
       // through marking would have no way to tell the two apart.
       let unreviewedCount = 0;
+      // Same idea, split out for the carried columns: the receiving teacher
+      // running this export cannot validate another section's submissions —
+      // every write path is scoped to the owning teacher — so when carried
+      // work is unreviewed the notice has to name whose validation it is
+      // waiting on, not just count it into the same total as their own.
+      let carriedUnreviewedCount = 0;
+      const carriedUnreviewedSections = new Set();
 
       // One query for the class, not one per student — the row loop below runs
       // per learner and must not issue a query inside it.
@@ -8457,6 +8464,21 @@ app.get('/api/teacher/:teacherId/gradebook/export', async (req, res) => {
             row[`carried:${sub.activity.id}`] = 'Excused';
             continue;
           }
+          // Carried work counts toward the same "not yet validated" warning
+          // as the class's own activities. Without this, an AI-scored
+          // submission the sending teacher never validated drops out of the
+          // grade via gradePercentOf returning null AND out of the count —
+          // the cell reads blank and the sheet stays silent about why.
+          if (!grading.countsAsGrade(sub)) {
+            unreviewedCount++;
+            carriedUnreviewedCount++;
+            const section = sub.activity.class?.section;
+            carriedUnreviewedSections.add(
+              section
+                ? (section.gradeLevel ? `${section.gradeLevel} — ${section.name}` : section.name)
+                : 'a previous section'
+            );
+          }
           const score = grading.gradePercentOf(sub);
           row[`carried:${sub.activity.id}`] = score === null ? null : Math.round(score * 10) / 10;
         }
@@ -8473,7 +8495,10 @@ app.get('/api/teacher/:teacherId/gradebook/export', async (req, res) => {
 
       // Carried through because the sheet-building loop below is a separate
       // scope and colours each cell against the school's own passing grade.
-      classData.push({ cls, activities, students, rows, passingGrade: exportPassing, unreviewedCount, useTransmutation, carriedActivities });
+      classData.push({
+        cls, activities, students, rows, passingGrade: exportPassing, unreviewedCount, useTransmutation,
+        carriedActivities, carriedUnreviewedCount, carriedUnreviewedSections: [...carriedUnreviewedSections],
+      });
     }
 
     // ── Preflight ──
@@ -8508,6 +8533,24 @@ app.get('/api/teacher/:teacherId/gradebook/export', async (req, res) => {
       return `${activity.title} · ${label}`;
     };
 
+    /**
+     * The blue/`#` "Carried over:" notice text, shared so xlsx and csv cannot
+     * say different things. Always states what the carried columns are; when
+     * some of that carried work is still unvalidated, also says whose
+     * validation it is waiting on — the receiving teacher running this export
+     * cannot validate it, since every write path is scoped to the owning
+     * teacher, so a blank cell alone would look like "never submitted" rather
+     * than "waiting on the old section".
+     */
+    const carriedOverNotice = (carriedActivities, unreviewedCount, unreviewedSections) => {
+      let text = `${carriedActivities.size} activit${carriedActivities.size === 1 ? 'y' : 'ies'} from a section a student transferred out of. Those columns are headed with the section they came from, and count toward the averages below.`;
+      if (unreviewedCount > 0) {
+        const sectionsPart = unreviewedSections.length > 0 ? ` (${unreviewedSections.join(', ')})` : '';
+        text += ` ${unreviewedCount} of those carried submission(s) not yet validated by the previous section's teacher${sectionsPart} — excluded from the averages below.`;
+      }
+      return text;
+    };
+
     if (format === 'xlsx') {
       // Excel export using exceljs
       let ExcelJS;
@@ -8521,7 +8564,10 @@ app.get('/api/teacher/:teacherId/gradebook/export', async (req, res) => {
       workbook.creator = 'TulongGuro';
       workbook.created = new Date();
 
-      for (const { cls, activities, rows, passingGrade: exportPassing, unreviewedCount, useTransmutation, carriedActivities } of classData) {
+      for (const {
+        cls, activities, rows, passingGrade: exportPassing, unreviewedCount, useTransmutation,
+        carriedActivities, carriedUnreviewedCount, carriedUnreviewedSections,
+      } of classData) {
         const sheetName = (cls.name || 'Grades').substring(0, 31);
         const sheet = workbook.addWorksheet(sheetName);
 
@@ -8556,7 +8602,7 @@ app.get('/api/teacher/:teacherId/gradebook/export', async (req, res) => {
         if (carriedActivities.size > 0) {
           const carriedRow = sheet.addRow([
             'Carried over:',
-            `${carriedActivities.size} activit${carriedActivities.size === 1 ? 'y' : 'ies'} from a section a student transferred out of. Those columns are headed with the section they came from, and count toward the averages below.`
+            carriedOverNotice(carriedActivities, carriedUnreviewedCount, carriedUnreviewedSections)
           ]);
           carriedRow.getCell(1).font = { bold: true, color: { argb: 'FF2563EB' } };
           carriedRow.getCell(2).font = { color: { argb: 'FF2563EB' } };
@@ -8653,7 +8699,10 @@ app.get('/api/teacher/:teacherId/gradebook/export', async (req, res) => {
     } else {
       // CSV export
       const lines = [];
-      for (const { cls, activities, rows, unreviewedCount, useTransmutation, carriedActivities } of classData) {
+      for (const {
+        cls, activities, rows, unreviewedCount, useTransmutation,
+        carriedActivities, carriedUnreviewedCount, carriedUnreviewedSections,
+      } of classData) {
         lines.push(`# Class: ${cls.name}`);
         lines.push(`# Section: ${cls.section?.name || 'N/A'}`);
         lines.push(`# School Year: ${cls.schoolYear}`);
@@ -8670,7 +8719,7 @@ app.get('/api/teacher/:teacherId/gradebook/export', async (req, res) => {
         // section is otherwise the only clue that this learner's grade rests
         // on work their current teacher did not set.
         if (carriedActivities.size > 0) {
-          lines.push(`# Carried over: ${carriedActivities.size} activit${carriedActivities.size === 1 ? 'y' : 'ies'} from a section a student transferred out of. Those columns are headed with the section they came from, and count toward the averages below.`);
+          lines.push(`# Carried over: ${carriedOverNotice(carriedActivities, carriedUnreviewedCount, carriedUnreviewedSections)}`);
         }
         lines.push('');
 
