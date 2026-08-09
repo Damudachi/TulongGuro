@@ -243,7 +243,10 @@ Totals after cleanup: **3 sections, 4 students**. Nothing beyond the demo rows w
 
 **Do not re-run any demo cleanup.** The `[DEMO]` sandbox was removed by hand in the Supabase SQL editor (child rows first: submissions → notifications → class lessons → activities → class → user → section — the table editor cannot do it, the foreign keys block a direct delete). `DELETE /api/teacher/demo-data/:classId` and the amber banner in `ClassHub.jsx` now have nothing left to act on; both can be removed, along with the `[DEMO]` exclusion in the teacher-delete route (`server.js`, the `realClasses` count).
 
-### 5.2 Known bugs — all three now fixed ✅
+### 5.2 Known bugs — all fixed ✅
+
+Three from the original audit (A, B, C below); six more from the admin-dashboard
+QA sweep, written up in §8.10.
 
 **A. The section gradebook grid dropped a transferred learner.** — **Fixed.**
 `GET /api/teacher/:teacherId/gradebook` now looks up `SectionTransfer` rows out of each class's section and appends the departed learners to the returned roster, flagged `transferredOut` with `transferredOutAt`. Added to the *response*, never to the Prisma relation — widening that relation would double-count a child in admin analytics and break QA P7.
@@ -527,3 +530,44 @@ four — so it cannot discriminate, and the incomplete paper scores the *same 22
 there as a complete one. Only Organization separates them, which is why the
 class compresses into 67–83 and an incomplete paper still lands at 65. That is a
 rubric-selection problem (see §8.7), not a grading-engine one.
+
+---
+
+### 8.10 Two owners, one section
+
+`Class.teacherId` and `Section.teacherId` are separate columns, and the admin
+dashboard lets you move each on its own — reassign a course shell on the teacher
+page, reassign an adviser on the section page. Both routes are correct in
+isolation, and the section form even says so ("changing the adviser does not
+move the classes taught in this section"). What nothing accounted for is the
+shape the two produce together: **a shell taught by one teacher, sitting in a
+section advised by another.** Four of the six bugs below are that shape meeting
+code written before it existed.
+
+Found by QA sweep, not by a report. The reassignment routes themselves were
+never the bug — everything they promise, they do.
+
+| # | Bug | Fix |
+|---|---|---|
+| 1 | **Removing a teacher part-destroyed them.** Reassign their shell, then delete them: both guards pass (no classes of their own, roster left with the shell), so the route reached `section.deleteMany({teacherId})` — still the parent of the colleague's class, and `Class_sectionId_fkey` is `ON DELETE RESTRICT`. The teardown was a bare sequence of `deleteMany` with **no transaction**, so the constraint fired *after* their rubric templates and grading examples were gone. Admin got a 500 and a teacher who still existed, minus their rubric library. | Refuse up front, naming the blocking class, its teacher and the section. Whole teardown moved into one `$transaction` so any *other* late constraint can't half-delete either. |
+| 2 | **Section rename could recreate §8.1.** The create path reuses a section by (name, school, year) via `findFirst` with no `orderBy` — that is the whole §8.1 fix, and it holds only while the name is unique inside a year. Rename enforced nothing. | Clash check mirroring the create path's key. Note the null-year arm: a legacy row with no `schoolYear` skips the year filter entirely rather than comparing `null` to `null` twice, which would hide every same-name section that *has* a year. |
+| 3 | **The old adviser's checklist reset to zero.** `setup-status` counted sections and students by `Section.teacherId` alone, while every other teacher-facing route scopes by school or `Class.teacherId`. An established teacher whose section got a new adviser was told they had 0 sections and 0 students, while still teaching those children. | Counts are now `OR: [{ teacherId }, { classes: { some: { teacherId } } }]`. |
+| 4 | **Four tenancy rules for one question.** `staffMayAccess` used section ?? teacher; `sectionInSchool` used section **or** teacher; class reassign used teacher **only** (never loaded `section`); analytics and overview used section **only**. A section with a null `schoolId` was editable from the Teachers page and invisible in Analytics. | All on `classSchoolId`'s ladder — section first, teacher as fallback. The `DELETE` class route was missed on the first pass and caught in review: an admin could see a class, rename it and hand it on, then be told "not found" when deleting it. |
+
+Two more in the AI checker, same root cause in a different place — **a set of
+columns that has to be changed in more than one spot**:
+
+| # | Bug | Fix |
+|---|---|---|
+| 5 | **Stale flags survived a photo replacement.** Three write sites each kept their own hand-written list of what to forget, so `rubricScoreNote` landed in all three *success* paths and none of the *reset* paths. Replace the photo on a flagged paper and its red "the AI's own numbers disagree" banner stayed, quoting criteria being set to `null` in the same statement. `rubricParseFailed`, `readingStrategy`, `scoreOutOfRange` and `privacyViolation` had drifted the same way — a cropped re-upload kept the uncropped copy's Privacy Act warning. | One exported `UNGRADED_RESET` naming **every** AI-written column, spread at all five sites (three resets, the success path, and both flag-and-stop writes, which set `privacyViolation: true` back on top). Pinned by an exact-shape test, so the next flag added has one place to go. |
+| 6 | **Batch privacy flag could revert a validated grade.** `applyBatchResult`'s privacy branch wrote by id with no status filter, while its sibling `persistGradingResult` guards the identical race with `status: 'PENDING'`. A batch snapshots its queue and runs for minutes; a teacher validating a paper meanwhile had their grade taken back to `PENDING` — and once the reset also nulled `rubricData` and `gradedAt`, their rubric with it, dropping the paper out of "release all" with no error. | `updateMany` scoped to `PENDING`, reporting `superseded` on `count === 0` — the same shape the sibling already used. |
+
+**Not defects.** Admin analytics was read end to end: per-student banding, the
+school average, the class summaries and the per-student-per-class double-count
+guard are all sound. `ActivityBuilder`'s `resolveDefaultRubric` precedence
+(linked template → embedded copy → outputType → any school rubric → built-ins)
+and `bandScoreNumber`'s `"36-40" → 40` fallback both hold.
+
+**Tests.** `server/tests/admin-reassign.test.js` — the delete-teacher refusal,
+the proof it destroys nothing on the way to refusing, the rename clash, and the
+`UNGRADED_RESET` shape. Suite is 302, up from 297.

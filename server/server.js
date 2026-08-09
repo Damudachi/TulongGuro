@@ -2599,9 +2599,16 @@ app.delete('/api/admin/:adminId/classes/:classId', async (req, res) => {
     const admin = await requireAdminSchool(req.params.adminId);
     const cls = await prisma.class.findUnique({
       where: { id: req.params.classId },
-      include: { teacher: true, activities: { select: { id: true, _count: { select: { submissions: true } } } } }
+      // Same tenancy ladder as the PUT beside it. Asking the teacher alone left
+      // an admin able to see a class in analytics, rename it and hand it to a
+      // colleague, but told "not found" when they tried to delete it.
+      include: {
+        teacher: true,
+        section: { select: { schoolId: true } },
+        activities: { select: { id: true, _count: { select: { submissions: true } } } }
+      }
     });
-    if (!cls || cls.teacher?.schoolId !== admin.schoolId) {
+    if (!cls || classSchoolId(cls) !== admin.schoolId) {
       return res.status(404).json({ success: false, error: 'Class not found in your school.' });
     }
     const submissions = cls.activities.reduce((n, a) => n + a._count.submissions, 0);
@@ -2694,7 +2701,13 @@ app.put('/api/admin/:adminId/sections/:sectionId', async (req, res) => {
             name: trimmed,
             NOT: { id: section.id },
             ...(section.schoolId ? { schoolId: section.schoolId } : { teacherId: section.teacherId }),
-            OR: [{ schoolYear: section.schoolYear ?? null }, { schoolYear: null }],
+            // Only narrowed when this section has a year to narrow by. A
+            // legacy row predating the column would otherwise compare null
+            // against null twice — every same-name section with a real year
+            // invisible, which is the ambiguity this check exists to close.
+            ...(section.schoolYear
+              ? { OR: [{ schoolYear: section.schoolYear }, { schoolYear: null }] }
+              : {}),
           },
           select: { id: true, gradeLevel: true },
         });
@@ -6498,11 +6511,22 @@ async function applyBatchResult(job, sub, result) {
   // graded and keeps its results — this is the whole reason the privacy verdict
   // comes back per paper instead of as a thrown error.
   if (result.privacyViolation) {
-    await prisma.submission.update({
-      where: { id: sub.id },
+    // Scoped to PENDING for the same reason persistGradingResult is: a batch
+    // snapshots its queue and then runs for minutes, and a teacher can validate
+    // any paper in it meanwhile. Writing by id alone would take a grade the
+    // teacher had just entered back to PENDING — and now that the reset also
+    // nulls readingStrategy, rubricData and gradedAt, it would take their
+    // rubric with it, leaving the paper out of "release all" with no error.
+    const claimed = await prisma.submission.updateMany({
+      where: { id: sub.id, status: 'PENDING' },
       // Same clearing as the single-paper path: flagged means ungraded.
       data: { ...UNGRADED_RESET, privacyViolation: true }
     });
+    if (claimed.count === 0) {
+      return setJobItem(job, sub.id, 'superseded', {
+        error: 'A teacher validated this paper while the AI check was still running, so the AI result was discarded — the teacher\'s grade stands.'
+      });
+    }
     return setJobItem(job, sub.id, 'flagged', {
       violationType: result.violationType,
       error: 'Identifying information was detected on this paper, so it was not graded.'
@@ -8709,7 +8733,15 @@ app.post('/api/teacher/upload', submissionUpload.fields([{ name: 'image', maxCou
           areasForGrowth: aiData.areasForGrowth,
           actionableSteps: aiData.actionableSteps
         });
+        // Spread over the reset, not written from scratch. Listing the fields
+        // this branch happens to set is what let a re-upload keep a stale
+        // privacyViolation: a paper flagged for a visible name, cropped and
+        // re-uploaded, graded cleanly here and still carried the Privacy Act
+        // banner, because the column was never mentioned and Prisma leaves an
+        // omitted key alone. The reset names every AI-written column, so the
+        // ones this branch does not overwrite are cleared rather than kept.
         submissionData = {
+          ...UNGRADED_RESET,
           imageUrl: processedUrl,
           aiScore: aiData.score,
           aiFeedback: aiFeedbackStr,
@@ -8725,6 +8757,7 @@ app.post('/api/teacher/upload', submissionUpload.fields([{ name: 'image', maxCou
           rubricParseFailed: !!aiData.rubricParseFailed,
           scoreFeedbackMismatch: !!aiData.scoreFeedbackMismatch,
           rubricScoreNote: aiData.rubricScoreNote || null,
+          scoreOutOfRange: !!aiData.scoreOutOfRange,
           gradedAt: new Date()
         };
       } catch (aiErr) {
