@@ -1,0 +1,427 @@
+# TulongGuro — Session Handoff
+
+**Written:** 7 August 2026
+**Purpose:** Hand a fresh session enough context to run QA on recent work without re-deriving the architecture.
+**State at handoff:** working tree clean, all work committed, all migrations applied, all checks green.
+
+---
+
+## 1. Orientation
+
+### Stack
+- **Frontend** — React 19 + Vite + Tailwind v4, `src/`. Deployed to Vercel.
+- **Backend** — Express + Prisma + PostgreSQL (Supabase), `server/`. Single file: `server/server.js` (~8k lines). Deployed to Render.
+- **AI** — Gemini, multiple API keys pooled (quota is metered per *project*, so two keys from two projects = two budgets).
+- **Storage** — Supabase Storage for submission images.
+- No TypeScript.
+
+### Commands
+```bash
+# from repo root
+npm run dev          # frontend
+npm run build        # frontend production build
+npx eslint src server
+
+# from server/
+npm run dev          # API (nodemon)
+npm run verify       # THE GATE: grading math + dashboard + route auth + unit tests
+npm test             # unit tests only (Vitest, 217 tests, 15 files in server/tests/)
+npx prisma migrate status
+```
+
+`npm run verify` is what `render.yaml` runs **before** the deploy touches the database. If it fails, nothing ships. Keep it that way.
+
+### Baselines to compare against
+| Check | Expected |
+|---|---|
+| `npx eslint src server` | **75 problems** (73 errors, 2 warnings) — all pre-existing, mostly `react-hooks/set-state-in-effect`. A number above 75 means something new was introduced. |
+| `server/` `npm run verify` | **Does not currently pass.** The three `verify:*` stages all pass individually — `verify:grading` 92 passed, `verify:dashboard` 41 passed, `verify:routes` 45 passed (45 routes scanned) — but the final stage, `npm test` (Vitest), is **265 tests across 16 files: 261 passed, 4 failed**. All 4 failures are confined to `server/tests/roster.test.js`, and come from commit `4a2d642` ("Name fix"), which added `stripNameCommas` to `src/utils/roster.js` — it strips the comma from names like "Dela Cruz, Juan", while those four tests assert the comma survives. That commit is the user's own in-flight work, made immediately before this branch started, and is unrelated to section transfers. `render.yaml` runs `npm run verify` before a deploy touches the database, so this must be resolved before deploying. |
+| `npx prisma migrate status` | 5 migrations, "Database schema is up to date" |
+| `npm run build` | succeeds; the >500 kB chunk warning is expected |
+
+---
+
+## 2. What changed, and where
+
+Three commits, oldest first.
+
+### `1d7bb1b` — ten user-reported bugs
+1. **Student IDs** — was always `SEC-001` (the code split the section name on a dash that the form never produces). Now `<SCHOOL>-<YY>-<NNNN>`, e.g. `AS-26-0001`. School-scoped, survives section changes. **Existing IDs were deliberately left alone** — they are login usernames.
+2. **Activity Builder** — "Curriculum Lesson" and "DepEd Topic" merged into one optional `Lesson / Topic` dropdown. DepEd competencies only appear for Grade 6 English (the list is Grade 6 English only).
+3. **Roster notes** — "last name first" guidance added to all three roster inputs.
+4. **`[STUDENT-DEMO]` auto-seed removed** — it wrote a fake class and a fabricated 90% graded submission into the student's *real* section on login.
+5. **Change password** — both teacher and student forms were fake (the teacher one printed "Password updated successfully!" without a network call). New `POST /api/auth/change-password`, rate-limited.
+6. **Credentials display** — `window.alert` replaced with a copyable table (`src/components/StudentCredentials.jsx`). Random passwords are generated server-side and stored hashed, so that alert was the only moment they were ever readable.
+7. **Cross-section moves** — enrolling a name that already has an account silently emptied a colleague's roster. Server now returns `pendingMoves` and refuses until confirmed.
+8. **Delete-section** — says what is blocking before calling the API.
+9. **Course-shell reassignment** — errors now render next to the control instead of in a banner offscreen.
+10. **Detached students** — a student unassigned from a section was invisible to name matching, so re-enrolling created a duplicate account and orphaned their grades. Students now carry `schoolId`; this also fixed a real security gap where rejecting a school revoked staff sessions but **not** student sessions.
+
+### `17b4201` — grade integrity, tenancy, analytics
+Groundwork:
+- **Prisma migrations adopted.** Baselined `0_init`; `render.yaml` runs `migrate deploy`, not `db push`.
+- **Vitest added** to `server/`, wired into `npm run verify`.
+- **`numInstances: 1`** pinned in `render.yaml` with the reasons.
+- **Grading temperature measured** before changing it (`server/scripts/measure-grading-variance.js`), then set to `0.2`.
+
+Fixes:
+- **Export shipped unvalidated AI drafts as official grades** — no `status` check. Now gated, with an `INCOMPLETE:` notice, a pre-export confirm, and draft markers in the gradebook.
+- **`hitlScore` unvalidated** — 400 on out-of-range.
+- **AI score unvalidated** — clamped 0–100, flagged via `Submission.scoreOutOfRange`, surfaced in the HITL workspace.
+- **`useTransmutation` was dead** — no call site ever transmuted. The export now does; analytics deliberately don't.
+- **Client/server band disagreement** — client now rounds before banding.
+- **Two (then three) contradictory "late" definitions** — reads stored `isLate`; fixed the student dashboard dropping tasks due today at 08:00 Manila.
+- **Cross-tenant read leak** — classes with no `schoolId` were readable by any staff account. Rule extracted to `server/access.js`.
+- **Admin band distribution double-counted** students.
+- **N+1 in teacher analytics** — ~120 queries → 3.
+
+### `6b423f8` — best-practice gaps
+- AI job registry finalises in a `finally`; hourly sweeper added.
+- Boot log names the process-local state that breaks under horizontal scaling.
+- School average is now the mean of per-student averages, not of class averages.
+- **AI skill scores only requested when the rubric assesses writing or language.** A Maths worksheet previously came back with an invented punctuation score that was charted as measurement.
+- **Excused state added** (`Submission.excusedAt` / `excusedReason`). Excused work leaves the average entirely rather than counting as zero.
+
+### Files worth knowing
+| File | Why |
+|---|---|
+| `server/grading.js` | Pure grading engine. `countsAsGrade`, `parseScore`, `clampScore`, `isExcused`, `memoPolicyLoader`, transmutation, descriptor bands, stars. No DB, no Express — everything here is unit-tested. |
+| `server/access.js` | Staff read-tenancy rule, pure. `classSchoolId`, `staffMayAccess`. |
+| `src/utils/grading.js` | Client twin of the descriptor ladder. **Must stay in step with `server/grading.js`** — `server/tests/band-parity.test.js` enforces this by running both against each other. |
+| `src/utils/deadlines.js` | Client twin of `isPastDeadline`. Same rule: a date-only deadline closes at 23:59:59 **Manila**, not midnight UTC. |
+| `server/scripts/verify-route-authorization.js` | Has a `ROUTE_MANIFEST`. **Any new `/api/teacher/` route must be added or `npm run verify` fails.** This is intentional. |
+| `server/db.js` | The Prisma client, behind a Proxy over a swappable instance. Exists so the route table can be exercised without a database — see the note in the file. `__setClientForTests` throws in production. |
+| `server/tests/route-wiring.test.js` | Drives the real Express app over HTTP with a fake Prisma client. Covers P3 and P8, which used to be manual REST-client steps. |
+
+---
+
+## 3. QA test plan
+
+Ordered by consequence. Items 1–4 involve numbers that reach report cards.
+
+**P3 and P8 are now automated** and run inside `npm run verify` — nothing to do by hand. The rest are still manual UI walkthroughs.
+
+> **Setup once:** a class with ≥3 students, one activity worth 100 points, and papers uploaded for all three.
+
+### P1 — Export never contains unvalidated AI grades
+1. Run **AI-check all** on the activity so all three get an `aiScore` but stay PENDING.
+2. Validate **only student 1** (give them 90).
+3. Teacher → Gradebook → section card → **Export All**.
+   - Expect a confirm: *"2 submission(s) in this section have not been validated yet"*. Cancel → no download.
+   - Confirm → `.xlsx` downloads.
+4. Open the file.
+   - Students 2 and 3: blank cells, no average.
+   - Student 1: 90, average 90.
+   - Amber row near the top: `Incomplete: 2 submission(s) not yet validated…`
+   - `CLASS AVERAGE` = 90, not ~60.
+5. On the gradebook screen, students 2 and 3 show an **amber ring + `*`** with a legend under the table.
+
+**Regression risk:** this is the change most likely to be reported as "my grades disappeared". They didn't — they were never validated.
+
+### P2 — Transmutation
+1. Get a student to an Initial Grade around **69**.
+2. Admin → Grading, transmutation **off** → export. Header `Average (%)`, value **69**, metadata says *"Initial Grade — not transmuted"*.
+3. Turn it **on**, save, export. Header `Final Grade (transmuted)`, value **80**, metadata names DO 8 s.2015.
+4. **Critical:** Teacher → Analytics with transmutation still on. The student must still read **69** and still be in "needs support".
+
+If step 4 moves, the early-warning system is broken.
+
+### P3 — Score validation — **automated**
+Covered by `server/tests/route-wiring.test.js`, so `npm run verify` now runs it on every deploy. It drives the real route over HTTP and asserts **400** for `500`, `-5`, `"abc"`, `null`, `""`, `true`, `[]`, `100.1` and an omitted field — and, in each case, that `submission.update` was **never called**. The happy path asserts 76.7 is stored unrounded and that a validated `0` is accepted as a real mark.
+
+Still worth one manual pass: validating through the review UI, to confirm the browser sends what the endpoint expects.
+
+### P4 — Excused
+1. Gradebook → click a student → find an activity showing **MISSING** → **Excuse**, enter a reason.
+2. Row turns lilac **Excused** with the reason beneath. The student's average goes **up** (the zero stopped counting).
+3. Export → that cell reads `Excused`, and it does **not** add to the INCOMPLETE count.
+4. **Un-excuse** → everything reverts, including any score that was already on the row.
+
+### P5 — Deadlines (Manila boundary)
+Create a `STUDENT_SUBMIT` activity with **today** as the deadline. As a student in that section, after 8am Manila:
+- Dashboard → the activity is in **Upcoming Deadlines** (previously it vanished at 08:00 while still being submittable).
+- Teacher → Gradebook → that student: **UPCOMING**, not MISSING.
+- Submit on the due date → **DONE**, not LATE.
+
+### P6 — Band boundaries agree
+```sql
+UPDATE "Submission" SET "hitlScore" = 74.6 WHERE id = '<a released, graded submission>';
+```
+With passing grade 75, the same student must read **passing/amber** in: student Subjects + Gradebook, teacher Gradebook, admin Analytics. Previously the server said passing and the browser coloured it red.
+
+### P7 — Admin counts
+Admin → Analytics: the **Students** tile and the **class spread bar** must total the same number. Enrol a student in a second class and reload — both stay the same.
+
+### P8 — Tenancy — **automated**
+Covered by `server/tests/route-wiring.test.js`. All three routes are asserted in both directions, which is what makes the result meaningful — identical fixture data, only the token differs:
+
+| Class | Caller | Expect |
+|---|---|---|
+| no school anywhere | unrelated teacher | 403 |
+| no school anywhere | the owning teacher | 200 |
+| belongs to school A | staff at school B | 403 |
+| belongs to school A | colleague at school A | 200 |
+
+Plus 404 (not 403) for a missing activity, 401 for no token and for a tampered signature, and 403 for a student on a staff-only route.
+
+### P9 — AI skill scores
+1. Create a **Maths** activity with a rubric of non-language criteria ("Accuracy", "Solution Steps"). AI-check a paper.
+   - `SELECT "skillScores" FROM "Submission" WHERE id='<id>'` → `NULL`.
+   - Teacher → Analytics on a Maths-only class → the writing-skills panel says **"not measured"**, not `0/25`.
+2. Same on an **English essay** → `skillScores` populated as before.
+
+### P10 — Smoke tests (nothing should have changed)
+- Student: log in, submit work, see a released grade, change password.
+- Teacher: create section with roster (last-name-first, birthdays), create class, create activity, batch upload, AI check, review, validate, release.
+- Admin: create teacher, move a course shell between teachers, edit grading policy.
+
+### P11 — Section transfer
+
+*Requires a running app with seeded data — these steps were not executed by automation, walk them by hand.*
+
+Two sections, both teaching English 6 in the same school year, each with graded
+activities. Move a student from one to the other.
+
+1. The confirm dialog names what carries, what does not, and how many
+   activities will be excused. Cancel → nothing is written.
+2. Confirm. In the receiving teacher's gradebook, click the student:
+   - their old marks appear under **Carried over from …**, with no
+     excuse/re-grade controls;
+   - activities the new section ran before they arrived read **Excused**, with
+     the reason naming the old section and the date — not MISSING.
+3. Export the receiving section. The student's average must reflect **both**
+   sections' work. Carried columns are headed with the old section's name.
+4. In the *sending* teacher's gradebook, the student is still listed, greyed,
+   **Transferred out ⟨date⟩**, marks intact. They are **not** on that teacher's
+   at-risk list.
+5. Admin → Analytics: the Students tile and the class spread bar still agree
+   (this is P7, re-asserted across a move).
+6. Move them back. The auto-excused rows disappear; nothing a teacher entered
+   is lost.
+
+---
+
+## 4. Known gaps — deliberately not fixed
+
+Don't file these as new bugs; they were considered and left.
+
+| Gap | Why it was left |
+|---|---|
+| **Single instance is load-bearing.** AI job registry, rate-limit buckets and AI quota counters are all in-process. | `render.yaml` runs one instance and pins `numInstances: 1` with an explanation; the server logs it at boot. A durable job queue solves a problem that doesn't exist yet. **If you ever scale past one instance, fix this first.** |
+| **Curriculum is copy-on-apply.** Editing a `CurriculumLesson` does not reach `ClassLesson` rows already copied into live classes. | Correct for stability. What's missing is a "N classes are using an older copy — push update?" affordance in the admin UI. |
+| **Analytics include GRADED-but-unreleased work.** | Deliberate — `status: 'GRADED'` is the gate everywhere. Worth adding UI copy saying so on the admin dashboard. |
+| **`computeSkillProgress` is cumulative.** A student who collapses in week 8 shows a gentle drift, not a cliff. | Chart is least sensitive exactly when intervention matters most. A rolling-average overlay would fix it. |
+| **`server/server.js` is ~8k lines.** | Several bugs found in the audit were divergences between call sites that would be obvious if the grade-writing paths lived in one module. Extracting `grades.js` and `analytics.js` is the highest-value refactor available. |
+| **Existing student IDs stay `SEC-001`.** | They are login usernames. Changing them locks students out. Only new enrolments get the new format. |
+| **Transfers do not cross schools.** A learner moving to another school gets a new account. | The match key is scoped inside one school's sections, and moving a child's grade history across a tenant boundary is a privacy decision, not a data one. |
+| **Transfers before this shipped have no record.** Those learners are treated as always having been in their current section. | Which is exactly what every screen assumed before, so nothing regressed — but a move that happened last term will not show carried-over work. |
+| **`POST /api/teacher/activities/:activityId/scores` and `POST /api/teacher/upload` skip roster validation.** They write `Submission` rows for an arbitrary `studentId` with only `teacherOwnsActivity` checked, unlike `POST /api/teacher/submissions/excuse`, which does check the roster. | Pre-existing, not introduced by this branch. A misassigned upload can attach a graded submission to a student outside the activity's section. Recommended follow-up: mirror the excuse route's roster check on both routes. |
+| **`src/pages/teacher/Gradebook.jsx` has a second, independent roster-rendering branch**, fed by the same endpoint as `GradebookClass.jsx` but without the transferred-out treatment. | Currently unreachable via in-app navigation, so it was left alone — but it will drift. |
+
+---
+
+## 5. Outstanding
+
+**Last measured against production: 7 Aug 2026, ~20:05 local.**
+
+### 5.1 Data — all clear ✅
+
+Every fabricated-data item is gone. Verified against production 7 Aug 2026, ~20:30 local:
+
+| Check | Count |
+|---|---|
+| `[STUDENT-DEMO]` classes | **0** — the fabricated 90% is off Aldrich Gavriel Sabando's record |
+| `[DEMO]` sandbox classes | **0** |
+| `DEMO-` student accounts | **0** — including the one whose password was the literal string `password` |
+| Demo sections | **0** |
+| Students without `schoolId` | **0** — the invariant tenancy and session revocation key on |
+| Sections without `schoolId` | **0** |
+| Duplicate rubric names | **0** groups / 40 templates |
+| `GradingExample` rows | **0** — no fabricated few-shot rows |
+
+Totals after cleanup: **3 sections, 4 students**. Nothing beyond the demo rows was touched.
+
+**Do not re-run any demo cleanup.** The `[DEMO]` sandbox was removed by hand in the Supabase SQL editor (child rows first: submissions → notifications → class lessons → activities → class → user → section — the table editor cannot do it, the foreign keys block a direct delete). `DELETE /api/teacher/demo-data/:classId` and the amber banner in `ClassHub.jsx` now have nothing left to act on; both can be removed, along with the `[DEMO]` exclusion in the teacher-delete route (`server.js`, the `realClasses` count).
+
+### 5.2 Known bugs, not fixed
+
+**A. The section gradebook grid still drops a transferred learner.** ⚠️
+The *per-student* view (`GET /api/teacher/:teacherId/student/:studentId/gradebook`) was fixed — see §8. The **grid** at `GET /api/teacher/:teacherId/gradebook` was not. It builds its roster from `class.section.students`, i.e. *current* membership, so a learner who transfers vanishes from their previous teacher's grid while their submissions still load through the activity include. Same root cause, different endpoint.
+
+**B. The export path is unverified.** ❗ **Check this first.**
+`GET /api/teacher/:teacherId/gradebook/export` was never checked for the same defect. If it lists students from section membership rather than from submissions, a transferred learner's marks are **silently absent from the exported file** — the file that becomes a report card. Small read to confirm; highest consequence of anything on this list.
+
+**C. The new section shows a transferee as MISSING** for activities set before they arrived. Mirror of the case fixed in §8. Needs a record of *when* a learner joined a section, so it needs a migration.
+
+### 5.3 Never manually tested
+
+`QA-PLAN.md` exists and is ordered by consequence, but **none of it has been run by hand.** P1 (*export never contains unvalidated AI grades*) is the highest-consequence test in the whole document and is untested. P3 and P8 are automated and can be skipped.
+
+### 5.4 Documentation drift
+
+- `QA-PLAN.md` §3.2 still describes the roster as a comma-separated textarea; it is now a two-column editor (§8).
+- `QA-PLAN.md` has no coverage for: student rename, rubric-name uniqueness, score-only rubric removal, the two-column section form, transfer visibility, or school-year archiving.
+
+### 5.5 A caveat on this list
+
+This is what surfaced *in the course of doing other work* — not a systematic audit. The transfer bug only came to light because it was asked about directly, and the section-name-reuse bug (§8) was found while building something else. A deliberate sweep would likely find more.
+
+---
+
+## 6. Gotchas for the next session
+
+1. **`DATABASE_URL` in `server/.env` points at production Supabase.** There is no staging. Any script you run hits live school data. Use read-only queries unless the change is explicitly authorised, and prefer `prisma migrate deploy` (never resets) over `migrate dev` (can reset).
+
+2. **Schema changes go through migrations now, not `db push`.**
+   ```bash
+   # edit schema.prisma, then:
+   npx prisma migrate diff --from-url "$DATABASE_URL" --to-schema-datamodel prisma/schema.prisma --script
+   # review, save as prisma/migrations/<timestamp>_<name>/migration.sql, then:
+   npx prisma migrate deploy && npx prisma generate
+   ```
+
+3. **The JS coercion trap bit three times.** `Number(null)`, `Number('')` and `Number([])` are all **`0`** — a valid score. Coerce-then-validate silently turns "no value sent" into a zero for a student. Always check the *type* before coercing. `grading.parseScore` and `grading.clampScore` both do; copy that shape.
+
+4. **Two client/server twins must stay in step:** `src/utils/grading.js` ↔ `server/grading.js`, and `src/utils/deadlines.js` ↔ `isPastDeadline()` in `server.js`. The first pair is enforced by `band-parity.test.js`. The second is not — if you touch deadline logic, check both.
+
+5. **Adding an `/api/teacher/` route requires a `ROUTE_MANIFEST` entry** in `scripts/verify-route-authorization.js` or the build fails. Intentional.
+
+6. **AI quota is ~20 requests/day per model per credential**, 2 credentials configured. `AI_BATCH_SIZE` defaults to **1** on purpose — batching was measured to shift an identical paper's score by up to 14 points depending on which classmates shared the request. Don't raise it to solve a capacity problem; add a key from a second Google Cloud project instead.
+
+7. **Grading temperature is 0.2**, set after measurement, not assumption. `node scripts/measure-grading-variance.js --dry-run` shows the plan; without the flag it spends ~30 requests. Measured result: mean SD 1.77 → 1.26, with the gain concentrated on weak papers (3.71 → 2.19).
+
+8. **`vi.mock` does not work on `server.js`.** It is CommonJS, and Vitest cannot rewrite a `require()` inside a CJS file — the mock is ignored *silently*. The first draft of `route-wiring.test.js` mocked `@prisma/client`, appeared to pass 13 assertions, and was in fact querying the production database the whole time; the tell was `findUnique.mock.calls.length === 0` alongside a 404. Swap the client through `db.js` instead, and load both `db.js` and `server.js` with `createRequire` so the test shares Node's CJS cache with the app. Loading them through Vitest's module runner yields a second copy and the swap does nothing.
+
+9. **Onboarding progress is derived, not stored.** Don't add a "current step" column or a localStorage step number. `GET /api/teacher/:id/setup-status` counts rows; `src/utils/setupSteps.js` turns those counts into the checklist. The only flag left in localStorage is whether the teacher *hid* the card. See section 7.
+
+10. **Audit reports live in the git history**, not in files. `git show 17b4201` and `git show 6b423f8` carry the reasoning in their messages, and the code comments explain *why* rather than *what* — read them before changing anything in `grading.js` or the grading prompt.
+
+---
+
+## 7. Onboarding — the demo sandbox is gone
+
+### What was removed
+
+`seedDemoSandbox` ran on **every** admin-created teacher and wrote five real rows: a Section, a STUDENT account, a Class, an Activity, and a Submission with a fabricated `aiScore` of 85. It is deleted. Three reasons, ascending:
+
+- Cleanup was the teacher's job — the walkthrough's last step asked them to delete it. The `[STUDENT-DEMO]` rows in section 5 are what that instruction was worth.
+- The demo student's password was the literal string `password`, under username `DEMO-<epoch ms>`. A working login, once per teacher.
+- It created that student with **no `schoolId`**, undoing the backfill on every teacher added, and putting those accounts outside the tenancy rules that key on `schoolId`.
+
+The four-step walkthrough went with it — every step named the demo class.
+
+### What replaced it
+
+A **setup checklist** on the teacher dashboard, over the teacher's own real work:
+
+1. Add your block section and its class list
+2. Create your first class
+3. Create your first activity
+4. Grade a paper **and release it**
+
+| File | Role |
+|---|---|
+| `GET /api/teacher/:teacherId/setup-status` | Six counts: sections, students, classes, activities, graded, released. |
+| `src/utils/setupSteps.js` | `buildSteps(counts)` → the four steps, with `done`, `progress`, `cta`, `blockedBy`. Pure; unit-tested by `server/tests/setup-steps.test.js` (15 tests). |
+| `src/components/SetupChecklist.jsx` | Draws it. Only the current step expands. |
+| `src/components/ExampleFeedback.jsx` | Static sample of AI output — the one thing the sandbox was actually good for. Constants in the file; **cannot** be graded, released or counted. |
+
+Three decisions worth keeping:
+
+- **Derived, never stored.** Onboarding state used to be localStorage-only, so it was a property of the *device*: signing in on the other staff-room computer restarted the tour, and a mis-clicked "Dismiss" hid it permanently. Counts fix both.
+- **Step 4 is `released > 0`, not `graded > 0`.** Marked-but-unreleased is invisible to learners and is the state a teacher is most likely to stop in without realising.
+- **Hiding is reversible** — a "Setup guide" button in the dashboard header, and `clearOnboardingSeen()` in `src/utils/onboarding.js`.
+
+### One bug fixed on the way
+
+`DELETE /api/admin/:adminId/teachers/:teacherId` deletes every student in every section the teacher owns. That was survivable when the only such students were seeded `Demo Student` rows — but a teacher's first real action is now building a roster, which can exist for weeks before the first class does, and the route only blocked on *classes*. Removing such a teacher would have silently deleted real children's accounts and their grades while reporting success. It now refuses when any non-`DEMO-` student sits in those sections.
+
+### Student side
+
+The hard part for an elementary learner is the **login**, not the dashboard. All six items are done.
+
+| Change | Where |
+|---|---|
+| **Printable login slips** — one cut-out card per learner, name + ID + password in 15pt monospace. Opens a detached print window so the app's layout stays out of the handout. | `src/components/StudentCredentials.jsx` (`printSlips`) |
+| **Birthday-password nudge** — a count before submitting: "12 of 40 learners have no birthday, so their passwords will be random digits shown only once." The per-row preview already existed; a 40-name roster scrolls, and the *count* is the decision. | `src/pages/teacher/ManageSections.jsx` |
+| **Forgiving student IDs** — `as-26-0001`, `AS 26 0001` and `as260001` all reach `AS-26-0001`. | `POST /api/auth/login` |
+| **Show-password toggle** | already existed on `src/pages/Login.jsx`; the placeholder now shows the real ID format and says punctuation does not matter |
+| **One-click password reset from the teacher's roster** | `PUT /api/teacher/sections/:sectionId/students/:studentId/password` |
+| **Student welcome cut to one screen**, held until the learner has released work | `src/pages/student/Dashboard.jsx` |
+
+Two of these are worth understanding before changing them.
+
+**The relaxed ID lookup widens how an account is *named*, never what proves it is yours.** It runs only for `role === 'STUDENT'`, only after an exact match has already failed, and only when the normalised form matches **exactly one** account — two candidates is treated as no match rather than a guess. The password is then checked normally. Ten tests in `route-wiring.test.js` pin this, including "still refuses the wrong password on a relaxed match" and "refuses rather than guessing when two IDs normalise the same way".
+
+**The teacher reset revokes sessions**, like the admin one it mirrors — a forgotten password is indistinguishable from a shared one. It hands back a birthday-derived password when the roster has a birthdate, random otherwise, and the new password renders inline next to the learner and stays there until the next reset. It is not a toast: the teacher has to read it aloud to a child at a keyboard, which is exactly what the old `window.alert` got wrong.
+
+Why the student welcome moved: it used to fire on first sign-in, in front of an empty dashboard. "Look out for the yellow cards" means nothing when there are no cards, and a nine-year-old facing a three-step carousel taps through it to make it go away. It now waits until `submissions` is non-empty — that list only ever contains *released* work — so every line describes something visible behind the modal.
+
+### Not done
+
+For Grades 1–3 specifically, the standard elsewhere (Seesaw, ClassDojo) is no typed password at all: a class code on the board, then pick your name from a grid and tap a picture as a PIN. That is a bigger change than anything above and was not attempted.
+
+---
+
+## 8. Later changes — rosters, transfers, school years
+
+Everything below landed after §7, in the same session. Ordered by how much damage the original behaviour could do.
+
+### 8.1 Section names were reused across school years ⚠️ *the worst one*
+
+`POST /api/teacher/sections` looked up an existing section by **name alone**. Schools reuse block names every year, so next June, creating "Grade 6 - Sampaguita" would have silently reopened **last year's** section and enrolled the new intake onto the leaving class's roster — alongside their grades.
+
+Now scoped by school year as well. A `NULL` year still matches, so a roster created before the column existed is reused and stamped rather than duplicated.
+
+### 8.2 School year on sections
+
+- **Migration** `20260807020000_section_school_year` — adds nullable `Section.schoolYear`, backfills existing rows to `'2026-2027'`, indexes it. The backfill is a **hardcoded constant, not a computed date**: a migration must replay identically whenever it runs, so it cannot ask what "now" is.
+- **`server/schoolYear.js`** — the June–March rule as pure functions. Twin of the derivation in `src/constants/school.js`, held in step by parity tests in `server/tests/school-year.test.js` (same twin problem as `grading.js` — see gotcha 4).
+
+Three leniencies, all deliberate and all tested:
+
+| Case | Treated as | Why |
+|---|---|---|
+| `null` / unparseable year | **current** | Hiding a roster nobody can then find again is worse than one stale entry |
+| A *future* year | **current** | A teacher setting up next June's blocks in April must see what they just made |
+| April–May gap | **the year that just ended** | Classes are over but results are not final; archiving there hides a gradebook mid-entry |
+
+The list endpoint returns **everything** and flags `isArchived`; the client folds past years behind a "Show past years (N)" toggle. Filtering server-side would leave a teacher no route to last year's marks, and those are records.
+
+### 8.3 Moving a learner between sections
+
+A move is only `User.sectionId = <new>`. Submissions are never touched — they stay bound to activities in the old class. Nothing is lost from the database; the problem was **visibility**, and it was asymmetric in the worst direction: the numbers kept counting while the evidence became unreachable to the person who produced it.
+
+**Fixed:**
+- `GET /api/teacher/:teacherId/student/:studentId/gradebook` resolved on `sectionId: student.sectionId`, so the moment a learner transferred, every mark their previous teacher gave them dropped out of that teacher's view. It now also includes classes *that teacher owns* where the learner has work. Still scoped by `teacherId` throughout — a test asserts this.
+- Rows from a class the learner has left carry `fromPreviousSection: true`.
+- **A previous-section activity with no submission is dropped, not shown as MISSING.** Without an enrolment date, "didn't hand it in" and "had already left" are indistinguishable, and inventing a missing mark against a child is the worse error. Work they actually did is always kept.
+- `GET /api/student/:studentId/subjects` now unions in classes the learner has graded work in but is no longer rostered into (flagged `isPreviousSection`, only activities they have submissions for). Previously the General Average counted subjects the page would not list.
+- The dashboard's subject total unions current-section subjects with subjects they have been graded in, so `subjectsIncluded` can no longer exceed `subjectsTotal` — that produced *"covering 3 of 2 subjects"* for a transferee.
+
+**Still broken:** see §5.2 A, B and C.
+
+### 8.4 Roster entry is two columns
+
+Name and birthday were one comma-separated line, split on the last comma — the same character separating a surname from a first name *and* a name from a date.
+
+Now `src/components/RosterEditor.jsx` + `src/utils/roster.js`, used by both the create-section and add-students forms. Name required, birthday explicitly optional (blank ⇒ random password). **Pasting a block of lines still works** — it is how a 40-name roster actually gets entered — and still splits a trailing date while keeping a surname comma.
+
+`rosterPayload` **refuses the whole submit** on an unreadable date rather than dropping it: dropping it hands the learner a random password nobody wrote down while the teacher believes they set a memorable one.
+
+### 8.5 Four smaller fixes
+
+| Fix | Note |
+|---|---|
+| **Rubric names unique** | Per-teacher for private templates, per-school for admin ones; case-insensitive and trimmed. 409 with the existing name; the save dialog stays open so work is not lost. The curriculum importer already deduped — the doubling came through the *save* path, which had no check at all. |
+| **Score-only hides the rubric** | `MANUAL_SCORE` replaces the panel with a line saying why. Not greyed out — a disabled section reads as something you failed to fill in. |
+| **Section form in two columns** | "Step 1 · About the section" / "Step 2 · Who is in it". |
+| **Student rename, teacher and admin** | `PUT /api/{teacher,admin}/.../students/:studentId`. **The username is deliberately untouched** — it is the student ID and their login, so regenerating it from a corrected spelling would lock the child out. Both prompts say so. Previously the only way to fix a misspelling was deleting the account, which is refused for anyone who had submitted work. |
+
+### 8.6 Deploying the migration — no permission needed
+
+`render.yaml:32` already runs `npx prisma migrate deploy` in the build command, with `npm run verify` **before** it, so a broken build stops the deploy without touching the database. **Commit and push and the migration applies itself.**
+
+The permission blocks hit repeatedly in this session (the Claude Code auto-mode classifier auto-denying production writes) only ever mattered for *ad-hoc* SQL — the `[STUDENT-DEMO]` delete. They do not block schema changes. If a future session needs ad-hoc SQL, either use `/permissions` to switch to a mode that prompts, or run it in the Supabase SQL editor.
+
+⚠️ **Push before anyone creates sections expecting year separation.** The code sets `schoolYear` on create, but the column has to exist first. One push handles both, since Render migrates during the build.
