@@ -163,7 +163,7 @@ describe('the excusal reason is written to the student, not to the system', () =
 
 describe('buildMovePreview', () => {
   const { buildMovePreview } = transfers;
-  const src = (id, subject) => ({ id, subject, gradeLevel: 'Grade 6', schoolYear: '2026-2027' });
+  const src = (id, subject, gradeLevel = 'Grade 6') => ({ id, subject, gradeLevel, schoolYear: '2026-2027' });
 
   it('reports what carries, with the number of grades behind it', () => {
     const preview = buildMovePreview({
@@ -191,7 +191,7 @@ describe('buildMovePreview', () => {
 
     expect(preview.carries).toEqual([]);
     expect(preview.unmatched).toEqual([
-      { subject: 'Science', gradeCount: 3, reason: NO_MATCHING_CLASS },
+      { subject: 'Science', gradeLevel: 'Grade 6', gradeCount: 3, reason: NO_MATCHING_CLASS },
     ]);
   });
 
@@ -204,7 +204,7 @@ describe('buildMovePreview', () => {
     });
 
     expect(preview.ambiguous).toEqual([
-      { subject: null, gradeCount: 2, reason: CLASS_HAS_NO_SUBJECT },
+      { subject: null, gradeLevel: 'Grade 6', gradeCount: 2, reason: CLASS_HAS_NO_SUBJECT },
     ]);
   });
 
@@ -219,7 +219,26 @@ describe('buildMovePreview', () => {
 
     expect(preview.carries).toEqual([]);
     expect(preview.ambiguous).toEqual([
-      { subject: 'English', gradeCount: 4, reason: 'MULTIPLE_TARGET_CLASSES' },
+      { subject: 'English', gradeLevel: 'Grade 6', gradeCount: 4, reason: 'MULTIPLE_TARGET_CLASSES' },
+    ]);
+  });
+
+  // Nothing in the schema stops one section holding two classes with the same
+  // subject at different grade levels. classKey treats them as different keys,
+  // so both must be reported as their own entry — never merged, and never
+  // colliding on a "subject-only" identity that would make them indistinguishable
+  // to the teacher reading the confirm screen.
+  it('reports two source classes with the same subject at different grade levels as separate entries', () => {
+    const preview = buildMovePreview({
+      sourceClasses: [src('old-eng-6', 'English', 'Grade 6'), src('old-eng-7', 'English', 'Grade 7')],
+      targetClasses: [src('new-math', 'Math', 'Grade 6')],
+      gradeCountByClassId: { 'old-eng-6': 3, 'old-eng-7': 2 },
+      preArrivalCount: 0,
+    });
+
+    expect(preview.unmatched).toEqual([
+      { subject: 'English', gradeLevel: 'Grade 6', gradeCount: 3, reason: NO_MATCHING_CLASS },
+      { subject: 'English', gradeLevel: 'Grade 7', gradeCount: 2, reason: NO_MATCHING_CLASS },
     ]);
   });
 });

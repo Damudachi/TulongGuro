@@ -159,16 +159,16 @@ function buildMovePreview({ sourceClasses, targetClasses, gradeCountByClassId, p
     const key = classKey(source);
 
     if (key === null) {
-      ambiguous.push({ subject: source.subject ?? null, gradeCount, reason: CLASS_HAS_NO_SUBJECT });
+      ambiguous.push({ subject: source.subject ?? null, gradeLevel: source.gradeLevel, gradeCount, reason: CLASS_HAS_NO_SUBJECT });
       continue;
     }
     if (dupes.has(key)) {
-      ambiguous.push({ subject: source.subject, gradeCount, reason: MULTIPLE_TARGET_CLASSES });
+      ambiguous.push({ subject: source.subject, gradeLevel: source.gradeLevel, gradeCount, reason: MULTIPLE_TARGET_CLASSES });
       continue;
     }
     const hit = (targetClasses || []).some(t => classKey(t) === key);
     if (!hit) {
-      unmatched.push({ subject: source.subject, gradeCount, reason: NO_MATCHING_CLASS });
+      unmatched.push({ subject: source.subject, gradeLevel: source.gradeLevel, gradeCount, reason: NO_MATCHING_CLASS });
       continue;
     }
     carries.push({ subject: source.subject, gradeLevel: source.gradeLevel, gradeCount });

@@ -38,19 +38,23 @@ export default function SectionMoveConfirm({ moves, targetSection, onConfirm, on
               </div>
               {m.preview && (
                 <ul className="text-xs space-y-0.5 mt-1.5">
-                  {m.preview.carries.map(c => (
-                    <li key={`c-${c.subject}`} className="text-emerald-700">
-                      ✓ {c.subject} — <span className="font-bold">{c.gradeCount} grade{c.gradeCount === 1 ? '' : 's'} carry over</span>
+                  {/* Keyed on subject + gradeLevel + index: a section can hold two
+                      classes with the same subject at different grade levels
+                      (classKey treats them as distinct), so subject alone is not
+                      a unique — or a distinguishable — identity for these rows. */}
+                  {m.preview.carries.map((c, i) => (
+                    <li key={`c-${c.subject}-${c.gradeLevel}-${i}`} className="text-emerald-700">
+                      ✓ {c.subject} ({c.gradeLevel}) — <span className="font-bold">{c.gradeCount} grade{c.gradeCount === 1 ? '' : 's'} carry over</span>
                     </li>
                   ))}
-                  {m.preview.unmatched.map(u => (
-                    <li key={`u-${u.subject}`} className="text-amber-700">
-                      ⚠ {u.subject} — no matching class here, <span className="font-bold">{u.gradeCount} grade{u.gradeCount === 1 ? '' : 's'} will not carry</span>
+                  {m.preview.unmatched.map((u, i) => (
+                    <li key={`u-${u.subject}-${u.gradeLevel}-${i}`} className="text-amber-700">
+                      ⚠ {u.subject} ({u.gradeLevel}) — no matching class here, <span className="font-bold">{u.gradeCount} grade{u.gradeCount === 1 ? '' : 's'} will not carry</span>
                     </li>
                   ))}
                   {m.preview.ambiguous.map((a, i) => (
-                    <li key={`a-${i}`} className="text-amber-700">
-                      ⚠ {a.subject || 'An unlabelled class'} — {a.reason === 'MULTIPLE_TARGET_CLASSES'
+                    <li key={`a-${a.subject}-${a.gradeLevel}-${i}`} className="text-amber-700">
+                      ⚠ {a.subject || 'An unlabelled class'} ({a.gradeLevel}) — {a.reason === 'MULTIPLE_TARGET_CLASSES'
                         ? 'more than one class here teaches it'
                         : 'the class has no subject set'}, {a.gradeCount} grade{a.gradeCount === 1 ? '' : 's'} will not carry
                     </li>
