@@ -1306,6 +1306,15 @@ describe('excusing a student who has since transferred out', () => {
 
     expect(res.status).toBe(200);
     expect(prismaFake.submission.update).toHaveBeenCalled();
+
+    // `studentId` alone would let a teacher excuse any learner who has ever
+    // transferred out of ANY section, anywhere — it is the pairing with THIS
+    // activity's own section (`fromSectionId`) that keeps the check honest.
+    // Assert both fields explicitly so a future "simplification" that drops
+    // one of them fails loudly here instead of silently widening access.
+    const { where } = prismaFake.sectionTransfer.findFirst.mock.calls[0][0];
+    expect(where.studentId).toBe('maria');
+    expect(where.fromSectionId).toBe('sec-a');
   });
 
   it('still 404s for a student who was never in the section at all', async () => {
