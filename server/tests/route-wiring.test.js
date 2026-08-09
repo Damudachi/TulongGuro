@@ -622,6 +622,37 @@ describe('carriedOverForClass', () => {
     const { where } = prisma.submission.findMany.mock.calls[0][0];
     expect(where.activity.classId.in).toEqual(['old-eng']);
   });
+
+  it('selects subject and gradeLevel on the carried activity\'s class', async () => {
+    // workingAverageAcrossSubjects keys its per-subject grouping on
+    // `activity.class.subject` + `.gradeLevel` (server.js: `const key =
+    // ...cls?.subject...cls?.gradeLevel`). If CARRIED_OVER_SELECT ever stops
+    // asking Prisma for those two fields, every pooled carried submission
+    // comes back with subject/gradeLevel undefined, keys as the empty-string
+    // pair, and lands in a phantom extra "subject" bucket instead of merging
+    // into the student's real one — silently skewing every average that
+    // pools carried work (teacher analytics, gradebook export, drill-down).
+    const { carriedOverForClass } = require('../server.js');
+
+    const prisma = {
+      class: {
+        findUnique: vi.fn().mockResolvedValue({ id: 'c1', subject: 'English', gradeLevel: 'Grade 6', schoolYear: '2026-2027', sectionId: 'sec-b' }),
+        findMany: vi.fn().mockResolvedValue([
+          { id: 'old-eng', subject: 'English', gradeLevel: 'Grade 6', schoolYear: '2026-2027', sectionId: 'sec-a' },
+        ]),
+      },
+      sectionTransfer: {
+        findMany: vi.fn().mockResolvedValue([{ studentId: 's1', fromSectionId: 'sec-a', toSectionId: 'sec-b' }]),
+      },
+      submission: { findMany: vi.fn().mockResolvedValue([]) },
+    };
+
+    await carriedOverForClass(prisma, { classId: 'c1', studentIds: ['s1'] });
+
+    const { select } = prisma.submission.findMany.mock.calls[0][0];
+    expect(select.activity.select.class.select.subject).toBe(true);
+    expect(select.activity.select.class.select.gradeLevel).toBe(true);
+  });
 });
 
 describe('the receiving teacher sees carried-over work read-only', () => {
@@ -845,5 +876,188 @@ describe('a transferred student\'s exported grade uses their whole subject histo
     const preflight = await preflightRes.json();
     expect(preflight.classes[0].unreviewedCount).toBe(1);
     expect(preflight.totalUnreviewed).toBe(1);
+  });
+});
+
+describe('at-risk detection for a transferred student', () => {
+  // One graded item since arriving is not evidence of anything. Flagging on it
+  // is noise; hiding a struggling child behind it is worse.
+  it('reads their whole subject history, not just post-arrival work', () => {
+    const grading = require('../grading.js');
+    const POLICY = { WW: 30, PT: 50, QA: 20 };
+
+    const postArrivalOnly = [{ percent: 55, points: 100, component: 'WW' }];
+    const withCarried = [
+      ...postArrivalOnly,
+      { percent: 88, points: 100, component: 'WW' },
+      { percent: 90, points: 100, component: 'PT' },
+    ];
+
+    expect(grading.computeGrade(postArrivalOnly, POLICY, { transmute: false }).isPassing).toBe(false);
+    expect(grading.computeGrade(withCarried, POLICY, { transmute: false }).isPassing).toBe(true);
+  });
+});
+
+describe('GET /api/teacher/:teacherId/analytics and a transferred student', () => {
+  it('pools a transferred-in student\'s carried work into the same subject bucket as their own, not a phantom one', async () => {
+    // Proves the endpoint wiring (server.js's new carriedOverForClass loop):
+    // a transferred-in student's carried WW/PT submissions merge with their
+    // own WW submission into ONE subject average, not two averaged
+    // separately. 83 is the single-subject weighted average of all three
+    // items together; a two-bucket split (own subject + a same-keyed second
+    // bucket) would instead give 72. This test's fixture supplies
+    // subject/gradeLevel on the carried rows directly (the fake Prisma client
+    // does not project fields per `select`), so it does not exercise
+    // CARRIED_OVER_SELECT itself — that is covered separately by
+    // "selects subject and gradeLevel on the carried activity's class" above.
+    const CLASS_NEW = 'class-ti-new';
+    const CLASS_OLD = 'class-ti-old';
+    const SECTION_NEW = 'sec-ti-new';
+    const SECTION_OLD = 'sec-ti-old';
+    const STUDENT = 'student-transferred-in';
+
+    prismaFake.class.findMany.mockImplementation(({ where }) => {
+      if (where?.teacherId) {
+        return Promise.resolve([{
+          id: CLASS_NEW, name: 'English 6', subject: 'English', gradeLevel: 'Grade 6',
+          teacherId: T1, sectionId: SECTION_NEW,
+          section: { id: SECTION_NEW, name: 'New Section', students: [{ id: STUDENT, name: 'Incoming Student', username: 'incoming' }] },
+        }]);
+      }
+      if (where?.sectionId?.in?.includes(SECTION_OLD)) {
+        return Promise.resolve([{ id: CLASS_OLD, subject: 'English', gradeLevel: 'Grade 6', schoolYear: '2026-2027' }]);
+      }
+      return Promise.resolve([]);
+    });
+
+    prismaFake.class.findUnique.mockImplementation(({ where }) => (
+      where.id === CLASS_NEW
+        ? Promise.resolve({ id: CLASS_NEW, subject: 'English', gradeLevel: 'Grade 6', schoolYear: '2026-2027', sectionId: SECTION_NEW })
+        : Promise.resolve(null)
+    ));
+
+    prismaFake.sectionTransfer.findMany.mockImplementation(({ where }) => {
+      const rows = [{ studentId: STUDENT, fromSectionId: SECTION_OLD, toSectionId: SECTION_NEW }];
+      if (where.fromSectionId?.in) return Promise.resolve(rows.filter(r => where.fromSectionId.in.includes(r.fromSectionId)));
+      return Promise.resolve(rows.filter(r => r.fromSectionId != null));
+    });
+
+    prismaFake.submission.findMany.mockImplementation(({ where }) => {
+      if (where.archivedAt === null) {
+        // carriedOverForClass's own lookup.
+        if (!where.activity.classId.in.includes(CLASS_OLD)) return Promise.resolve([]);
+        return Promise.resolve([
+          {
+            id: 'sub-ti-carried-ww', studentId: STUDENT, activityId: 'act-ti-carried-ww', status: 'GRADED',
+            hitlScore: 88, aiScore: null, hitlFeedback: null, aiFeedback: null,
+            archivedAt: null, excusedAt: null, excusedReason: null, isLate: false,
+            gradedAt: '2026-01-05T00:00:00Z', releasedAt: null,
+            activity: {
+              id: 'act-ti-carried-ww', title: 'Old WW', points: 100, component: 'WW', deadline: '2026-01-01T00:00:00Z', classId: CLASS_OLD,
+              class: { id: CLASS_OLD, name: 'English 6 (Old)', subject: 'English', gradeLevel: 'Grade 6', section: { id: SECTION_OLD, name: 'Old Section', gradeLevel: 'Grade 6' } },
+            },
+          },
+          {
+            id: 'sub-ti-carried-pt', studentId: STUDENT, activityId: 'act-ti-carried-pt', status: 'GRADED',
+            hitlScore: 90, aiScore: null, hitlFeedback: null, aiFeedback: null,
+            archivedAt: null, excusedAt: null, excusedReason: null, isLate: false,
+            gradedAt: '2026-01-06T00:00:00Z', releasedAt: null,
+            activity: {
+              id: 'act-ti-carried-pt', title: 'Old PT', points: 100, component: 'PT', deadline: '2026-01-02T00:00:00Z', classId: CLASS_OLD,
+              class: { id: CLASS_OLD, name: 'English 6 (Old)', subject: 'English', gradeLevel: 'Grade 6', section: { id: SECTION_OLD, name: 'Old Section', gradeLevel: 'Grade 6' } },
+            },
+          },
+        ]);
+      }
+      // The endpoint's own `graded` query.
+      return Promise.resolve([{
+        id: 'sub-ti-own', studentId: STUDENT, status: 'GRADED', hitlScore: 55, aiScore: null, skillScores: null, createdAt: '2026-06-01T00:00:00Z',
+        activity: {
+          id: 'act-ti-own', title: 'WW1', type: 'WRITTEN_WORK', points: 100, classId: CLASS_NEW, component: 'WW',
+          rubric: null, classLesson: null,
+          class: { subject: 'English', gradeLevel: 'Grade 6' },
+        },
+      }]);
+    });
+
+    const res = await call('GET', `/api/teacher/${T1}/analytics`, { token: tokenFor({ id: T1 }) });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+
+    const trend = body.studentTrends.find(t => t.student.id === STUDENT);
+    expect(trend).toBeDefined();
+    expect(trend.gradedCount).toBe(3); // 1 own + 2 carried
+    expect(trend.avgPercent).toBe(83); // merged single-subject average, not the 72 a phantom bucket would give
+    expect(trend.transferredOut).toBe(false);
+  });
+
+  it('keeps a transferred-out student in the class average but off needsSupport', async () => {
+    // T1 is a self-contained homeroom teacher running two sections of the
+    // same subject. The student moved from Section A to Section B, both
+    // taught by T1, so they are still visible in this endpoint (current
+    // enrolment is Section B) with a low mark that would otherwise flag them.
+    // Without the transferredOut guard this test fails: the student shows up
+    // in needsSupport.
+    const CLASS_A = 'class-to-a';
+    const CLASS_B = 'class-to-b';
+    const SECTION_A = 'sec-to-a';
+    const SECTION_B = 'sec-to-b';
+    const STUDENT = 'student-transferred-out';
+
+    prismaFake.class.findMany.mockImplementation(({ where }) => {
+      if (where?.teacherId) {
+        return Promise.resolve([
+          {
+            id: CLASS_A, name: 'Math A', subject: 'Math', gradeLevel: 'Grade 6',
+            teacherId: T1, sectionId: SECTION_A,
+            section: { id: SECTION_A, name: 'Masipag', students: [] },
+          },
+          {
+            id: CLASS_B, name: 'Math B', subject: 'Math', gradeLevel: 'Grade 6',
+            teacherId: T1, sectionId: SECTION_B,
+            section: { id: SECTION_B, name: 'Masaya', students: [{ id: STUDENT, name: 'Transferred Student', username: 'transferred' }] },
+          },
+        ]);
+      }
+      // carriedOverForClass's candidate-class lookup — no prior section to
+      // search, so nothing should ever reach this branch in this fixture.
+      return Promise.resolve([]);
+    });
+
+    prismaFake.class.findUnique.mockImplementation(({ where }) => {
+      if (where.id === CLASS_A) return Promise.resolve({ id: CLASS_A, subject: 'Math', gradeLevel: 'Grade 6', schoolYear: '2026-2027', sectionId: SECTION_A });
+      if (where.id === CLASS_B) return Promise.resolve({ id: CLASS_B, subject: 'Math', gradeLevel: 'Grade 6', schoolYear: '2026-2027', sectionId: SECTION_B });
+      return Promise.resolve(null);
+    });
+
+    // The one transfer on record: this student left Section A for Section B.
+    prismaFake.sectionTransfer.findMany.mockResolvedValue([
+      { studentId: STUDENT, fromSectionId: SECTION_A, toSectionId: SECTION_B },
+    ]);
+
+    prismaFake.submission.findMany.mockResolvedValue([{
+      id: 'sub-to-1', studentId: STUDENT, status: 'GRADED', hitlScore: 40, aiScore: null, skillScores: null, createdAt: '2026-07-01T00:00:00Z',
+      activity: {
+        id: 'act-to-1', title: 'Quiz 1', type: 'QUIZ', points: 100, classId: CLASS_B, component: 'WW',
+        rubric: null, classLesson: null,
+        class: { subject: 'Math', gradeLevel: 'Grade 6' },
+      },
+    }]);
+
+    const res = await call('GET', `/api/teacher/${T1}/analytics`, { token: tokenFor({ id: T1 }) });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+
+    const trend = body.studentTrends.find(t => t.student.id === STUDENT);
+    expect(trend).toBeDefined();
+    expect(trend.transferredOut).toBe(true);
+    // The mark stays in the class average — a record of what happened while
+    // they were here.
+    expect(trend.avgPercent).toBe(40);
+    expect(body.summary.classAverage).toBe(40);
+
+    // But they are off the action list: this teacher no longer owns the
+    // follow-up.
+    expect(body.needsSupport.find(n => n.student.id === STUDENT)).toBeUndefined();
   });
 });

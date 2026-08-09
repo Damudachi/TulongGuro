@@ -3615,7 +3615,12 @@ const CARRIED_OVER_SELECT = {
   activity: {
     select: {
       id: true, title: true, points: true, component: true, deadline: true, classId: true,
-      class: { select: { id: true, name: true, section: { select: { id: true, name: true, gradeLevel: true } } } },
+      // subject + gradeLevel are what workingAverageAcrossSubjects keys its
+      // per-subject grouping on. Without them every carried submission keys
+      // as '|' — a phantom extra "subject" holding all of a student's carried
+      // work — and the pooled average becomes the mean of their real subject
+      // average and that phantom, instead of one merged subject average.
+      class: { select: { id: true, name: true, subject: true, gradeLevel: true, section: { select: { id: true, name: true, gradeLevel: true } } } },
     },
   },
 };
@@ -6756,6 +6761,40 @@ app.get('/api/teacher/:teacherId/analytics', async (req, res) => {
       };
     }).sort((a, b) => a.avgPercent - b.avgPercent);
 
+    // ── A learner who transferred in ──
+    //
+    // `graded` above is scoped to this teacher's classIds, so a pupil who
+    // arrived in week 6 is measured on weeks 6 onward alone. That is both a
+    // false alarm generator — one mark below the line reads as at-risk — and a
+    // way to miss a genuinely struggling child behind too small a sample. The
+    // at-risk list is the whole point of this endpoint, so it has to see the
+    // subject history the grade actually rests on.
+    for (const cls of classes) {
+      const carried = await carriedOverForClass(prisma, {
+        classId: cls.id,
+        studentIds: uniqueStudents.map(s => s.id),
+      });
+      for (const [studentId, subs] of carried) {
+        if (!byStudent.has(studentId)) byStudent.set(studentId, []);
+        byStudent.get(studentId).push(...subs);
+      }
+    }
+
+    // ── A learner who transferred out ──
+    //
+    // Their marks stay in this teacher's class average, because the average is
+    // a record of what happened and they were here when it did. They come off
+    // needsSupport, because that is an action list and this child is now
+    // somebody else's to act on.
+    const sectionIds = [...new Set(classes.map(c => c.sectionId).filter(Boolean))];
+    const departures = sectionIds.length
+      ? await prisma.sectionTransfer.findMany({
+          where: { fromSectionId: { in: sectionIds }, studentId: { in: uniqueStudents.map(s => s.id) } },
+          select: { studentId: true },
+        })
+      : [];
+    const transferredOut = new Set(departures.map(d => d.studentId));
+
     // ── Per-student summary ──
     const studentTrends = [];
     const needsSupport = [];
@@ -6763,7 +6802,7 @@ app.get('/api/teacher/:teacherId/analytics', async (req, res) => {
     for (const student of uniqueStudents) {
       const subs = byStudent.get(student.id) || [];
       if (subs.length === 0) {
-        studentTrends.push({ student, gradedCount: 0, avgPercent: null, pointsEarned: 0, pointsPossible: 0, latest: null, skillScores: {}, history: [] });
+        studentTrends.push({ student, gradedCount: 0, avgPercent: null, pointsEarned: 0, pointsPossible: 0, latest: null, skillScores: {}, history: [], transferredOut: transferredOut.has(student.id) });
         continue;
       }
 
@@ -6798,7 +6837,8 @@ app.get('/api/teacher/:teacherId/analytics', async (req, res) => {
           totalPoints: last.activity?.points || 100
         },
         skillScores: latestSkills,
-        history: percents.slice(-5)
+        history: percents.slice(-5),
+        transferredOut: transferredOut.has(student.id)
       });
 
       // ── Who could use a hand? Stated as encouragement, not alarm. ──
@@ -6825,7 +6865,9 @@ app.get('/api/teacher/:teacherId/analytics', async (req, res) => {
           }
         }
       }
-      if (reasons.length) needsSupport.push({ student, avgPercent, reasons });
+      if (reasons.length && !transferredOut.has(student.id)) {
+        needsSupport.push({ student, avgPercent, reasons });
+      }
     }
 
     // Lowest averages first — that's who to look at.
