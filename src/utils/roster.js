@@ -37,12 +37,19 @@ export function previewPassword(raw) {
 }
 
 /**
+ * Strip commas from a name — the two-column editor no longer needs "Last,
+ * First" as a separator (the birthday lives in its own column), and a stray
+ * comma in the stored name breaks first-name extraction for the greeting and
+ * any downstream split. Collapses the extra space it leaves behind.
+ */
+export const stripNameCommas = (text) => (text || '').replace(/,/g, ' ').replace(/\s+/g, ' ').trimStart();
+
+/**
  * Turns pasted or extracted text into editor rows.
  *
- * Splits each line on its LAST comma, and only when what follows contains a
- * digit — so "Dela Cruz, Juan" stays one name while "Dela Cruz, Juan,
- * 03/15/2014" gives up its birthday. This is what makes pasting a column
- * straight out of a School Form work without the teacher reformatting it.
+ * Splits each line on its LAST comma only when a digit follows — so
+ * "Dela Cruz, Juan, 03/15/2014" gives up its birthday. Any remaining commas in
+ * the name portion are then stripped, since the name column is comma-free.
  */
 export function parseRosterLines(text) {
   return (text || '')
@@ -53,7 +60,7 @@ export function parseRosterLines(text) {
       const cut = line.lastIndexOf(',');
       const looksDated = cut > 0 && /\d/.test(line.slice(cut + 1));
       return {
-        name: (looksDated ? line.slice(0, cut) : line).trim(),
+        name: stripNameCommas((looksDated ? line.slice(0, cut) : line)).trim(),
         birthday: looksDated ? line.slice(cut + 1).trim() : '',
       };
     })
@@ -62,6 +69,28 @@ export function parseRosterLines(text) {
 
 /** A row the teacher has actually put something in. */
 export const isFilledRow = (row) => Boolean(row?.name?.trim());
+
+/**
+ * Best-guess first name for a greeting.
+ *
+ * Rosters are entered last-name-first to match DepEd School Form 1 sorting,
+ * so a naive `.split(' ')[0]` on the stored name yields the surname — the
+ * dashboard greeted a learner by their family name. Two shapes to handle:
+ *
+ *   "Dela Cruz, Juan"  → take what follows the last comma → "Juan"
+ *   "Dela Cruz Juan"   → no comma; take the trailing word → "Juan"
+ *
+ * Both collapse to the first token of the tail, which is enough for a "Hello,
+ * X!" line. Falls back to the whole string if nothing else works.
+ */
+export function firstNameFromRoster(fullName) {
+  const raw = (fullName || '').trim();
+  if (!raw) return '';
+  const tail = raw.includes(',')
+    ? raw.slice(raw.lastIndexOf(',') + 1).trim()
+    : raw.split(/\s+/).pop();
+  return (tail || raw).split(/\s+/)[0];
+}
 
 /** A roster with nothing in it yet — one empty row to type into. */
 export const emptyRoster = () => [{ name: '', birthday: '' }];

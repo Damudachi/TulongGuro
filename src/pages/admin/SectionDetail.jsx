@@ -8,6 +8,7 @@ import { API_URL, apiFetch } from '../../config';
 import { GRADE_LEVELS } from '../../constants/school';
 import StudentCredentials from '../../components/StudentCredentials';
 import SectionMoveConfirm from '../../components/SectionMoveConfirm';
+import { stripNameCommas } from '../../utils/roster';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
 
@@ -126,7 +127,9 @@ export default function AdminSectionDetail() {
       student.name
     );
     if (name === null) return;
-    const trimmed = name.trim();
+    // Match the roster editor — the stored name is comma-free so downstream
+    // first-name extraction (student greeting, sorting) stays predictable.
+    const trimmed = stripNameCommas(name).trim();
     if (!trimmed || trimmed === student.name) return;
     call(
       `${API_URL}/api/admin/${admin.id}/sections/${sectionId}/students/${student.id}`,
@@ -322,12 +325,13 @@ export default function AdminSectionDetail() {
       {/* Add students */}
       {addOpen && (
         <div className="bg-blue-50/60 border border-blue-200 rounded-2xl p-4 mb-6">
-          <label className="block text-xs font-medium text-slate-600 mb-1">Student names — last name first, one per line</label>
-          <textarea rows={4} value={studentsText} onChange={e => setStudentsText(e.target.value)}
-            placeholder={'Dela Cruz, Juan\nSantos, Maria Clara'}
+          <label className="block text-xs font-medium text-slate-600 mb-1">Student names — last name first, one per line, no commas</label>
+          <textarea rows={4} value={studentsText}
+            onChange={e => setStudentsText(e.target.value.split('\n').map(stripNameCommas).join('\n'))}
+            placeholder={'Dela Cruz Juan\nSantos Maria Clara'}
             className="w-full border border-slate-200 p-2 rounded-lg text-sm outline-none focus:ring-2 focus:ring-brand-navy resize-none bg-white" />
           <p className="text-[11px] text-slate-400 mt-1">
-            Enter names <span className="font-bold text-slate-500">last name first</span> — rosters and gradebooks sort by this.
+            Enter names <span className="font-bold text-slate-500">last name first, without commas</span> — rosters and gradebooks sort by this.
             Anyone already enrolled in another section is listed for you to confirm before being moved.
             Password: their birthday as MMDDYYYY, or a random code shown once after adding if there is no birthday on file.
           </p>

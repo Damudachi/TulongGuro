@@ -3,8 +3,32 @@ import { Link } from 'react-router-dom';
 import { BookOpen, Eye, EyeOff, UploadCloud, X, Image as ImageIcon, ArrowLeft, Clock } from 'lucide-react';
 import { API_URL, apiFetch } from '../config';
 
-/** Suggested school colours — the admin can still pick any hex. */
-const COLOR_PRESETS = ['#2B59C3', '#0A2463', '#2A9D9A', '#EE2F80', '#8E5CAF', '#C9A417', '#7E9410', '#4A9BC9'];
+/**
+ * Suggested school colours — the admin can still pick any hex via the picker
+ * below. Spread around the colour wheel so a school likely to have a red, a
+ * maroon or a burnt-orange banner (common on Philippine school seals) does not
+ * have to reach for the free-form picker just to get near their real colour.
+ */
+const COLOR_PRESETS = [
+  '#DC2626', // red
+  '#E11D48', // rose
+  '#EE2F80', // pink
+  '#EA580C', // orange
+  '#D97706', // amber
+  '#C9A417', // gold
+  '#7E9410', // olive
+  '#16A34A', // green
+  '#059669', // emerald
+  '#2A9D9A', // teal
+  '#0E7490', // cyan
+  '#4A9BC9', // sky
+  '#2B59C3', // blue
+  '#0A2463', // navy
+  '#7C3AED', // violet
+  '#8E5CAF', // purple
+  '#831843', // maroon
+  '#475569', // slate
+];
 
 /** Fallback swatch when the school picks no colour of its own. */
 const DEFAULT_BRAND = '#2B59C3';

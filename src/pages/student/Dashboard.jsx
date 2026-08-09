@@ -8,6 +8,7 @@ import SkillProgressChart from '../../components/SkillProgressChart';
 import { ONBOARDING, hasSeenOnboarding, markOnboardingSeen } from '../../utils/onboarding';
 import SchoolBadge from '../../components/SchoolBadge';
 import { StatTile } from '../../components/PageHeader';
+import { firstNameFromRoster } from '../../utils/roster';
 
 /**
  * Shown once, the first time a learner has a grade to actually look at.
@@ -76,7 +77,7 @@ export default function StudentDashboard() {
   );
 
   const user = JSON.parse(localStorage.getItem('user') || '{}');
-  const firstName = (data?.student?.name || user.name || 'Student').split(' ')[0];
+  const firstName = firstNameFromRoster(data?.student?.name || user.name) || 'Student';
   const submissions = data?.submissions || [];
   const stars = data?.stars || 0;
   const avgGrade = data?.avgGrade || 0;

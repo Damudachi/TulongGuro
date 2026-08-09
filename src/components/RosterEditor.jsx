@@ -1,5 +1,5 @@
 import { Upload, Plus, X } from 'lucide-react';
-import { isReadableDate, previewPassword, parseRosterLines, isFilledRow, withBlankRow, emptyRoster } from '../utils/roster';
+import { isReadableDate, previewPassword, parseRosterLines, isFilledRow, withBlankRow, emptyRoster, stripNameCommas } from '../utils/roster';
 
 /**
  * The class list, as a name column and a birthday column.
@@ -96,9 +96,11 @@ export default function RosterEditor({
       {/* Surname first, matching the DepEd School Form 1 the roster is copied
           from — and it is what the class list, the gradebook and every export
           are sorted by, so a mixed roster sorts by first name for some
-          learners and surname for others. */}
+          learners and surname for others. No commas: the birthday has its own
+          column, and a stray comma in the stored name breaks first-name
+          extraction downstream. */}
       <p className="text-xs font-medium text-brand-navy bg-blue-50 border border-blue-100 rounded-lg px-3 py-2 mb-2">
-        Enter names <span className="font-bold">last name first</span> — e.g. <span className="font-mono">Dela Cruz, Juan</span>.
+        Enter names <span className="font-bold">last name first, without commas</span> — e.g. <span className="font-mono">Dela Cruz Juan</span>.
         You can paste a whole list into the first box.
       </p>
 
@@ -119,9 +121,9 @@ export default function RosterEditor({
               <input
                 type="text"
                 value={row.name}
-                onChange={(e) => setRow(i, { name: e.target.value })}
+                onChange={(e) => setRow(i, { name: stripNameCommas(e.target.value) })}
                 onPaste={(e) => handlePaste(i, e)}
-                placeholder={i === 0 ? 'Dela Cruz, Juan' : ''}
+                placeholder={i === 0 ? 'Dela Cruz Juan' : ''}
                 aria-label={`Learner ${i + 1} name`}
                 className="w-full px-2 py-1.5 text-sm border border-slate-200 rounded-md focus:ring-2 focus:ring-brand-navy outline-none"
               />
