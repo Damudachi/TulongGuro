@@ -37,19 +37,36 @@ export function previewPassword(raw) {
 }
 
 /**
- * Strip commas from a name — the two-column editor no longer needs "Last,
- * First" as a separator (the birthday lives in its own column), and a stray
- * comma in the stored name breaks first-name extraction for the greeting and
- * any downstream split. Collapses the extra space it leaves behind.
+ * Tidy a typed name, keeping the surname comma.
+ *
+ * This used to strip every comma, on the reasoning that the two-column editor
+ * no longer needs "Last, First" as a separator. It does not need it — but the
+ * comma is the only thing in the stored string that says where the surname
+ * ends, and removing it made the greeting unfixable: "Dela Cruz Juan Miguel"
+ * cannot be told from "Dela Cruz Juan Miguel" with a two-word surname, so
+ * firstNameFromRoster fell back to the trailing word and greeted a child by
+ * their second given name.
+ *
+ * So: a comma is optional to type and preserved when typed. At most one is
+ * kept — a name has one surname boundary, and a second comma is a typo or a
+ * paste artefact. Whitespace is collapsed either way.
  */
-export const stripNameCommas = (text) => (text || '').replace(/,/g, ' ').replace(/\s+/g, ' ').trimStart();
+export const normalizeRosterName = (text) => {
+  const collapsed = (text || '').replace(/\s+/g, ' ').trimStart();
+  const first = collapsed.indexOf(',');
+  if (first === -1) return collapsed;
+  // Keep the first comma, demote any others to spaces.
+  const head = collapsed.slice(0, first + 1);
+  const tail = collapsed.slice(first + 1).replace(/,/g, ' ').replace(/\s+/g, ' ');
+  return `${head}${tail}`;
+};
 
 /**
  * Turns pasted or extracted text into editor rows.
  *
  * Splits each line on its LAST comma only when a digit follows — so
- * "Dela Cruz, Juan, 03/15/2014" gives up its birthday. Any remaining commas in
- * the name portion are then stripped, since the name column is comma-free.
+ * "Dela Cruz, Juan, 03/15/2014" gives up its birthday. The surname comma in
+ * the name portion survives: it is what marks where the family name ends.
  */
 export function parseRosterLines(text) {
   return (text || '')
@@ -60,7 +77,7 @@ export function parseRosterLines(text) {
       const cut = line.lastIndexOf(',');
       const looksDated = cut > 0 && /\d/.test(line.slice(cut + 1));
       return {
-        name: stripNameCommas((looksDated ? line.slice(0, cut) : line)).trim(),
+        name: normalizeRosterName((looksDated ? line.slice(0, cut) : line)).trim(),
         birthday: looksDated ? line.slice(cut + 1).trim() : '',
       };
     })
@@ -71,25 +88,39 @@ export function parseRosterLines(text) {
 export const isFilledRow = (row) => Boolean(row?.name?.trim());
 
 /**
- * Best-guess first name for a greeting.
+ * The name to greet a learner by: everything that is not their surname.
  *
- * Rosters are entered last-name-first to match DepEd School Form 1 sorting,
- * so a naive `.split(' ')[0]` on the stored name yields the surname — the
- * dashboard greeted a learner by their family name. Two shapes to handle:
+ * Rosters are entered last-name-first to match DepEd School Form 1 sorting, so
+ * a naive `.split(' ')[0]` yields the family name — the dashboard used to
+ * greet children by their surname. The fix for that then took only the FIRST
+ * token of the tail, which is wrong the other way for the very common
+ * two-given-name shape: a child called "Juan Miguel" was greeted as "Juan"
+ * when there was a comma, and as "Miguel" when there was not (the tail fell
+ * back to the trailing word). Neither is their name.
  *
- *   "Dela Cruz, Juan"  → take what follows the last comma → "Juan"
- *   "Dela Cruz Juan"   → no comma; take the trailing word → "Juan"
+ * The whole given-name portion is returned instead:
  *
- * Both collapse to the first token of the tail, which is enough for a "Hello,
- * X!" line. Falls back to the whole string if nothing else works.
+ *   "Dela Cruz, Juan Miguel" → everything after the comma  → "Juan Miguel"
+ *   "Dela Cruz Juan Miguel"  → no comma, so drop one token → "Cruz Juan Miguel"
+ *
+ * The comma case is exact. The no-comma case cannot be: nothing in the string
+ * says whether the surname is one word or two, and this is why
+ * normalizeRosterName keeps a typed comma. Dropping exactly one leading token
+ * is the conservative guess — it is right for a single-word surname, the
+ * common case, and its failure mode is including part of the surname rather
+ * than greeting a child by a name that is not theirs.
+ *
+ * Falls back to the whole string when there is only one word to work with.
  */
 export function firstNameFromRoster(fullName) {
-  const raw = (fullName || '').trim();
+  const raw = (fullName || '').trim().replace(/\s+/g, ' ');
   if (!raw) return '';
-  const tail = raw.includes(',')
-    ? raw.slice(raw.lastIndexOf(',') + 1).trim()
-    : raw.split(/\s+/).pop();
-  return (tail || raw).split(/\s+/)[0];
+  if (raw.includes(',')) {
+    const tail = raw.slice(raw.indexOf(',') + 1).trim();
+    return tail || raw;
+  }
+  const words = raw.split(' ');
+  return words.length > 1 ? words.slice(1).join(' ') : raw;
 }
 
 /** A roster with nothing in it yet — one empty row to type into. */

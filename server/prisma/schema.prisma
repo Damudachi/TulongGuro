@@ -228,15 +228,21 @@ model Curriculum {
 /// Template lesson copied into a class's ClassLesson rows when a teacher
 /// applies the curriculum to a new course shell.
 model CurriculumLesson {
-  id            String     @id @default(uuid())
-  curriculumId  String
-  title         String
-  description   String?
-  outputType    String     @default("Essay")
-  weekNumber    Int?
-  defaultRubric String?
-  createdAt     DateTime   @default(now())
-  curriculum    Curriculum @relation(fields: [curriculumId], references: [id], onDelete: Cascade)
+  id               String     @id @default(uuid())
+  curriculumId     String
+  title            String
+  description      String?
+  outputType       String     @default("Essay")
+  weekNumber       Int?
+  defaultRubric    String?
+  /// The school RubricTemplate this lesson's rubric was saved as, so picking
+  /// the lesson in the Activity Builder selects that template by id rather
+  /// than a detached copy under a different name. Deliberately not a foreign
+  /// key: defaultRubric above stays the fallback, so a deleted template must
+  /// degrade to "use the embedded copy", not cascade or block the delete.
+  rubricTemplateId String?
+  createdAt        DateTime   @default(now())
+  curriculum       Curriculum @relation(fields: [curriculumId], references: [id], onDelete: Cascade)
 }
 
 model Class {
@@ -256,16 +262,20 @@ model Class {
 }
 
 model ClassLesson {
-  id            String     @id @default(uuid())
-  classId       String
-  title         String
-  description   String?
-  outputType    String     @default("Essay")
-  weekNumber    Int?
-  defaultRubric String?
-  createdAt     DateTime   @default(now())
-  activities    Activity[]
-  class         Class      @relation(fields: [classId], references: [id], onDelete: Cascade)
+  id               String     @id @default(uuid())
+  classId          String
+  title            String
+  description      String?
+  outputType       String     @default("Essay")
+  weekNumber       Int?
+  defaultRubric    String?
+  /// Carried over from CurriculumLesson when the curriculum is applied to a
+  /// class — see the note there. Copy-on-apply is deliberate (HANDOFF §4), so
+  /// this is a copy of the id, not a live link.
+  rubricTemplateId String?
+  createdAt        DateTime   @default(now())
+  activities       Activity[]
+  class            Class      @relation(fields: [classId], references: [id], onDelete: Cascade)
 }
 
 model Activity {

@@ -133,6 +133,13 @@ export default function GradebookStudent() {
 
   const { student, rows } = data;
 
+  // The distinct sections the carried rows actually came from. A learner who
+  // moved twice (A -> B -> C) carries work from both A and B when each taught
+  // this subject, so this is not always one section — see the panel below.
+  const carriedSections = [...new Set(
+    rows.filter(row => row.carriedOver && row.fromSection).map(row => row.fromSection)
+  )];
+
   return (
     <>
       <PageHeader title={student?.name || 'Student'} subtitle={student?.username} back="/teacher/gradebook" />
@@ -243,8 +250,19 @@ export default function GradebookStudent() {
                 must never let this teacher re-grade, excuse or release it. */}
             {rows.some(row => row.carriedOver) && (
               <div className="mt-6">
+                {/* A learner who moved twice (A -> B -> C) carries work from
+                    both A and B when each taught this subject, so the panel can
+                    legitimately hold rows from more than one section. `find`
+                    named only the first of them while listing all of them, and
+                    the rows themselves show className, not the section — so
+                    every row from a second source sat under a heading naming
+                    the wrong one. This is the screen a teacher opens to answer
+                    "where did this mark come from?", so the source belongs on
+                    the row when there is more than one. */}
                 <h4 className="text-xs font-extrabold uppercase tracking-wide text-navy-400 mb-2">
-                  Carried over from {rows.find(row => row.carriedOver)?.fromSection}
+                  {carriedSections.length === 1
+                    ? `Carried over from ${carriedSections[0]}`
+                    : 'Carried over from previous sections'}
                 </h4>
                 <p className="text-xs text-navy-400 font-semibold mb-3">
                   Marked by their previous teacher. These count toward the subject grade and
@@ -255,7 +273,12 @@ export default function GradebookStudent() {
                     <div key={row.submissionId} className="px-4 py-3 text-sm flex items-center justify-between gap-3">
                       <div className="min-w-0">
                         <p className="font-bold text-navy-700 truncate">{row.activityTitle}</p>
-                        {row.className && <p className="text-xs text-navy-400 font-semibold truncate">{row.className}</p>}
+                        {row.className && (
+                          <p className="text-xs text-navy-400 font-semibold truncate">
+                            {row.className}
+                            {carriedSections.length > 1 && row.fromSection && ` · ${row.fromSection}`}
+                          </p>
+                        )}
                         {row.feedback && <p className="text-xs text-navy-400 truncate">{row.feedback}</p>}
                       </div>
                       <span className="text-sm font-extrabold text-navy-700 shrink-0">

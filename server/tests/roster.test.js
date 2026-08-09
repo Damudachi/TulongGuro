@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import {
   isReadableDate, previewPassword, parseRosterLines,
   isFilledRow, withBlankRow, emptyRoster, rosterPayload,
+  normalizeRosterName, firstNameFromRoster,
 } from '../../src/utils/roster.js';
 
 /**
@@ -82,6 +83,59 @@ describe('parseRosterLines — what a paste turns into', () => {
   it('survives empty input', () => {
     expect(parseRosterLines('')).toEqual([]);
     expect(parseRosterLines(null)).toEqual([]);
+  });
+});
+
+describe('normalizeRosterName', () => {
+  it('keeps the surname comma — it is the only marker of where a family name ends', () => {
+    expect(normalizeRosterName('Dela Cruz, Juan Miguel')).toBe('Dela Cruz, Juan Miguel');
+  });
+
+  it('collapses runs of whitespace', () => {
+    expect(normalizeRosterName('Dela  Cruz,   Juan')).toBe('Dela Cruz, Juan');
+  });
+
+  it('keeps only the first comma — a name has one surname boundary', () => {
+    expect(normalizeRosterName('Dela Cruz, Juan, Miguel')).toBe('Dela Cruz, Juan Miguel');
+  });
+
+  it('leaves a comma-free name alone', () => {
+    expect(normalizeRosterName('Dela Cruz Juan')).toBe('Dela Cruz Juan');
+  });
+});
+
+describe('firstNameFromRoster — who the dashboard says hello to', () => {
+  // Two regressions live here. The original took .split(' ')[0] and greeted a
+  // child by their surname; the fix for that took only the first token of the
+  // tail, so "Juan Miguel" was greeted as "Juan" with a comma and — once
+  // commas were being stripped on save — as "Miguel" without one, because the
+  // no-comma branch fell back to the trailing word.
+  it('greets the whole given name, not just its first word', () => {
+    expect(firstNameFromRoster('Dela Cruz, Juan Miguel')).toBe('Juan Miguel');
+  });
+
+  it('greets a single given name', () => {
+    expect(firstNameFromRoster('Rizal, Jose')).toBe('Jose');
+  });
+
+  it('never greets by the trailing word, which is a second given name', () => {
+    // The reported bug: "Rizal Jose Protacio" was greeted as "Protacio".
+    expect(firstNameFromRoster('Rizal Jose Protacio')).not.toBe('Protacio');
+    expect(firstNameFromRoster('Rizal Jose Protacio')).toBe('Jose Protacio');
+  });
+
+  it('drops exactly one token when no comma was typed', () => {
+    // Cannot be exact without the comma — a two-word surname is
+    // indistinguishable from a second given name. Including part of the
+    // surname is the safer miss than greeting a child by a name that is not
+    // theirs.
+    expect(firstNameFromRoster('Dela Cruz Juan')).toBe('Cruz Juan');
+  });
+
+  it('falls back to the whole string when there is nothing to drop', () => {
+    expect(firstNameFromRoster('Madonna')).toBe('Madonna');
+    expect(firstNameFromRoster('')).toBe('');
+    expect(firstNameFromRoster(null)).toBe('');
   });
 });
 

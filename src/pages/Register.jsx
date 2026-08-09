@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
-import { BookOpen, Eye, EyeOff, UploadCloud, X, Image as ImageIcon, ArrowLeft, Clock } from 'lucide-react';
+import { BookOpen, Eye, EyeOff, UploadCloud, X, Image as ImageIcon, ArrowLeft, Clock, Pipette } from 'lucide-react';
 import { API_URL, apiFetch } from '../config';
 
 /**
@@ -264,10 +264,27 @@ export default function Register() {
                           style={{ backgroundColor: c }} />
                       ))}
                     </div>
-                    <div className="flex items-center gap-2 mt-3">
-                      <input type="color" value={brandColor || DEFAULT_BRAND}
-                        onChange={e => setBrandColor(e.target.value.toUpperCase())}
-                        className="w-9 h-9 rounded-lg cursor-pointer border-2 border-slate-200 bg-white p-0.5" />
+                    {/* The presets are only a starting point, and a bare
+                        <input type="color"> is an 8mm square that reads as a
+                        twelfth swatch rather than as the door to the full
+                        picker. A school whose seal is a specific maroon needs
+                        to know it can get there, so the control says what it
+                        is instead of relying on the swatch being recognised. */}
+                    <label className="flex items-center gap-2 mt-3 cursor-pointer w-fit group">
+                      <span className="relative inline-flex shrink-0">
+                        <input type="color" value={brandColor || DEFAULT_BRAND}
+                          onChange={e => setBrandColor(e.target.value.toUpperCase())}
+                          aria-label="Pick any colour with the colour wheel"
+                          className="w-9 h-9 rounded-lg cursor-pointer border-2 border-slate-200 bg-white p-0.5" />
+                        <Pipette className="w-3.5 h-3.5 absolute -right-1 -bottom-1 p-0.5 rounded-full bg-white text-navy-500 border border-slate-200 pointer-events-none" />
+                      </span>
+                      <span className="text-xs font-bold text-navy-500 group-hover:text-navy-700 underline decoration-dotted underline-offset-2">
+                        Not your colour? Pick any shade
+                      </span>
+                    </label>
+                    {/* Outside the <label>: a button inside it would open the
+                        colour picker on its way to clearing the colour. */}
+                    <div className="flex items-center gap-2 mt-2">
                       <span className="text-xs font-mono font-bold text-navy-500">{brandColor || 'Default'}</span>
                       {brandColor && (
                         <button type="button" onClick={() => setBrandColor('')}

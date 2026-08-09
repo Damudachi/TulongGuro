@@ -1093,6 +1093,75 @@ describe('a transferred student\'s exported grade uses their whole subject histo
   });
 });
 
+describe('the export still contains a learner who transferred out', () => {
+  // HANDOFF §5.2 B. The export built its roster from Section.students — where a
+  // learner is *now* — so a pupil who moved was not a blank row or a flagged
+  // row but no row at all, while every mark this teacher gave them sat in the
+  // database untouched. This is the file that becomes a report card.
+  it('lists them with the date they left, and keeps them out of the class average', async () => {
+    const CLASS_ID = 'class-departed-export';
+    const SECTION_ID = 'sec-departed-export';
+    const STAYED = 'student-departed-stayed';
+    const LEFT = 'student-departed-left';
+    const ACT = 'act-departed-ww';
+
+    prismaFake.class.findFirst.mockResolvedValue({ id: CLASS_ID });
+    prismaFake.class.findUnique.mockImplementation(({ where }) => (
+      where.id === CLASS_ID ? Promise.resolve({
+        id: CLASS_ID, name: 'English 6', subject: 'English', gradeLevel: 'Grade 6',
+        schoolYear: '2026-2027', sectionId: SECTION_ID,
+        section: {
+          id: SECTION_ID, name: 'Masipag', gradeLevel: 'Grade 6', schoolId: null,
+          // Jose is NOT here — he has already moved on. That is the point.
+          students: [{ id: STAYED, name: 'Ana Reyes', username: 'ana' }],
+        },
+        activities: [{
+          id: ACT, title: 'Written Work 1', points: 100, component: 'WW', createdAt: '2026-06-01T00:00:00Z',
+          submissions: [
+            { studentId: STAYED, aiScore: null, hitlScore: 90, status: 'GRADED', archivedAt: null, excusedAt: null },
+            // Awarded by this teacher, before Jose left. Never deleted.
+            { studentId: LEFT, aiScore: null, hitlScore: 70, status: 'GRADED', archivedAt: null, excusedAt: null },
+          ],
+        }],
+      }) : Promise.resolve(null)
+    ));
+    prismaFake.user.findMany.mockResolvedValue([{ id: LEFT, name: 'Jose Rizal', username: 'jose' }]);
+    // Two different callers hit sectionTransfer.findMany here: the departure
+    // lookup (fromSectionId is this section) and carriedOverPrefetch
+    // (fromSectionId: { not: null }). Only the first has anything to say.
+    prismaFake.sectionTransfer.findMany.mockImplementation(({ where }) => (
+      where.fromSectionId === SECTION_ID
+        ? Promise.resolve([{ studentId: LEFT, transferredAt: '2026-07-15T00:00:00Z' }])
+        : Promise.resolve([])
+    ));
+    prismaFake.class.findMany.mockResolvedValue([]);
+    prismaFake.submission.findMany.mockResolvedValue([]);
+
+    const res = await call('GET', `/api/teacher/${T1}/gradebook/export?classId=${CLASS_ID}&format=csv`, {
+      token: tokenFor({ id: T1 }),
+    });
+    const csv = await res.text();
+    const lines = csv.split('\n');
+
+    // (a) The row exists at all. Before the fix there was no line for Jose.
+    const departedLine = lines.find(l => l.startsWith('"Jose Rizal'));
+    expect(departedLine).toBeDefined();
+    // (b) Named with the day he left, so his blank cells for work set after
+    // that date read as "was not here" rather than "did not hand it in".
+    expect(departedLine).toContain('transferred out 15 July 2026');
+    // (c) Carrying his real mark.
+    expect(departedLine.split(',').pop()).toBe('70%');
+    // (d) The sheet says why he is on it.
+    expect(lines.find(l => l.startsWith('# Transferred out:'))).toContain('1 learner(s)');
+
+    // (e) CLASS AVERAGE is the current class's standing — 90, Ana alone. His
+    // row rests on whatever part of the quarter he was present for, so
+    // averaging it in would compare two different things.
+    const avgLine = lines.find(l => l.startsWith('CLASS AVERAGE'));
+    expect(avgLine.split(',').pop()).toBe('90%');
+  });
+});
+
 describe('at-risk detection for a transferred student', () => {
   // One graded item since arriving is not evidence of anything. Flagging on it
   // is noise; hiding a struggling child behind it is worse.
@@ -1202,6 +1271,96 @@ describe('GET /api/teacher/:teacherId/analytics and a transferred student', () =
     expect(trend).toBeDefined();
     expect(trend.gradedCount).toBe(3); // 1 own + 2 carried
     expect(trend.avgPercent).toBe(83); // merged single-subject average, not the 72 a phantom bucket would give
+  });
+
+  it('orders a transferred-in student\'s merged history by date, so "latest" is their newest work and the trend runs forwards', async () => {
+    // `graded` arrives ordered createdAt asc; carried work is appended to the
+    // tail. For a learner who transferred IN, that work is OLDER than anything
+    // their new teacher set — so without a re-sort, subs[length - 1] named a
+    // previous section's activity as their most recent, the sparkline rendered
+    // right-to-left, and the "easing down" check read the last three of an
+    // anti-chronological array and could flip direction.
+    //
+    // Maria: three carried marks in January (88, 90, 85), then one own mark in
+    // June (55). Chronologically her scores are sliding; appended untouched
+    // they read 55, 88, 90, 85 — improving, with an old QA as "latest".
+    const CLASS_NEW = 'class-chrono-new';
+    const CLASS_OLD = 'class-chrono-old';
+    const SECTION_NEW = 'sec-chrono-new';
+    const SECTION_OLD = 'sec-chrono-old';
+    const STUDENT = 'student-chrono';
+
+    const oldClassShape = {
+      id: CLASS_OLD, name: 'English 6 (Old)', subject: 'English', gradeLevel: 'Grade 6',
+      section: { id: SECTION_OLD, name: 'Masaya', gradeLevel: 'Grade 6' },
+    };
+    const carried = (id, title, component, score, createdAt) => ({
+      id, studentId: STUDENT, activityId: `act-${id}`, status: 'GRADED',
+      hitlScore: score, aiScore: null, hitlFeedback: null, aiFeedback: null,
+      archivedAt: null, excusedAt: null, excusedReason: null, isLate: false,
+      createdAt, gradedAt: createdAt, releasedAt: null,
+      activity: {
+        id: `act-${id}`, title, points: 100, component, deadline: createdAt, classId: CLASS_OLD,
+        class: oldClassShape,
+      },
+    });
+
+    prismaFake.class.findMany.mockImplementation(({ where }) => {
+      if (where?.teacherId) {
+        return Promise.resolve([{
+          id: CLASS_NEW, name: 'English 6', subject: 'English', gradeLevel: 'Grade 6',
+          teacherId: T1, sectionId: SECTION_NEW,
+          section: { id: SECTION_NEW, name: 'Masipag', students: [{ id: STUDENT, name: 'Maria Clara', username: 'maria' }] },
+        }]);
+      }
+      if (where?.sectionId?.in?.includes(SECTION_OLD)) {
+        return Promise.resolve([{ id: CLASS_OLD, subject: 'English', gradeLevel: 'Grade 6', schoolYear: '2026-2027', sectionId: SECTION_OLD }]);
+      }
+      return Promise.resolve([]);
+    });
+    prismaFake.class.findUnique.mockImplementation(({ where }) => (
+      where.id === CLASS_NEW
+        ? Promise.resolve({ id: CLASS_NEW, subject: 'English', gradeLevel: 'Grade 6', schoolYear: '2026-2027', sectionId: SECTION_NEW })
+        : Promise.resolve(null)
+    ));
+    prismaFake.sectionTransfer.findMany.mockResolvedValue([
+      { studentId: STUDENT, fromSectionId: SECTION_OLD, toSectionId: SECTION_NEW },
+    ]);
+    prismaFake.submission.findMany.mockImplementation(({ where }) => {
+      if (where.archivedAt === null) {
+        if (!where.activity.classId.in.includes(CLASS_OLD)) return Promise.resolve([]);
+        return Promise.resolve([
+          carried('sub-chrono-ww', 'Old WW', 'WW', 88, '2026-01-05T00:00:00Z'),
+          carried('sub-chrono-pt', 'Old PT', 'PT', 90, '2026-01-06T00:00:00Z'),
+          carried('sub-chrono-qa', 'Old QA', 'QA', 85, '2026-01-07T00:00:00Z'),
+        ]);
+      }
+      return Promise.resolve([{
+        id: 'sub-chrono-own', studentId: STUDENT, status: 'GRADED', hitlScore: 55, aiScore: null,
+        skillScores: null, createdAt: '2026-06-01T00:00:00Z',
+        activity: {
+          id: 'act-chrono-own', title: 'June WW', type: 'WRITTEN_WORK', points: 100, classId: CLASS_NEW,
+          component: 'WW', rubric: null, classLesson: null,
+          class: { subject: 'English', gradeLevel: 'Grade 6' },
+        },
+      }]);
+    });
+
+    const res = await call('GET', `/api/teacher/${T1}/analytics`, { token: tokenFor({ id: T1 }) });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    const trend = body.studentTrends.find(t => t.student.id === STUDENT);
+
+    // (a) "Latest" is the June work she actually did most recently, not the
+    // January QA that happened to be appended last.
+    expect(trend.latest.activityTitle).toBe('June WW');
+    expect(trend.latest.percent).toBe(55);
+    // (b) The sparkline runs oldest -> newest, so its trailing point is 55.
+    expect(trend.history).toEqual([88, 90, 85, 55]);
+    // (c) Her real slide is caught. On the unsorted array the last three read
+    // 88, 90, 85 and the check does not fire at all.
+    const maria = body.needsSupport.find(s => s.student.id === STUDENT);
+    expect(maria?.reasons.some(r => r.kind === 'trend')).toBe(true);
   });
 
   it('a student who left the section is absent from studentTrends and needsSupport, but their mark before leaving still counts in the class record', async () => {

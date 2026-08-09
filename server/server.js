@@ -2696,6 +2696,7 @@ async function saveCurriculumRubrics(curriculum, lessons) {
   );
 
   const bySignature = new Map();
+  const signatureByLesson = new Map();
   const skipped = [];
 
   for (const lesson of lessons) {
@@ -2718,36 +2719,47 @@ async function saveCurriculumRubrics(curriculum, lessons) {
 
     const key = signature(criteria);
     if (!bySignature.has(key)) {
-      bySignature.set(key, { outputType: lesson.outputType || 'Essay', criteria, lessons: [label] });
+      bySignature.set(key, { key, outputType: lesson.outputType || 'Essay', criteria, lessons: [label] });
     } else {
       // Same rubric on another lesson — genuinely one template, as intended.
       bySignature.get(key).lessons.push(label);
     }
+    // Which template each lesson ends up on, so the lesson row can point at it
+    // and the Activity Builder can select the real template rather than an
+    // unnamed copy of the same criteria.
+    signatureByLesson.set(lesson, key);
   }
 
   if (bySignature.size === 0) {
-    return { saved: 0, merged: 0, skipped, names: [] };
+    return { saved: 0, merged: 0, skipped, names: [], templateIdByLesson: new Map() };
   }
 
-  // Name by what the rubric grades, not by the lesson — one "Survey/Form"
-  // rubric is reusable across every survey lesson. Where a single output type
-  // has several distinct rubrics, disambiguate rather than overwrite.
-  const byType = new Map();
-  for (const entry of bySignature.values()) {
-    const list = byType.get(entry.outputType) || [];
-    list.push(entry);
-    byType.set(entry.outputType, list);
-  }
-  const candidates = [];
-  for (const [outputType, entries] of byType) {
-    entries.forEach((entry, i) => {
-      const base = `${outputType} — ${curriculum.subject} ${curriculum.gradeLevel}`;
-      candidates.push({
-        ...entry,
-        // "Essay — English Grade 6" and "Essay — English Grade 6 (Week 3: ...)"
-        name: entries.length === 1 ? base : `${base} (${entry.lessons[0]})`.slice(0, 180),
-      });
-    });
+  // ── Naming ──
+  //
+  // Lesson-led, not output-type-led. These templates were previously all named
+  // "Essay — English Grade 6", which told a teacher browsing "Your school
+  // rubrics" nothing about which week's work the rubric was written for — and
+  // meant the name shown when a lesson was picked in the Activity Builder bore
+  // no relation to the name in the rubric tab. A rubric genuinely shared by
+  // several lessons keeps the output-type name, because that is what it is.
+  const suffix = `${curriculum.subject} ${curriculum.gradeLevel}`;
+  const entries = [...bySignature.values()];
+  const candidates = entries.map(entry => ({
+    ...entry,
+    name: (entry.lessons.length === 1
+      // "Week 3: Elements of a Short Story — English Grade 6"
+      ? `${entry.lessons[0]} — ${suffix}`
+      // Shared by several lessons, so name it for what it grades.
+      : `${entry.outputType} — ${suffix}`).slice(0, 180),
+  }));
+
+  // Two lessons with the same title but different rubrics would collide. Number
+  // the later ones rather than letting the dedupe below silently drop them.
+  const seenNames = new Map();
+  for (const c of candidates) {
+    const n = (seenNames.get(c.name) || 0) + 1;
+    seenNames.set(c.name, n);
+    if (n > 1) c.name = `${c.name} (${n})`.slice(0, 180);
   }
 
   // Don't duplicate a template the school already has under the same name.
@@ -2773,13 +2785,30 @@ async function saveCurriculumRubrics(curriculum, lessons) {
     });
   }
 
+  // ── Which template each lesson landed on ──
+  //
+  // Read back by name rather than trusting createMany's count, because a name
+  // already taken by an earlier import is reused rather than duplicated — the
+  // lesson still has to point at that existing template, not at nothing.
+  const saved = await prisma.rubricTemplate.findMany({
+    where: { schoolId: curriculum.schoolId, name: { in: candidates.map(c => c.name) } },
+    select: { id: true, name: true },
+  });
+  const idByName = new Map(saved.map(r => [r.name, r.id]));
+  const nameByKey = new Map(candidates.map(c => [c.key, c.name]));
+  const templateIdByLesson = new Map();
+  for (const [lesson, key] of signatureByLesson) {
+    const id = idByName.get(nameByKey.get(key));
+    if (id) templateIdByLesson.set(lesson, id);
+  }
+
   // How many lessons shared a rubric with another — worth reporting so a
   // count of 3 from 20 lessons doesn't look like something went wrong.
   const merged = [...bySignature.values()].reduce((n, e) => n + Math.max(0, e.lessons.length - 1), 0);
   console.log(`📐 Saved ${fresh.length} rubric template(s) from curriculum "${curriculum.title}"` +
     `${merged ? `, ${merged} lesson(s) shared one` : ''}${skipped.length ? `, ${skipped.length} skipped` : ''}`);
 
-  return { saved: fresh.length, merged, skipped, names: fresh.map(r => r.name) };
+  return { saved: fresh.length, merged, skipped, names: fresh.map(r => r.name), templateIdByLesson };
 }
 
 app.get('/api/admin/:adminId/curriculums', async (req, res) => {
@@ -2845,6 +2874,12 @@ app.post('/api/admin/:adminId/curriculums', upload.single('curriculumFile'), asy
     if (req.file && !parseWarning) {
       try {
         if (lessons.length) {
+          // Templates first: each lesson is then stored already pointing at the
+          // school rubric its criteria were saved as, so picking that lesson in
+          // the Activity Builder selects the template by id and shows the name
+          // the rubric tab shows. Saving the lessons first and back-filling
+          // would leave a window where the two disagreed.
+          rubricReport = await saveCurriculumRubrics(curriculum, lessons);
           await prisma.curriculumLesson.createMany({
             data: lessons.map(l => ({
               curriculumId: curriculum.id,
@@ -2852,10 +2887,10 @@ app.post('/api/admin/:adminId/curriculums', upload.single('curriculumFile'), asy
               description: l.description || null,
               outputType: l.outputType || 'Essay',
               weekNumber: l.weekNumber ?? null,
-              defaultRubric: l.defaultRubric ? JSON.stringify(l.defaultRubric) : null
+              defaultRubric: l.defaultRubric ? JSON.stringify(l.defaultRubric) : null,
+              rubricTemplateId: rubricReport.templateIdByLesson?.get(l) || null
             }))
           });
-          rubricReport = await saveCurriculumRubrics(curriculum, lessons);
         } else {
           parseWarning = 'No lessons could be extracted from that file. You can still add them by hand.';
         }
@@ -2899,15 +2934,28 @@ app.post('/api/admin/:adminId/curriculums/:curriculumId/promote-rubrics', async 
       return res.status(404).json({ success: false, error: 'Curriculum not found in your school.' });
     }
 
-    // saveCurriculumRubrics works on the parser's shape, so reparse the stored JSON.
+    // saveCurriculumRubrics works on the parser's shape, so reparse the stored
+    // JSON. `title` is carried through because templates are now named after
+    // the lesson/week they belong to — without it every one of them would fall
+    // back to the output-type name.
     const lessons = curriculum.lessons.map(l => {
       let defaultRubric = null;
       try { defaultRubric = l.defaultRubric ? JSON.parse(l.defaultRubric) : null; } catch { /* skip malformed */ }
-      return { outputType: l.outputType, defaultRubric };
+      return { id: l.id, title: l.title, outputType: l.outputType, defaultRubric };
     });
 
     const rubricReport = await saveCurriculumRubrics(curriculum, lessons);
-    res.json({ success: true, savedRubrics: rubricReport.saved, rubricReport });
+    // Point each lesson at the template its rubric was saved as. Upload does
+    // this at insert time; here the rows already exist, so it is an update.
+    for (const [lesson, templateId] of rubricReport.templateIdByLesson) {
+      await prisma.curriculumLesson.update({
+        where: { id: lesson.id },
+        data: { rubricTemplateId: templateId },
+      });
+    }
+
+    const { templateIdByLesson, ...report } = rubricReport;   // a Map does not serialise
+    res.json({ success: true, savedRubrics: report.saved, rubricReport: report });
   } catch (e) { sendAdminError(res, e); }
 });
 
@@ -3611,6 +3659,13 @@ const CARRIED_OVER_SELECT = {
   id: true, studentId: true, activityId: true, status: true,
   hitlScore: true, aiScore: true, hitlFeedback: true, aiFeedback: true,
   archivedAt: true, excusedAt: true, excusedReason: true, isLate: true,
+  // createdAt is what lets a caller interleave carried work with the student's
+  // own by date. Analytics reads its "latest mark", its sparkline and its
+  // "easing down" trend off the tail of one merged array, and carried work is
+  // historically *older* than the work the receiving teacher set — appended
+  // without a sort it would claim a previous section's activity as the
+  // learner's most recent, and draw the trend backwards.
+  createdAt: true,
   gradedAt: true, releasedAt: true,
   activity: {
     select: {
@@ -3626,6 +3681,40 @@ const CARRIED_OVER_SELECT = {
 };
 
 /**
+ * The part of carriedOverForClass that does not depend on which class is being
+ * asked about.
+ *
+ * Both reads below are keyed only on studentIds: which sections these learners
+ * have left, and which classes are taught in those sections. A caller that
+ * loops over a teacher's classes asking the same question of each — teacher
+ * analytics does, once per class — would otherwise reissue both for
+ * byte-identical answers. A departmentalised load of ten classes meant nine
+ * redundant round trips of each against the pooler per page load.
+ *
+ * Deliberately not memoised on a module-global: the process is long-lived and
+ * a cache keyed on a student set would go stale the moment anyone transferred.
+ * Built per request, thrown away with it.
+ */
+async function carriedOverPrefetch(prisma, { studentIds }) {
+  const moves = studentIds?.length
+    ? await prisma.sectionTransfer.findMany({
+        where: { studentId: { in: studentIds }, fromSectionId: { not: null } },
+        select: { studentId: true, fromSectionId: true },
+      })
+    : [];
+  const priorSectionIds = [...new Set(moves.map(m => m.fromSectionId).filter(Boolean))];
+  // sectionId is selected because the per-class filter that used to happen in
+  // the `where` — excluding the target's own section — now happens in memory.
+  const candidates = priorSectionIds.length
+    ? await prisma.class.findMany({
+        where: { sectionId: { in: priorSectionIds } },
+        select: { id: true, subject: true, gradeLevel: true, schoolYear: true, sectionId: true },
+      })
+    : [];
+  return { moves, candidates };
+}
+
+/**
  * Work these students did in another section that counts toward this class.
  *
  * The single lookup behind the drill-down, the export, the teacher analytics
@@ -3636,11 +3725,15 @@ const CARRIED_OVER_SELECT = {
  * Batched over studentIds on purpose. Called per student it would be the same
  * N+1 the teacher analytics rewrite removed (~120 queries -> 3).
  *
+ * A caller asking about the same studentIds for class after class should build
+ * a `prefetch` once with carriedOverPrefetch and pass it in — see there for
+ * why.
+ *
  * @returns {Promise<Map<string, object[]>>} studentId -> submissions. Students
  *   with nothing carried over are absent from the map rather than present with
  *   an empty array, so callers can skip them cheaply.
  */
-async function carriedOverForClass(prisma, { classId, studentIds }) {
+async function carriedOverForClass(prisma, { classId, studentIds, prefetch = null }) {
   const empty = new Map();
   if (!classId || !studentIds?.length) return empty;
 
@@ -3650,23 +3743,16 @@ async function carriedOverForClass(prisma, { classId, studentIds }) {
   });
   if (!target) return empty;
 
-  // Sections these learners have actually left. No transfers means nobody has
-  // moved, and there is nothing to look for.
-  const moves = await prisma.sectionTransfer.findMany({
-    where: { studentId: { in: studentIds }, fromSectionId: { not: null } },
-    select: { studentId: true, fromSectionId: true },
-  });
-  const priorSectionIds = [...new Set(
-    moves.map(m => m.fromSectionId).filter(id => id && id !== target.sectionId)
-  )];
-  if (priorSectionIds.length === 0) return empty;
+  // Sections these learners have actually left, and the classes taught in
+  // them. No transfers means nobody has moved, and there is nothing to look
+  // for. Both reads are keyed only on studentIds, so a caller looping over
+  // classes can hand them in already done — the target section is the only
+  // per-class part, and it filters in memory.
+  const { candidates } = prefetch || await carriedOverPrefetch(prisma, { studentIds });
+  const fromOtherSections = candidates.filter(c => c.sectionId !== target.sectionId);
+  if (fromOtherSections.length === 0) return empty;
 
-  const candidates = await prisma.class.findMany({
-    where: { sectionId: { in: priorSectionIds } },
-    select: { id: true, subject: true, gradeLevel: true, schoolYear: true },
-  });
-
-  const { matched } = transfers.matchingSourceClasses(candidates, target);
+  const { matched } = transfers.matchingSourceClasses(fromOtherSections, target);
   if (matched.length === 0) return empty;
 
   const subs = await prisma.submission.findMany({
@@ -3753,6 +3839,87 @@ async function enrolStudents(section, studentsList, { schoolId, teacherId, actor
     select: { id: true, createdAt: true, deadline: true },
   });
 
+  // ── The confirm-screen preview, batched ──
+  //
+  // Describing what one move would do took four lookups, and they sat inside
+  // the loop below — one sequential round trip each, per candidate. A
+  // forty-name import where ten names resolve to accounts enrolled elsewhere
+  // paid forty round trips just to draw a dialog the teacher may still
+  // cancel. None of the four is per-name in shape; they all compose over the
+  // set, exactly as targetClasses/targetActivities above already do.
+  //
+  // Classified here without mutating anything. The loop re-tests the same
+  // conditions itself, so a candidate this pass includes and the loop then
+  // skips only leaves a map entry nobody reads.
+  const moveCandidates = allowMove ? [] : [...new Map(entries
+    .map(e => {
+      const normalized = e.name.toLowerCase().trim();
+      if (sectionNamesSet.has(normalized)) return null;
+      const account = schoolStudents.find(s => s.name.toLowerCase().trim() === normalized);
+      if (!account?.section || account.section.id === section.id) return null;
+      return account;
+    })
+    .filter(Boolean)
+    .map(a => [a.id, a])).values()];
+
+  const candidateIds = moveCandidates.map(a => a.id);
+  const sourceSectionIds = [...new Set(moveCandidates.map(a => a.section.id))];
+
+  // Every source section's classes at once, then bucketed by section.
+  const allSourceClasses = sourceSectionIds.length
+    ? await prisma.class.findMany({
+        where: { sectionId: { in: sourceSectionIds } },
+        select: { id: true, subject: true, gradeLevel: true, schoolYear: true, sectionId: true },
+      })
+    : [];
+  const sourceClassesBySection = new Map();
+  for (const c of allSourceClasses) {
+    if (!sourceClassesBySection.has(c.sectionId)) sourceClassesBySection.set(c.sectionId, []);
+    sourceClassesBySection.get(c.sectionId).push(c);
+  }
+
+  // How much graded work each candidate has in each of their source classes.
+  // Counted as *distinct activities*, which is what the per-name version did:
+  // it grouped by activityId and then added one per group, so a class shows
+  // "3 graded activities", not three submissions.
+  //
+  // Scoping by every candidate's source classes at once cannot cross-
+  // contaminate: buildMovePreview only ever looks up ids from the source
+  // classes of the student it is called for.
+  const gradedRows = candidateIds.length && allSourceClasses.length
+    ? await prisma.submission.findMany({
+        where: {
+          studentId: { in: candidateIds }, status: 'GRADED', archivedAt: null, excusedAt: null,
+          activity: { classId: { in: allSourceClasses.map(c => c.id) } },
+        },
+        select: { studentId: true, activityId: true, activity: { select: { classId: true } } },
+      })
+    : [];
+  const gradedActivitiesByStudent = new Map();
+  for (const row of gradedRows) {
+    const classId = row.activity?.classId;
+    if (!classId) continue;
+    if (!gradedActivitiesByStudent.has(row.studentId)) gradedActivitiesByStudent.set(row.studentId, new Map());
+    const perClass = gradedActivitiesByStudent.get(row.studentId);
+    if (!perClass.has(classId)) perClass.set(classId, new Set());
+    perClass.get(classId).add(row.activityId);
+  }
+
+  // Work each candidate already has against THIS section's activities — a
+  // learner coming back to a section they were in before. preArrivalActivityIds
+  // uses it to leave their own work alone.
+  const existingHereRows = candidateIds.length && targetActivities.length
+    ? await prisma.submission.findMany({
+        where: { studentId: { in: candidateIds }, activityId: { in: targetActivities.map(a => a.id) } },
+        select: { studentId: true, activityId: true },
+      })
+    : [];
+  const existingHereByStudent = new Map();
+  for (const row of existingHereRows) {
+    if (!existingHereByStudent.has(row.studentId)) existingHereByStudent.set(row.studentId, []);
+    existingHereByStudent.get(row.studentId).push(row.activityId);
+  }
+
   for (const entry of entries) {
     const studentName = entry.name;
     const normalizedName = studentName.toLowerCase().trim();
@@ -3769,36 +3936,15 @@ async function enrolStudents(section, studentsList, { schoolId, teacherId, actor
       // whoever is running the import, not something to do quietly.
       const currentSection = existingAccount.section;
       if (currentSection && currentSection.id !== section.id && !allowMove) {
-        const sourceClasses = await prisma.class.findMany({
-          where: { sectionId: currentSection.id },
-          select: { id: true, subject: true, gradeLevel: true, schoolYear: true },
-        });
-        const gradedCounts = await prisma.submission.groupBy({
-          by: ['activityId'],
-          where: {
-            studentId: existingAccount.id, status: 'GRADED', archivedAt: null, excusedAt: null,
-            activity: { classId: { in: sourceClasses.map(c => c.id) } },
-          },
-          _count: { _all: true },
-        });
-        const activityClass = new Map(
-          (await prisma.activity.findMany({
-            where: { id: { in: gradedCounts.map(g => g.activityId) } },
-            select: { id: true, classId: true },
-          })).map(a => [a.id, a.classId])
-        );
+        // All four reads this used to make are already done — see the batched
+        // prefetch above the loop.
+        const sourceClasses = sourceClassesBySection.get(currentSection.id) || [];
         const gradeCountByClassId = {};
-        for (const g of gradedCounts) {
-          const classId = activityClass.get(g.activityId);
-          if (classId) gradeCountByClassId[classId] = (gradeCountByClassId[classId] || 0) + 1;
+        for (const [classId, activityIds] of gradedActivitiesByStudent.get(existingAccount.id) || []) {
+          gradeCountByClassId[classId] = activityIds.size;
         }
-
-        const existingHere = await prisma.submission.findMany({
-          where: { studentId: existingAccount.id, activityId: { in: targetActivities.map(a => a.id) } },
-          select: { activityId: true },
-        });
         const preArrivalCount = transfers.preArrivalActivityIds(
-          targetActivities, new Date(), existingHere.map(s => s.activityId), isPastDeadline
+          targetActivities, new Date(), existingHereByStudent.get(existingAccount.id) || [], isPastDeadline
         ).length;
 
         pendingMoves.push({
@@ -4293,7 +4439,11 @@ app.post('/api/teacher/classes/:id/parse-curriculum', async (req, res) => {
           description: lesson.description || null,
           weekNumber: lesson.weekNumber || null,
           outputType: lesson.outputType || 'Essay',
-          defaultRubric: lesson.defaultRubric ? JSON.stringify(lesson.defaultRubric) : null
+          defaultRubric: lesson.defaultRubric ? JSON.stringify(lesson.defaultRubric) : null,
+          // Copied, not linked — curriculum is copy-on-apply by design
+          // (HANDOFF §4). The id still resolves to a live school template on
+          // read, which is what lets the Activity Builder name it correctly.
+          rubricTemplateId: lesson.rubricTemplateId || null
         }
       });
       createdLessons.push(created);
@@ -6845,10 +6995,18 @@ app.get('/api/teacher/:teacherId/analytics', async (req, res) => {
     // of once, silently inflating avgPercent, gradedCount and the "easing
     // down" trend for every student it touches.
     const pooledCarriedIds = new Set();
+    // Whose merged history needs re-sorting afterwards; see the sort below.
+    const touchedByCarried = new Set();
+    // Built once for the whole loop. The student set is the same on every
+    // iteration, so the two lookups this covers would otherwise be reissued
+    // per class for identical answers — see carriedOverPrefetch.
+    const carriedStudentIds = uniqueStudents.map(s => s.id);
+    const carriedPrefetch = await carriedOverPrefetch(prisma, { studentIds: carriedStudentIds });
     for (const cls of classes) {
       const carried = await carriedOverForClass(prisma, {
         classId: cls.id,
-        studentIds: uniqueStudents.map(s => s.id),
+        studentIds: carriedStudentIds,
+        prefetch: carriedPrefetch,
       });
       for (const [studentId, subs] of carried) {
         if (!byStudent.has(studentId)) byStudent.set(studentId, []);
@@ -6878,7 +7036,38 @@ app.get('/api/teacher/:teacherId/analytics', async (req, res) => {
         );
         for (const s of genuinelyForeign) pooledCarriedIds.add(s.id);
         byStudent.get(studentId).push(...genuinelyForeign);
+        touchedByCarried.add(studentId);
       }
+    }
+
+    // ── Put the merged history back in date order ──
+    //
+    // `graded` was fetched `orderBy: createdAt asc`, but the carried work above
+    // is appended to the tail — and for a learner who transferred *in*, that
+    // work is older than everything their new teacher set. Three outputs below
+    // read this array as a chronology and would otherwise be wrong for exactly
+    // those learners: `latest` takes subs[length - 1] and would name a
+    // previous section's activity as their most recent work, `history` feeds a
+    // sparkline that would render right-to-left, and the "easing down" check
+    // reads the last three and can flip direction — missing a real slide, or
+    // inventing one. The averages, counts and points are order-invariant and
+    // were never affected.
+    //
+    // Only students who actually received carried work are re-sorted; everyone
+    // else's array is already ordered and sorting it would be wasted work on
+    // the common path.
+    //
+    // The key never returns NaN. A comparator that does leaves the array in an
+    // arbitrary order rather than an unsorted one, which would be a worse bug
+    // than the one being fixed — so a row with no usable date falls back to
+    // gradedAt and then to the epoch, sorting to the front rather than
+    // scrambling everything around it.
+    const chronoKey = (sub) => {
+      const t = new Date(sub.createdAt ?? sub.gradedAt ?? 0).getTime();
+      return Number.isFinite(t) ? t : 0;
+    };
+    for (const studentId of touchedByCarried) {
+      byStudent.get(studentId).sort((a, b) => chronoKey(a) - chronoKey(b));
     }
 
     // ── A learner who transferred out ──
@@ -7798,8 +7987,15 @@ app.get('/api/teacher/:teacherId/student/:studentId/gradebook', async (req, res)
     // and, worse, with a duplicate React key (GradebookStudent.jsx, keyed on
     // row.submissionId).
     const pushedCarriedIds = new Set();
+    // One student, but still once per class of theirs this teacher owns — so
+    // the student-keyed half of the lookup is hoisted here too.
+    const carriedPrefetch = ownClassIds.length
+      ? await carriedOverPrefetch(prisma, { studentIds: [studentId] })
+      : null;
     for (const classId of ownClassIds) {
-      const carried = await carriedOverForClass(prisma, { classId, studentIds: [studentId] });
+      const carried = await carriedOverForClass(prisma, {
+        classId, studentIds: [studentId], prefetch: carriedPrefetch,
+      });
       for (const sub of carried.get(studentId) || []) {
         // A teacher who teaches the same subject in two sections (Maria's old
         // English 6 in Section A, her new one in Section B) already has her
@@ -8595,8 +8791,56 @@ app.get('/api/teacher/:teacherId/gradebook/export', async (req, res) => {
       });
       if (!cls) continue;
 
-      const students = cls.section?.students || [];
       const activities = cls.activities || [];
+
+      // ── Learners who have left this section ──
+      //
+      // Section.students is where a learner is *now*, so building the roster
+      // from it alone meant a pupil who transferred out was silently absent
+      // from the exported file — not blank, not flagged, simply not a row —
+      // while every mark this teacher personally gave them stayed in the
+      // database. This is the file that becomes a report card, so an omission
+      // here is the worst shape the transfer bug could take: the numbers were
+      // never wrong, the child just stopped being on the page.
+      //
+      // Derived from the submissions already loaded above rather than from a
+      // fresh query — `activities.submissions` is scoped by activity, not by
+      // enrolment, so a departed learner's work is right here.
+      const roster = cls.section?.students || [];
+      const rosterIds = new Set(roster.map(s => s.id));
+      const departedIds = [...new Set(
+        activities
+          .flatMap(a => a.submissions || [])
+          .filter(s => !s.archivedAt && !rosterIds.has(s.studentId))
+          .map(s => s.studentId)
+      )];
+
+      const departedStudents = departedIds.length
+        ? await prisma.user.findMany({
+            where: { id: { in: departedIds }, role: 'STUDENT' },
+            select: { id: true, name: true, username: true },
+            orderBy: { name: 'asc' },
+          })
+        : [];
+      // When they left, so the row can say so. Most recent first and kept on
+      // first sight: a learner who moved out, back and out again left this
+      // section on the latest of those dates.
+      const departures = departedIds.length && cls.sectionId
+        ? await prisma.sectionTransfer.findMany({
+            where: { studentId: { in: departedIds }, fromSectionId: cls.sectionId },
+            select: { studentId: true, transferredAt: true },
+            orderBy: { transferredAt: 'desc' },
+          })
+        : [];
+      const leftAt = new Map();
+      for (const d of departures) if (!leftAt.has(d.studentId)) leftAt.set(d.studentId, d.transferredAt);
+
+      const students = [
+        ...roster.map(s => ({ ...s, transferredOut: false, transferredOutAt: null })),
+        ...departedStudents.map(s => ({
+          ...s, transferredOut: true, transferredOutAt: leftAt.get(s.id) || null,
+        })),
+      ];
 
       // The export is the official class record, so its average has to be the
       // same number the gradebook shows. It used to divide a sum of percentages
@@ -8652,7 +8896,12 @@ app.get('/api/teacher/:teacherId/gradebook/export', async (req, res) => {
       }
 
       const rows = students.map(student => {
-        const row = { name: student.name, username: student.username };
+        const row = {
+          name: student.name,
+          username: student.username,
+          transferredOut: !!student.transferredOut,
+          transferredOutAt: student.transferredOutAt || null,
+        };
         const entries = [];
         for (const act of activities) {
           const sub = act.submissions.find(s => s.studentId === student.id && !s.archivedAt);
@@ -8726,6 +8975,7 @@ app.get('/api/teacher/:teacherId/gradebook/export', async (req, res) => {
       classData.push({
         cls, activities, students, rows, passingGrade: exportPassing, unreviewedCount, useTransmutation,
         carriedActivities, carriedUnreviewedCount, carriedUnreviewedSections: [...carriedUnreviewedSections],
+        departedCount: departedStudents.length,
       });
     }
 
@@ -8751,6 +9001,30 @@ app.get('/api/teacher/:teacherId/gradebook/export', async (req, res) => {
         totalUnreviewed: classData.reduce((n, c) => n + c.unreviewedCount, 0),
       });
     }
+
+    /**
+     * The name in the first column. A learner who has left the section is
+     * named with the date they left, so their blank cells for work set after
+     * that date read as "was not here" rather than "did not hand it in".
+     */
+    const studentLabel = (row) =>
+      row.transferredOut ? transfers.transferredOutLabel(row.name, row.transferredOutAt) : row.name;
+
+    /**
+     * Rows the CLASS AVERAGE is computed over.
+     *
+     * Transferred-out learners are listed but excluded from it. Their row rests
+     * on whatever part of the quarter they were present for — computeGrade
+     * renormalises over the activities they actually have marks in — so
+     * averaging it with a full quarter's averages compares two different
+     * things, and would move a number teachers read off the sheet as this
+     * class's standing. Stated on the sheet rather than left to be inferred.
+     */
+    const averagedRows = (rows) => rows.filter(r => !r.transferredOut);
+
+    /** The "Transferred out:" notice, shared so xlsx and csv cannot disagree. */
+    const transferredOutNotice = (n) =>
+      `${n} learner(s) listed below have left this section. Their marks are shown because this teacher awarded them, and the date they left is on their row. They are excluded from the CLASS AVERAGE.`;
 
     /** "Sci 6 · Grade 6 — Masipag" — a carried column says where it came from. */
     const carriedHeader = (activity) => {
@@ -8794,7 +9068,7 @@ app.get('/api/teacher/:teacherId/gradebook/export', async (req, res) => {
 
       for (const {
         cls, activities, rows, passingGrade: exportPassing, unreviewedCount, useTransmutation,
-        carriedActivities, carriedUnreviewedCount, carriedUnreviewedSections,
+        carriedActivities, carriedUnreviewedCount, carriedUnreviewedSections, departedCount,
       } of classData) {
         const sheetName = (cls.name || 'Grades').substring(0, 31);
         const sheet = workbook.addWorksheet(sheetName);
@@ -8835,6 +9109,14 @@ app.get('/api/teacher/:teacherId/gradebook/export', async (req, res) => {
           carriedRow.getCell(1).font = { bold: true, color: { argb: 'FF2563EB' } };
           carriedRow.getCell(2).font = { color: { argb: 'FF2563EB' } };
         }
+        // Said on the sheet, because a row for someone who is no longer in the
+        // section is otherwise indistinguishable from a current member with a
+        // lot of missing work.
+        if (departedCount > 0) {
+          const leftRow = sheet.addRow(['Transferred out:', transferredOutNotice(departedCount)]);
+          leftRow.getCell(1).font = { bold: true, color: { argb: 'FF6B7280' } };
+          leftRow.getCell(2).font = { color: { argb: 'FF6B7280' } };
+        }
         sheet.addRow([]);
 
         // Header row
@@ -8855,7 +9137,7 @@ app.get('/api/teacher/:teacherId/gradebook/export', async (req, res) => {
         // Data rows
         for (const row of rows) {
           const dataRow = sheet.addRow([
-            row.name,
+            studentLabel(row),
             ...activities.map(a => row[a.id] !== null ? row[a.id] : '—'),
             ...[...carriedActivities.keys()].map(id => {
               const v = row[`carried:${id}`];
@@ -8883,19 +9165,21 @@ app.get('/api/teacher/:teacherId/gradebook/export', async (req, res) => {
 
         // Class average row
         const avgRow = ['CLASS AVERAGE'];
+        // Current members only — see averagedRows.
+        const avgOver = averagedRows(rows);
         for (const act of activities) {
           // Numbers only: an excused cell holds the string 'Excused', and
           // reduce() on a mixed array would concatenate rather than add.
-          const scores = rows.map(r => r[act.id]).filter(s => typeof s === 'number');
+          const scores = avgOver.map(r => r[act.id]).filter(s => typeof s === 'number');
           avgRow.push(scores.length > 0 ? Math.round(scores.reduce((a, b) => a + b, 0) / scores.length) : '—');
         }
         for (const activityId of carriedActivities.keys()) {
           // Numbers only, same as above: an excused cell holds the string
           // 'Excused' and would concatenate rather than add.
-          const scores = rows.map(r => r[`carried:${activityId}`]).filter(s => typeof s === 'number');
+          const scores = avgOver.map(r => r[`carried:${activityId}`]).filter(s => typeof s === 'number');
           avgRow.push(scores.length > 0 ? Math.round(scores.reduce((a, b) => a + b, 0) / scores.length) : '—');
         }
-        const allAvgs = rows.map(r => r.average).filter(a => a !== null);
+        const allAvgs = avgOver.map(r => r.average).filter(a => a !== null);
         avgRow.push(allAvgs.length > 0 ? `${Math.round(allAvgs.reduce((a, b) => a + b, 0) / allAvgs.length)}%` : '—');
         const footerRow = sheet.addRow(avgRow);
         footerRow.eachCell(cell => {
@@ -8929,7 +9213,7 @@ app.get('/api/teacher/:teacherId/gradebook/export', async (req, res) => {
       const lines = [];
       for (const {
         cls, activities, rows, unreviewedCount, useTransmutation,
-        carriedActivities, carriedUnreviewedCount, carriedUnreviewedSections,
+        carriedActivities, carriedUnreviewedCount, carriedUnreviewedSections, departedCount,
       } of classData) {
         lines.push(`# Class: ${cls.name}`);
         lines.push(`# Section: ${cls.section?.name || 'N/A'}`);
@@ -8949,6 +9233,12 @@ app.get('/api/teacher/:teacherId/gradebook/export', async (req, res) => {
         if (carriedActivities.size > 0) {
           lines.push(`# Carried over: ${carriedOverNotice(carriedActivities, carriedUnreviewedCount, carriedUnreviewedSections)}`);
         }
+        // Said in the file, because a row for someone who is no longer in the
+        // section is otherwise indistinguishable from a current member with a
+        // lot of missing work.
+        if (departedCount > 0) {
+          lines.push(`# Transferred out: ${transferredOutNotice(departedCount)}`);
+        }
         lines.push('');
 
         // Header
@@ -8963,7 +9253,7 @@ app.get('/api/teacher/:teacherId/gradebook/export', async (req, res) => {
         // Data rows
         for (const row of rows) {
           const vals = [
-            `"${row.name.replace(/"/g, '""')}"`,
+            `"${studentLabel(row).replace(/"/g, '""')}"`,
             ...activities.map(a => row[a.id] !== null ? row[a.id] : ''),
             ...[...carriedActivities.keys()].map(id => {
               const v = row[`carried:${id}`];
@@ -8976,19 +9266,21 @@ app.get('/api/teacher/:teacherId/gradebook/export', async (req, res) => {
 
         // Class average
         const avgVals = ['CLASS AVERAGE'];
+        // Current members only — see averagedRows.
+        const avgOver = averagedRows(rows);
         for (const act of activities) {
           // Numbers only: an excused cell holds the string 'Excused', and
           // reduce() on a mixed array would concatenate rather than add.
-          const scores = rows.map(r => r[act.id]).filter(s => typeof s === 'number');
+          const scores = avgOver.map(r => r[act.id]).filter(s => typeof s === 'number');
           avgVals.push(scores.length > 0 ? Math.round(scores.reduce((a, b) => a + b, 0) / scores.length) : '');
         }
         for (const activityId of carriedActivities.keys()) {
           // Numbers only, same as above: an excused cell holds the string
           // 'Excused' and would concatenate rather than add.
-          const scores = rows.map(r => r[`carried:${activityId}`]).filter(s => typeof s === 'number');
+          const scores = avgOver.map(r => r[`carried:${activityId}`]).filter(s => typeof s === 'number');
           avgVals.push(scores.length > 0 ? Math.round(scores.reduce((a, b) => a + b, 0) / scores.length) : '');
         }
-        const allAvgs = rows.map(r => r.average).filter(a => a !== null);
+        const allAvgs = avgOver.map(r => r.average).filter(a => a !== null);
         avgVals.push(allAvgs.length > 0 ? `${Math.round(allAvgs.reduce((a, b) => a + b, 0) / allAvgs.length)}%` : '');
         lines.push(avgVals.join(','));
         lines.push('');

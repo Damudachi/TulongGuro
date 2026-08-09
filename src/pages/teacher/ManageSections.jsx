@@ -5,7 +5,7 @@ import { GRADE_LEVELS } from '../../constants/school';
 import StudentCredentials from '../../components/StudentCredentials';
 import SectionMoveConfirm from '../../components/SectionMoveConfirm';
 import RosterEditor from '../../components/RosterEditor';
-import { parseRosterLines, isFilledRow, rosterPayload, emptyRoster, withBlankRow, stripNameCommas } from '../../utils/roster';
+import { parseRosterLines, isFilledRow, rosterPayload, emptyRoster, withBlankRow, normalizeRosterName } from '../../utils/roster';
 
 export default function ManageSections() {
   const [sections, setSections] = useState([]);
@@ -50,9 +50,9 @@ export default function ManageSections() {
       student.name
     );
     if (name === null) return;                       // cancelled
-    // Match the roster editor — the stored name is comma-free so downstream
-    // first-name extraction (student greeting, sorting) stays predictable.
-    const trimmed = stripNameCommas(name).trim();
+    // Match the roster editor — a typed surname comma is kept, since it is
+    // what first-name extraction (the student greeting) reads.
+    const trimmed = normalizeRosterName(name).trim();
     if (!trimmed || trimmed === student.name) return;
 
     try {

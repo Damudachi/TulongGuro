@@ -76,6 +76,7 @@ export default function HITLWorkspace() {
   const [showSummary, setShowSummary] = useState(false);
   const [releaseState, setReleaseState] = useState(null);  // { total, reviewed, released, readyToRelease }
   const [isReleasing, setIsReleasing] = useState(false);
+  const [isReleasingOne, setIsReleasingOne] = useState(false);
 
   const [submission, setSubmission] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -515,6 +516,35 @@ export default function HITLWorkspace() {
       alert('Could not release the results. Please check your connection.');
     } finally {
       setIsReleasing(false);
+    }
+  };
+
+  /**
+   * Publish this one paper.
+   *
+   * Releasing used to be reachable only from the end-of-run summary, which
+   * only exists in queue mode (`?queue=`). A teacher opening a single paper
+   * from the gradebook could validate it and then had nowhere to go: the mark
+   * was recorded, status GRADED, so the learner's dashboard reported the
+   * activity as already graded — while releasedAt stayed null, so they could
+   * not actually see it. The server route for this existed the whole time and
+   * simply had no caller.
+   */
+  const releaseThisOne = async () => {
+    setIsReleasingOne(true);
+    try {
+      const res = await apiFetch(`${API_URL}/api/teacher/submissions/${submissionId}/release`, { method: 'POST' });
+      const data = await res.json();
+      if (data.success) {
+        // Keep the relations already loaded — the route returns the bare row.
+        setSubmission(prev => ({ ...prev, releasedAt: data.submission?.releasedAt || new Date().toISOString() }));
+      } else {
+        alert(data.error || 'Could not release this result.');
+      }
+    } catch {
+      alert('Could not release this result. Please check your connection.');
+    } finally {
+      setIsReleasingOne(false);
     }
   };
 
@@ -991,10 +1021,22 @@ export default function HITLWorkspace() {
                   ⏰ Submitted late
                 </span>
               )}
+              {/* Validated and released are two different states, and this
+                  badge used to key on isApproved — which is only status ===
+                  'GRADED' — and announce "Released to Student" for a paper
+                  nobody had published. A teacher reading that had no reason to
+                  look for a release control, while the learner saw the
+                  activity reported as graded with no result behind it. */}
               {isApproved && (
-                <span className="mt-1 inline-flex items-center gap-1 text-xs font-bold text-green-600 bg-green-50 px-2 py-1 rounded-full">
-                  <CheckCircle2 className="w-3 h-3" /> Released to Student
-                </span>
+                submission?.releasedAt ? (
+                  <span className="mt-1 inline-flex items-center gap-1 text-xs font-bold text-green-600 bg-green-50 px-2 py-1 rounded-full">
+                    <CheckCircle2 className="w-3 h-3" /> Released to Student
+                  </span>
+                ) : (
+                  <span className="mt-1 inline-flex items-center gap-1 text-xs font-bold text-amber-700 bg-amber-50 border border-amber-200 px-2 py-1 rounded-full">
+                    <Check className="w-3 h-3" /> Validated — not yet released
+                  </span>
+                )
               )}
             </div>
             <div className="flex items-center gap-4">
@@ -1326,11 +1368,25 @@ export default function HITLWorkspace() {
             </button>
           )}
           {isApproved && !isEditingAssessment && !queueActivityId ? (
-            <button
-              onClick={() => navigate(rosterLink)}
-              className="flex-1 py-3 px-4 rounded-xl bg-brand-green text-white font-bold hover:bg-emerald-600 transition-colors flex items-center justify-center gap-2">
-              <CheckCircle2 className="w-5 h-5" /> Done
-            </button>
+            // Validated, working on one paper rather than a run. Release is the
+            // step that actually reaches the learner, so it is the action here
+            // until it has been done — "Done" alone left the mark recorded and
+            // invisible, with no route to publishing it from this screen.
+            !submission?.releasedAt ? (
+              <button
+                onClick={releaseThisOne} disabled={isReleasingOne}
+                title="Publish this result so the student can see it"
+                className="flex-1 py-3 px-4 rounded-xl bg-brand-green text-white font-bold hover:bg-emerald-600 transition-colors flex items-center justify-center gap-2 disabled:opacity-60">
+                {isReleasingOne ? <Loader2 className="w-5 h-5 animate-spin" /> : <SendIcon className="w-5 h-5" />}
+                {isReleasingOne ? 'Releasing…' : 'Release to student'}
+              </button>
+            ) : (
+              <button
+                onClick={() => navigate(rosterLink)}
+                className="flex-1 py-3 px-4 rounded-xl bg-brand-green text-white font-bold hover:bg-emerald-600 transition-colors flex items-center justify-center gap-2">
+                <CheckCircle2 className="w-5 h-5" /> Done
+              </button>
+            )
           ) : (
             <button onClick={handleValidate} disabled={isSaving || !canValidate}
               title={!canValidate ? 'Run AI checking first — there is nothing to validate yet.' : 'Approve this mark and move on (Enter)'}

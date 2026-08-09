@@ -105,7 +105,24 @@ function resolveDefaultRubric({ lesson, schoolRubrics, myRubrics, builtins, topi
   const pick = (rubric, option, criteria) =>
     ({ option, criteria, type: rubricTypeOf(rubric, criteria) });
 
-  // 1) The curriculum lesson this activity is mapped to.
+  // 1a) The school rubric this lesson's criteria were saved as.
+  //
+  //     Curriculum upload writes each lesson's rubric into "Your school
+  //     rubrics" and stamps the lesson with the template's id, so the lesson
+  //     and the tab are two views of one row rather than two copies that drift.
+  //     Selecting the template itself is what makes the picker show the rubric
+  //     under the name the tab shows it under — before this the lesson resolved
+  //     to an unnamed 'lesson-rubric' option, so a teacher saw a rubric they
+  //     could not then find anywhere in their rubric list.
+  if (lesson?.rubricTemplateId) {
+    const linked = schoolRubrics.find(r => r.id === lesson.rubricTemplateId && r.criteria?.length);
+    if (linked) return pick(linked, `saved:${linked.id}`, linked.criteria);
+  }
+
+  // 1b) The copy embedded on the lesson. Still the fallback: lessons imported
+  //     before the link existed have no rubricTemplateId, and a template an
+  //     admin has since deleted must degrade to the embedded copy rather than
+  //     leaving the activity with no rubric at all.
   const lessonCriteria = readCriteria(lesson?.defaultRubric);
   if (lessonCriteria) {
     const parsed = typeof lesson.defaultRubric === 'string' ? JSON.parse(lesson.defaultRubric) : lesson.defaultRubric;

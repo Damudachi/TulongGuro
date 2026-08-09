@@ -35,8 +35,8 @@ npx prisma migrate status
 | Check | Expected |
 |---|---|
 | `npx eslint src server` | **75 problems** (73 errors, 2 warnings) — all pre-existing, mostly `react-hooks/set-state-in-effect`. A number above 75 means something new was introduced. |
-| `server/` `npm run verify` | **Does not currently pass.** The three `verify:*` stages all pass individually — `verify:grading` 92 passed, `verify:dashboard` 41 passed, `verify:routes` 45 passed (45 routes scanned) — but the final stage, `npm test` (Vitest), is **265 tests across 16 files: 261 passed, 4 failed**. All 4 failures are confined to `server/tests/roster.test.js`, and come from commit `4a2d642` ("Name fix"), which added `stripNameCommas` to `src/utils/roster.js` — it strips the comma from names like "Dela Cruz, Juan", while those four tests assert the comma survives. That commit is the user's own in-flight work, made immediately before this branch started, and is unrelated to section transfers. `render.yaml` runs `npm run verify` before a deploy touches the database, so this must be resolved before deploying. |
-| `npx prisma migrate status` | 5 migrations, "Database schema is up to date" |
+| `server/` `npm run verify` | **Passes.** 282 tests across 16 files, plus `verify:grading` 92, `verify:dashboard` 41, `verify:routes` 45. The four `roster.test.js` failures described below are resolved — see the note. *(Historic:* **Did not pass.** The three `verify:*` stages all pass individually — `verify:grading` 92 passed, `verify:dashboard` 41 passed, `verify:routes` 45 passed (45 routes scanned) — but the final stage, `npm test` (Vitest), is **265 tests across 16 files: 261 passed, 4 failed**. All 4 failures are confined to `server/tests/roster.test.js`, and come from commit `4a2d642` ("Name fix"), which added `stripNameCommas` to `src/utils/roster.js` — it strips the comma from names like "Dela Cruz, Juan", while those four tests assert the comma survives. That commit is the user's own in-flight work, made immediately before this branch started, and is unrelated to section transfers.)* **Resolution:** `stripNameCommas` was the wrong fix. The surname comma is the only thing in a stored name that marks where the family name ends, so removing it made the student greeting unfixable — `firstNameFromRoster` fell back to the trailing word and greeted children by their *second given name*. It is now `normalizeRosterName`, which collapses whitespace and keeps the first comma (optional to type, preserved when typed), and `firstNameFromRoster` returns the whole given-name portion. The four tests pass unchanged, because what they asserted was right. |
+| `npx prisma migrate status` | **6 migrations.** `20260810020000_lesson_rubric_template` is written but **not yet applied** — it applies itself on the next deploy (`render.yaml` runs `migrate deploy` after `verify`). Two additive nullable columns; existing rows untouched. |
 | `npm run build` | succeeds; the >500 kB chunk warning is expected |
 
 ---
@@ -243,15 +243,16 @@ Totals after cleanup: **3 sections, 4 students**. Nothing beyond the demo rows w
 
 **Do not re-run any demo cleanup.** The `[DEMO]` sandbox was removed by hand in the Supabase SQL editor (child rows first: submissions → notifications → class lessons → activities → class → user → section — the table editor cannot do it, the foreign keys block a direct delete). `DELETE /api/teacher/demo-data/:classId` and the amber banner in `ClassHub.jsx` now have nothing left to act on; both can be removed, along with the `[DEMO]` exclusion in the teacher-delete route (`server.js`, the `realClasses` count).
 
-### 5.2 Known bugs, not fixed
+### 5.2 Known bugs — all three now fixed ✅
 
-**A. The section gradebook grid still drops a transferred learner.** ⚠️
-The *per-student* view (`GET /api/teacher/:teacherId/student/:studentId/gradebook`) was fixed — see §8. The **grid** at `GET /api/teacher/:teacherId/gradebook` was not. It builds its roster from `class.section.students`, i.e. *current* membership, so a learner who transfers vanishes from their previous teacher's grid while their submissions still load through the activity include. Same root cause, different endpoint.
+**A. The section gradebook grid dropped a transferred learner.** — **Fixed.**
+`GET /api/teacher/:teacherId/gradebook` now looks up `SectionTransfer` rows out of each class's section and appends the departed learners to the returned roster, flagged `transferredOut` with `transferredOutAt`. Added to the *response*, never to the Prisma relation — widening that relation would double-count a child in admin analytics and break QA P7.
 
-**B. The export path is unverified.** ❗ **Check this first.**
-`GET /api/teacher/:teacherId/gradebook/export` was never checked for the same defect. If it lists students from section membership rather than from submissions, a transferred learner's marks are **silently absent from the exported file** — the file that becomes a report card. Small read to confirm; highest consequence of anything on this list.
+**B. The export dropped them too.** — **Fixed.**
+`GET /api/teacher/:teacherId/gradebook/export` built `students` from `cls.section.students` alone, so a transferred learner was not a blank row or a flagged row but **no row at all**, while every mark their teacher gave them sat untouched in the database. The roster is now the current section **plus** anyone holding a non-archived submission against one of the class's activities — derived from the submissions already loaded, not a fresh query. Departed learners are named `"<name> (transferred out <date>)"`, the sheet carries a `Transferred out:` notice, and they are **excluded from CLASS AVERAGE**: their row rests on whatever part of the quarter they were present for, so averaging it with full-quarter averages compares two different things. Regression test: *"the export still contains a learner who transferred out"*.
 
-**C. The new section shows a transferee as MISSING** for activities set before they arrived. Mirror of the case fixed in §8. Needs a record of *when* a learner joined a section, so it needs a migration.
+**C. The new section showed a transferee as MISSING** for activities set before they arrived. — **Fixed.**
+`excusePreArrival()` writes an excused row for every activity assigned before the learner's `transferredAt` that is already past its deadline and that they have no submission for. No migration was needed after all: `SectionTransfer.transferredAt` is the record of *when* they joined. `cleanUpTransferRows()` deletes exactly those invented rows if the move is undone — four conditions, all load-bearing.
 
 ### 5.3 Never manually tested
 
@@ -399,7 +400,7 @@ A move is only `User.sectionId = <new>`. Submissions are never touched — they 
 - `GET /api/student/:studentId/subjects` now unions in classes the learner has graded work in but is no longer rostered into (flagged `isPreviousSection`, only activities they have submissions for). Previously the General Average counted subjects the page would not list.
 - The dashboard's subject total unions current-section subjects with subjects they have been graded in, so `subjectsIncluded` can no longer exceed `subjectsTotal` — that produced *"covering 3 of 2 subjects"* for a transferee.
 
-**Still broken:** see §5.2 A, B and C.
+**Also fixed since:** §5.2 A, B and C — the grid, the export and the pre-arrival MISSING case.
 
 ### 8.4 Roster entry is two columns
 
@@ -425,3 +426,45 @@ Now `src/components/RosterEditor.jsx` + `src/utils/roster.js`, used by both the 
 The permission blocks hit repeatedly in this session (the Claude Code auto-mode classifier auto-denying production writes) only ever mattered for *ad-hoc* SQL — the `[STUDENT-DEMO]` delete. They do not block schema changes. If a future session needs ad-hoc SQL, either use `/permissions` to switch to a mode that prompts, or run it in the Supabase SQL editor.
 
 ⚠️ **Push before anyone creates sections expecting year separation.** The code sets `schoolYear` on create, but the column has to exist first. One push handles both, since Render migrates during the build.
+
+### 8.7 Curriculum lesson rubrics are school rubrics
+
+A lesson's rubric was saved into "Your school rubrics" already, but named after
+its **output type** (`Essay — English Grade 6`), and picking that lesson in the
+Activity Builder loaded the separate copy on `ClassLesson.defaultRubric` under a
+synthetic `lesson-rubric` option. So the rubric a teacher saw when they chose a
+week was a rubric they could not then find anywhere in their rubric list, and
+the two copies were free to drift.
+
+- Templates are now named after the **lesson/week** they belong to
+  (`Week 3: Elements of a Short Story — English Grade 6`). A rubric genuinely
+  shared by several lessons keeps the output-type name, because that is what it
+  is. Same-title collisions are numbered rather than silently dropped.
+- `CurriculumLesson.rubricTemplateId` / `ClassLesson.rubricTemplateId`
+  (migration `20260810020000_lesson_rubric_template`) point the lesson at the
+  template. **No foreign key on purpose:** `defaultRubric` stays the fallback,
+  so a deleted template must degrade to "use the embedded copy" rather than
+  cascade the lesson away or block the delete.
+- `resolveDefaultRubric` tier 1 now resolves the linked template and returns
+  `saved:<id>`, so the picker selects the real row and shows the real name.
+  Lessons imported before the link have no id and fall through to the embedded
+  copy exactly as before.
+- Rubrics are saved *before* the lessons on import, so a lesson is never
+  written pointing at a template that does not exist yet.
+- `POST .../curriculums/:id/promote-rubrics` back-fills the link for
+  curriculums that predate this.
+
+### 8.8 Releasing one paper
+
+`POST /api/teacher/submissions/:id/release` existed and had **no caller**.
+Release was reachable only from the end-of-run summary, which only renders in
+queue mode (`?queue=`), so a teacher opening one paper from the gradebook could
+validate it and then had nowhere to go — the mark was recorded, `status` GRADED,
+so the learner's dashboard reported the activity as graded, while `releasedAt`
+stayed null so they could not see it. Compounding it, the header badge keyed on
+`isApproved` (which is only `status === 'GRADED'`) and announced **"Released to
+Student"** for a paper nobody had published.
+
+Single-paper mode now shows **Release to student** as the primary action until
+it has been done, and the badge distinguishes *Validated — not yet released*
+from *Released to Student*.

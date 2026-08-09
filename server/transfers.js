@@ -132,6 +132,26 @@ function transferExcuseReason(fromSectionLabel, transferredAt) {
     : `Enrolled on ${day}`;
 }
 
+/**
+ * How a learner who has left this section is named in the export.
+ *
+ * The export is the report card, so their marks have to appear — but printed
+ * under a bare name they read as a current member of a class they are no
+ * longer in, and their blank cells for work set after they left read as
+ * failures to hand in. The date is what separates the two, so it is part of
+ * the name rather than a column somebody has to notice.
+ *
+ * Manila calendar date, same as transferExcuseReason: the day the move
+ * actually happened where the school is.
+ */
+function transferredOutLabel(name, transferredAt) {
+  if (!transferredAt) return `${name} (transferred out)`;
+  const day = new Date(transferredAt).toLocaleDateString('en-GB', {
+    timeZone: 'Asia/Manila', day: 'numeric', month: 'long', year: 'numeric',
+  });
+  return `${name} (transferred out ${day})`;
+}
+
 /** A target section holding two classes with the same key; see duplicateTargetKeys. */
 const MULTIPLE_TARGET_CLASSES = 'MULTIPLE_TARGET_CLASSES';
 
@@ -184,6 +204,7 @@ module.exports = {
   preArrivalActivityIds,
   carriedOverEntries,
   transferExcuseReason,
+  transferredOutLabel,
   buildMovePreview,
   CLASS_HAS_NO_SUBJECT,
   NO_MATCHING_CLASS,
