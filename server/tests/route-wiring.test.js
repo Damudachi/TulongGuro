@@ -653,6 +653,49 @@ describe('carriedOverForClass', () => {
     expect(select.activity.select.class.select.subject).toBe(true);
     expect(select.activity.select.class.select.gradeLevel).toBe(true);
   });
+
+  it('counts carried work exactly once for a student with two SectionTransfer rows out of the same section', async () => {
+    // A -> B -> A -> C is a real shape: a move gets undone (Task 4's "move
+    // back") and then the student leaves A again, this time for C. That
+    // leaves TWO SectionTransfer rows with the same fromSectionId ('sec-a')
+    // for the same student. priorSectionIds dedupes them with `new Set`
+    // before the class lookup and the submission query, so this is already
+    // correct — this test is the regression pin the review asked for (rides
+    // along with the CRITICAL-1 fixtures/family), not a fix.
+    const { carriedOverForClass } = require('../server.js');
+
+    const classFindMany = vi.fn().mockResolvedValue([
+      { id: 'old-eng', subject: 'English', gradeLevel: 'Grade 6', schoolYear: '2026-2027', sectionId: 'sec-a' },
+    ]);
+    const submissionFindMany = vi.fn().mockResolvedValue([
+      { id: 'sub1', studentId: 's1', activityId: 'a1', activity: { id: 'a1', classId: 'old-eng' } },
+    ]);
+
+    const prisma = {
+      class: {
+        findUnique: vi.fn().mockResolvedValue({ id: 'c1', subject: 'English', gradeLevel: 'Grade 6', schoolYear: '2026-2027', sectionId: 'sec-c' }),
+        findMany: classFindMany,
+      },
+      sectionTransfer: {
+        // Two rows, same fromSectionId — the double-transfer-out shape.
+        findMany: vi.fn().mockResolvedValue([
+          { studentId: 's1', fromSectionId: 'sec-a', toSectionId: 'sec-b' },
+          { studentId: 's1', fromSectionId: 'sec-a', toSectionId: 'sec-c' },
+        ]),
+      },
+      submission: { findMany: submissionFindMany },
+    };
+
+    const result = await carriedOverForClass(prisma, { classId: 'c1', studentIds: ['s1'] });
+
+    // The candidate-class lookup and the submission query each ran once, over
+    // a single 'sec-a' — not twice — and the student's carried work appears
+    // exactly once, not duplicated.
+    expect(classFindMany).toHaveBeenCalledTimes(1);
+    expect(classFindMany.mock.calls[0][0].where.sectionId.in).toEqual(['sec-a']);
+    expect(submissionFindMany).toHaveBeenCalledTimes(1);
+    expect(result.get('s1').map(s => s.id)).toEqual(['sub1']);
+  });
 });
 
 describe('the receiving teacher sees carried-over work read-only', () => {
@@ -763,10 +806,99 @@ describe('the receiving teacher sees carried-over work read-only', () => {
     expect(matches[0].carriedOver).toBe(false);
     expect(matches[0].fromPreviousSection).toBe(true);
   });
+
+  it('IMPORTANT-3: does not duplicate a carried row across a double move (A -> D -> B) where the teacher owns both D and B', async () => {
+    // Maria moved A -> D -> B. T1 owns both D and B (not A, which belongs to
+    // a colleague). ownClassIds ends up [D, B]: D via classIdsWithWork (she
+    // has a submission there), B via her current section. Asking
+    // carriedOverForClass once per ownClassIds entry:
+    //   - target D: priorSectionIds excludes D itself, leaving just A -> matches A only.
+    //   - target B: priorSectionIds excludes B, leaving {A, D} -> matches A AND D,
+    //     but D's own row is filtered by ownClassIdSet, so only A survives again.
+    // Without a dedupe spanning the whole loop, A's submission is pushed into
+    // carriedRows twice — rendered twice in the "Carried over from…" panel
+    // and with a duplicate React key.
+    const STUDENT = 'student-dm1';
+    const SECTION_A = 'sec-dm1-a';
+    const SECTION_D = 'sec-dm1-d';
+    const SECTION_B = 'sec-dm1-b';
+    const CLASS_A = 'class-dm1-a';
+    const CLASS_D = 'class-dm1-d';
+    const CLASS_B = 'class-dm1-b';
+    const SUB_A = 'sub-dm1-a';
+
+    prismaFake.user.findUnique.mockImplementation(({ where }) => {
+      if (where.id === STUDENT) {
+        return Promise.resolve({ id: STUDENT, name: 'Double Move Student', username: 'doublemove', sectionId: SECTION_B });
+      }
+      return Promise.resolve({ sessionsValidFrom: null });
+    });
+
+    prismaFake.activity.findMany.mockResolvedValue([
+      { id: 'act-dm1-d', title: 'D Activity', classId: CLASS_D, deadline: '2026-01-01T00:00:00Z', points: 100, class: { name: 'Eng (D)', sectionId: SECTION_D }, submissions: [] },
+      { id: 'act-dm1-b', title: 'B Activity', classId: CLASS_B, deadline: '2026-02-01T00:00:00Z', points: 100, class: { name: 'Eng (B)', sectionId: SECTION_B }, submissions: [] },
+    ]);
+
+    prismaFake.class.findUnique.mockImplementation(({ where }) => {
+      if (where.id === CLASS_D) return Promise.resolve({ id: CLASS_D, subject: 'English', gradeLevel: 'Grade 6', schoolYear: '2026-2027', sectionId: SECTION_D });
+      if (where.id === CLASS_B) return Promise.resolve({ id: CLASS_B, subject: 'English', gradeLevel: 'Grade 6', schoolYear: '2026-2027', sectionId: SECTION_B });
+      return Promise.resolve(null);
+    });
+    prismaFake.class.findMany.mockImplementation(({ where }) => {
+      const ids = where.sectionId.in;
+      const result = [];
+      if (ids.includes(SECTION_A)) result.push({ id: CLASS_A, subject: 'English', gradeLevel: 'Grade 6', schoolYear: '2026-2027' });
+      if (ids.includes(SECTION_D)) result.push({ id: CLASS_D, subject: 'English', gradeLevel: 'Grade 6', schoolYear: '2026-2027' });
+      return Promise.resolve(result);
+    });
+
+    prismaFake.sectionTransfer.findMany.mockResolvedValue([
+      { studentId: STUDENT, fromSectionId: SECTION_A },
+      { studentId: STUDENT, fromSectionId: SECTION_D },
+    ]);
+
+    prismaFake.submission.findMany.mockImplementation(({ where }) => {
+      // classesWithWork — the query that puts CLASS_D into ownClassIds.
+      if (where.activity?.class?.teacherId) {
+        return Promise.resolve([{ activity: { classId: CLASS_D } }]);
+      }
+      // carriedOverForClass's own lookup — A is the only real foreign
+      // source, present whether it's asked alongside D or alone.
+      if (where.archivedAt === null) {
+        if (!where.activity.classId.in.includes(CLASS_A)) return Promise.resolve([]);
+        return Promise.resolve([{
+          id: SUB_A, studentId: STUDENT, activityId: 'act-dm1-a-src', status: 'GRADED',
+          hitlScore: 88, aiScore: null, hitlFeedback: null, aiFeedback: null,
+          archivedAt: null, excusedAt: null, excusedReason: null, isLate: false,
+          gradedAt: '2026-01-05T00:00:00Z', releasedAt: null,
+          activity: {
+            id: 'act-dm1-a-src', title: 'A Activity', points: 100, component: 'WW', deadline: '2026-01-01T00:00:00Z', classId: CLASS_A,
+            class: { id: CLASS_A, name: 'Eng (A)', section: { id: SECTION_A, name: 'Section A', gradeLevel: 'Grade 6' } },
+          },
+        }]);
+      }
+      return Promise.resolve([]);
+    });
+
+    const res = await call('GET', `/api/teacher/${T1}/student/${STUDENT}/gradebook`, {
+      token: tokenFor({ id: T1 }),
+    });
+    const body = await res.json();
+
+    expect(res.status).toBe(200);
+    const matches = body.rows.filter(r => r.submissionId === SUB_A && r.carriedOver === true);
+    expect(matches).toHaveLength(1);
+  });
 });
 
 describe('a transferred student\'s exported grade uses their whole subject history', () => {
-  it('pools carried entries with own entries before computeGrade', () => {
+  // Unit-level only: exercises grading.computeGrade directly, not the export
+  // route. It was originally named as if it proved the export route itself
+  // merges carried work — it doesn't touch the route at all, so it would
+  // still pass even if the export stopped calling carriedOverEntries. The
+  // route-level proof is the 'the export route itself...' test below, which
+  // drives GET .../gradebook/export and reads the CSV.
+  it('computeGrade merges carried entries with a student\'s own before renormalising weights', () => {
     const grading = require('../grading.js');
     const POLICY = { WW: 30, PT: 50, QA: 20 };
 
@@ -876,6 +1008,88 @@ describe('a transferred student\'s exported grade uses their whole subject histo
     const preflight = await preflightRes.json();
     expect(preflight.classes[0].unreviewedCount).toBe(1);
     expect(preflight.totalUnreviewed).toBe(1);
+  });
+
+  it('the export route itself pools a validated carried mark into the exported average, not just computeGrade in isolation', async () => {
+    // The sibling test above proves the *unvalidated* case is excluded. This
+    // proves the whole point of the branch the other way round: a validated
+    // carried mark from the previous section has to actually move the number
+    // that lands on the CSV, driven through the real route — not just
+    // asserted against grading.computeGrade called directly.
+    const CLASS_ID = 'class-transfer-export-new-2';
+    const OLD_CLASS_ID = 'class-transfer-export-old-2';
+    const SECTION_NEW = 'sec-transfer-export-new-2';
+    const SECTION_OLD = 'sec-transfer-export-old-2';
+    const STUDENT = 'student-transfer-export-2';
+    const OWN_ACTIVITY = 'act-transfer-export-ww-2';
+    const CARRIED_ACTIVITY = 'act-transfer-export-qa-2';
+
+    prismaFake.class.findFirst.mockResolvedValue({ id: CLASS_ID });
+
+    const classRow = {
+      id: CLASS_ID,
+      name: 'Science 6',
+      subject: 'Science',
+      gradeLevel: 'Grade 6',
+      schoolYear: '2026-2027',
+      sectionId: SECTION_NEW,
+      section: {
+        id: SECTION_NEW, name: 'Masipag', gradeLevel: 'Grade 6', schoolId: null,
+        students: [{ id: STUDENT, name: 'Maria Clara', username: 'maria' }],
+      },
+      // Own work since arriving: one Written Work at 80%. Science weighs
+      // WW 40 / PT 40 / QA 20 — with QA absent, WW-only renormalises to the
+      // full 100% and the average would read 80% if the carried mark below
+      // were ignored.
+      activities: [{
+        id: OWN_ACTIVITY, title: 'Written Work 1', points: 100, component: 'WW', createdAt: '2026-06-01T00:00:00Z',
+        submissions: [{ studentId: STUDENT, aiScore: null, hitlScore: 80, status: 'GRADED', archivedAt: null, excusedAt: null }],
+      }],
+    };
+    prismaFake.class.findUnique.mockImplementation(({ where }) => (
+      where.id === CLASS_ID ? Promise.resolve(classRow) : Promise.resolve(null)
+    ));
+    prismaFake.sectionTransfer.findMany.mockResolvedValue([
+      { studentId: STUDENT, fromSectionId: SECTION_OLD },
+    ]);
+    prismaFake.class.findMany.mockImplementation(({ where }) => (
+      where.sectionId?.in?.includes(SECTION_OLD)
+        ? Promise.resolve([{ id: OLD_CLASS_ID, subject: 'Science', gradeLevel: 'Grade 6', schoolYear: '2026-2027' }])
+        : Promise.resolve([])
+    ));
+    // The old section's teacher DID validate this QA (hitlScore set, status
+    // GRADED) before Maria moved — the case the branch exists to serve.
+    prismaFake.submission.findMany.mockResolvedValue([{
+      id: 'sub-carried-qa-validated', studentId: STUDENT, activityId: CARRIED_ACTIVITY, status: 'GRADED',
+      hitlScore: 60, aiScore: null, hitlFeedback: null, aiFeedback: null,
+      archivedAt: null, excusedAt: null, excusedReason: null, isLate: false,
+      gradedAt: '2026-04-01T00:00:00Z', releasedAt: null,
+      activity: {
+        id: CARRIED_ACTIVITY, title: 'Quarterly Assessment', points: 100, component: 'QA',
+        deadline: '2026-05-01T00:00:00Z', classId: OLD_CLASS_ID,
+        class: { id: OLD_CLASS_ID, name: 'Science 6 (Old)', section: { id: SECTION_OLD, name: 'Masaya', gradeLevel: 'Grade 6' } },
+      },
+    }]);
+
+    const csvRes = await call('GET', `/api/teacher/${T1}/gradebook/export?classId=${CLASS_ID}&format=csv`, {
+      token: tokenFor({ id: T1 }),
+    });
+    const csv = await csvRes.text();
+    const lines = csv.split('\n');
+
+    const dataLine = lines.find(l => l.startsWith('"Maria Clara"'));
+    expect(dataLine).toBeDefined();
+    const cells = dataLine.split(',');
+    // Own WW 80 + carried QA 60, weighted 40/20 renormalised over 60:
+    // (80*40 + 60*20) / 60 = 73.33 -> 73. NOT 80 (own work alone) and NOT the
+    // unvalidated-case blank — this is the whole-subject-history number the
+    // feature exists to produce.
+    expect(cells[cells.length - 2]).toBe('60'); // the carried QA cell itself, printed as a real score
+    expect(cells[cells.length - 1]).toBe('73%');
+
+    // Nothing left unreviewed — the mark was validated before the move.
+    const notice = lines.find(l => l.startsWith('# Carried over:'));
+    expect(notice).not.toContain('not yet validated');
   });
 });
 
@@ -1157,6 +1371,248 @@ describe('GET /api/teacher/:teacherId/analytics and a transferred student', () =
     expect(trend).toBeDefined();
     expect(trend.gradedCount).toBe(2); // own two marks, not the old one counted twice
     expect(trend.avgPercent).toBe(75); // (60 + 90) / 2, points-weighted, single WW component — 80 would mean the 90 counted twice
+  });
+
+  it('does not double-count a FOREIGN class\'s carried work across two of the teacher\'s own same-key classes', async () => {
+    // CRITICAL-1 from the final review. Different shape from the test above:
+    // there the same class appeared on both sides (own class == source
+    // class), and the `!classIds.includes(...)` guard alone was enough. Here
+    // T1 is an ordinary departmentalised Grade 6 English teacher running TWO
+    // of his own sections — CLASS_B and CLASS_C, same (subject, gradeLevel,
+    // schoolYear) key — and the source class the student transferred out of
+    // (CLASS_FOREIGN) belongs to a THIRD, unrelated teacher. carriedOverForClass
+    // matches purely on classKey, so asking it once for CLASS_B and once for
+    // CLASS_C both find CLASS_FOREIGN and both return the SAME submission.
+    // The `!classIds.includes(...)` guard does not catch this — CLASS_FOREIGN
+    // is in neither class's classIds — so only a dedupe that spans the WHOLE
+    // loop (not reset per class) can stop it being pooled twice.
+    const CLASS_B = 'class-cc1-eng-b';
+    const CLASS_C = 'class-cc1-eng-c';
+    const SECTION_B = 'sec-cc1-b';
+    const SECTION_C = 'sec-cc1-c';
+    const SECTION_FOREIGN = 'sec-cc1-foreign';
+    const CLASS_FOREIGN = 'class-cc1-foreign';
+    const STUDENT = 'student-cc1';
+
+    prismaFake.class.findMany.mockImplementation(({ where }) => {
+      if (where?.teacherId) {
+        return Promise.resolve([
+          {
+            id: CLASS_B, name: 'English 6 (Masipag)', subject: 'English', gradeLevel: 'Grade 6',
+            teacherId: T1, sectionId: SECTION_B,
+            section: { id: SECTION_B, name: 'Masipag', students: [] },
+          },
+          {
+            id: CLASS_C, name: 'English 6 (Masaya)', subject: 'English', gradeLevel: 'Grade 6',
+            teacherId: T1, sectionId: SECTION_C,
+            section: { id: SECTION_C, name: 'Masaya', students: [{ id: STUDENT, name: 'Cross Count Student', username: 'crosscount' }] },
+          },
+        ]);
+      }
+      if (where?.sectionId?.in?.includes(SECTION_FOREIGN)) {
+        return Promise.resolve([{ id: CLASS_FOREIGN, subject: 'English', gradeLevel: 'Grade 6', schoolYear: '2026-2027' }]);
+      }
+      return Promise.resolve([]);
+    });
+
+    prismaFake.class.findUnique.mockImplementation(({ where }) => {
+      if (where.id === CLASS_B) return Promise.resolve({ id: CLASS_B, subject: 'English', gradeLevel: 'Grade 6', schoolYear: '2026-2027', sectionId: SECTION_B });
+      if (where.id === CLASS_C) return Promise.resolve({ id: CLASS_C, subject: 'English', gradeLevel: 'Grade 6', schoolYear: '2026-2027', sectionId: SECTION_C });
+      return Promise.resolve(null);
+    });
+
+    prismaFake.sectionTransfer.findMany.mockResolvedValue([
+      { studentId: STUDENT, fromSectionId: SECTION_FOREIGN, toSectionId: SECTION_C },
+    ]);
+
+    prismaFake.submission.findMany.mockImplementation(({ where }) => {
+      if (where.archivedAt === null) {
+        // carriedOverForClass's own lookup. Both the CLASS_B and CLASS_C
+        // iterations land here and both match CLASS_FOREIGN — this is not
+        // filtered by which of T1's classes triggered the lookup.
+        if (!where.activity.classId.in.includes(CLASS_FOREIGN)) return Promise.resolve([]);
+        return Promise.resolve([{
+          id: 'sub-cc1-foreign', studentId: STUDENT, activityId: 'act-cc1-foreign', status: 'GRADED',
+          hitlScore: 90, aiScore: null, hitlFeedback: null, aiFeedback: null,
+          archivedAt: null, excusedAt: null, excusedReason: null, isLate: false,
+          gradedAt: '2026-01-05T00:00:00Z', releasedAt: null,
+          activity: {
+            id: 'act-cc1-foreign', title: 'Foreign WW', points: 100, component: 'WW', deadline: '2026-01-01T00:00:00Z', classId: CLASS_FOREIGN,
+            class: { id: CLASS_FOREIGN, name: 'English 6 (Foreign)', subject: 'English', gradeLevel: 'Grade 6', section: { id: SECTION_FOREIGN, name: 'Foreign Section', gradeLevel: 'Grade 6' } },
+          },
+        }]);
+      }
+      // The endpoint's own `graded` query — scoped to CLASS_B/CLASS_C, so it
+      // never contains CLASS_FOREIGN's row.
+      return Promise.resolve([{
+        id: 'sub-cc1-own', studentId: STUDENT, status: 'GRADED', hitlScore: 60, aiScore: null, skillScores: null, createdAt: '2026-06-01T00:00:00Z',
+        activity: {
+          id: 'act-cc1-own', title: 'Own WW', type: 'QUIZ', points: 100, classId: CLASS_C, component: 'WW',
+          rubric: null, classLesson: null,
+          class: { subject: 'English', gradeLevel: 'Grade 6' },
+        },
+      }]);
+    });
+
+    const res = await call('GET', `/api/teacher/${T1}/analytics`, { token: tokenFor({ id: T1 }) });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+
+    const trend = body.studentTrends.find(t => t.student.id === STUDENT);
+    expect(trend).toBeDefined();
+    // 1 own + 1 foreign carried, pooled once even though the loop asked
+    // twice — NOT 3, which is what pooling CLASS_FOREIGN's row on both the
+    // CLASS_B and CLASS_C iterations would give.
+    expect(trend.gradedCount).toBe(2);
+    expect(trend.avgPercent).toBe(75); // (60 + 90) / 200 * 100 — 80 would mean the foreign 90 counted twice
+  });
+
+  it('CRITICAL-2: an unvalidated carried AI draft does not become a grade of record', async () => {
+    // The main `graded` query is scoped `status: 'GRADED'`, so byStudent
+    // normally holds only grades of record. Before this fix, carried rows
+    // entered unfiltered — an AI-scored submission the sending teacher never
+    // validated (status still SUBMITTED) would be pooled and counted exactly
+    // like a real mark, which is the bug grading.countsAsGrade exists to
+    // prevent everywhere else in this file.
+    const CLASS_NEW = 'class-cg2-new';
+    const CLASS_OLD = 'class-cg2-old';
+    const SECTION_NEW = 'sec-cg2-new';
+    const SECTION_OLD = 'sec-cg2-old';
+    const STUDENT = 'student-cg2';
+
+    prismaFake.class.findMany.mockImplementation(({ where }) => {
+      if (where?.teacherId) {
+        return Promise.resolve([{
+          id: CLASS_NEW, name: 'English 6', subject: 'English', gradeLevel: 'Grade 6',
+          teacherId: T1, sectionId: SECTION_NEW,
+          section: { id: SECTION_NEW, name: 'New Section', students: [{ id: STUDENT, name: 'Unvalidated Draft Student', username: 'unval' }] },
+        }]);
+      }
+      if (where?.sectionId?.in?.includes(SECTION_OLD)) {
+        return Promise.resolve([{ id: CLASS_OLD, subject: 'English', gradeLevel: 'Grade 6', schoolYear: '2026-2027' }]);
+      }
+      return Promise.resolve([]);
+    });
+
+    prismaFake.class.findUnique.mockImplementation(({ where }) => (
+      where.id === CLASS_NEW
+        ? Promise.resolve({ id: CLASS_NEW, subject: 'English', gradeLevel: 'Grade 6', schoolYear: '2026-2027', sectionId: SECTION_NEW })
+        : Promise.resolve(null)
+    ));
+
+    prismaFake.sectionTransfer.findMany.mockResolvedValue([
+      { studentId: STUDENT, fromSectionId: SECTION_OLD, toSectionId: SECTION_NEW },
+    ]);
+
+    prismaFake.submission.findMany.mockImplementation(({ where }) => {
+      if (where.archivedAt === null) {
+        if (!where.activity.classId.in.includes(CLASS_OLD)) return Promise.resolve([]);
+        // AI-scored 90, never signed off by the sending teacher — status
+        // stays short of GRADED.
+        return Promise.resolve([{
+          id: 'sub-cg2-draft', studentId: STUDENT, activityId: 'act-cg2-draft', status: 'SUBMITTED',
+          hitlScore: null, aiScore: 90, hitlFeedback: null, aiFeedback: null,
+          archivedAt: null, excusedAt: null, excusedReason: null, isLate: false,
+          gradedAt: null, releasedAt: null,
+          activity: {
+            id: 'act-cg2-draft', title: 'Unvalidated PT', points: 100, component: 'PT', deadline: '2026-01-01T00:00:00Z', classId: CLASS_OLD,
+            class: { id: CLASS_OLD, name: 'English 6 (Old)', subject: 'English', gradeLevel: 'Grade 6', section: { id: SECTION_OLD, name: 'Old Section', gradeLevel: 'Grade 6' } },
+          },
+        }]);
+      }
+      return Promise.resolve([{
+        id: 'sub-cg2-own', studentId: STUDENT, status: 'GRADED', hitlScore: 70, aiScore: null, skillScores: null, createdAt: '2026-06-01T00:00:00Z',
+        activity: {
+          id: 'act-cg2-own', title: 'Own WW', type: 'QUIZ', points: 100, classId: CLASS_NEW, component: 'WW',
+          rubric: null, classLesson: null,
+          class: { subject: 'English', gradeLevel: 'Grade 6' },
+        },
+      }]);
+    });
+
+    const res = await call('GET', `/api/teacher/${T1}/analytics`, { token: tokenFor({ id: T1 }) });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+
+    const trend = body.studentTrends.find(t => t.student.id === STUDENT);
+    expect(trend).toBeDefined();
+    // Only the own, validated WW — the unvalidated carried PT never entered.
+    expect(trend.gradedCount).toBe(1);
+    expect(trend.avgPercent).toBe(70);
+  });
+
+  it('CRITICAL-2: a scoreless carried excused row does not become a phantom zero', async () => {
+    // percents = subs.map(s => s.hitlScore ?? s.aiScore ?? 0). A carried row
+    // the sending teacher excused (illness, etc. — both scores null) used to
+    // fall through that `?? 0` unfiltered, polluting history, latest and the
+    // "Scores easing down" trend with a zero the student never earned.
+    const CLASS_NEW = 'class-cg3-new';
+    const CLASS_OLD = 'class-cg3-old';
+    const SECTION_NEW = 'sec-cg3-new';
+    const SECTION_OLD = 'sec-cg3-old';
+    const STUDENT = 'student-cg3';
+
+    prismaFake.class.findMany.mockImplementation(({ where }) => {
+      if (where?.teacherId) {
+        return Promise.resolve([{
+          id: CLASS_NEW, name: 'English 6', subject: 'English', gradeLevel: 'Grade 6',
+          teacherId: T1, sectionId: SECTION_NEW,
+          section: { id: SECTION_NEW, name: 'New Section', students: [{ id: STUDENT, name: 'Excused Carry Student', username: 'excar' }] },
+        }]);
+      }
+      if (where?.sectionId?.in?.includes(SECTION_OLD)) {
+        return Promise.resolve([{ id: CLASS_OLD, subject: 'English', gradeLevel: 'Grade 6', schoolYear: '2026-2027' }]);
+      }
+      return Promise.resolve([]);
+    });
+
+    prismaFake.class.findUnique.mockImplementation(({ where }) => (
+      where.id === CLASS_NEW
+        ? Promise.resolve({ id: CLASS_NEW, subject: 'English', gradeLevel: 'Grade 6', schoolYear: '2026-2027', sectionId: SECTION_NEW })
+        : Promise.resolve(null)
+    ));
+
+    prismaFake.sectionTransfer.findMany.mockResolvedValue([
+      { studentId: STUDENT, fromSectionId: SECTION_OLD, toSectionId: SECTION_NEW },
+    ]);
+
+    prismaFake.submission.findMany.mockImplementation(({ where }) => {
+      if (where.archivedAt === null) {
+        if (!where.activity.classId.in.includes(CLASS_OLD)) return Promise.resolve([]);
+        // Excused for illness before she moved — both scores null.
+        return Promise.resolve([{
+          id: 'sub-cg3-excused', studentId: STUDENT, activityId: 'act-cg3-excused', status: 'GRADED',
+          hitlScore: null, aiScore: null, hitlFeedback: null, aiFeedback: null,
+          archivedAt: null, excusedAt: '2026-01-01T00:00:00Z', excusedReason: 'Illness', isLate: false,
+          gradedAt: null, releasedAt: null,
+          activity: {
+            id: 'act-cg3-excused', title: 'Excused QA', points: 100, component: 'QA', deadline: '2026-01-01T00:00:00Z', classId: CLASS_OLD,
+            class: { id: CLASS_OLD, name: 'English 6 (Old)', subject: 'English', gradeLevel: 'Grade 6', section: { id: SECTION_OLD, name: 'Old Section', gradeLevel: 'Grade 6' } },
+          },
+        }]);
+      }
+      return Promise.resolve([{
+        id: 'sub-cg3-own', studentId: STUDENT, status: 'GRADED', hitlScore: 70, aiScore: null, skillScores: null, createdAt: '2026-06-01T00:00:00Z',
+        activity: {
+          id: 'act-cg3-own', title: 'Own WW', type: 'QUIZ', points: 100, classId: CLASS_NEW, component: 'WW',
+          rubric: null, classLesson: null,
+          class: { subject: 'English', gradeLevel: 'Grade 6' },
+        },
+      }]);
+    });
+
+    const res = await call('GET', `/api/teacher/${T1}/analytics`, { token: tokenFor({ id: T1 }) });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+
+    const trend = body.studentTrends.find(t => t.student.id === STUDENT);
+    expect(trend).toBeDefined();
+    // Only the own, validated WW — the excused carried QA never entered, so
+    // no phantom 0 anywhere: not in gradedCount, not in avgPercent, not in
+    // history.
+    expect(trend.gradedCount).toBe(1);
+    expect(trend.avgPercent).toBe(70);
+    expect(trend.history).toEqual([70]);
   });
 });
 

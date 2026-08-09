@@ -6836,6 +6836,15 @@ app.get('/api/teacher/:teacherId/analytics', async (req, res) => {
     // way to miss a genuinely struggling child behind too small a sample. The
     // at-risk list is the whole point of this endpoint, so it has to see the
     // subject history the grade actually rests on.
+    // Tracked across the WHOLE loop below, not reset per iteration.
+    // carriedOverForClass matches on (subject, gradeLevel, schoolYear), so the
+    // SAME foreign source class can match more than one of this teacher's own
+    // classes — e.g. two sections of English 6, the ordinary shape of a
+    // departmentalised load. Without a dedupe that spans iterations, that
+    // source class's submissions get pooled once per matching class instead
+    // of once, silently inflating avgPercent, gradedCount and the "easing
+    // down" trend for every student it touches.
+    const pooledCarriedIds = new Set();
     for (const cls of classes) {
       const carried = await carriedOverForClass(prisma, {
         classId: cls.id,
@@ -6850,8 +6859,24 @@ app.get('/api/teacher/:teacherId/analytics', async (req, res) => {
         // enrolment) and therefore already in byStudent — pooling them again
         // here would double-count every mark from that class. Only a
         // genuinely *foreign* class's work — one this teacher does not
-        // teach — needs to be pooled in.
-        const genuinelyForeign = subs.filter(s => !classIds.includes(s.activity?.classId));
+        // teach — needs to be pooled in, and only once even if two of the
+        // teacher's own classes both match its source (see pooledCarriedIds
+        // above).
+        //
+        // grading.countsAsGrade is also required here: the main `graded`
+        // query above is scoped `status: 'GRADED'`, and carried rows have to
+        // be held to that same bar or they distort the numbers two ways —
+        // (1) an unvalidated AI draft (status SUBMITTED) would become a grade
+        // of record it was never signed off as, and (2) a scoreless excused
+        // or auto-excused carried row would fall through `hitlScore ??
+        // aiScore ?? 0` below and enter history/pointsEarned/the "easing
+        // down" trend as a phantom zero. Filtering here keeps both out.
+        const genuinelyForeign = subs.filter(s =>
+          !classIds.includes(s.activity?.classId) &&
+          !pooledCarriedIds.has(s.id) &&
+          grading.countsAsGrade(s)
+        );
+        for (const s of genuinelyForeign) pooledCarriedIds.add(s.id);
         byStudent.get(studentId).push(...genuinelyForeign);
       }
     }
@@ -7765,6 +7790,14 @@ app.get('/api/teacher/:teacherId/student/:studentId/gradebook', async (req, res)
     const ownClassIds = [...new Set(activities.map(a => a.classId))];
     const ownClassIdSet = new Set(ownClassIds);
     const carriedRows = [];
+    // Tracked across the WHOLE loop, not reset per iteration — a double move
+    // (A -> D -> B, where this teacher owns both D and B) means the same
+    // foreign source class (A) can match more than one of ownClassIds, and
+    // without this the same carried submission would be pushed into
+    // carriedRows twice: rendered twice in the "Carried over from…" panel
+    // and, worse, with a duplicate React key (GradebookStudent.jsx, keyed on
+    // row.submissionId).
+    const pushedCarriedIds = new Set();
     for (const classId of ownClassIds) {
       const carried = await carriedOverForClass(prisma, { classId, studentIds: [studentId] });
       for (const sub of carried.get(studentId) || []) {
@@ -7777,6 +7810,8 @@ app.get('/api/teacher/:teacherId/student/:studentId/gradebook', async (req, res)
         // "marked by their previous teacher", which would be false: it's the
         // same teacher both times.
         if (ownClassIdSet.has(sub.activity.classId)) continue;
+        if (pushedCarriedIds.has(sub.id)) continue;
+        pushedCarriedIds.add(sub.id);
         const section = sub.activity?.class?.section;
         carriedRows.push({
           activityId: sub.activity.id,
