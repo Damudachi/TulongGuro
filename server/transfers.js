@@ -115,12 +115,30 @@ function carriedOverEntries(submissions) {
   return entries;
 }
 
+/**
+ * The sentence a student reads on an auto-excused row.
+ *
+ * Written to them, not about them — excusedReason is shown on their own
+ * gradebook, and "TRANSFER_IN" would be a code where a child needs a reason.
+ * Manila calendar date, because that is the day they and their teacher were
+ * actually living in; the same reason deadlines resolve in Manila.
+ */
+function transferExcuseReason(fromSectionLabel, transferredAt) {
+  const day = new Date(transferredAt).toLocaleDateString('en-GB', {
+    timeZone: 'Asia/Manila', day: 'numeric', month: 'long', year: 'numeric',
+  });
+  return fromSectionLabel
+    ? `Transferred in from ${fromSectionLabel} on ${day}`
+    : `Enrolled on ${day}`;
+}
+
 module.exports = {
   classKey,
   matchingSourceClasses,
   duplicateTargetKeys,
   preArrivalActivityIds,
   carriedOverEntries,
+  transferExcuseReason,
   CLASS_HAS_NO_SUBJECT,
   NO_MATCHING_CLASS,
 };

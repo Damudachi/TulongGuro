@@ -40,6 +40,7 @@ const { getAllRubricTemplates, getRubricTemplateById } = require('./rubricTempla
 const { SKILLS: CURRICULUM_SKILLS, classifyCriterion } = require('./skillTaxonomy');
 const AI_SKILLS = ['vocabulary', 'punctuation', 'thematicFlow', 'sentenceStructure'];
 const grading = require('./grading');
+const transfers = require('./transfers');
 
 require('dotenv').config({ path: path.join(__dirname, '.env') });
 
@@ -2545,6 +2546,7 @@ app.post('/api/admin/:adminId/sections/:sectionId/students', async (req, res) =>
     const result = await enrolStudents(section, studentsList, {
       schoolId: admin.schoolId,
       teacherId: section.teacherId,
+      actorId: req.auth.sub,
       allowMove: !!allowMove
     });
 
@@ -2572,7 +2574,17 @@ app.delete('/api/admin/:adminId/sections/:sectionId/students/:studentId', async 
 
     if (student._count.submissions > 0) {
       // Graded work must survive, so unassign rather than delete the account.
-      await prisma.user.update({ where: { id: student.id }, data: { sectionId: null } });
+      await prisma.$transaction(async (tx) => {
+        await tx.user.update({ where: { id: student.id }, data: { sectionId: null } });
+        await recordTransfer(tx, {
+          studentId: student.id,
+          fromSectionId: section.id,
+          toSectionId: null,
+          actorId: req.auth.sub,
+          schoolId: section.schoolId,
+          reason: 'Removed from section',
+        });
+      });
       return res.json({ success: true, detached: true, message: `${student.name} has submitted work, so their account was kept and only removed from this section.` });
     }
     await prisma.user.delete({ where: { id: student.id } });
@@ -3482,7 +3494,75 @@ async function studentIdIssuer(schoolName, fallbackName) {
  *   account silently empties a colleague's roster. Left off, those names come
  *   back as `pendingMoves` and nothing is written, so the caller can ask first.
  */
-async function enrolStudents(section, studentsList, { schoolId, teacherId, allowMove = false }) {
+/**
+ * Record that a learner changed section.
+ *
+ * Called from every place User.sectionId changes — there are three: a new
+ * enrolment, a move onto another roster, and the admin unassign. Each writes
+ * a row so the history has no gaps; a learner with no rows at all is one who
+ * has not moved since this shipped, and is treated as always having been where
+ * they are.
+ *
+ * Takes a transaction client, because a roster change and the excusals it
+ * implies have to land together or not at all.
+ */
+async function recordTransfer(tx, { studentId, fromSectionId, toSectionId, actorId, schoolId, reason }) {
+  return tx.sectionTransfer.create({
+    data: {
+      studentId,
+      fromSectionId: fromSectionId || null,
+      toSectionId: toSectionId || null,
+      actorId: actorId || null,
+      schoolId: schoolId || null,
+      reason: reason || null,
+    },
+  });
+}
+
+/**
+ * Excuse the activities a learner arriving into a section was never present
+ * for and can no longer do.
+ *
+ * Without this they read as MISSING against work set before they existed on
+ * the roster — a mark against a child for not doing something they were not
+ * there for. Excused is the state that already means exactly this: it leaves
+ * the average entirely (computeGrade renormalises), prints as "Excused" in the
+ * export, and is not counted as unreviewed. So this reuses it rather than
+ * adding a state every screen would have to learn.
+ *
+ * transfers.preArrivalActivityIds owns the decision; this is the write.
+ */
+async function excusePreArrival(tx, { studentId, sectionId, transferId, transferredAt, fromSectionLabel }) {
+  const activities = await tx.activity.findMany({
+    where: { class: { sectionId } },
+    select: { id: true, createdAt: true, deadline: true },
+  });
+  if (activities.length === 0) return 0;
+
+  const existing = await tx.submission.findMany({
+    where: { studentId, activityId: { in: activities.map(a => a.id) } },
+    select: { activityId: true },
+  });
+
+  const toExcuse = transfers.preArrivalActivityIds(
+    activities, transferredAt, existing.map(s => s.activityId), isPastDeadline
+  );
+  if (toExcuse.length === 0) return 0;
+
+  const reason = transfers.transferExcuseReason(fromSectionLabel, transferredAt);
+  // createMany rather than a loop: this can be a whole quarter of activities,
+  // and retainUntil is not set because an excused row holds no learner work to
+  // retain — nothing was submitted.
+  const { count } = await tx.submission.createMany({
+    data: toExcuse.map(activityId => ({
+      studentId, activityId, status: 'PENDING', attemptCount: 0,
+      excusedAt: transferredAt, excusedReason: reason, transferId,
+    })),
+  });
+  return count;
+}
+
+async function enrolStudents(section, studentsList, { schoolId, teacherId, actorId = null, allowMove = false }) {
   const createdStudents = [];
   const skippedStudents = [];
   const linkedStudents = [];
@@ -3564,11 +3644,32 @@ async function enrolStudents(section, studentsList, { schoolId, teacherId, allow
         });
         continue;
       }
-      await prisma.user.update({
-        where: { id: existingAccount.id },
-        // schoolId is set here too so an account that predates students
-        // carrying one picks it up the first time it is re-enrolled.
-        data: { sectionId: section.id, ...(schoolId ? { schoolId } : {}) }
+      // The roster change and the excusals it implies land together or not at
+      // all. Not the whole function: it hashes passwords for new accounts,
+      // which is deliberately slow and has no business holding a transaction
+      // open.
+      await prisma.$transaction(async (tx) => {
+        await tx.user.update({
+          where: { id: existingAccount.id },
+          // schoolId is set here too so an account that predates students
+          // carrying one picks it up the first time it is re-enrolled.
+          data: { sectionId: section.id, ...(schoolId ? { schoolId } : {}) },
+        });
+        const transfer = await recordTransfer(tx, {
+          studentId: existingAccount.id,
+          fromSectionId: currentSection?.id || null,
+          toSectionId: section.id,
+          actorId, schoolId,
+        });
+        await excusePreArrival(tx, {
+          studentId: existingAccount.id,
+          sectionId: section.id,
+          transferId: transfer.id,
+          transferredAt: transfer.transferredAt,
+          fromSectionLabel: currentSection
+            ? (currentSection.gradeLevel ? `${currentSection.gradeLevel} — ${currentSection.name}` : currentSection.name)
+            : null,
+        });
       });
       linkedStudents.push({
         name: studentName.trim(),
@@ -3615,6 +3716,15 @@ async function enrolStudents(section, studentsList, { schoolId, teacherId, allow
         schoolId: schoolId || null,
         birthdate
       }
+    });
+    await prisma.$transaction(async (tx) => {
+      const transfer = await recordTransfer(tx, {
+        studentId: user.id, fromSectionId: null, toSectionId: section.id, actorId, schoolId,
+      });
+      await excusePreArrival(tx, {
+        studentId: user.id, sectionId: section.id, transferId: transfer.id,
+        transferredAt: transfer.transferredAt, fromSectionLabel: null,
+      });
     });
     const { password: _pw, ...safeUser } = user;
     // Returned in the clear on purpose: it is the credential the teacher has to
@@ -3765,7 +3875,7 @@ app.post('/api/teacher/sections', async (req, res) => {
     }
 
     const { createdStudents, skippedStudents, linkedStudents, pendingMoves } =
-      await enrolStudents(section, studentsList, { schoolId, teacherId, allowMove: !!allowMove });
+      await enrolStudents(section, studentsList, { schoolId, teacherId, actorId: req.auth.sub, allowMove: !!allowMove });
 
     let message = isExisting
       ? `Section "${section.name}" already exists. `

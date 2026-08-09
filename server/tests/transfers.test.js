@@ -139,3 +139,24 @@ describe('carriedOverEntries', () => {
     expect(carriedOverEntries(null)).toEqual([]);
   });
 });
+
+describe('the excusal reason is written to the student, not to the system', () => {
+  it('names the section they came from and the date', () => {
+    expect(transfers.transferExcuseReason('Grade 6 — Masipag', new Date('2026-08-09T02:00:00Z')))
+      .toBe('Transferred in from Grade 6 — Masipag on 9 August 2026');
+  });
+
+  // A learner enrolled for the first time came from nowhere; the sentence has
+  // to still read as a sentence.
+  it('handles an arrival with no previous section', () => {
+    expect(transfers.transferExcuseReason(null, new Date('2026-08-09T02:00:00Z')))
+      .toBe('Enrolled on 9 August 2026');
+  });
+
+  // The date a Filipino teacher and pupil see is the Manila one. 9 Aug 2026
+  // at 20:00 UTC is already the 10th in Manila.
+  it('uses the Manila calendar date, not UTC', () => {
+    expect(transfers.transferExcuseReason(null, new Date('2026-08-09T20:00:00Z')))
+      .toBe('Enrolled on 10 August 2026');
+  });
+});
