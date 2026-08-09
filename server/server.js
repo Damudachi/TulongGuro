@@ -3742,6 +3742,17 @@ async function enrolStudents(section, studentsList, { schoolId, teacherId, actor
     : null;
   const nextStudentId = await studentIdIssuer(school?.name, section.name);
 
+  // Fetched once for the whole import, not per name: this is the section every
+  // pending move would be arriving into.
+  const targetClasses = await prisma.class.findMany({
+    where: { sectionId: section.id },
+    select: { id: true, subject: true, gradeLevel: true, schoolYear: true },
+  });
+  const targetActivities = await prisma.activity.findMany({
+    where: { class: { sectionId: section.id } },
+    select: { id: true, createdAt: true, deadline: true },
+  });
+
   for (const entry of entries) {
     const studentName = entry.name;
     const normalizedName = studentName.toLowerCase().trim();
@@ -3758,6 +3769,38 @@ async function enrolStudents(section, studentsList, { schoolId, teacherId, actor
       // whoever is running the import, not something to do quietly.
       const currentSection = existingAccount.section;
       if (currentSection && currentSection.id !== section.id && !allowMove) {
+        const sourceClasses = await prisma.class.findMany({
+          where: { sectionId: currentSection.id },
+          select: { id: true, subject: true, gradeLevel: true, schoolYear: true },
+        });
+        const gradedCounts = await prisma.submission.groupBy({
+          by: ['activityId'],
+          where: {
+            studentId: existingAccount.id, status: 'GRADED', archivedAt: null, excusedAt: null,
+            activity: { classId: { in: sourceClasses.map(c => c.id) } },
+          },
+          _count: { _all: true },
+        });
+        const activityClass = new Map(
+          (await prisma.activity.findMany({
+            where: { id: { in: gradedCounts.map(g => g.activityId) } },
+            select: { id: true, classId: true },
+          })).map(a => [a.id, a.classId])
+        );
+        const gradeCountByClassId = {};
+        for (const g of gradedCounts) {
+          const classId = activityClass.get(g.activityId);
+          if (classId) gradeCountByClassId[classId] = (gradeCountByClassId[classId] || 0) + 1;
+        }
+
+        const existingHere = await prisma.submission.findMany({
+          where: { studentId: existingAccount.id, activityId: { in: targetActivities.map(a => a.id) } },
+          select: { activityId: true },
+        });
+        const preArrivalCount = transfers.preArrivalActivityIds(
+          targetActivities, new Date(), existingHere.map(s => s.activityId), isPastDeadline
+        ).length;
+
         pendingMoves.push({
           name: studentName.trim(),
           username: existingAccount.username,
@@ -3765,6 +3808,9 @@ async function enrolStudents(section, studentsList, { schoolId, teacherId, actor
           fromSection: currentSection.gradeLevel
             ? `${currentSection.gradeLevel} — ${currentSection.name}`
             : currentSection.name,
+          preview: transfers.buildMovePreview({
+            sourceClasses, targetClasses, gradeCountByClassId, preArrivalCount,
+          }),
         });
         continue;
       }

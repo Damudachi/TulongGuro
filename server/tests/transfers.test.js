@@ -160,3 +160,66 @@ describe('the excusal reason is written to the student, not to the system', () =
       .toBe('Enrolled on 10 August 2026');
   });
 });
+
+describe('buildMovePreview', () => {
+  const { buildMovePreview } = transfers;
+  const src = (id, subject) => ({ id, subject, gradeLevel: 'Grade 6', schoolYear: '2026-2027' });
+
+  it('reports what carries, with the number of grades behind it', () => {
+    const preview = buildMovePreview({
+      sourceClasses: [src('old-eng', 'English')],
+      targetClasses: [src('new-eng', 'English')],
+      gradeCountByClassId: { 'old-eng': 4 },
+      preArrivalCount: 5,
+    });
+
+    expect(preview.carries).toEqual([{ subject: 'English', gradeLevel: 'Grade 6', gradeCount: 4 }]);
+    expect(preview.unmatched).toEqual([]);
+    expect(preview.ambiguous).toEqual([]);
+    expect(preview.willExcuse).toBe(5);
+  });
+
+  // A real transfer is often into a section that does not teach the same
+  // subjects. It is stated, not refused.
+  it('reports work that will not carry, and does not treat it as an error', () => {
+    const preview = buildMovePreview({
+      sourceClasses: [src('old-sci', 'Science')],
+      targetClasses: [src('new-eng', 'English')],
+      gradeCountByClassId: { 'old-sci': 3 },
+      preArrivalCount: 0,
+    });
+
+    expect(preview.carries).toEqual([]);
+    expect(preview.unmatched).toEqual([
+      { subject: 'Science', gradeCount: 3, reason: NO_MATCHING_CLASS },
+    ]);
+  });
+
+  it('reports an unlabelled source class as ambiguous rather than guessing', () => {
+    const preview = buildMovePreview({
+      sourceClasses: [src('old-x', null)],
+      targetClasses: [src('new-eng', 'English')],
+      gradeCountByClassId: { 'old-x': 2 },
+      preArrivalCount: 0,
+    });
+
+    expect(preview.ambiguous).toEqual([
+      { subject: null, gradeCount: 2, reason: CLASS_HAS_NO_SUBJECT },
+    ]);
+  });
+
+  // Two English classes in the target would each claim the same work.
+  it('reports a duplicated target subject as ambiguous, never merging into both', () => {
+    const preview = buildMovePreview({
+      sourceClasses: [src('old-eng', 'English')],
+      targetClasses: [src('new-eng-a', 'English'), src('new-eng-b', 'English')],
+      gradeCountByClassId: { 'old-eng': 4 },
+      preArrivalCount: 0,
+    });
+
+    expect(preview.carries).toEqual([]);
+    expect(preview.ambiguous).toEqual([
+      { subject: 'English', gradeCount: 4, reason: 'MULTIPLE_TARGET_CLASSES' },
+    ]);
+  });
+});

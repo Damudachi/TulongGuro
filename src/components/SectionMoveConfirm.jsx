@@ -27,13 +27,41 @@ export default function SectionMoveConfirm({ moves, targetSection, onConfirm, on
           <span className="font-bold text-brand-slate">{targetSection}</span> takes {moves.length === 1 ? 'them' : 'them'} off
           the roster shown below. Their account, submitted work and grades travel with them; nothing is deleted.
         </p>
-        <div className="border border-slate-200 rounded-xl divide-y divide-slate-100 max-h-60 overflow-y-auto mb-5">
+        <div className="border border-slate-200 rounded-xl divide-y divide-slate-100 max-h-80 overflow-y-auto mb-5">
           {moves.map(m => (
-            <div key={m.username} className="flex items-center justify-between gap-3 px-3 py-2 text-sm">
-              <span className="font-medium text-brand-slate truncate">{m.name}</span>
-              <span className="text-xs text-slate-500 shrink-0">
-                <span className="font-mono">{m.username}</span> · now in {m.fromSection}
-              </span>
+            <div key={m.username} className="px-3 py-3 text-sm">
+              <div className="flex items-center justify-between gap-3 mb-1">
+                <span className="font-medium text-brand-slate truncate">{m.name}</span>
+                <span className="text-xs text-slate-500 shrink-0">
+                  <span className="font-mono">{m.username}</span> · now in {m.fromSection}
+                </span>
+              </div>
+              {m.preview && (
+                <ul className="text-xs space-y-0.5 mt-1.5">
+                  {m.preview.carries.map(c => (
+                    <li key={`c-${c.subject}`} className="text-emerald-700">
+                      ✓ {c.subject} — <span className="font-bold">{c.gradeCount} grade{c.gradeCount === 1 ? '' : 's'} carry over</span>
+                    </li>
+                  ))}
+                  {m.preview.unmatched.map(u => (
+                    <li key={`u-${u.subject}`} className="text-amber-700">
+                      ⚠ {u.subject} — no matching class here, <span className="font-bold">{u.gradeCount} grade{u.gradeCount === 1 ? '' : 's'} will not carry</span>
+                    </li>
+                  ))}
+                  {m.preview.ambiguous.map((a, i) => (
+                    <li key={`a-${i}`} className="text-amber-700">
+                      ⚠ {a.subject || 'An unlabelled class'} — {a.reason === 'MULTIPLE_TARGET_CLASSES'
+                        ? 'more than one class here teaches it'
+                        : 'the class has no subject set'}, {a.gradeCount} grade{a.gradeCount === 1 ? '' : 's'} will not carry
+                    </li>
+                  ))}
+                  {m.preview.willExcuse > 0 && (
+                    <li className="text-slate-500">
+                      ⓘ {m.preview.willExcuse} activit{m.preview.willExcuse === 1 ? 'y' : 'ies'} already closed before they arrive will be marked <span className="font-medium">Excused</span>
+                    </li>
+                  )}
+                </ul>
+              )}
             </div>
           ))}
         </div>

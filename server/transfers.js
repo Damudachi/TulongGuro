@@ -132,6 +132,51 @@ function transferExcuseReason(fromSectionLabel, transferredAt) {
     : `Enrolled on ${day}`;
 }
 
+/** A target section holding two classes with the same key; see duplicateTargetKeys. */
+const MULTIPLE_TARGET_CLASSES = 'MULTIPLE_TARGET_CLASSES';
+
+/**
+ * What a move will do, for the confirm screen.
+ *
+ * SectionMoveConfirm already promises "their account, submitted work and
+ * grades travel with them; nothing is deleted". This is what makes that
+ * sentence checkable rather than a claim — and what stops "Science did not
+ * carry" being discovered at report-card time.
+ *
+ * Nothing here blocks a move. A transfer into a section that does not teach
+ * the same subjects is a normal thing a school decides; refusing it would
+ * leave the teacher unable to do what has already been decided.
+ */
+function buildMovePreview({ sourceClasses, targetClasses, gradeCountByClassId, preArrivalCount }) {
+  const counts = gradeCountByClassId || {};
+  const dupes = new Set(duplicateTargetKeys(targetClasses));
+  const carries = [];
+  const unmatched = [];
+  const ambiguous = [];
+
+  for (const source of sourceClasses || []) {
+    const gradeCount = counts[source.id] || 0;
+    const key = classKey(source);
+
+    if (key === null) {
+      ambiguous.push({ subject: source.subject ?? null, gradeCount, reason: CLASS_HAS_NO_SUBJECT });
+      continue;
+    }
+    if (dupes.has(key)) {
+      ambiguous.push({ subject: source.subject, gradeCount, reason: MULTIPLE_TARGET_CLASSES });
+      continue;
+    }
+    const hit = (targetClasses || []).some(t => classKey(t) === key);
+    if (!hit) {
+      unmatched.push({ subject: source.subject, gradeCount, reason: NO_MATCHING_CLASS });
+      continue;
+    }
+    carries.push({ subject: source.subject, gradeLevel: source.gradeLevel, gradeCount });
+  }
+
+  return { carries, unmatched, ambiguous, willExcuse: preArrivalCount || 0 };
+}
+
 module.exports = {
   classKey,
   matchingSourceClasses,
@@ -139,6 +184,8 @@ module.exports = {
   preArrivalActivityIds,
   carriedOverEntries,
   transferExcuseReason,
+  buildMovePreview,
   CLASS_HAS_NO_SUBJECT,
   NO_MATCHING_CLASS,
+  MULTIPLE_TARGET_CLASSES,
 };
