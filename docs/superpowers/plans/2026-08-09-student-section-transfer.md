@@ -2282,12 +2282,16 @@ In section 4, add:
 | **Transfers before this shipped have no record.** Those learners are treated as always having been in their current section. | Which is exactly what every screen assumed before, so nothing regressed — but a move that happened last term will not show carried-over work. |
 ```
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: Do NOT commit**
 
-```bash
-cd .. && git add HANDOFF.md
-git commit -m "docs: update baselines and add P11 section-transfer QA"
-```
+> **CORRECTED IN EXECUTION.** This step originally said to `git add HANDOFF.md`.
+> That was wrong: `HANDOFF.md` is listed in `.gitignore` (line 35), has never been
+> tracked (`git log --all -- HANDOFF.md` is empty), and was excluded by the repo
+> owner's own commit `7b75006`. Committing it would require `git add -f`, which
+> overrides a deliberate decision that is not a plan step's to override.
+>
+> Task 13's deliverable is the edited file on disk. If the owner wants it in
+> version control, `git add -f HANDOFF.md` remains available to them.
 
 ---
 
