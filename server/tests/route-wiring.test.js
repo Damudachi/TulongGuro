@@ -1186,3 +1186,96 @@ describe('a section\'s skill-progress timeline is stable when a student leaves',
     expect(where.status).toBe('GRADED');
   });
 });
+
+describe('P7 invariant: a move does not change the admin student count', () => {
+  it('never widens the Section.students relation itself', () => {
+    const src = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'server.js'), 'utf8');
+
+    // Admin analytics builds its student set from this relation and dedupes by
+    // id (server.js ~1757); QA test P7 asserts the Students tile and the class
+    // spread bar agree. Widening the relation would put a transferred learner
+    // in two sections at once and break that. The widening belongs in the
+    // gradebook endpoint's response shaping, and only there.
+    const adminAnalytics = src.slice(src.indexOf("app.get('/api/admin/:adminId/analytics'"));
+    const body = adminAnalytics.slice(0, adminAnalytics.indexOf('\napp.'));
+    expect(body).not.toMatch(/sectionTransfer/);
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────
+// GET /api/teacher/:teacherId/gradebook — the sending teacher's roster
+// ───────────────────────────────────────────────────────────────────
+
+describe('GET /api/teacher/:teacherId/gradebook keeps a transferred-out learner on the sending roster', () => {
+  const CLASS = 'class-gb-1';
+  const SECTION = 'section-gb-old';
+  const STAYED = 'student-gb-stayed';
+  const LEFT = 'student-gb-left';
+  const RETURNED = 'student-gb-returned';
+  const LEFT_AT = '2026-07-01T00:00:00.000Z';
+
+  const armClasses = (students) => {
+    prismaFake.activity.findMany.mockResolvedValue([]);
+    prismaFake.class.findMany.mockResolvedValue([{
+      id: CLASS, name: 'Class', teacherId: T1, sectionId: SECTION,
+      section: { id: SECTION, name: 'Section', students },
+    }]);
+  };
+
+  const fetchStudents = async () => {
+    const res = await call('GET', `/api/teacher/${T1}/gradebook`, { token: tokenFor({ id: T1 }) });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    return body.classes[0].section.students;
+  };
+
+  it('flags a departed learner transferredOut with the date they left, and leaves current students unflagged', async () => {
+    armClasses([{ id: STAYED, name: 'Stayed Learner', username: 'stayed' }]);
+    prismaFake.sectionTransfer.findMany.mockResolvedValue([
+      { studentId: LEFT, fromSectionId: SECTION, transferredAt: LEFT_AT },
+    ]);
+    prismaFake.user.findMany.mockResolvedValue([
+      { id: LEFT, name: 'Left Learner', username: 'left', sectionId: 'section-gb-new' },
+    ]);
+
+    const students = await fetchStudents();
+
+    const stayed = students.find(s => s.id === STAYED);
+    expect(stayed.transferredOut).toBe(false);
+    expect(stayed.transferredOutAt).toBeNull();
+
+    const left = students.find(s => s.id === LEFT);
+    expect(left).toBeDefined();
+    expect(left.transferredOut).toBe(true);
+    expect(left.transferredOutAt).toBe(LEFT_AT);
+  });
+
+  it('does not flag a learner who left and came back as transferred out', async () => {
+    // She has a SectionTransfer row out of this section, but her current
+    // sectionId is this section again — she is on the roster the normal way,
+    // via Section.students. An earlier task shipped exactly the inverted bug
+    // (flagging a returning student as departed) and it had to be reverted.
+    armClasses([{ id: RETURNED, name: 'Returned Learner', username: 'returned' }]);
+    prismaFake.sectionTransfer.findMany.mockResolvedValue([
+      { studentId: RETURNED, fromSectionId: SECTION, transferredAt: LEFT_AT },
+    ]);
+    prismaFake.user.findMany.mockResolvedValue([
+      { id: RETURNED, name: 'Returned Learner', username: 'returned', sectionId: SECTION },
+    ]);
+
+    const students = await fetchStudents();
+
+    expect(students).toHaveLength(1);
+    expect(students[0].id).toBe(RETURNED);
+    expect(students[0].transferredOut).toBe(false);
+  });
+
+  it('does not query sectionTransfer when the teacher has no classes', async () => {
+    prismaFake.activity.findMany.mockResolvedValue([]);
+    prismaFake.class.findMany.mockResolvedValue([]);
+
+    const res = await call('GET', `/api/teacher/${T1}/gradebook`, { token: tokenFor({ id: T1 }) });
+    expect(res.status).toBe(200);
+    expect(prismaFake.sectionTransfer.findMany).not.toHaveBeenCalled();
+  });
+});

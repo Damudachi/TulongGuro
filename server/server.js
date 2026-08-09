@@ -7492,7 +7492,65 @@ app.get('/api/teacher/:teacherId/gradebook', async (req, res) => {
       where: { teacherId: req.params.teacherId },
       include: { section: { include: { students: { select: { id: true, name: true, username: true } } } } }
     });
-    res.json({ success: true, activities, classes });
+
+    // ── Learners who have transferred out ──
+    //
+    // Section.students is where they are now, so a learner who moved vanishes
+    // from their old teacher's roster the instant it happens — along with every
+    // mark that teacher personally awarded, and with the class average silently
+    // changing shape behind them.
+    //
+    // Added here, in the response, and NOT to the Prisma relation. Admin
+    // analytics builds its school-wide student set from that relation
+    // (deduped by id) and QA test P7 asserts the resulting count; widening it
+    // would count one child in two sections.
+    const sectionIds = [...new Set(classes.map(c => c.sectionId).filter(Boolean))];
+    const departures = sectionIds.length
+      ? await prisma.sectionTransfer.findMany({
+          where: { fromSectionId: { in: sectionIds } },
+          select: { studentId: true, fromSectionId: true, transferredAt: true },
+          orderBy: { transferredAt: 'desc' },
+        })
+      : [];
+
+    const departedIds = [...new Set(departures.map(d => d.studentId))];
+    const departed = departedIds.length
+      ? await prisma.user.findMany({
+          where: { id: { in: departedIds }, role: 'STUDENT' },
+          select: { id: true, name: true, username: true, sectionId: true },
+        })
+      : [];
+    const departedById = new Map(departed.map(s => [s.id, s]));
+
+    const classesWithDepartures = classes.map(cls => {
+      const current = cls.section?.students || [];
+      const currentIds = new Set(current.map(s => s.id));
+      const left = departures
+        .filter(d => d.fromSectionId === cls.sectionId)
+        .map(d => ({ ...departedById.get(d.studentId), at: d.transferredAt }))
+        // Gone only if they have not come back. A learner moved out and back in
+        // is on the roster normally.
+        .filter(s => s.id && !currentIds.has(s.id) && s.sectionId !== cls.sectionId);
+
+      const seen = new Set();
+      const transferredOut = left.filter(s => !seen.has(s.id) && seen.add(s.id)).map(s => ({
+        id: s.id, name: s.name, username: s.username,
+        transferredOut: true, transferredOutAt: s.at,
+      }));
+
+      return {
+        ...cls,
+        section: cls.section && {
+          ...cls.section,
+          students: [
+            ...current.map(s => ({ ...s, transferredOut: false, transferredOutAt: null })),
+            ...transferredOut,
+          ],
+        },
+      };
+    });
+
+    res.json({ success: true, activities, classes: classesWithDepartures });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
   }

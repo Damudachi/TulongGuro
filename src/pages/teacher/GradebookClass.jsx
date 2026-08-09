@@ -168,7 +168,11 @@ export default function GradebookClass() {
               ) : students.map(student => {
                 const gwa = computeGWA(student.id);
                 return (
-                  <tr key={student.id} className="border-b border-cream-200 last:border-0 hover:bg-cream-50 transition-colors">
+                  <tr key={student.id}
+                    className={cn(
+                      'border-b border-cream-200 last:border-0 hover:bg-cream-50 transition-colors',
+                      student.transferredOut && 'opacity-60'
+                    )}>
                     <td className="px-4 py-3 sticky left-0 bg-white z-10">
                       <div className="flex items-center gap-2.5">
                         <div className="w-9 h-9 rounded-xl bg-royal-100 flex items-center justify-center text-royal-700 font-extrabold text-xs shrink-0">
@@ -180,6 +184,13 @@ export default function GradebookClass() {
                             {student.name}
                           </Link>
                           <p className="text-xs text-navy-400 font-semibold truncate">{student.username}</p>
+                          {student.transferredOut && (
+                            <p className="text-[11px] font-bold text-slate-500 truncate">
+                              Transferred out {new Date(student.transferredOutAt).toLocaleDateString('en-GB', {
+                                timeZone: 'Asia/Manila', day: 'numeric', month: 'short', year: 'numeric',
+                              })}
+                            </p>
+                          )}
                         </div>
                       </div>
                     </td>
