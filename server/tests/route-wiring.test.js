@@ -622,3 +622,26 @@ describe('carriedOverForClass', () => {
     expect(where.activity.classId.in).toEqual(['old-eng']);
   });
 });
+
+describe('the receiving teacher sees carried-over work read-only', () => {
+  const T_RECEIVING = 'teacher-receiving';
+  const STUDENT = 'student-maria';
+
+  it('403s when that teacher tries to write to the sending teacher\'s class', async () => {
+    // The read is school-scoped via staffMayAccess; the write is not. A
+    // receiving teacher who can re-grade a colleague's mark would be able to
+    // rewrite a grade of record they never awarded.
+    prismaFake.activity.findUnique.mockResolvedValue({
+      id: ACTIVITY, class: { teacherId: T1, sectionId: 'sec-a' },
+    });
+
+    const res = await call('POST', '/api/teacher/submissions/excuse', {
+      token: tokenFor({ id: T_RECEIVING, schoolId: SCHOOL_A }),
+      body: { activityId: ACTIVITY, studentId: STUDENT, excused: true, reason: 'x' },
+    });
+
+    expect(res.status).toBe(403);
+    expect(prismaFake.submission.update).not.toHaveBeenCalled();
+    expect(prismaFake.submission.create).not.toHaveBeenCalled();
+  });
+});

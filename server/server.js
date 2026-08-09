@@ -7542,6 +7542,8 @@ app.get('/api/teacher/:teacherId/student/:studentId/gradebook', async (req, res)
         // they are still enrolled in it — and so an activity they were never
         // present for is not read as MISSING against them.
         fromPreviousSection: !!student.sectionId && a.class?.sectionId !== student.sectionId,
+        carriedOver: false,
+        fromSection: null,
       };
     });
 
@@ -7552,7 +7554,50 @@ app.get('/api/teacher/:teacherId/student/:studentId/gradebook', async (req, res)
     // child for the second is the worse error. Work they actually did is kept.
     const visibleRows = rows.filter(r => !(r.fromPreviousSection && !r.submissionId));
 
-    res.json({ success: true, student, rows: visibleRows });
+    // ── Work from a section they transferred out of ──
+    //
+    // The rows above are this teacher's own classes. A learner who moved
+    // mid-year did part of the same subject somewhere else, and this teacher is
+    // the one who files the combined subject grade — so the marks that grade
+    // rests on have to be visible to them, or the number is undefendable to a
+    // parent.
+    //
+    // Read-only throughout. staffMayAccess (access.js) is school-scoped rather
+    // than owner-scoped precisely so a colleague can open this; every write
+    // path stays teacherId-scoped, so nothing here can be re-graded, excused or
+    // released by anyone but the teacher who awarded it.
+    const ownClassIds = [...new Set(activities.map(a => a.classId))];
+    const carriedRows = [];
+    for (const classId of ownClassIds) {
+      const carried = await carriedOverForClass(prisma, { classId, studentIds: [studentId] });
+      for (const sub of carried.get(studentId) || []) {
+        const section = sub.activity?.class?.section;
+        carriedRows.push({
+          activityId: sub.activity.id,
+          activityTitle: sub.activity.title,
+          className: sub.activity.class?.name || '',
+          deadline: sub.activity.deadline,
+          status: grading.isExcused(sub) ? 'EXCUSED' : (sub.isLate ? 'LATE' : 'DONE'),
+          grade: grading.gradePercentOf(sub) === null
+            ? null
+            : Math.round((grading.gradePercentOf(sub) / 100) * (sub.activity.points || 100)),
+          totalScore: sub.activity.points || 100,
+          submissionId: sub.id,
+          excusedReason: sub.excusedReason || null,
+          fromPreviousSection: true,
+          // Distinct from fromPreviousSection, which the sending teacher's own
+          // view already uses. This says "another teacher awarded this, you may
+          // read it and nothing more".
+          carriedOver: true,
+          fromSection: section
+            ? (section.gradeLevel ? `${section.gradeLevel} — ${section.name}` : section.name)
+            : null,
+          feedback: sub.hitlFeedback || sub.aiFeedback || null,
+        });
+      }
+    }
+
+    res.json({ success: true, student, rows: [...visibleRows, ...carriedRows] });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
   }
