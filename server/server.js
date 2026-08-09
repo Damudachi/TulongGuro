@@ -7434,18 +7434,27 @@ app.get('/api/teacher/:teacherId/section/:sectionId/skill-progress', async (req,
       where: {
         status: 'GRADED',
         rubricData: { not: null },
-        // Scoped by the activity's section alone, deliberately.
+        // Scoped by the activity's own class/section, deliberately — that is
+        // the property that stays fixed even after a learner transfers out.
         //
         // There used to be a `student: { sectionId }` filter alongside this.
-        // The two were redundant — a submission on this section's activity can
-        // only have been made by someone enrolled here at the time — and only
-        // one of them was correct. The student filter re-tested enrolment
-        // against *now*, so the moment a learner transferred out, every point
+        // It re-tested enrolment against *now* rather than against the
+        // activity, so the moment a learner transferred out, every point
         // they had contributed vanished from this section's timeline and the
-        // section's past silently changed shape.
+        // section's past silently changed shape. That is the bug this filter
+        // fixes; do not restore it.
         //
-        // Auto-excused transfer rows carry no rubricData, so they are already
-        // excluded by the filter above.
+        // This does NOT by itself prove every row belongs to a section
+        // member: POST /api/teacher/activities/:activityId/scores and POST
+        // /api/teacher/upload write `studentId` from the request body with
+        // only `teacherOwnsActivity` checked, no roster/section validation
+        // (unlike POST /api/teacher/submissions/excuse, which does check).
+        // A misassigned submission on one of those routes will sit in this
+        // timeline. Pre-existing gap, recorded here, not introduced or
+        // papered over by this endpoint.
+        //
+        // Auto-excused transfer rows carry no rubricData, so they are
+        // excluded by the filter above regardless.
         activity: { class: { teacherId, sectionId } },
       },
       include: { activity: { select: SKILL_PROGRESS_ACTIVITY_SELECT } }
