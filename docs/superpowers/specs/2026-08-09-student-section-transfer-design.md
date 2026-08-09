@@ -194,35 +194,68 @@ keeps it out of the 8k-line `server.js` that `HANDOFF.md` already flags.
 ### Pure functions
 
 ```
-matchClass(candidateClasses, targetClass)
-  → the class matching on (subject, gradeLevel, schoolYear).
+classKey(cls)
+  → "subject|gradeLevel|schoolYear", or null when the class has no subject.
+    Null rather than a key on purpose: Class.subject is nullable, and treating
+    "unlabelled" as a value would merge a Maths class into a Science one.
+
+matchingSourceClasses(candidateClasses, targetClass)
+  → { matched: Class[], reason: string|null }
     Candidates are the classes the student has submissions in, belonging to
     sections they have a transfer *out of*. Their current section's classes
     are never candidates — that work is already the target's own.
-    A null subject never matches a null subject — an unlabelled class is
-    ambiguous, not a match, and is surfaced at the confirm screen instead.
-    More than one match in the target section is also ambiguous, surfaced and
-    never silently picked, so carried work cannot be counted twice.
+    More than one match is NOT an error: a student who moved twice has two
+    prior classes in the same subject and both are legitimately theirs.
+    `reason` is set only when nothing matched — CLASS_HAS_NO_SUBJECT or
+    NO_MATCHING_CLASS — and names why, for the confirm screen.
 
-preArrivalActivityIds(activities, transferredAt, alreadySubmittedIds, now)
-  → the three-condition rule above.
+duplicateTargetKeys(targetClasses)
+  → keys held by more than one class in the *target* section.
+    This is where double-counting would come from, so it is checked on the
+    target side rather than the source side, and surfaced, never guessed.
 
-carriedOverEntries(carriedSubmissions, activities)
+preArrivalActivityIds(activities, transferredAt, alreadySubmittedIds, isPastDeadline)
+  → the three-condition rule above. `isPastDeadline` is injected rather than
+    imported: the server's copy is private to server.js, which cannot be
+    pulled into a unit test.
+
+carriedOverEntries(submissions)
   → { percent, points, component } entries, the shape computeGrade already
-    consumes.
+    consumes. Each submission carries its own `activity`, so no second
+    argument is needed. Routed through grading.gradePercentOf, so unvalidated
+    AI drafts, archived and excused rows drop out here — and a validated 0
+    survives.
+
+buildMovePreview({ sourceClasses, targetClasses, gradeCountByClassId, preArrivalCount })
+  → { carries[], unmatched[], ambiguous[], willExcuse } for the confirm screen.
+
+transferExcuseReason(fromSectionLabel, transferredAt)
+  → the sentence written to the student on an auto-excused row, in Manila
+    calendar terms.
 ```
 
 ### Thin DB wrapper
 
 ```
-carriedOverFor(prisma, { studentId, targetClassId })
+carriedOverForClass(prisma, { classId, studentIds }) -> Map<studentId, Submission[]>
 ```
 
-Finds the student's transfer history, resolves source classes through
-`matchClass`, and returns their submissions. This is the single function the
-drill-down, the export, the teacher analytics and the confirm-screen preview all
-call, so the four cannot drift apart — divergence between call sites is the
-failure the handoff names as the source of past grade bugs.
+Finds the students' transfer history, resolves source classes through
+`matchingSourceClasses`, and returns their submissions. This is the single
+function the drill-down, the export and the teacher analytics all call, so the
+three cannot drift apart — divergence between call sites is the failure the
+handoff names as the source of past grade bugs.
+
+**Batched over `studentIds`, not per student.** Teacher analytics runs it across
+a whole section; a per-student signature would recreate the N+1 that rewrite
+removed (~120 queries → 3). The drill-down passes a single-element array.
+
+The confirm-screen preview (§5) is the one merged read that **cannot** use it:
+`carriedOverForClass` locates source sections by reading `SectionTransfer` rows,
+and at preview time the move has not happened, so no such row exists. The preview
+reads the student's current section directly. Both still route the matching
+decision itself through `matchingSourceClasses`, which is the part that must not
+diverge.
 
 ### Authorization
 
@@ -375,8 +408,11 @@ behind `npm run verify`, so it cannot ship if the gate fails.
 
 Pure functions only, no database:
 
-- `matchClass` — clean match; null subject on either side; two matching classes in
-  the target section.
+- `matchingSourceClasses` — clean match; a differing school year and a differing
+  grade level; null subject on either side; two matching *source* classes, which
+  must both be returned rather than treated as an error.
+- `duplicateTargetKeys` — two classes in the target section sharing a key;
+  unlabelled classes ignored.
 - `preArrivalActivityIds` — each of the three conditions failing independently,
   and all three holding.
 - `carriedOverEntries` — the `{ percent, points, component }` shape, including a
