@@ -6776,24 +6776,33 @@ app.get('/api/teacher/:teacherId/analytics', async (req, res) => {
       });
       for (const [studentId, subs] of carried) {
         if (!byStudent.has(studentId)) byStudent.set(studentId, []);
-        byStudent.get(studentId).push(...subs);
+        // A self-contained homeroom teacher commonly owns both the student's
+        // old and new class for a subject (two sections of the same
+        // subject). When that's the case, the old class's submissions are
+        // already in `graded` (scoped by activity.classId, not by current
+        // enrolment) and therefore already in byStudent — pooling them again
+        // here would double-count every mark from that class. Only a
+        // genuinely *foreign* class's work — one this teacher does not
+        // teach — needs to be pooled in.
+        const genuinelyForeign = subs.filter(s => !classIds.includes(s.activity?.classId));
+        byStudent.get(studentId).push(...genuinelyForeign);
       }
     }
 
     // ── A learner who transferred out ──
     //
-    // Their marks stay in this teacher's class average, because the average is
-    // a record of what happened and they were here when it did. They come off
-    // needsSupport, because that is an action list and this child is now
-    // somebody else's to act on.
-    const sectionIds = [...new Set(classes.map(c => c.sectionId).filter(Boolean))];
-    const departures = sectionIds.length
-      ? await prisma.sectionTransfer.findMany({
-          where: { fromSectionId: { in: sectionIds }, studentId: { in: uniqueStudents.map(s => s.id) } },
-          select: { studentId: true },
-        })
-      : [];
-    const transferredOut = new Set(departures.map(d => d.studentId));
+    // No code needed here. `graded` is scoped by the activity's class, not by
+    // current enrolment, so a departed student's marks stay in `graded` (and
+    // therefore in the class average) exactly as they were recorded. And
+    // `uniqueStudents` is built from `classes[].section.students` — the live
+    // roster — so a student who has actually left is already absent from
+    // `uniqueStudents`, `studentTrends` and `needsSupport`; there is nothing
+    // to flag or filter. An explicit "transferredOut" flag was tried here and
+    // removed: the only students a `fromSectionId` lookup can match, once
+    // filtered to `uniqueStudents`, are ones who left and were re-enrolled
+    // (Task 4 supports this) — i.e. currently-enrolled children — so the flag
+    // could only ever mis-fire by dropping an enrolled, possibly struggling
+    // student off the at-risk list.
 
     // ── Per-student summary ──
     const studentTrends = [];
@@ -6802,7 +6811,7 @@ app.get('/api/teacher/:teacherId/analytics', async (req, res) => {
     for (const student of uniqueStudents) {
       const subs = byStudent.get(student.id) || [];
       if (subs.length === 0) {
-        studentTrends.push({ student, gradedCount: 0, avgPercent: null, pointsEarned: 0, pointsPossible: 0, latest: null, skillScores: {}, history: [], transferredOut: transferredOut.has(student.id) });
+        studentTrends.push({ student, gradedCount: 0, avgPercent: null, pointsEarned: 0, pointsPossible: 0, latest: null, skillScores: {}, history: [] });
         continue;
       }
 
@@ -6837,8 +6846,7 @@ app.get('/api/teacher/:teacherId/analytics', async (req, res) => {
           totalPoints: last.activity?.points || 100
         },
         skillScores: latestSkills,
-        history: percents.slice(-5),
-        transferredOut: transferredOut.has(student.id)
+        history: percents.slice(-5)
       });
 
       // ── Who could use a hand? Stated as encouragement, not alarm. ──
@@ -6865,9 +6873,7 @@ app.get('/api/teacher/:teacherId/analytics', async (req, res) => {
           }
         }
       }
-      if (reasons.length && !transferredOut.has(student.id)) {
-        needsSupport.push({ student, avgPercent, reasons });
-      }
+      if (reasons.length) needsSupport.push({ student, avgPercent, reasons });
     }
 
     // Lowest averages first — that's who to look at.
