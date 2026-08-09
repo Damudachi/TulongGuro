@@ -6459,7 +6459,28 @@ app.post('/api/teacher/submissions/excuse', async (req, res) => {
     const student = await prisma.user.findUnique({
       where: { id: studentId }, select: { id: true, sectionId: true, role: true }
     });
-    if (!student || student.role !== 'STUDENT' || student.sectionId !== activity?.class?.sectionId) {
+
+    // ── "Is this learner on this activity's roster?" ──
+    //
+    // Their current section is the common answer, but not the only correct
+    // one. A learner who transferred out is no longer in this section, and the
+    // teacher who set the work is still the only person who can excuse it —
+    // the receiving teacher cannot, because every write path is scoped to the
+    // owning teacher. Comparing against `sectionId` alone therefore left work
+    // nobody at all could correct.
+    //
+    // Having *been* enrolled here is the honest test, and a learner who was
+    // never in this section still fails it.
+    const activitySectionId = activity?.class?.sectionId;
+    let onRoster = !!student && student.role === 'STUDENT' && student.sectionId === activitySectionId;
+    if (!onRoster && student?.role === 'STUDENT' && activitySectionId) {
+      const wasEnrolled = await prisma.sectionTransfer.findFirst({
+        where: { studentId: student.id, fromSectionId: activitySectionId },
+        select: { id: true },
+      });
+      onRoster = !!wasEnrolled;
+    }
+    if (!onRoster) {
       return res.status(404).json({ success: false, error: 'That student is not in this activity\'s section.' });
     }
 

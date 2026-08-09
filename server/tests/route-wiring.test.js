@@ -1279,3 +1279,50 @@ describe('GET /api/teacher/:teacherId/gradebook keeps a transferred-out learner 
     expect(prismaFake.sectionTransfer.findMany).not.toHaveBeenCalled();
   });
 });
+
+describe('excusing a student who has since transferred out', () => {
+  const url = '/api/teacher/submissions/excuse';
+
+  it('lets the owning teacher excuse work set while the student was enrolled', async () => {
+    prismaFake.submission.findUnique.mockResolvedValue({
+      id: SUBMISSION, activity: { type: 'Essay', class: { teacherId: T1 } },
+    });
+    prismaFake.activity.findUnique.mockResolvedValue({
+      id: ACTIVITY, class: { teacherId: T1, sectionId: 'sec-a' },
+    });
+    // She is in sec-b now, but she was in sec-a when this was set.
+    prismaFake.user.findUnique.mockResolvedValue({
+      id: 'maria', role: 'STUDENT', sectionId: 'sec-b', sessionsValidFrom: null,
+    });
+    prismaFake.sectionTransfer.findFirst.mockResolvedValue({
+      studentId: 'maria', fromSectionId: 'sec-a',
+    });
+    prismaFake.submission.findFirst.mockResolvedValue({ id: SUBMISSION });
+
+    const res = await call('POST', url, {
+      token: tokenFor({ id: T1, schoolId: SCHOOL_A }),
+      body: { activityId: ACTIVITY, studentId: 'maria', excused: true, reason: 'Was on school representation' },
+    });
+
+    expect(res.status).toBe(200);
+    expect(prismaFake.submission.update).toHaveBeenCalled();
+  });
+
+  it('still 404s for a student who was never in the section at all', async () => {
+    prismaFake.activity.findUnique.mockResolvedValue({
+      id: ACTIVITY, class: { teacherId: T1, sectionId: 'sec-a' },
+    });
+    prismaFake.user.findUnique.mockResolvedValue({
+      id: 'stranger', role: 'STUDENT', sectionId: 'sec-z', sessionsValidFrom: null,
+    });
+    prismaFake.sectionTransfer.findFirst.mockResolvedValue(null);
+
+    const res = await call('POST', url, {
+      token: tokenFor({ id: T1, schoolId: SCHOOL_A }),
+      body: { activityId: ACTIVITY, studentId: 'stranger', excused: true },
+    });
+
+    expect(res.status).toBe(404);
+    expect(prismaFake.submission.create).not.toHaveBeenCalled();
+  });
+});
