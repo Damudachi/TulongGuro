@@ -1040,6 +1040,45 @@ function normalisePaperResult(raw, modelId, gradeLevelAssumed = false, rubricPar
 }
 
 /**
+ * Every column an AI pass writes, back to "this paper has not been checked".
+ *
+ * Named once because it is used from three places that each have to forget the
+ * *same* set — a photo replaced, the AI unreachable, or a paper pulled back for
+ * a privacy violation — and they had drifted. Each site listed the fields it
+ * happened to remember, so a flag added later was cleared by the success path
+ * and by none of the reset paths.
+ *
+ * That matters more than it sounds, because Prisma reads an *omitted* key as
+ * "leave this column alone" rather than "null it". A paper that had been
+ * flagged for an arithmetic disagreement kept its red "the AI's own numbers
+ * disagree" banner after its photo was replaced — quoting criteria that had
+ * just been set to null. The same trap the skillScores comment below warns
+ * about, sprung by the next field somebody added.
+ *
+ * Spread over `imageUrl` (and anything else the caller is setting), never
+ * under it.
+ */
+const UNGRADED_RESET = {
+  status: 'PENDING',
+  aiScore: null,
+  aiFeedback: null,
+  readingStrategy: null,
+  rubricData: null,
+  skillScores: null,
+  // Cleared here for the same reason the analyze route clears it on a clean
+  // re-check: a teacher who re-uploads a cropped copy must not be left with the
+  // Privacy Act warning the uncropped one earned. The two flag-and-stop sites
+  // spread this and then set it back to true.
+  privacyViolation: false,
+  gradeLevelAssumed: false,
+  rubricParseFailed: false,
+  scoreFeedbackMismatch: false,
+  rubricScoreNote: null,
+  scoreOutOfRange: false,
+  gradedAt: null,
+};
+
+/**
  * Retention deadline for a submission: exactly one calendar year past the end of
  * the school year the work belongs to.
  *
@@ -1790,8 +1829,19 @@ app.get('/api/admin/:adminId/analytics', async (req, res) => {
     const admin = await requireAdminSchool(req.params.adminId);
     const { passingGrade } = await gradingSettingsFor(admin.schoolId);
 
+    // Section.schoolId is the primary signal and the teacher is the fallback —
+    // the same ladder access.js and sectionInSchool use. Keying on the section
+    // alone meant a section with no schoolId was editable from the Teachers
+    // page yet absent from Analytics, so the two admin screens described
+    // different schools.
+    const inThisSchool = {
+      OR: [
+        { section: { schoolId: admin.schoolId } },
+        { section: { schoolId: null }, teacher: { schoolId: admin.schoolId } },
+      ],
+    };
     const classes = await prisma.class.findMany({
-      where: { section: { schoolId: admin.schoolId } },
+      where: inThisSchool,
       include: {
         teacher: { select: { id: true, name: true } },
         section: { select: { id: true, name: true, gradeLevel: true, students: { select: { id: true, name: true, username: true } } } }
@@ -1799,7 +1849,7 @@ app.get('/api/admin/:adminId/analytics', async (req, res) => {
     });
 
     const graded = await prisma.submission.findMany({
-      where: { status: 'GRADED', activity: { class: { section: { schoolId: admin.schoolId } } } },
+      where: { status: 'GRADED', activity: { class: inThisSchool } },
       // Oldest first, so the last few entries per student are their most recent
       // work and a trend can be read off them.
       orderBy: [{ gradedAt: 'asc' }, { updatedAt: 'asc' }],
@@ -2196,7 +2246,9 @@ app.get('/api/admin/:adminId/overview', async (req, res) => {
         orderBy: { createdAt: 'desc' }
       }),
       prisma.section.findMany({
-        where: { schoolId: admin.schoolId },
+        // Same ladder as sectionInSchool, which already lets an admin open and
+        // edit a section whose own schoolId is null but whose adviser is theirs.
+        where: { OR: [{ schoolId: admin.schoolId }, { schoolId: null, teacher: { schoolId: admin.schoolId } }] },
         select: { id: true, name: true, gradeLevel: true, teacher: { select: { name: true } }, _count: { select: { students: true } } },
         orderBy: [{ gradeLevel: 'asc' }, { name: 'asc' }]
       }),
@@ -2308,19 +2360,53 @@ app.delete('/api/admin/:adminId/teachers/:teacherId', async (req, res) => {
       });
     }
 
-    await prisma.rubricTemplate.deleteMany({ where: { teacherId: teacher.id } });
-    await prisma.gradingExample.deleteMany({ where: { teacherId: teacher.id } });
-    const demoClasses = await prisma.class.findMany({ where: { teacherId: teacher.id }, select: { id: true } });
-    for (const cls of demoClasses) {
-      await prisma.submission.deleteMany({ where: { activity: { classId: cls.id } } });
-      await prisma.activity.deleteMany({ where: { classId: cls.id } });
-      await prisma.classLesson.deleteMany({ where: { classId: cls.id } });
+    // A section this teacher advises can still be the parent of a course shell
+    // that belongs to somebody else. Reassigning a shell (PUT .../classes/:id)
+    // moves Class.teacherId and deliberately leaves Class.sectionId alone, so
+    // the two owners come apart as a matter of routine — and the guards above
+    // both pass afterwards, because the shell is no longer this teacher's and
+    // its roster left with it.
+    //
+    // Class_sectionId_fkey is ON DELETE RESTRICT, so the section delete below
+    // would then throw partway through a teardown that used to have no
+    // transaction around it: the rubric templates and grading examples were
+    // already gone, the teacher was still there, and the admin got a 500.
+    // Ask before touching anything.
+    const ownSections = await prisma.section.findMany({
+      where: { teacherId: teacher.id },
+      select: { id: true, name: true },
+    });
+    if (ownSections.length > 0) {
+      const foreign = await prisma.class.findFirst({
+        where: { sectionId: { in: ownSections.map(s => s.id) }, NOT: { teacherId: teacher.id } },
+        include: { teacher: { select: { name: true } }, section: { select: { name: true } } },
+      });
+      if (foreign) {
+        return res.status(400).json({
+          success: false,
+          error: `"${foreign.name}", taught by ${foreign.teacher?.name || 'another teacher'}, still uses this `
+            + `teacher's section "${foreign.section?.name}". Reassign that section's adviser first, `
+            + 'then remove this teacher.',
+        });
+      }
     }
-    await prisma.class.deleteMany({ where: { teacherId: teacher.id } });
-    const ownSections = await prisma.section.findMany({ where: { teacherId: teacher.id }, select: { id: true } });
-    await prisma.user.deleteMany({ where: { sectionId: { in: ownSections.map(s => s.id) }, role: 'STUDENT' } });
-    await prisma.section.deleteMany({ where: { teacherId: teacher.id } });
-    await prisma.user.delete({ where: { id: teacher.id } });
+
+    // One transaction: a constraint that fires late must not be able to leave a
+    // half-deleted teacher — rubric library gone, account still present.
+    await prisma.$transaction(async (tx) => {
+      await tx.rubricTemplate.deleteMany({ where: { teacherId: teacher.id } });
+      await tx.gradingExample.deleteMany({ where: { teacherId: teacher.id } });
+      const ownClasses = await tx.class.findMany({ where: { teacherId: teacher.id }, select: { id: true } });
+      for (const cls of ownClasses) {
+        await tx.submission.deleteMany({ where: { activity: { classId: cls.id } } });
+        await tx.activity.deleteMany({ where: { classId: cls.id } });
+        await tx.classLesson.deleteMany({ where: { classId: cls.id } });
+      }
+      await tx.class.deleteMany({ where: { teacherId: teacher.id } });
+      await tx.user.deleteMany({ where: { sectionId: { in: ownSections.map(s => s.id) }, role: 'STUDENT' } });
+      await tx.section.deleteMany({ where: { teacherId: teacher.id } });
+      await tx.user.delete({ where: { id: teacher.id } });
+    });
     res.json({ success: true });
   } catch (e) { sendAdminError(res, e); }
 });
@@ -2431,10 +2517,16 @@ app.put('/api/admin/:adminId/classes/:classId', async (req, res) => {
       where: { id: req.params.classId },
       include: {
         teacher: true,
+        // Loaded so tenancy can be judged the way access.js judges it. Asking
+        // the teacher alone disagreed with every other reader of the same row:
+        // a class sitting in this school's section but owned by a teacher whose
+        // own schoolId had been cleared was unreachable here — which is exactly
+        // the class an admin most needs to hand to somebody else.
+        section: { select: { schoolId: true } },
         activities: { select: { id: true, _count: { select: { submissions: true } } } }
       }
     });
-    if (!cls || cls.teacher?.schoolId !== admin.schoolId) {
+    if (!cls || classSchoolId(cls) !== admin.schoolId) {
       return res.status(404).json({ success: false, error: 'Class not found in your school.' });
     }
 
@@ -2588,7 +2680,34 @@ app.put('/api/admin/:adminId/sections/:sectionId', async (req, res) => {
     const data = {};
     if (name !== undefined) {
       if (!name.trim()) return res.status(400).json({ success: false, error: 'Section name cannot be empty.' });
-      data.name = name.trim();
+      const trimmed = name.trim();
+      if (trimmed !== section.name) {
+        // The create path (POST /api/teacher/sections) reuses a section by
+        // (name, school, school year) with findFirst and no orderBy — that is
+        // how block names stop being recycled between years, and it holds only
+        // while the name is unique inside a year. Renaming enforced nothing, so
+        // this door led straight back to §8.1: two indistinguishable rows, and
+        // the next teacher to add a learner enrolling them onto whichever one
+        // the planner happened to return.
+        const clash = await prisma.section.findFirst({
+          where: {
+            name: trimmed,
+            NOT: { id: section.id },
+            ...(section.schoolId ? { schoolId: section.schoolId } : { teacherId: section.teacherId }),
+            OR: [{ schoolYear: section.schoolYear ?? null }, { schoolYear: null }],
+          },
+          select: { id: true, gradeLevel: true },
+        });
+        if (clash) {
+          return res.status(400).json({
+            success: false,
+            error: `Another section is already called "${trimmed}"`
+              + (section.schoolYear ? ` in ${section.schoolYear}` : '')
+              + '. Section names have to be unique within a school year, or adding a student to one can put them on the other.',
+          });
+        }
+      }
+      data.name = trimmed;
     }
     if (gradeLevel !== undefined) data.gradeLevel = gradeLevel || null;
     if (teacherId !== undefined && teacherId !== section.teacherId) {
@@ -3285,8 +3404,15 @@ app.get('/api/teacher/:teacherId/setup-status', async (req, res) => {
     const ofThisTeacher = { activity: { class: { teacherId } } };
 
     const [sections, students, classes, activities, graded, released] = await Promise.all([
-      prisma.section.count({ where: { teacherId } }),
-      prisma.user.count({ where: { role: 'STUDENT', section: { teacherId } } }),
+      // Advised by them, OR used by one of their course shells. Counting the
+      // adviser alone meant an admin reassigning a section's adviser reset an
+      // established teacher's checklist to "0 sections, 0 students" while they
+      // were still teaching those children — every other teacher-facing route
+      // scopes by Class.teacherId or by school, not by who advises the block.
+      prisma.section.count({ where: { OR: [{ teacherId }, { classes: { some: { teacherId } } }] } }),
+      prisma.user.count({
+        where: { role: 'STUDENT', section: { OR: [{ teacherId }, { classes: { some: { teacherId } } }] } },
+      }),
       prisma.class.count({ where: { teacherId } }),
       prisma.activity.count({ where: { class: { teacherId } } }),
       prisma.submission.count({ where: { ...ofThisTeacher, status: 'GRADED' } }),
@@ -6123,7 +6249,11 @@ app.post('/api/teacher/submissions/:id/analyze', async (req, res) => {
     if (e instanceof PrivacyViolationError) {
       const flagged = await prisma.submission.update({
         where: { id: req.params.id },
-        data: { privacyViolation: true, status: 'PENDING' },
+        // Cleared as well as flagged. A re-check that trips the privacy gate
+        // leaves nothing graded, so an earlier pass's score, rubric and
+        // arithmetic note must not stay on the row underneath a banner saying
+        // the paper was not graded.
+        data: { ...UNGRADED_RESET, privacyViolation: true },
         include: { student: true, activity: { include: { class: true } } }
       });
       return res.status(400).json({
@@ -6370,7 +6500,8 @@ async function applyBatchResult(job, sub, result) {
   if (result.privacyViolation) {
     await prisma.submission.update({
       where: { id: sub.id },
-      data: { privacyViolation: true, status: 'PENDING' }
+      // Same clearing as the single-paper path: flagged means ungraded.
+      data: { ...UNGRADED_RESET, privacyViolation: true }
     });
     return setJobItem(job, sub.id, 'flagged', {
       violationType: result.violationType,
@@ -8568,17 +8699,7 @@ app.post('/api/teacher/upload', submissionUpload.fields([{ name: 'image', maxCou
       // POST /api/teacher/submissions/:id/analyze (see the "Ready for AI
       // Checking" flow in HITLWorkspace). Explicitly null out any prior
       // grading result in case this is a replacement photo.
-      submissionData = {
-        imageUrl: processedUrl,
-        status: 'PENDING',
-        aiScore: null,
-        aiFeedback: null,
-        rubricData: null,
-        skillScores: null,
-        gradeLevelAssumed: false,
-        scoreFeedbackMismatch: false,
-        gradedAt: null
-      };
+      submissionData = { ...UNGRADED_RESET, imageUrl: processedUrl };
     } else {
       // 2) Call the shared AI grading function
       try {
@@ -8613,17 +8734,7 @@ app.post('/api/teacher/upload', submissionUpload.fields([{ name: 'image', maxCou
         // checking" queue and can be re-checked later or graded by hand.
         if (!(aiErr instanceof AiUnavailableError)) throw aiErr;
         aiUnavailable = aiErr;
-        submissionData = {
-          imageUrl: processedUrl,
-          status: 'PENDING',
-          aiScore: null,
-          aiFeedback: null,
-          rubricData: null,
-          skillScores: null,
-          gradeLevelAssumed: false,
-          scoreFeedbackMismatch: false,
-          gradedAt: null
-        };
+        submissionData = { ...UNGRADED_RESET, imageUrl: processedUrl };
       }
     }
 
@@ -9679,5 +9790,5 @@ function startServer() {
 
 module.exports = {
   app, startServer, cleanUpTransferRows, carriedOverForClass, carriedOverPrefetch,
-  saveCurriculumRubrics, rubricScoreNoteFor,
+  saveCurriculumRubrics, rubricScoreNoteFor, UNGRADED_RESET,
 };
