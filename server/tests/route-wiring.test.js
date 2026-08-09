@@ -644,4 +644,91 @@ describe('the receiving teacher sees carried-over work read-only', () => {
     expect(prismaFake.submission.update).not.toHaveBeenCalled();
     expect(prismaFake.submission.create).not.toHaveBeenCalled();
   });
+
+  it('does not duplicate a submission the teacher already owns in both sections', async () => {
+    // Maria moved from Section A's English 6 to Section B's English 6, and the
+    // SAME teacher (T1) teaches both. Her Section A marks are already in `rows`
+    // via classIdsWithWork, flagged fromPreviousSection. The carried-over loop
+    // must not carry them in a second time just because Section B's English
+    // matches Section A's English on (subject, gradeLevel, schoolYear) — that
+    // would render the same grade twice, the second copy wrongly captioned
+    // "marked by their previous teacher" when it was T1 both times.
+    const CLASS_A = 'class-a-eng';
+    const CLASS_B = 'class-b-eng';
+    const SUB = 'sub-a1';
+
+    prismaFake.user.findUnique.mockImplementation(({ where }) => {
+      if (where.id === STUDENT) {
+        return Promise.resolve({ id: STUDENT, name: 'Maria Test', username: 'maria', sectionId: 'sec-b' });
+      }
+      // Any other id is the auth revocation check on the signed-in teacher.
+      return Promise.resolve({ sessionsValidFrom: null });
+    });
+
+    // classesWithWork: T1 already has a submission of Maria's from Section A's
+    // English, which is why Section A's class ends up in ownClassIds too.
+    // CARRIED_OVER_SELECT (the carried-over lookup) is distinguished by its
+    // `archivedAt: null` clause, which the classesWithWork query never has.
+    prismaFake.submission.findMany.mockImplementation(({ where }) => {
+      if (where.archivedAt === null) {
+        const wantsClassA = where.activity.classId.in.includes(CLASS_A);
+        if (!wantsClassA) return Promise.resolve([]);
+        return Promise.resolve([{
+          id: SUB, studentId: STUDENT, activityId: 'act-a1',
+          status: 'GRADED', hitlScore: 85, aiScore: null, hitlFeedback: null, aiFeedback: null,
+          archivedAt: null, excusedAt: null, excusedReason: null, isLate: false,
+          gradedAt: '2026-01-05T00:00:00Z', releasedAt: null,
+          activity: {
+            id: 'act-a1', title: 'A Activity', points: 100, component: 'WW',
+            deadline: '2026-01-01T00:00:00Z', classId: CLASS_A,
+            class: { id: CLASS_A, name: 'Eng6-A', section: { id: 'sec-a', name: 'Section A', gradeLevel: 'Grade 6' } },
+          },
+        }]);
+      }
+      return Promise.resolve([{ activity: { classId: CLASS_A } }]);
+    });
+
+    prismaFake.activity.findMany.mockResolvedValue([
+      {
+        id: 'act-b1', title: 'B Activity', classId: CLASS_B, deadline: '2026-02-01T00:00:00Z', points: 100,
+        class: { name: 'Eng6-B', sectionId: 'sec-b' },
+        submissions: [],
+      },
+      {
+        id: 'act-a1', title: 'A Activity', classId: CLASS_A, deadline: '2026-01-01T00:00:00Z', points: 100,
+        class: { name: 'Eng6-A', sectionId: 'sec-a' },
+        submissions: [{
+          id: SUB, hitlScore: 85, aiScore: null, status: 'GRADED',
+          createdAt: '2026-01-01T00:00:00Z', isLate: false, excusedAt: null, excusedReason: null,
+        }],
+      },
+    ]);
+
+    prismaFake.class.findUnique.mockImplementation(({ where }) => {
+      if (where.id === CLASS_B) return Promise.resolve({ id: CLASS_B, subject: 'English', gradeLevel: 'Grade 6', schoolYear: '2026-2027', sectionId: 'sec-b' });
+      if (where.id === CLASS_A) return Promise.resolve({ id: CLASS_A, subject: 'English', gradeLevel: 'Grade 6', schoolYear: '2026-2027', sectionId: 'sec-a' });
+      return Promise.resolve(null);
+    });
+    prismaFake.class.findMany.mockImplementation(({ where }) => {
+      const ids = where.sectionId.in;
+      if (ids.includes('sec-a')) return Promise.resolve([{ id: CLASS_A, subject: 'English', gradeLevel: 'Grade 6', schoolYear: '2026-2027' }]);
+      return Promise.resolve([]);
+    });
+    prismaFake.sectionTransfer.findMany.mockResolvedValue([
+      { studentId: STUDENT, fromSectionId: 'sec-a' },
+    ]);
+
+    const res = await call('GET', `/api/teacher/${T1}/student/${STUDENT}/gradebook`, {
+      token: tokenFor({ id: T1 }),
+    });
+    const body = await res.json();
+
+    expect(res.status).toBe(200);
+    const matches = body.rows.filter(r => r.submissionId === SUB);
+    expect(matches).toHaveLength(1);
+    // The surviving copy is the main-path row (fromPreviousSection, not the
+    // read-only carried-over duplicate), because it is T1's own mark.
+    expect(matches[0].carriedOver).toBe(false);
+    expect(matches[0].fromPreviousSection).toBe(true);
+  });
 });

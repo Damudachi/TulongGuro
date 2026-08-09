@@ -7562,15 +7562,28 @@ app.get('/api/teacher/:teacherId/student/:studentId/gradebook', async (req, res)
     // rests on have to be visible to them, or the number is undefendable to a
     // parent.
     //
-    // Read-only throughout. staffMayAccess (access.js) is school-scoped rather
-    // than owner-scoped precisely so a colleague can open this; every write
-    // path stays teacherId-scoped, so nothing here can be re-graded, excused or
+    // Read-only throughout. What makes it safe to show a colleague's marks here
+    // is the (subject, gradeLevel, schoolYear) match in matchingSourceClasses
+    // plus the school-scoping invariant enrolStudents already enforces — a
+    // SectionTransfer row for one student never spans two schools, so a match
+    // can only ever surface a class in this same school. Every write path stays
+    // teacherId-scoped regardless, so nothing here can be re-graded, excused or
     // released by anyone but the teacher who awarded it.
     const ownClassIds = [...new Set(activities.map(a => a.classId))];
+    const ownClassIdSet = new Set(ownClassIds);
     const carriedRows = [];
     for (const classId of ownClassIds) {
       const carried = await carriedOverForClass(prisma, { classId, studentIds: [studentId] });
       for (const sub of carried.get(studentId) || []) {
+        // A teacher who teaches the same subject in two sections (Maria's old
+        // English 6 in Section A, her new one in Section B) already has her
+        // Section A marks in `rows` above via classIdsWithWork, flagged
+        // fromPreviousSection. Without this guard, matching Section B's
+        // English against Section A's would carry the very same submissions
+        // in again — rendering the same grade twice and captioning the copy
+        // "marked by their previous teacher", which would be false: it's the
+        // same teacher both times.
+        if (ownClassIdSet.has(sub.activity.classId)) continue;
         const section = sub.activity?.class?.section;
         carriedRows.push({
           activityId: sub.activity.id,
