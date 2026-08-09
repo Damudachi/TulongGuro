@@ -3606,6 +3606,81 @@ async function cleanUpTransferRows(tx, { studentId, sectionId }) {
   return count;
 }
 
+/** What a carried-over row has to carry to be displayed and to be graded. */
+const CARRIED_OVER_SELECT = {
+  id: true, studentId: true, activityId: true, status: true,
+  hitlScore: true, aiScore: true, hitlFeedback: true, aiFeedback: true,
+  archivedAt: true, excusedAt: true, excusedReason: true, isLate: true,
+  gradedAt: true, releasedAt: true,
+  activity: {
+    select: {
+      id: true, title: true, points: true, component: true, deadline: true, classId: true,
+      class: { select: { id: true, name: true, section: { select: { id: true, name: true, gradeLevel: true } } } },
+    },
+  },
+};
+
+/**
+ * Work these students did in another section that counts toward this class.
+ *
+ * The single lookup behind the drill-down, the export, the teacher analytics
+ * and the confirm-screen preview. They share it so they cannot disagree about
+ * a learner's grade — divergence between call sites doing the same sum by hand
+ * is what produced several of the grade bugs in HANDOFF.md.
+ *
+ * Batched over studentIds on purpose. Called per student it would be the same
+ * N+1 the teacher analytics rewrite removed (~120 queries -> 3).
+ *
+ * @returns {Promise<Map<string, object[]>>} studentId -> submissions. Students
+ *   with nothing carried over are absent from the map rather than present with
+ *   an empty array, so callers can skip them cheaply.
+ */
+async function carriedOverForClass(prisma, { classId, studentIds }) {
+  const empty = new Map();
+  if (!classId || !studentIds?.length) return empty;
+
+  const target = await prisma.class.findUnique({
+    where: { id: classId },
+    select: { id: true, subject: true, gradeLevel: true, schoolYear: true, sectionId: true },
+  });
+  if (!target) return empty;
+
+  // Sections these learners have actually left. No transfers means nobody has
+  // moved, and there is nothing to look for.
+  const moves = await prisma.sectionTransfer.findMany({
+    where: { studentId: { in: studentIds }, fromSectionId: { not: null } },
+    select: { studentId: true, fromSectionId: true },
+  });
+  const priorSectionIds = [...new Set(
+    moves.map(m => m.fromSectionId).filter(id => id && id !== target.sectionId)
+  )];
+  if (priorSectionIds.length === 0) return empty;
+
+  const candidates = await prisma.class.findMany({
+    where: { sectionId: { in: priorSectionIds } },
+    select: { id: true, subject: true, gradeLevel: true, schoolYear: true },
+  });
+
+  const { matched } = transfers.matchingSourceClasses(candidates, target);
+  if (matched.length === 0) return empty;
+
+  const subs = await prisma.submission.findMany({
+    where: {
+      studentId: { in: studentIds },
+      activity: { classId: { in: matched.map(c => c.id) } },
+      archivedAt: null,
+    },
+    select: CARRIED_OVER_SELECT,
+  });
+
+  const byStudent = new Map();
+  for (const sub of subs) {
+    if (!byStudent.has(sub.studentId)) byStudent.set(sub.studentId, []);
+    byStudent.get(sub.studentId).push(sub);
+  }
+  return byStudent;
+}
+
 async function enrolStudents(section, studentsList, { schoolId, teacherId, actorId = null, allowMove = false }) {
   const createdStudents = [];
   const skippedStudents = [];
@@ -8750,4 +8825,4 @@ function startServer() {
   });
 }
 
-module.exports = { app, startServer, cleanUpTransferRows };
+module.exports = { app, startServer, cleanUpTransferRows, carriedOverForClass };

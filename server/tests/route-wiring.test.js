@@ -564,3 +564,61 @@ describe('a transfer out cleans up only what a transfer in created', () => {
     expect(where.activity).toEqual({ class: { sectionId: 'sec-a' } });
   });
 });
+
+// ───────────────────────────────────────────────────────────────────
+// The one lookup every merged read shares
+// ───────────────────────────────────────────────────────────────────
+
+describe('carriedOverForClass', () => {
+  it('returns an empty map without querying when no student has moved', async () => {
+    const { carriedOverForClass } = require('../server.js');
+
+    const prisma = {
+      class: { findUnique: vi.fn().mockResolvedValue({ id: 'c1', subject: 'English', gradeLevel: 'Grade 6', schoolYear: '2026-2027', sectionId: 'sec-b' }) },
+      sectionTransfer: { findMany: vi.fn().mockResolvedValue([]) },
+      submission: { findMany: vi.fn() },
+    };
+
+    const result = await carriedOverForClass(prisma, { classId: 'c1', studentIds: ['s1'] });
+
+    expect(result.size).toBe(0);
+    // The N+1 this replaces is the whole point: no student means no query.
+    expect(prisma.submission.findMany).not.toHaveBeenCalled();
+  });
+
+  it('fetches every student\'s carried work in one query, not one per student', async () => {
+    const { carriedOverForClass } = require('../server.js');
+
+    const prisma = {
+      class: {
+        findUnique: vi.fn().mockResolvedValue({ id: 'c1', subject: 'English', gradeLevel: 'Grade 6', schoolYear: '2026-2027', sectionId: 'sec-b' }),
+        findMany: vi.fn().mockResolvedValue([
+          { id: 'old-eng', subject: 'English', gradeLevel: 'Grade 6', schoolYear: '2026-2027', sectionId: 'sec-a' },
+          { id: 'old-sci', subject: 'Science', gradeLevel: 'Grade 6', schoolYear: '2026-2027', sectionId: 'sec-a' },
+        ]),
+      },
+      sectionTransfer: {
+        findMany: vi.fn().mockResolvedValue([
+          { studentId: 's1', fromSectionId: 'sec-a', toSectionId: 'sec-b' },
+          { studentId: 's2', fromSectionId: 'sec-a', toSectionId: 'sec-b' },
+        ]),
+      },
+      submission: {
+        findMany: vi.fn().mockResolvedValue([
+          { id: 'sub1', studentId: 's1', activityId: 'a1', activity: { id: 'a1', classId: 'old-eng' } },
+          { id: 'sub2', studentId: 's2', activityId: 'a2', activity: { id: 'a2', classId: 'old-eng' } },
+        ]),
+      },
+    };
+
+    const result = await carriedOverForClass(prisma, { classId: 'c1', studentIds: ['s1', 's2'] });
+
+    expect(prisma.submission.findMany).toHaveBeenCalledTimes(1);
+    expect(result.get('s1').map(s => s.id)).toEqual(['sub1']);
+    expect(result.get('s2').map(s => s.id)).toEqual(['sub2']);
+
+    // Science is not English: the Science class must never be a source.
+    const { where } = prisma.submission.findMany.mock.calls[0][0];
+    expect(where.activity.classId.in).toEqual(['old-eng']);
+  });
+});
