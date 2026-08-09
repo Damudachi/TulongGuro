@@ -40,6 +40,7 @@ const { getAllRubricTemplates, getRubricTemplateById } = require('./rubricTempla
 const { SKILLS: CURRICULUM_SKILLS, classifyCriterion } = require('./skillTaxonomy');
 const AI_SKILLS = ['vocabulary', 'punctuation', 'thematicFlow', 'sentenceStructure'];
 const grading = require('./grading');
+const transfers = require('./transfers');
 
 require('dotenv').config({ path: path.join(__dirname, '.env') });
 
@@ -2545,6 +2546,7 @@ app.post('/api/admin/:adminId/sections/:sectionId/students', async (req, res) =>
     const result = await enrolStudents(section, studentsList, {
       schoolId: admin.schoolId,
       teacherId: section.teacherId,
+      actorId: req.auth.sub,
       allowMove: !!allowMove
     });
 
@@ -2572,7 +2574,18 @@ app.delete('/api/admin/:adminId/sections/:sectionId/students/:studentId', async 
 
     if (student._count.submissions > 0) {
       // Graded work must survive, so unassign rather than delete the account.
-      await prisma.user.update({ where: { id: student.id }, data: { sectionId: null } });
+      await prisma.$transaction(async (tx) => {
+        await cleanUpTransferRows(tx, { studentId: student.id, sectionId: section.id });
+        await tx.user.update({ where: { id: student.id }, data: { sectionId: null } });
+        await recordTransfer(tx, {
+          studentId: student.id,
+          fromSectionId: section.id,
+          toSectionId: null,
+          actorId: req.auth.sub,
+          schoolId: section.schoolId,
+          reason: 'Removed from section',
+        });
+      });
       return res.json({ success: true, detached: true, message: `${student.name} has submitted work, so their account was kept and only removed from this section.` });
     }
     await prisma.user.delete({ where: { id: student.id } });
@@ -3482,7 +3495,198 @@ async function studentIdIssuer(schoolName, fallbackName) {
  *   account silently empties a colleague's roster. Left off, those names come
  *   back as `pendingMoves` and nothing is written, so the caller can ask first.
  */
-async function enrolStudents(section, studentsList, { schoolId, teacherId, allowMove = false }) {
+/**
+ * Record that a learner changed section.
+ *
+ * Called from every place User.sectionId changes — there are three: a new
+ * enrolment, a move onto another roster, and the admin unassign. Each writes
+ * a row so the history has no gaps; a learner with no rows at all is one who
+ * has not moved since this shipped, and is treated as always having been where
+ * they are.
+ *
+ * Takes a transaction client, because a roster change and the excusals it
+ * implies have to land together or not at all.
+ */
+async function recordTransfer(tx, { studentId, fromSectionId, toSectionId, actorId, schoolId, reason }) {
+  return tx.sectionTransfer.create({
+    data: {
+      studentId,
+      fromSectionId: fromSectionId || null,
+      toSectionId: toSectionId || null,
+      actorId: actorId || null,
+      schoolId: schoolId || null,
+      reason: reason || null,
+    },
+  });
+}
+
+/**
+ * Excuse the activities a learner arriving into a section was never present
+ * for and can no longer do.
+ *
+ * Without this they read as MISSING against work set before they existed on
+ * the roster — a mark against a child for not doing something they were not
+ * there for. Excused is the state that already means exactly this: it leaves
+ * the average entirely (computeGrade renormalises), prints as "Excused" in the
+ * export, and is not counted as unreviewed. So this reuses it rather than
+ * adding a state every screen would have to learn.
+ *
+ * transfers.preArrivalActivityIds owns the decision; this is the write.
+ */
+async function excusePreArrival(tx, { studentId, sectionId, transferId, transferredAt, fromSectionLabel }) {
+  const activities = await tx.activity.findMany({
+    where: { class: { sectionId } },
+    select: { id: true, createdAt: true, deadline: true, class: { select: { schoolYear: true } } },
+  });
+  if (activities.length === 0) return 0;
+
+  const existing = await tx.submission.findMany({
+    where: { studentId, activityId: { in: activities.map(a => a.id) } },
+    select: { activityId: true },
+  });
+
+  const toExcuse = transfers.preArrivalActivityIds(
+    activities, transferredAt, existing.map(s => s.activityId), isPastDeadline
+  );
+  if (toExcuse.length === 0) return 0;
+
+  // Retention is keyed to the school year the work belongs to, not to whether
+  // any work exists — computeRetainUntil reads only activity.class.schoolYear.
+  // An excused row with retainUntil left null would be invisible to
+  // /api/admin/retention-report and never auto-archived or purged, so it is
+  // computed here from the schoolYear already fetched above (one lookup per
+  // activity, not per row) rather than left unset.
+  const retainUntilByActivity = new Map(
+    activities.map(a => [a.id, computeRetainUntil(a.class?.schoolYear)])
+  );
+
+  const reason = transfers.transferExcuseReason(fromSectionLabel, transferredAt);
+  // createMany rather than a loop: this can be a whole quarter of activities.
+  const { count } = await tx.submission.createMany({
+    data: toExcuse.map(activityId => ({
+      studentId, activityId, status: 'PENDING', attemptCount: 0,
+      excusedAt: transferredAt, excusedReason: reason, transferId,
+      retainUntil: retainUntilByActivity.get(activityId) || null,
+    })),
+  });
+  return count;
+}
+
+/**
+ * Undo, without an undo screen.
+ *
+ * A move that was a mis-click is repaired by moving the learner back through
+ * the normal roster flow. What has to be cleaned up is the rows the first move
+ * invented — the auto-excused pre-arrival ones — because leaving them behind
+ * would show a learner as having "work" in a section they were never really in.
+ *
+ * All four conditions are load-bearing, and the reason this can be a delete
+ * rather than a soft flag:
+ *
+ *   transferId   not null  -> the system created this row, not a person
+ *   attemptCount 0         -> nobody ever submitted against it
+ *   aiScore      null      -> the AI never graded it
+ *   hitlScore    null      -> no teacher ever entered a mark
+ *
+ * A row failing any one of them is somebody's work or somebody's judgement and
+ * is never in range. If a teacher un-excused a transfer row and marked it, it
+ * has a score and survives.
+ */
+async function cleanUpTransferRows(tx, { studentId, sectionId }) {
+  const { count } = await tx.submission.deleteMany({
+    where: {
+      studentId,
+      transferId: { not: null },
+      attemptCount: 0,
+      aiScore: null,
+      hitlScore: null,
+      activity: { class: { sectionId } },
+    },
+  });
+  return count;
+}
+
+/** What a carried-over row has to carry to be displayed and to be graded. */
+const CARRIED_OVER_SELECT = {
+  id: true, studentId: true, activityId: true, status: true,
+  hitlScore: true, aiScore: true, hitlFeedback: true, aiFeedback: true,
+  archivedAt: true, excusedAt: true, excusedReason: true, isLate: true,
+  gradedAt: true, releasedAt: true,
+  activity: {
+    select: {
+      id: true, title: true, points: true, component: true, deadline: true, classId: true,
+      // subject + gradeLevel are what workingAverageAcrossSubjects keys its
+      // per-subject grouping on. Without them every carried submission keys
+      // as '|' — a phantom extra "subject" holding all of a student's carried
+      // work — and the pooled average becomes the mean of their real subject
+      // average and that phantom, instead of one merged subject average.
+      class: { select: { id: true, name: true, subject: true, gradeLevel: true, section: { select: { id: true, name: true, gradeLevel: true } } } },
+    },
+  },
+};
+
+/**
+ * Work these students did in another section that counts toward this class.
+ *
+ * The single lookup behind the drill-down, the export, the teacher analytics
+ * and the confirm-screen preview. They share it so they cannot disagree about
+ * a learner's grade — divergence between call sites doing the same sum by hand
+ * is what produced several of the grade bugs in HANDOFF.md.
+ *
+ * Batched over studentIds on purpose. Called per student it would be the same
+ * N+1 the teacher analytics rewrite removed (~120 queries -> 3).
+ *
+ * @returns {Promise<Map<string, object[]>>} studentId -> submissions. Students
+ *   with nothing carried over are absent from the map rather than present with
+ *   an empty array, so callers can skip them cheaply.
+ */
+async function carriedOverForClass(prisma, { classId, studentIds }) {
+  const empty = new Map();
+  if (!classId || !studentIds?.length) return empty;
+
+  const target = await prisma.class.findUnique({
+    where: { id: classId },
+    select: { id: true, subject: true, gradeLevel: true, schoolYear: true, sectionId: true },
+  });
+  if (!target) return empty;
+
+  // Sections these learners have actually left. No transfers means nobody has
+  // moved, and there is nothing to look for.
+  const moves = await prisma.sectionTransfer.findMany({
+    where: { studentId: { in: studentIds }, fromSectionId: { not: null } },
+    select: { studentId: true, fromSectionId: true },
+  });
+  const priorSectionIds = [...new Set(
+    moves.map(m => m.fromSectionId).filter(id => id && id !== target.sectionId)
+  )];
+  if (priorSectionIds.length === 0) return empty;
+
+  const candidates = await prisma.class.findMany({
+    where: { sectionId: { in: priorSectionIds } },
+    select: { id: true, subject: true, gradeLevel: true, schoolYear: true },
+  });
+
+  const { matched } = transfers.matchingSourceClasses(candidates, target);
+  if (matched.length === 0) return empty;
+
+  const subs = await prisma.submission.findMany({
+    where: {
+      studentId: { in: studentIds },
+      activity: { classId: { in: matched.map(c => c.id) } },
+      archivedAt: null,
+    },
+    select: CARRIED_OVER_SELECT,
+  });
+
+  const byStudent = new Map();
+  for (const sub of subs) {
+    if (!byStudent.has(sub.studentId)) byStudent.set(sub.studentId, []);
+    byStudent.get(sub.studentId).push(sub);
+  }
+  return byStudent;
+}
+
+async function enrolStudents(section, studentsList, { schoolId, teacherId, actorId = null, allowMove = false }) {
   const createdStudents = [];
   const skippedStudents = [];
   const linkedStudents = [];
@@ -3538,6 +3742,17 @@ async function enrolStudents(section, studentsList, { schoolId, teacherId, allow
     : null;
   const nextStudentId = await studentIdIssuer(school?.name, section.name);
 
+  // Fetched once for the whole import, not per name: this is the section every
+  // pending move would be arriving into.
+  const targetClasses = await prisma.class.findMany({
+    where: { sectionId: section.id },
+    select: { id: true, subject: true, gradeLevel: true, schoolYear: true },
+  });
+  const targetActivities = await prisma.activity.findMany({
+    where: { class: { sectionId: section.id } },
+    select: { id: true, createdAt: true, deadline: true },
+  });
+
   for (const entry of entries) {
     const studentName = entry.name;
     const normalizedName = studentName.toLowerCase().trim();
@@ -3554,6 +3769,38 @@ async function enrolStudents(section, studentsList, { schoolId, teacherId, allow
       // whoever is running the import, not something to do quietly.
       const currentSection = existingAccount.section;
       if (currentSection && currentSection.id !== section.id && !allowMove) {
+        const sourceClasses = await prisma.class.findMany({
+          where: { sectionId: currentSection.id },
+          select: { id: true, subject: true, gradeLevel: true, schoolYear: true },
+        });
+        const gradedCounts = await prisma.submission.groupBy({
+          by: ['activityId'],
+          where: {
+            studentId: existingAccount.id, status: 'GRADED', archivedAt: null, excusedAt: null,
+            activity: { classId: { in: sourceClasses.map(c => c.id) } },
+          },
+          _count: { _all: true },
+        });
+        const activityClass = new Map(
+          (await prisma.activity.findMany({
+            where: { id: { in: gradedCounts.map(g => g.activityId) } },
+            select: { id: true, classId: true },
+          })).map(a => [a.id, a.classId])
+        );
+        const gradeCountByClassId = {};
+        for (const g of gradedCounts) {
+          const classId = activityClass.get(g.activityId);
+          if (classId) gradeCountByClassId[classId] = (gradeCountByClassId[classId] || 0) + 1;
+        }
+
+        const existingHere = await prisma.submission.findMany({
+          where: { studentId: existingAccount.id, activityId: { in: targetActivities.map(a => a.id) } },
+          select: { activityId: true },
+        });
+        const preArrivalCount = transfers.preArrivalActivityIds(
+          targetActivities, new Date(), existingHere.map(s => s.activityId), isPastDeadline
+        ).length;
+
         pendingMoves.push({
           name: studentName.trim(),
           username: existingAccount.username,
@@ -3561,14 +3808,41 @@ async function enrolStudents(section, studentsList, { schoolId, teacherId, allow
           fromSection: currentSection.gradeLevel
             ? `${currentSection.gradeLevel} — ${currentSection.name}`
             : currentSection.name,
+          preview: transfers.buildMovePreview({
+            sourceClasses, targetClasses, gradeCountByClassId, preArrivalCount,
+          }),
         });
         continue;
       }
-      await prisma.user.update({
-        where: { id: existingAccount.id },
-        // schoolId is set here too so an account that predates students
-        // carrying one picks it up the first time it is re-enrolled.
-        data: { sectionId: section.id, ...(schoolId ? { schoolId } : {}) }
+      // The roster change and the excusals it implies land together or not at
+      // all. Not the whole function: it hashes passwords for new accounts,
+      // which is deliberately slow and has no business holding a transaction
+      // open.
+      await prisma.$transaction(async (tx) => {
+        if (currentSection?.id) {
+          await cleanUpTransferRows(tx, { studentId: existingAccount.id, sectionId: currentSection.id });
+        }
+        await tx.user.update({
+          where: { id: existingAccount.id },
+          // schoolId is set here too so an account that predates students
+          // carrying one picks it up the first time it is re-enrolled.
+          data: { sectionId: section.id, ...(schoolId ? { schoolId } : {}) },
+        });
+        const transfer = await recordTransfer(tx, {
+          studentId: existingAccount.id,
+          fromSectionId: currentSection?.id || null,
+          toSectionId: section.id,
+          actorId, schoolId,
+        });
+        await excusePreArrival(tx, {
+          studentId: existingAccount.id,
+          sectionId: section.id,
+          transferId: transfer.id,
+          transferredAt: transfer.transferredAt,
+          fromSectionLabel: currentSection
+            ? (currentSection.gradeLevel ? `${currentSection.gradeLevel} — ${currentSection.name}` : currentSection.name)
+            : null,
+        });
       });
       linkedStudents.push({
         name: studentName.trim(),
@@ -3597,24 +3871,40 @@ async function enrolStudents(section, studentsList, { schoolId, teacherId, allow
     const initialPassword = birthdate ? birthdayPassword(birthdate) : randomStudentPassword();
     const passwordHash = await bcrypt.hash(initialPassword, BCRYPT_SALT_ROUNDS);
 
-    const user = await prisma.user.create({
-      data: {
-        name: studentName.trim(),
-        username: studentId,
-        password: passwordHash,
-        role: 'STUDENT',
-        sectionId: section.id,
-        // Students used to carry no schoolId, inheriting one through their
-        // section. Two things went wrong with that. A learner unassigned from
-        // their section became attributable to no school at all, so
-        // re-enrolling them duplicated the account (see the match query
-        // above). And the school-rejection path revokes sessions with
-        // `updateMany({ where: { schoolId } })` — which matched no students,
-        // so refusing a school signed out its staff and left every pupil's
-        // session live until it expired on its own.
-        schoolId: schoolId || null,
-        birthdate
-      }
+    // The account and the transfer record it implies land together or not at
+    // all — creating the user outside the transaction that follows left a
+    // window where the student was on the roster with no transfer row and no
+    // excusals, which is the exact MISSING-work bug this whole task exists to
+    // prevent. bcrypt above stays outside: it is deliberately slow and must
+    // not hold a transaction open.
+    const user = await prisma.$transaction(async (tx) => {
+      const created = await tx.user.create({
+        data: {
+          name: studentName.trim(),
+          username: studentId,
+          password: passwordHash,
+          role: 'STUDENT',
+          sectionId: section.id,
+          // Students used to carry no schoolId, inheriting one through their
+          // section. Two things went wrong with that. A learner unassigned from
+          // their section became attributable to no school at all, so
+          // re-enrolling them duplicated the account (see the match query
+          // above). And the school-rejection path revokes sessions with
+          // `updateMany({ where: { schoolId } })` — which matched no students,
+          // so refusing a school signed out its staff and left every pupil's
+          // session live until it expired on its own.
+          schoolId: schoolId || null,
+          birthdate
+        }
+      });
+      const transfer = await recordTransfer(tx, {
+        studentId: created.id, fromSectionId: null, toSectionId: section.id, actorId, schoolId,
+      });
+      await excusePreArrival(tx, {
+        studentId: created.id, sectionId: section.id, transferId: transfer.id,
+        transferredAt: transfer.transferredAt, fromSectionLabel: null,
+      });
+      return created;
     });
     const { password: _pw, ...safeUser } = user;
     // Returned in the clear on purpose: it is the credential the teacher has to
@@ -3765,7 +4055,7 @@ app.post('/api/teacher/sections', async (req, res) => {
     }
 
     const { createdStudents, skippedStudents, linkedStudents, pendingMoves } =
-      await enrolStudents(section, studentsList, { schoolId, teacherId, allowMove: !!allowMove });
+      await enrolStudents(section, studentsList, { schoolId, teacherId, actorId: req.auth.sub, allowMove: !!allowMove });
 
     let message = isExisting
       ? `Section "${section.name}" already exists. `
@@ -6169,7 +6459,28 @@ app.post('/api/teacher/submissions/excuse', async (req, res) => {
     const student = await prisma.user.findUnique({
       where: { id: studentId }, select: { id: true, sectionId: true, role: true }
     });
-    if (!student || student.role !== 'STUDENT' || student.sectionId !== activity?.class?.sectionId) {
+
+    // ── "Is this learner on this activity's roster?" ──
+    //
+    // Their current section is the common answer, but not the only correct
+    // one. A learner who transferred out is no longer in this section, and the
+    // teacher who set the work is still the only person who can excuse it —
+    // the receiving teacher cannot, because every write path is scoped to the
+    // owning teacher. Comparing against `sectionId` alone therefore left work
+    // nobody at all could correct.
+    //
+    // Having *been* enrolled here is the honest test, and a learner who was
+    // never in this section still fails it.
+    const activitySectionId = activity?.class?.sectionId;
+    let onRoster = !!student && student.role === 'STUDENT' && student.sectionId === activitySectionId;
+    if (!onRoster && student?.role === 'STUDENT' && activitySectionId) {
+      const wasEnrolled = await prisma.sectionTransfer.findFirst({
+        where: { studentId: student.id, fromSectionId: activitySectionId },
+        select: { id: true },
+      });
+      onRoster = !!wasEnrolled;
+    }
+    if (!onRoster) {
       return res.status(404).json({ success: false, error: 'That student is not in this activity\'s section.' });
     }
 
@@ -6516,6 +6827,74 @@ app.get('/api/teacher/:teacherId/analytics', async (req, res) => {
         highest: Math.max(...a.percents)
       };
     }).sort((a, b) => a.avgPercent - b.avgPercent);
+
+    // ── A learner who transferred in ──
+    //
+    // `graded` above is scoped to this teacher's classIds, so a pupil who
+    // arrived in week 6 is measured on weeks 6 onward alone. That is both a
+    // false alarm generator — one mark below the line reads as at-risk — and a
+    // way to miss a genuinely struggling child behind too small a sample. The
+    // at-risk list is the whole point of this endpoint, so it has to see the
+    // subject history the grade actually rests on.
+    // Tracked across the WHOLE loop below, not reset per iteration.
+    // carriedOverForClass matches on (subject, gradeLevel, schoolYear), so the
+    // SAME foreign source class can match more than one of this teacher's own
+    // classes — e.g. two sections of English 6, the ordinary shape of a
+    // departmentalised load. Without a dedupe that spans iterations, that
+    // source class's submissions get pooled once per matching class instead
+    // of once, silently inflating avgPercent, gradedCount and the "easing
+    // down" trend for every student it touches.
+    const pooledCarriedIds = new Set();
+    for (const cls of classes) {
+      const carried = await carriedOverForClass(prisma, {
+        classId: cls.id,
+        studentIds: uniqueStudents.map(s => s.id),
+      });
+      for (const [studentId, subs] of carried) {
+        if (!byStudent.has(studentId)) byStudent.set(studentId, []);
+        // A self-contained homeroom teacher commonly owns both the student's
+        // old and new class for a subject (two sections of the same
+        // subject). When that's the case, the old class's submissions are
+        // already in `graded` (scoped by activity.classId, not by current
+        // enrolment) and therefore already in byStudent — pooling them again
+        // here would double-count every mark from that class. Only a
+        // genuinely *foreign* class's work — one this teacher does not
+        // teach — needs to be pooled in, and only once even if two of the
+        // teacher's own classes both match its source (see pooledCarriedIds
+        // above).
+        //
+        // grading.countsAsGrade is also required here: the main `graded`
+        // query above is scoped `status: 'GRADED'`, and carried rows have to
+        // be held to that same bar or they distort the numbers two ways —
+        // (1) an unvalidated AI draft (status SUBMITTED) would become a grade
+        // of record it was never signed off as, and (2) a scoreless excused
+        // or auto-excused carried row would fall through `hitlScore ??
+        // aiScore ?? 0` below and enter history/pointsEarned/the "easing
+        // down" trend as a phantom zero. Filtering here keeps both out.
+        const genuinelyForeign = subs.filter(s =>
+          !classIds.includes(s.activity?.classId) &&
+          !pooledCarriedIds.has(s.id) &&
+          grading.countsAsGrade(s)
+        );
+        for (const s of genuinelyForeign) pooledCarriedIds.add(s.id);
+        byStudent.get(studentId).push(...genuinelyForeign);
+      }
+    }
+
+    // ── A learner who transferred out ──
+    //
+    // No code needed here. `graded` is scoped by the activity's class, not by
+    // current enrolment, so a departed student's marks stay in `graded` (and
+    // therefore in the class average) exactly as they were recorded. And
+    // `uniqueStudents` is built from `classes[].section.students` — the live
+    // roster — so a student who has actually left is already absent from
+    // `uniqueStudents`, `studentTrends` and `needsSupport`; there is nothing
+    // to flag or filter. An explicit "transferredOut" flag was tried here and
+    // removed: the only students a `fromSectionId` lookup can match, once
+    // filtered to `uniqueStudents`, are ones who left and were re-enrolled
+    // (Task 4 supports this) — i.e. currently-enrolled children — so the flag
+    // could only ever mis-fire by dropping an enrolled, possibly struggling
+    // student off the at-risk list.
 
     // ── Per-student summary ──
     const studentTrends = [];
@@ -7147,8 +7526,28 @@ app.get('/api/teacher/:teacherId/section/:sectionId/skill-progress', async (req,
       where: {
         status: 'GRADED',
         rubricData: { not: null },
-        student: { sectionId },
-        activity: { class: { teacherId, sectionId } }
+        // Scoped by the activity's own class/section, deliberately — that is
+        // the property that stays fixed even after a learner transfers out.
+        //
+        // There used to be a `student: { sectionId }` filter alongside this.
+        // It re-tested enrolment against *now* rather than against the
+        // activity, so the moment a learner transferred out, every point
+        // they had contributed vanished from this section's timeline and the
+        // section's past silently changed shape. That is the bug this filter
+        // fixes; do not restore it.
+        //
+        // This does NOT by itself prove every row belongs to a section
+        // member: POST /api/teacher/activities/:activityId/scores and POST
+        // /api/teacher/upload write `studentId` from the request body with
+        // only `teacherOwnsActivity` checked, no roster/section validation
+        // (unlike POST /api/teacher/submissions/excuse, which does check).
+        // A misassigned submission on one of those routes will sit in this
+        // timeline. Pre-existing gap, recorded here, not introduced or
+        // papered over by this endpoint.
+        //
+        // Auto-excused transfer rows carry no rubricData, so they are
+        // excluded by the filter above regardless.
+        activity: { class: { teacherId, sectionId } },
       },
       include: { activity: { select: SKILL_PROGRESS_ACTIVITY_SELECT } }
     });
@@ -7185,7 +7584,65 @@ app.get('/api/teacher/:teacherId/gradebook', async (req, res) => {
       where: { teacherId: req.params.teacherId },
       include: { section: { include: { students: { select: { id: true, name: true, username: true } } } } }
     });
-    res.json({ success: true, activities, classes });
+
+    // ── Learners who have transferred out ──
+    //
+    // Section.students is where they are now, so a learner who moved vanishes
+    // from their old teacher's roster the instant it happens — along with every
+    // mark that teacher personally awarded, and with the class average silently
+    // changing shape behind them.
+    //
+    // Added here, in the response, and NOT to the Prisma relation. Admin
+    // analytics builds its school-wide student set from that relation
+    // (deduped by id) and QA test P7 asserts the resulting count; widening it
+    // would count one child in two sections.
+    const sectionIds = [...new Set(classes.map(c => c.sectionId).filter(Boolean))];
+    const departures = sectionIds.length
+      ? await prisma.sectionTransfer.findMany({
+          where: { fromSectionId: { in: sectionIds } },
+          select: { studentId: true, fromSectionId: true, transferredAt: true },
+          orderBy: { transferredAt: 'desc' },
+        })
+      : [];
+
+    const departedIds = [...new Set(departures.map(d => d.studentId))];
+    const departed = departedIds.length
+      ? await prisma.user.findMany({
+          where: { id: { in: departedIds }, role: 'STUDENT' },
+          select: { id: true, name: true, username: true, sectionId: true },
+        })
+      : [];
+    const departedById = new Map(departed.map(s => [s.id, s]));
+
+    const classesWithDepartures = classes.map(cls => {
+      const current = cls.section?.students || [];
+      const currentIds = new Set(current.map(s => s.id));
+      const left = departures
+        .filter(d => d.fromSectionId === cls.sectionId)
+        .map(d => ({ ...departedById.get(d.studentId), at: d.transferredAt }))
+        // Gone only if they have not come back. A learner moved out and back in
+        // is on the roster normally.
+        .filter(s => s.id && !currentIds.has(s.id) && s.sectionId !== cls.sectionId);
+
+      const seen = new Set();
+      const transferredOut = left.filter(s => !seen.has(s.id) && seen.add(s.id)).map(s => ({
+        id: s.id, name: s.name, username: s.username,
+        transferredOut: true, transferredOutAt: s.at,
+      }));
+
+      return {
+        ...cls,
+        section: cls.section && {
+          ...cls.section,
+          students: [
+            ...current.map(s => ({ ...s, transferredOut: false, transferredOutAt: null })),
+            ...transferredOut,
+          ],
+        },
+      };
+    });
+
+    res.json({ success: true, activities, classes: classesWithDepartures });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
   }
@@ -7303,6 +7760,8 @@ app.get('/api/teacher/:teacherId/student/:studentId/gradebook', async (req, res)
         // they are still enrolled in it — and so an activity they were never
         // present for is not read as MISSING against them.
         fromPreviousSection: !!student.sectionId && a.class?.sectionId !== student.sectionId,
+        carriedOver: false,
+        fromSection: null,
       };
     });
 
@@ -7313,7 +7772,73 @@ app.get('/api/teacher/:teacherId/student/:studentId/gradebook', async (req, res)
     // child for the second is the worse error. Work they actually did is kept.
     const visibleRows = rows.filter(r => !(r.fromPreviousSection && !r.submissionId));
 
-    res.json({ success: true, student, rows: visibleRows });
+    // ── Work from a section they transferred out of ──
+    //
+    // The rows above are this teacher's own classes. A learner who moved
+    // mid-year did part of the same subject somewhere else, and this teacher is
+    // the one who files the combined subject grade — so the marks that grade
+    // rests on have to be visible to them, or the number is undefendable to a
+    // parent.
+    //
+    // Read-only throughout. What makes it safe to show a colleague's marks here
+    // is the (subject, gradeLevel, schoolYear) match in matchingSourceClasses
+    // plus the school-scoping invariant enrolStudents already enforces — a
+    // SectionTransfer row for one student never spans two schools, so a match
+    // can only ever surface a class in this same school. Every write path stays
+    // teacherId-scoped regardless, so nothing here can be re-graded, excused or
+    // released by anyone but the teacher who awarded it.
+    const ownClassIds = [...new Set(activities.map(a => a.classId))];
+    const ownClassIdSet = new Set(ownClassIds);
+    const carriedRows = [];
+    // Tracked across the WHOLE loop, not reset per iteration — a double move
+    // (A -> D -> B, where this teacher owns both D and B) means the same
+    // foreign source class (A) can match more than one of ownClassIds, and
+    // without this the same carried submission would be pushed into
+    // carriedRows twice: rendered twice in the "Carried over from…" panel
+    // and, worse, with a duplicate React key (GradebookStudent.jsx, keyed on
+    // row.submissionId).
+    const pushedCarriedIds = new Set();
+    for (const classId of ownClassIds) {
+      const carried = await carriedOverForClass(prisma, { classId, studentIds: [studentId] });
+      for (const sub of carried.get(studentId) || []) {
+        // A teacher who teaches the same subject in two sections (Maria's old
+        // English 6 in Section A, her new one in Section B) already has her
+        // Section A marks in `rows` above via classIdsWithWork, flagged
+        // fromPreviousSection. Without this guard, matching Section B's
+        // English against Section A's would carry the very same submissions
+        // in again — rendering the same grade twice and captioning the copy
+        // "marked by their previous teacher", which would be false: it's the
+        // same teacher both times.
+        if (ownClassIdSet.has(sub.activity.classId)) continue;
+        if (pushedCarriedIds.has(sub.id)) continue;
+        pushedCarriedIds.add(sub.id);
+        const section = sub.activity?.class?.section;
+        carriedRows.push({
+          activityId: sub.activity.id,
+          activityTitle: sub.activity.title,
+          className: sub.activity.class?.name || '',
+          deadline: sub.activity.deadline,
+          status: grading.isExcused(sub) ? 'EXCUSED' : (sub.isLate ? 'LATE' : 'DONE'),
+          grade: grading.gradePercentOf(sub) === null
+            ? null
+            : Math.round((grading.gradePercentOf(sub) / 100) * (sub.activity.points || 100)),
+          totalScore: sub.activity.points || 100,
+          submissionId: sub.id,
+          excusedReason: sub.excusedReason || null,
+          fromPreviousSection: true,
+          // Distinct from fromPreviousSection, which the sending teacher's own
+          // view already uses. This says "another teacher awarded this, you may
+          // read it and nothing more".
+          carriedOver: true,
+          fromSection: section
+            ? (section.gradeLevel ? `${section.gradeLevel} — ${section.name}` : section.name)
+            : null,
+          feedback: sub.hitlFeedback || sub.aiFeedback || null,
+        });
+      }
+    }
+
+    res.json({ success: true, student, rows: [...visibleRows, ...carriedRows] });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
   }
@@ -8102,6 +8627,29 @@ app.get('/api/teacher/:teacherId/gradebook/export', async (req, res) => {
       // looks identical to "never submitted", and a teacher exporting halfway
       // through marking would have no way to tell the two apart.
       let unreviewedCount = 0;
+      // Same idea, split out for the carried columns: the receiving teacher
+      // running this export cannot validate another section's submissions —
+      // every write path is scoped to the owning teacher — so when carried
+      // work is unreviewed the notice has to name whose validation it is
+      // waiting on, not just count it into the same total as their own.
+      let carriedUnreviewedCount = 0;
+      const carriedUnreviewedSections = new Set();
+
+      // One query for the class, not one per student — the row loop below runs
+      // per learner and must not issue a query inside it.
+      const carriedByStudent = await carriedOverForClass(prisma, {
+        classId: cId,
+        studentIds: students.map(s => s.id),
+      });
+
+      // Every distinct carried activity in this class, so the sheet has a
+      // stable column per one rather than a ragged row per student.
+      const carriedActivities = new Map();
+      for (const subs of carriedByStudent.values()) {
+        for (const sub of subs) {
+          if (!carriedActivities.has(sub.activity.id)) carriedActivities.set(sub.activity.id, sub.activity);
+        }
+      }
 
       const rows = students.map(student => {
         const row = { name: student.name, username: student.username };
@@ -8128,6 +8676,42 @@ app.get('/api/teacher/:teacherId/gradebook/export', async (req, res) => {
             entries.push({ percent: score, points: act.points || 100, component: act.component || 'WW' });
           }
         }
+        // ── Work from a section this learner transferred out of ──
+        //
+        // The export is the report card, so it is the one place that must not
+        // grade a transferred learner on a fragment of the quarter. Without
+        // this, a pupil who sat the Quarterly Assessment before moving has QA
+        // renormalised away by initialGrade and is graded on whatever the new
+        // class happens to have set since — a smaller sample, weighted wrong.
+        //
+        // Same entry shape and the same computeGrade, so a merged grade is not
+        // computed by different code than an unmerged one.
+        const carried = carriedByStudent.get(student.id) || [];
+        for (const sub of carried) {
+          if (grading.isExcused(sub)) {
+            row[`carried:${sub.activity.id}`] = 'Excused';
+            continue;
+          }
+          // Carried work counts toward the same "not yet validated" warning
+          // as the class's own activities. Without this, an AI-scored
+          // submission the sending teacher never validated drops out of the
+          // grade via gradePercentOf returning null AND out of the count —
+          // the cell reads blank and the sheet stays silent about why.
+          if (!grading.countsAsGrade(sub)) {
+            unreviewedCount++;
+            carriedUnreviewedCount++;
+            const section = sub.activity.class?.section;
+            carriedUnreviewedSections.add(
+              section
+                ? (section.gradeLevel ? `${section.gradeLevel} — ${section.name}` : section.name)
+                : 'a previous section'
+            );
+          }
+          const score = grading.gradePercentOf(sub);
+          row[`carried:${sub.activity.id}`] = score === null ? null : Math.round(score * 10) / 10;
+        }
+        entries.push(...transfers.carriedOverEntries(carried));
+
         // Only the computed grade transmutes, never the individual activity
         // scores above — DO 8 s.2015 maps the Initial Grade, not raw marks.
         // finalGrade already resolves to whichever basis is in force, so the
@@ -8139,7 +8723,10 @@ app.get('/api/teacher/:teacherId/gradebook/export', async (req, res) => {
 
       // Carried through because the sheet-building loop below is a separate
       // scope and colours each cell against the school's own passing grade.
-      classData.push({ cls, activities, students, rows, passingGrade: exportPassing, unreviewedCount, useTransmutation });
+      classData.push({
+        cls, activities, students, rows, passingGrade: exportPassing, unreviewedCount, useTransmutation,
+        carriedActivities, carriedUnreviewedCount, carriedUnreviewedSections: [...carriedUnreviewedSections],
+      });
     }
 
     // ── Preflight ──
@@ -8165,6 +8752,33 @@ app.get('/api/teacher/:teacherId/gradebook/export', async (req, res) => {
       });
     }
 
+    /** "Sci 6 · Grade 6 — Masipag" — a carried column says where it came from. */
+    const carriedHeader = (activity) => {
+      const section = activity.class?.section;
+      const label = section
+        ? (section.gradeLevel ? `${section.gradeLevel} — ${section.name}` : section.name)
+        : 'previous section';
+      return `${activity.title} · ${label}`;
+    };
+
+    /**
+     * The blue/`#` "Carried over:" notice text, shared so xlsx and csv cannot
+     * say different things. Always states what the carried columns are; when
+     * some of that carried work is still unvalidated, also says whose
+     * validation it is waiting on — the receiving teacher running this export
+     * cannot validate it, since every write path is scoped to the owning
+     * teacher, so a blank cell alone would look like "never submitted" rather
+     * than "waiting on the old section".
+     */
+    const carriedOverNotice = (carriedActivities, unreviewedCount, unreviewedSections) => {
+      let text = `${carriedActivities.size} activit${carriedActivities.size === 1 ? 'y' : 'ies'} from a section a student transferred out of. Those columns are headed with the section they came from, and count toward the averages below.`;
+      if (unreviewedCount > 0) {
+        const sectionsPart = unreviewedSections.length > 0 ? ` (${unreviewedSections.join(', ')})` : '';
+        text += ` ${unreviewedCount} of those carried submission(s) not yet validated by the previous section's teacher${sectionsPart} — excluded from the averages below.`;
+      }
+      return text;
+    };
+
     if (format === 'xlsx') {
       // Excel export using exceljs
       let ExcelJS;
@@ -8178,7 +8792,10 @@ app.get('/api/teacher/:teacherId/gradebook/export', async (req, res) => {
       workbook.creator = 'TulongGuro';
       workbook.created = new Date();
 
-      for (const { cls, activities, rows, passingGrade: exportPassing, unreviewedCount, useTransmutation } of classData) {
+      for (const {
+        cls, activities, rows, passingGrade: exportPassing, unreviewedCount, useTransmutation,
+        carriedActivities, carriedUnreviewedCount, carriedUnreviewedSections,
+      } of classData) {
         const sheetName = (cls.name || 'Grades').substring(0, 31);
         const sheet = workbook.addWorksheet(sheetName);
 
@@ -8207,12 +8824,24 @@ app.get('/api/teacher/:teacherId/gradebook/export', async (req, res) => {
           warnRow.getCell(1).font = { bold: true, color: { argb: 'FFD97706' } };
           warnRow.getCell(2).font = { color: { argb: 'FFD97706' } };
         }
+        // Said in the sheet, because a column whose title names another
+        // section is otherwise the only clue that this learner's grade rests
+        // on work their current teacher did not set.
+        if (carriedActivities.size > 0) {
+          const carriedRow = sheet.addRow([
+            'Carried over:',
+            carriedOverNotice(carriedActivities, carriedUnreviewedCount, carriedUnreviewedSections)
+          ]);
+          carriedRow.getCell(1).font = { bold: true, color: { argb: 'FF2563EB' } };
+          carriedRow.getCell(2).font = { color: { argb: 'FF2563EB' } };
+        }
         sheet.addRow([]);
 
         // Header row
         const headers = [
           'Student Name',
           ...activities.map(a => a.title),
+          ...[...carriedActivities.values()].map(carriedHeader),
           useTransmutation ? 'Final Grade (transmuted)' : 'Average (%)'
         ];
         const headerRow = sheet.addRow(headers);
@@ -8228,6 +8857,10 @@ app.get('/api/teacher/:teacherId/gradebook/export', async (req, res) => {
           const dataRow = sheet.addRow([
             row.name,
             ...activities.map(a => row[a.id] !== null ? row[a.id] : '—'),
+            ...[...carriedActivities.keys()].map(id => {
+              const v = row[`carried:${id}`];
+              return v === undefined || v === null ? '—' : v;
+            }),
             row.average !== null ? `${row.average}%` : '—'
           ]);
           // Color code scores
@@ -8254,6 +8887,12 @@ app.get('/api/teacher/:teacherId/gradebook/export', async (req, res) => {
           // Numbers only: an excused cell holds the string 'Excused', and
           // reduce() on a mixed array would concatenate rather than add.
           const scores = rows.map(r => r[act.id]).filter(s => typeof s === 'number');
+          avgRow.push(scores.length > 0 ? Math.round(scores.reduce((a, b) => a + b, 0) / scores.length) : '—');
+        }
+        for (const activityId of carriedActivities.keys()) {
+          // Numbers only, same as above: an excused cell holds the string
+          // 'Excused' and would concatenate rather than add.
+          const scores = rows.map(r => r[`carried:${activityId}`]).filter(s => typeof s === 'number');
           avgRow.push(scores.length > 0 ? Math.round(scores.reduce((a, b) => a + b, 0) / scores.length) : '—');
         }
         const allAvgs = rows.map(r => r.average).filter(a => a !== null);
@@ -8288,7 +8927,10 @@ app.get('/api/teacher/:teacherId/gradebook/export', async (req, res) => {
     } else {
       // CSV export
       const lines = [];
-      for (const { cls, activities, rows, unreviewedCount, useTransmutation } of classData) {
+      for (const {
+        cls, activities, rows, unreviewedCount, useTransmutation,
+        carriedActivities, carriedUnreviewedCount, carriedUnreviewedSections,
+      } of classData) {
         lines.push(`# Class: ${cls.name}`);
         lines.push(`# Section: ${cls.section?.name || 'N/A'}`);
         lines.push(`# School Year: ${cls.schoolYear}`);
@@ -8301,12 +8943,19 @@ app.get('/api/teacher/:teacherId/gradebook/export', async (req, res) => {
         if (unreviewedCount > 0) {
           lines.push(`# INCOMPLETE: ${unreviewedCount} submission(s) not yet validated by a teacher — excluded from this export and from the averages.`);
         }
+        // Said in the file, because a column whose title names another
+        // section is otherwise the only clue that this learner's grade rests
+        // on work their current teacher did not set.
+        if (carriedActivities.size > 0) {
+          lines.push(`# Carried over: ${carriedOverNotice(carriedActivities, carriedUnreviewedCount, carriedUnreviewedSections)}`);
+        }
         lines.push('');
 
         // Header
         const headers = [
           'Student Name',
           ...activities.map(a => `"${a.title.replace(/"/g, '""')}"`),
+          ...[...carriedActivities.values()].map(a => `"${carriedHeader(a).replace(/"/g, '""')}"`),
           useTransmutation ? 'Final Grade (transmuted)' : 'Average (%)'
         ];
         lines.push(headers.join(','));
@@ -8316,6 +8965,10 @@ app.get('/api/teacher/:teacherId/gradebook/export', async (req, res) => {
           const vals = [
             `"${row.name.replace(/"/g, '""')}"`,
             ...activities.map(a => row[a.id] !== null ? row[a.id] : ''),
+            ...[...carriedActivities.keys()].map(id => {
+              const v = row[`carried:${id}`];
+              return v === undefined || v === null ? '' : v;
+            }),
             row.average !== null ? `${row.average}%` : ''
           ];
           lines.push(vals.join(','));
@@ -8327,6 +8980,12 @@ app.get('/api/teacher/:teacherId/gradebook/export', async (req, res) => {
           // Numbers only: an excused cell holds the string 'Excused', and
           // reduce() on a mixed array would concatenate rather than add.
           const scores = rows.map(r => r[act.id]).filter(s => typeof s === 'number');
+          avgVals.push(scores.length > 0 ? Math.round(scores.reduce((a, b) => a + b, 0) / scores.length) : '');
+        }
+        for (const activityId of carriedActivities.keys()) {
+          // Numbers only, same as above: an excused cell holds the string
+          // 'Excused' and would concatenate rather than add.
+          const scores = rows.map(r => r[`carried:${activityId}`]).filter(s => typeof s === 'number');
           avgVals.push(scores.length > 0 ? Math.round(scores.reduce((a, b) => a + b, 0) / scores.length) : '');
         }
         const allAvgs = rows.map(r => r.average).filter(a => a !== null);
@@ -8586,4 +9245,4 @@ function startServer() {
   });
 }
 
-module.exports = { app, startServer };
+module.exports = { app, startServer, cleanUpTransferRows, carriedOverForClass };
