@@ -8400,6 +8400,22 @@ app.get('/api/teacher/:teacherId/gradebook/export', async (req, res) => {
       // through marking would have no way to tell the two apart.
       let unreviewedCount = 0;
 
+      // One query for the class, not one per student — the row loop below runs
+      // per learner and must not issue a query inside it.
+      const carriedByStudent = await carriedOverForClass(prisma, {
+        classId: cId,
+        studentIds: students.map(s => s.id),
+      });
+
+      // Every distinct carried activity in this class, so the sheet has a
+      // stable column per one rather than a ragged row per student.
+      const carriedActivities = new Map();
+      for (const subs of carriedByStudent.values()) {
+        for (const sub of subs) {
+          if (!carriedActivities.has(sub.activity.id)) carriedActivities.set(sub.activity.id, sub.activity);
+        }
+      }
+
       const rows = students.map(student => {
         const row = { name: student.name, username: student.username };
         const entries = [];
@@ -8425,6 +8441,27 @@ app.get('/api/teacher/:teacherId/gradebook/export', async (req, res) => {
             entries.push({ percent: score, points: act.points || 100, component: act.component || 'WW' });
           }
         }
+        // ── Work from a section this learner transferred out of ──
+        //
+        // The export is the report card, so it is the one place that must not
+        // grade a transferred learner on a fragment of the quarter. Without
+        // this, a pupil who sat the Quarterly Assessment before moving has QA
+        // renormalised away by initialGrade and is graded on whatever the new
+        // class happens to have set since — a smaller sample, weighted wrong.
+        //
+        // Same entry shape and the same computeGrade, so a merged grade is not
+        // computed by different code than an unmerged one.
+        const carried = carriedByStudent.get(student.id) || [];
+        for (const sub of carried) {
+          if (grading.isExcused(sub)) {
+            row[`carried:${sub.activity.id}`] = 'Excused';
+            continue;
+          }
+          const score = grading.gradePercentOf(sub);
+          row[`carried:${sub.activity.id}`] = score === null ? null : Math.round(score * 10) / 10;
+        }
+        entries.push(...transfers.carriedOverEntries(carried));
+
         // Only the computed grade transmutes, never the individual activity
         // scores above — DO 8 s.2015 maps the Initial Grade, not raw marks.
         // finalGrade already resolves to whichever basis is in force, so the
@@ -8436,7 +8473,7 @@ app.get('/api/teacher/:teacherId/gradebook/export', async (req, res) => {
 
       // Carried through because the sheet-building loop below is a separate
       // scope and colours each cell against the school's own passing grade.
-      classData.push({ cls, activities, students, rows, passingGrade: exportPassing, unreviewedCount, useTransmutation });
+      classData.push({ cls, activities, students, rows, passingGrade: exportPassing, unreviewedCount, useTransmutation, carriedActivities });
     }
 
     // ── Preflight ──
@@ -8462,6 +8499,15 @@ app.get('/api/teacher/:teacherId/gradebook/export', async (req, res) => {
       });
     }
 
+    /** "Sci 6 · Grade 6 — Masipag" — a carried column says where it came from. */
+    const carriedHeader = (activity) => {
+      const section = activity.class?.section;
+      const label = section
+        ? (section.gradeLevel ? `${section.gradeLevel} — ${section.name}` : section.name)
+        : 'previous section';
+      return `${activity.title} · ${label}`;
+    };
+
     if (format === 'xlsx') {
       // Excel export using exceljs
       let ExcelJS;
@@ -8475,7 +8521,7 @@ app.get('/api/teacher/:teacherId/gradebook/export', async (req, res) => {
       workbook.creator = 'TulongGuro';
       workbook.created = new Date();
 
-      for (const { cls, activities, rows, passingGrade: exportPassing, unreviewedCount, useTransmutation } of classData) {
+      for (const { cls, activities, rows, passingGrade: exportPassing, unreviewedCount, useTransmutation, carriedActivities } of classData) {
         const sheetName = (cls.name || 'Grades').substring(0, 31);
         const sheet = workbook.addWorksheet(sheetName);
 
@@ -8504,12 +8550,24 @@ app.get('/api/teacher/:teacherId/gradebook/export', async (req, res) => {
           warnRow.getCell(1).font = { bold: true, color: { argb: 'FFD97706' } };
           warnRow.getCell(2).font = { color: { argb: 'FFD97706' } };
         }
+        // Said in the sheet, because a column whose title names another
+        // section is otherwise the only clue that this learner's grade rests
+        // on work their current teacher did not set.
+        if (carriedActivities.size > 0) {
+          const carriedRow = sheet.addRow([
+            'Carried over:',
+            `${carriedActivities.size} activit${carriedActivities.size === 1 ? 'y' : 'ies'} from a section a student transferred out of. Those columns are headed with the section they came from, and count toward the averages below.`
+          ]);
+          carriedRow.getCell(1).font = { bold: true, color: { argb: 'FF2563EB' } };
+          carriedRow.getCell(2).font = { color: { argb: 'FF2563EB' } };
+        }
         sheet.addRow([]);
 
         // Header row
         const headers = [
           'Student Name',
           ...activities.map(a => a.title),
+          ...[...carriedActivities.values()].map(carriedHeader),
           useTransmutation ? 'Final Grade (transmuted)' : 'Average (%)'
         ];
         const headerRow = sheet.addRow(headers);
@@ -8525,6 +8583,10 @@ app.get('/api/teacher/:teacherId/gradebook/export', async (req, res) => {
           const dataRow = sheet.addRow([
             row.name,
             ...activities.map(a => row[a.id] !== null ? row[a.id] : '—'),
+            ...[...carriedActivities.keys()].map(id => {
+              const v = row[`carried:${id}`];
+              return v === undefined || v === null ? '—' : v;
+            }),
             row.average !== null ? `${row.average}%` : '—'
           ]);
           // Color code scores
@@ -8551,6 +8613,12 @@ app.get('/api/teacher/:teacherId/gradebook/export', async (req, res) => {
           // Numbers only: an excused cell holds the string 'Excused', and
           // reduce() on a mixed array would concatenate rather than add.
           const scores = rows.map(r => r[act.id]).filter(s => typeof s === 'number');
+          avgRow.push(scores.length > 0 ? Math.round(scores.reduce((a, b) => a + b, 0) / scores.length) : '—');
+        }
+        for (const activityId of carriedActivities.keys()) {
+          // Numbers only, same as above: an excused cell holds the string
+          // 'Excused' and would concatenate rather than add.
+          const scores = rows.map(r => r[`carried:${activityId}`]).filter(s => typeof s === 'number');
           avgRow.push(scores.length > 0 ? Math.round(scores.reduce((a, b) => a + b, 0) / scores.length) : '—');
         }
         const allAvgs = rows.map(r => r.average).filter(a => a !== null);
@@ -8585,7 +8653,7 @@ app.get('/api/teacher/:teacherId/gradebook/export', async (req, res) => {
     } else {
       // CSV export
       const lines = [];
-      for (const { cls, activities, rows, unreviewedCount, useTransmutation } of classData) {
+      for (const { cls, activities, rows, unreviewedCount, useTransmutation, carriedActivities } of classData) {
         lines.push(`# Class: ${cls.name}`);
         lines.push(`# Section: ${cls.section?.name || 'N/A'}`);
         lines.push(`# School Year: ${cls.schoolYear}`);
@@ -8598,12 +8666,19 @@ app.get('/api/teacher/:teacherId/gradebook/export', async (req, res) => {
         if (unreviewedCount > 0) {
           lines.push(`# INCOMPLETE: ${unreviewedCount} submission(s) not yet validated by a teacher — excluded from this export and from the averages.`);
         }
+        // Said in the file, because a column whose title names another
+        // section is otherwise the only clue that this learner's grade rests
+        // on work their current teacher did not set.
+        if (carriedActivities.size > 0) {
+          lines.push(`# Carried over: ${carriedActivities.size} activit${carriedActivities.size === 1 ? 'y' : 'ies'} from a section a student transferred out of. Those columns are headed with the section they came from, and count toward the averages below.`);
+        }
         lines.push('');
 
         // Header
         const headers = [
           'Student Name',
           ...activities.map(a => `"${a.title.replace(/"/g, '""')}"`),
+          ...[...carriedActivities.values()].map(a => `"${carriedHeader(a).replace(/"/g, '""')}"`),
           useTransmutation ? 'Final Grade (transmuted)' : 'Average (%)'
         ];
         lines.push(headers.join(','));
@@ -8613,6 +8688,10 @@ app.get('/api/teacher/:teacherId/gradebook/export', async (req, res) => {
           const vals = [
             `"${row.name.replace(/"/g, '""')}"`,
             ...activities.map(a => row[a.id] !== null ? row[a.id] : ''),
+            ...[...carriedActivities.keys()].map(id => {
+              const v = row[`carried:${id}`];
+              return v === undefined || v === null ? '' : v;
+            }),
             row.average !== null ? `${row.average}%` : ''
           ];
           lines.push(vals.join(','));
@@ -8624,6 +8703,12 @@ app.get('/api/teacher/:teacherId/gradebook/export', async (req, res) => {
           // Numbers only: an excused cell holds the string 'Excused', and
           // reduce() on a mixed array would concatenate rather than add.
           const scores = rows.map(r => r[act.id]).filter(s => typeof s === 'number');
+          avgVals.push(scores.length > 0 ? Math.round(scores.reduce((a, b) => a + b, 0) / scores.length) : '');
+        }
+        for (const activityId of carriedActivities.keys()) {
+          // Numbers only, same as above: an excused cell holds the string
+          // 'Excused' and would concatenate rather than add.
+          const scores = rows.map(r => r[`carried:${activityId}`]).filter(s => typeof s === 'number');
           avgVals.push(scores.length > 0 ? Math.round(scores.reduce((a, b) => a + b, 0) / scores.length) : '');
         }
         const allAvgs = rows.map(r => r.average).filter(a => a !== null);

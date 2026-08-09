@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import { createRequire } from 'node:module';
+import transfersModule from '../transfers.js';
 
 /**
  * Route wiring for the two rules that already have pure unit tests.
@@ -730,5 +731,29 @@ describe('the receiving teacher sees carried-over work read-only', () => {
     // read-only carried-over duplicate), because it is T1's own mark.
     expect(matches[0].carriedOver).toBe(false);
     expect(matches[0].fromPreviousSection).toBe(true);
+  });
+});
+
+describe('a transferred student\'s exported grade uses their whole subject history', () => {
+  it('pools carried entries with own entries before computeGrade', () => {
+    const grading = require('../grading.js');
+    const POLICY = { WW: 30, PT: 50, QA: 20 };
+
+    // Maria did the Quarterly Assessment in her old section and only one
+    // Written Work task since arriving. Grading the new class alone drops QA
+    // entirely and renormalises its 20% away.
+    const own = [{ percent: 80, points: 100, component: 'WW' }];
+    const carried = transfersModule.carriedOverEntries([
+      { status: 'GRADED', hitlScore: 60, archivedAt: null, excusedAt: null,
+        activity: { points: 100, component: 'QA' } },
+    ]);
+
+    const partial = grading.computeGrade(own, POLICY, { transmute: false });
+    const merged = grading.computeGrade([...own, ...carried], POLICY, { transmute: false });
+
+    expect(partial.finalGrade).toBe(80);          // QA renormalised away
+    expect(merged.componentPercents.QA).toBe(60); // the QA she actually sat
+    expect(merged.finalGrade).toBe(72);           // (80*30 + 60*20) / 50
+    expect(merged.finalGrade).not.toBe(partial.finalGrade);
   });
 });
