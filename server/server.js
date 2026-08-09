@@ -2575,6 +2575,7 @@ app.delete('/api/admin/:adminId/sections/:sectionId/students/:studentId', async 
     if (student._count.submissions > 0) {
       // Graded work must survive, so unassign rather than delete the account.
       await prisma.$transaction(async (tx) => {
+        await cleanUpTransferRows(tx, { studentId: student.id, sectionId: section.id });
         await tx.user.update({ where: { id: student.id }, data: { sectionId: null } });
         await recordTransfer(tx, {
           studentId: student.id,
@@ -3571,6 +3572,40 @@ async function excusePreArrival(tx, { studentId, sectionId, transferId, transfer
   return count;
 }
 
+/**
+ * Undo, without an undo screen.
+ *
+ * A move that was a mis-click is repaired by moving the learner back through
+ * the normal roster flow. What has to be cleaned up is the rows the first move
+ * invented — the auto-excused pre-arrival ones — because leaving them behind
+ * would show a learner as having "work" in a section they were never really in.
+ *
+ * All four conditions are load-bearing, and the reason this can be a delete
+ * rather than a soft flag:
+ *
+ *   transferId   not null  -> the system created this row, not a person
+ *   attemptCount 0         -> nobody ever submitted against it
+ *   aiScore      null      -> the AI never graded it
+ *   hitlScore    null      -> no teacher ever entered a mark
+ *
+ * A row failing any one of them is somebody's work or somebody's judgement and
+ * is never in range. If a teacher un-excused a transfer row and marked it, it
+ * has a score and survives.
+ */
+async function cleanUpTransferRows(tx, { studentId, sectionId }) {
+  const { count } = await tx.submission.deleteMany({
+    where: {
+      studentId,
+      transferId: { not: null },
+      attemptCount: 0,
+      aiScore: null,
+      hitlScore: null,
+      activity: { class: { sectionId } },
+    },
+  });
+  return count;
+}
+
 async function enrolStudents(section, studentsList, { schoolId, teacherId, actorId = null, allowMove = false }) {
   const createdStudents = [];
   const skippedStudents = [];
@@ -3658,6 +3693,9 @@ async function enrolStudents(section, studentsList, { schoolId, teacherId, actor
       // which is deliberately slow and has no business holding a transaction
       // open.
       await prisma.$transaction(async (tx) => {
+        if (currentSection?.id) {
+          await cleanUpTransferRows(tx, { studentId: existingAccount.id, sectionId: currentSection.id });
+        }
         await tx.user.update({
           where: { id: existingAccount.id },
           // schoolId is set here too so an account that predates students
@@ -8712,4 +8750,4 @@ function startServer() {
   });
 }
 
-module.exports = { app, startServer };
+module.exports = { app, startServer, cleanUpTransferRows };

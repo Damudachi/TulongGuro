@@ -537,3 +537,30 @@ describe('the session gate itself', () => {
     expect(res.status).toBe(403);
   });
 });
+
+// ───────────────────────────────────────────────────────────────────
+// Moving a student back out deletes only the rows the move invented
+// ───────────────────────────────────────────────────────────────────
+
+describe('a transfer out cleans up only what a transfer in created', () => {
+  it('deletes untouched auto-excused rows and nothing else', async () => {
+    const { cleanUpTransferRows } = require('../server.js');
+
+    const deleteMany = vi.fn().mockResolvedValue({ count: 3 });
+    const tx = { submission: { deleteMany } };
+
+    await cleanUpTransferRows(tx, { studentId: 'stu-1', sectionId: 'sec-a' });
+
+    expect(deleteMany).toHaveBeenCalledTimes(1);
+    const { where } = deleteMany.mock.calls[0][0];
+
+    // The four conditions together are what makes this safe. Losing any one of
+    // them puts a teacher-entered mark in range of a delete.
+    expect(where.studentId).toBe('stu-1');
+    expect(where.transferId).toEqual({ not: null });
+    expect(where.attemptCount).toBe(0);
+    expect(where.aiScore).toBeNull();
+    expect(where.hitlScore).toBeNull();
+    expect(where.activity).toEqual({ class: { sectionId: 'sec-a' } });
+  });
+});
