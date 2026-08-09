@@ -939,6 +939,79 @@ function hasScoreFeedbackMismatch(raw) {
   return !growth.some(isSubstantive);
 }
 
+/** "Developing (20-27 pts): …" → [20, 27]. Null when the band carries no range. */
+function bandRangeOf(bandDescription) {
+  const m = /\(\s*(\d+)\s*[-–]\s*(\d+)\s*(?:pts?|points?)?\s*\)/i.exec(String(bandDescription || ''));
+  if (!m) return null;
+  const lo = Number(m[1]), hi = Number(m[2]);
+  return Number.isFinite(lo) && Number.isFinite(hi) && lo <= hi ? [lo, hi] : null;
+}
+
+/**
+ * Does the model's own arithmetic agree with itself?
+ *
+ * Two things the prompt asks for and nothing checked. Both were found in live
+ * data on one activity:
+ *
+ *   1. The headline `score` disagreed with the criteria it is supposed to be
+ *      the sum of — one paper's criteria totalled 65 while `score` said 67,
+ *      and 67 is the number that became the grade. The prompt says plainly
+ *      "Your 'score' field must equal the sum, scaled to percentage"; saying
+ *      so is not the same as checking.
+ *   2. A criterion was given 28 under a band the model itself labelled
+ *      "Proficient (21-26 pts)". The score and the justification printed next
+ *      to it described different pieces of work.
+ *
+ * Neither is caught by scoreFeedbackMismatch, which asks whether a shortfall
+ * was *explained*, not whether the numbers add up. Returns a short sentence
+ * for the teacher, or null when everything agrees — presence is the flag.
+ *
+ * Deliberately does not correct anything. A disagreement means the model's
+ * output is not trustworthy on this paper, and picking one of its two answers
+ * would be guessing which; the teacher is the one who decides.
+ */
+function rubricScoreNoteFor(raw) {
+  if (raw?.noTextDetected || raw?.privacyViolationDetected) return null;
+  const rows = Array.isArray(raw?.rubricScores) ? raw.rubricScores : [];
+  if (rows.length === 0) return null;
+
+  const problems = [];
+
+  // 1) Headline vs the sum of its parts.
+  let earned = 0, possible = 0, usable = true;
+  for (const r of rows) {
+    const s = Number(r?.score), max = Number(r?.maxPoints);
+    if (!Number.isFinite(s) || !Number.isFinite(max) || max <= 0) { usable = false; break; }
+    earned += s; possible += max;
+  }
+  if (usable && possible > 0) {
+    const expected = (earned / possible) * 100;
+    const reported = Number(raw?.score);
+    // One point of slack: the model is asked to scale and round, and a
+    // half-point of rounding is not a contradiction.
+    if (Number.isFinite(reported) && Math.abs(reported - expected) > 1) {
+      problems.push(
+        `the criteria add up to ${Math.round(expected * 10) / 10}%, but the overall score was reported as ${Math.round(reported * 10) / 10}%`
+      );
+    }
+  }
+
+  // 2) Each score inside the band it claims.
+  for (const r of rows) {
+    const range = bandRangeOf(r?.bandDescription);
+    const s = Number(r?.score);
+    if (!range || !Number.isFinite(s)) continue;
+    if (s < range[0] || s > range[1]) {
+      problems.push(
+        `"${r?.criterionName || r?.name || 'a criterion'}" scored ${s} under a band described as ${range[0]}-${range[1]} points`
+      );
+    }
+  }
+
+  if (problems.length === 0) return null;
+  return `The AI's own numbers disagree: ${problems.join('; ')}. Check this paper before validating it.`;
+}
+
 function normalisePaperResult(raw, modelId, gradeLevelAssumed = false, rubricParseFailed = false) {
   if (raw?.privacyViolationDetected === true) {
     return { privacyViolation: true, violationType: raw.privacyViolationType || 'name', aiSource: modelId };
@@ -959,7 +1032,10 @@ function normalisePaperResult(raw, modelId, gradeLevelAssumed = false, rubricPar
     aiSource: modelId,
     gradeLevelAssumed,
     rubricParseFailed,
-    scoreFeedbackMismatch: hasScoreFeedbackMismatch(raw)
+    scoreFeedbackMismatch: hasScoreFeedbackMismatch(raw),
+    // Computed from `raw`, before clampScore — a clamped 120 would otherwise
+    // read as agreeing with a set of criteria it never matched.
+    rubricScoreNote: rubricScoreNoteFor(raw)
   };
 }
 
@@ -2762,13 +2838,63 @@ async function saveCurriculumRubrics(curriculum, lessons) {
     if (n > 1) c.name = `${c.name} (${n})`.slice(0, 180);
   }
 
-  // Don't duplicate a template the school already has under the same name.
+  // ── Don't duplicate a template the school already has — but "same name" is
+  //    not "same rubric" ──
+  //
+  // Revising a curriculum means deleting it and re-uploading: the route
+  // refuses a second one for the same (school, gradeLevel, subject) and says
+  // "Delete it first to replace it". RubricTemplate.curriculumId is
+  // onDelete: SetNull, so the old templates SURVIVE that delete under their old
+  // names holding their old criteria.
+  //
+  // Matching on name alone then skipped the revised rubric as "already there"
+  // and — since the lesson now carries rubricTemplateId — stamped the new
+  // lesson with the SUPERSEDED template's id. The correct new criteria sat
+  // unread in defaultRubric while resolveDefaultRubric's linked-template tier
+  // won, so teachers built activities against the criteria the admin thought
+  // they had just replaced, silently. That failure mode did not exist before
+  // the link: the embedded copy always won, and drift meant nothing.
+  //
+  // So a name is only "taken" by a rubric that is genuinely the same rubric.
   const existing = await prisma.rubricTemplate.findMany({
-    where: { schoolId: curriculum.schoolId, name: { in: candidates.map(c => c.name) } },
-    select: { name: true }
+    where: { schoolId: curriculum.schoolId },
+    select: { id: true, name: true, criteria: true }
   });
-  const taken = new Set(existing.map(r => r.name));
-  const fresh = candidates.filter(r => !taken.has(r.name));
+  /** The stored criteria JSON reduced to the same shape `signature` produces. */
+  const storedSignature = (criteriaJson) => {
+    try {
+      const parsed = JSON.parse(criteriaJson);
+      const list = Array.isArray(parsed) ? parsed : parsed?.criteria;
+      return Array.isArray(list) ? signature(list) : null;
+    } catch { return null; }
+  };
+  const existingByName = new Map();
+  for (const t of existing) {
+    if (!existingByName.has(t.name)) existingByName.set(t.name, []);
+    existingByName.get(t.name).push(t);
+  }
+  const takenNames = new Set(existing.map(t => t.name));
+
+  const fresh = [];
+  for (const c of candidates) {
+    const sig = signature(c.criteria);
+    const same = (existingByName.get(c.name) || []).find(t => storedSignature(t.criteria) === sig);
+    if (same) {
+      // Genuinely the same rubric under the same name — reuse it, and make
+      // sure the lesson links to it rather than to nothing.
+      c.existingId = same.id;
+      continue;
+    }
+    if (takenNames.has(c.name)) {
+      // Same name, different criteria: a revision. Number it rather than let
+      // the lesson point at the rubric it was meant to replace.
+      let n = 2;
+      while (takenNames.has(`${c.name} (${n})`)) n++;
+      c.name = `${c.name} (${n})`.slice(0, 180);
+    }
+    takenNames.add(c.name);
+    fresh.push(c);
+  }
 
   if (fresh.length) {
     await prisma.rubricTemplate.createMany({
@@ -2795,10 +2921,16 @@ async function saveCurriculumRubrics(curriculum, lessons) {
     select: { id: true, name: true },
   });
   const idByName = new Map(saved.map(r => [r.name, r.id]));
-  const nameByKey = new Map(candidates.map(c => [c.key, c.name]));
+  // existingId wins where the candidate matched a template already held under
+  // that name AND with the same criteria — that is the row to point at.
+  const idByKey = new Map();
+  for (const c of candidates) {
+    const id = c.existingId || idByName.get(c.name);
+    if (id) idByKey.set(c.key, id);
+  }
   const templateIdByLesson = new Map();
   for (const [lesson, key] of signatureByLesson) {
-    const id = idByName.get(nameByKey.get(key));
+    const id = idByKey.get(key);
     if (id) templateIdByLesson.set(lesson, id);
   }
 
@@ -4292,7 +4424,12 @@ app.post('/api/teacher/classes', (req, res, next) => {
             description: l.description,
             outputType: l.outputType,
             weekNumber: l.weekNumber,
-            defaultRubric: l.defaultRubric
+            defaultRubric: l.defaultRubric,
+            // Carried over with the rest of the lesson. Missing here, every
+            // class created through the main "accept the school curriculum"
+            // flow got a null link, and the Activity Builder fell back to the
+            // unnamed embedded copy — the behaviour §8.7 exists to remove.
+            rubricTemplateId: l.rubricTemplateId
           }))
         });
         appliedLessons = curriculum.lessons.length;
@@ -5965,6 +6102,7 @@ app.post('/api/teacher/submissions/:id/analyze', async (req, res) => {
         gradeLevelAssumed: !!aiData.gradeLevelAssumed,
         rubricParseFailed: !!aiData.rubricParseFailed,
         scoreFeedbackMismatch: !!aiData.scoreFeedbackMismatch,
+        rubricScoreNote: aiData.rubricScoreNote || null,
         scoreOutOfRange: !!aiData.scoreOutOfRange,
         gradedAt: new Date(),
         retainUntil: sub.retainUntil ?? await retainUntilForActivity(sub.activityId)
@@ -6211,6 +6349,7 @@ async function persistGradingResult(submissionId, activityId, aiData, existingRe
       gradeLevelAssumed: !!aiData.gradeLevelAssumed,
       rubricParseFailed: !!aiData.rubricParseFailed,
       scoreFeedbackMismatch: !!aiData.scoreFeedbackMismatch,
+      rubricScoreNote: aiData.rubricScoreNote || null,
       scoreOutOfRange: !!aiData.scoreOutOfRange,
       gradedAt: new Date(),
       retainUntil: existingRetainUntil ?? await retainUntilForActivity(activityId)
@@ -8464,6 +8603,7 @@ app.post('/api/teacher/upload', submissionUpload.fields([{ name: 'image', maxCou
           gradeLevelAssumed: !!aiData.gradeLevelAssumed,
           rubricParseFailed: !!aiData.rubricParseFailed,
           scoreFeedbackMismatch: !!aiData.scoreFeedbackMismatch,
+          rubricScoreNote: aiData.rubricScoreNote || null,
           gradedAt: new Date()
         };
       } catch (aiErr) {
@@ -9537,4 +9677,7 @@ function startServer() {
   });
 }
 
-module.exports = { app, startServer, cleanUpTransferRows, carriedOverForClass };
+module.exports = {
+  app, startServer, cleanUpTransferRows, carriedOverForClass, carriedOverPrefetch,
+  saveCurriculumRubrics, rubricScoreNoteFor,
+};

@@ -952,6 +952,26 @@ export default function HITLWorkspace() {
             </div>
           )}
 
+          {/* The AI's own arithmetic disagrees with itself: the headline score
+              is not the sum of the criteria it is meant to be, or a criterion
+              was scored outside the band the model itself labelled it with.
+              Distinct from the banner above, which asks whether a shortfall was
+              *explained* — this one is about the numbers not adding up, which
+              that check passes straight over. Red rather than amber: the other
+              flags say "this may need a second look", this one says two of the
+              numbers on this page cannot both be right. Deliberately not
+              auto-corrected — picking one of the model's two answers would be
+              guessing which. */}
+          {submission?.rubricScoreNote && (
+            <div className="flex items-start gap-3 p-4 bg-red-50 border-2 border-red-300 rounded-xl text-sm">
+              <AlertTriangle className="w-5 h-5 shrink-0 text-red-600" />
+              <div>
+                <p className="font-bold text-red-800">The AI&apos;s Numbers Don&apos;t Add Up</p>
+                <p className="text-red-700 text-xs mt-0.5">{submission.rubricScoreNote}</p>
+              </div>
+            </div>
+          )}
+
           {/* Score Out Of Range Banner — the AI returned a total outside 0-100
               and it was clamped on the way in. The prompt makes the 0-100
               scaling the model's own job ("the total score = sum of all

@@ -35,8 +35,8 @@ npx prisma migrate status
 | Check | Expected |
 |---|---|
 | `npx eslint src server` | **75 problems** (73 errors, 2 warnings) — all pre-existing, mostly `react-hooks/set-state-in-effect`. A number above 75 means something new was introduced. |
-| `server/` `npm run verify` | **Passes.** 282 tests across 16 files, plus `verify:grading` 92, `verify:dashboard` 41, `verify:routes` 45. The four `roster.test.js` failures described below are resolved — see the note. *(Historic:* **Did not pass.** The three `verify:*` stages all pass individually — `verify:grading` 92 passed, `verify:dashboard` 41 passed, `verify:routes` 45 passed (45 routes scanned) — but the final stage, `npm test` (Vitest), is **265 tests across 16 files: 261 passed, 4 failed**. All 4 failures are confined to `server/tests/roster.test.js`, and come from commit `4a2d642` ("Name fix"), which added `stripNameCommas` to `src/utils/roster.js` — it strips the comma from names like "Dela Cruz, Juan", while those four tests assert the comma survives. That commit is the user's own in-flight work, made immediately before this branch started, and is unrelated to section transfers.)* **Resolution:** `stripNameCommas` was the wrong fix. The surname comma is the only thing in a stored name that marks where the family name ends, so removing it made the student greeting unfixable — `firstNameFromRoster` fell back to the trailing word and greeted children by their *second given name*. It is now `normalizeRosterName`, which collapses whitespace and keeps the first comma (optional to type, preserved when typed), and `firstNameFromRoster` returns the whole given-name portion. The four tests pass unchanged, because what they asserted was right. |
-| `npx prisma migrate status` | **6 migrations.** `20260810020000_lesson_rubric_template` is written but **not yet applied** — it applies itself on the next deploy (`render.yaml` runs `migrate deploy` after `verify`). Two additive nullable columns; existing rows untouched. |
+| `server/` `npm run verify` | **Passes.** 297 tests across 17 files, plus `verify:grading` 92, `verify:dashboard` 41, `verify:routes` 45. The four `roster.test.js` failures described below are resolved — see the note. *(Historic:* **Did not pass.** The three `verify:*` stages all pass individually — `verify:grading` 92 passed, `verify:dashboard` 41 passed, `verify:routes` 45 passed (45 routes scanned) — but the final stage, `npm test` (Vitest), is **265 tests across 16 files: 261 passed, 4 failed**. All 4 failures are confined to `server/tests/roster.test.js`, and come from commit `4a2d642` ("Name fix"), which added `stripNameCommas` to `src/utils/roster.js` — it strips the comma from names like "Dela Cruz, Juan", while those four tests assert the comma survives. That commit is the user's own in-flight work, made immediately before this branch started, and is unrelated to section transfers.)* **Resolution:** `stripNameCommas` was the wrong fix. The surname comma is the only thing in a stored name that marks where the family name ends, so removing it made the student greeting unfixable — `firstNameFromRoster` fell back to the trailing word and greeted children by their *second given name*. It is now `normalizeRosterName`, which collapses whitespace and keeps the first comma (optional to type, preserved when typed), and `firstNameFromRoster` returns the whole given-name portion. The four tests pass unchanged, because what they asserted was right. |
+| `npx prisma migrate status` | **7 migrations.** `20260810020000_lesson_rubric_template` and `20260810030000_submission_rubric_score_note` are written but **not yet applied** — they apply themselves on the next deploy (`render.yaml` runs `migrate deploy` after `verify`). Three additive nullable columns; existing rows untouched. |
 | `npm run build` | succeeds; the >500 kB chunk warning is expected |
 
 ---
@@ -451,6 +451,23 @@ the two copies were free to drift.
   copy exactly as before.
 - Rubrics are saved *before* the lessons on import, so a lesson is never
   written pointing at a template that does not exist yet.
+- **A name is only "taken" by a rubric that is genuinely the same rubric.**
+  Revising a curriculum means deleting and re-uploading it (the upload route
+  refuses a second one for the same school/grade/subject), and
+  `RubricTemplate.curriculumId` is `onDelete: SetNull` — so the old templates
+  survive that delete under their old names holding their old criteria.
+  Matching on name alone skipped the revision as "already there" and stamped
+  the new lesson with the **superseded** template's id; because the linked
+  template outranks the embedded copy, teachers would then build activities
+  against criteria the admin thought they had replaced, silently. Templates are
+  now matched on name **and** criteria signature, and a same-name-different-
+  criteria revision is written under a numbered name. This failure mode did not
+  exist before the link — the embedded copy always won, so drift meant nothing.
+- **Both copy paths carry the id.** `POST /api/teacher/classes` (accepting a
+  curriculum at class creation — the dominant flow) and
+  `POST /api/teacher/classes/:id/parse-curriculum` both copy `rubricTemplateId`
+  onto `ClassLesson`. Missing it on either leaves a null link and silently
+  reinstates the pre-§8.7 behaviour for every class made that way.
 - `POST .../curriculums/:id/promote-rubrics` back-fills the link for
   curriculums that predate this.
 
@@ -468,3 +485,45 @@ Student"** for a paper nobody had published.
 Single-paper mode now shows **Release to student** as the primary action until
 it has been done, and the badge distinguishes *Validated — not yet released*
 from *Released to Student*.
+
+### 8.9 The AI checker's arithmetic is now checked
+
+Investigating a report that an incomplete paper scored too well surfaced two
+things nothing was checking. Both were found in **live data**, on the same
+activity, and both papers were already `GRADED` — i.e. a teacher had validated
+them and they were counting toward real marks:
+
+| Symptom | Real instance |
+|---|---|
+| Headline score ≠ the criteria it is the sum of | criteria totalled **65**, `aiScore` stored **67** — 67 became the grade |
+| A criterion scored outside the band the model itself labelled it with | **28** awarded under `"Proficient (21-26 pts)"` |
+
+Neither is caught by `scoreFeedbackMismatch`, which asks whether a shortfall was
+*explained*, not whether the numbers add up. The prompt does say *"Your 'score'
+field must equal the sum, scaled to percentage"* — saying so is not checking.
+
+- `rubricScoreNoteFor()` (exported, unit-tested in `tests/rubric-arithmetic.test.js`,
+  11 tests built from the real shapes) returns a sentence naming the
+  disagreement, or null. Persisted to `Submission.rubricScoreNote`
+  (migration `20260810030000_submission_rubric_score_note`), red banner in the
+  HITL workspace.
+- **It never corrects the score.** A disagreement means the model's output is
+  untrustworthy on that paper; picking one of its two answers would be guessing
+  which. The teacher decides.
+- One point of rounding slack, so the banner does not cry wolf and get ignored.
+- Computed from the raw result *before* `clampScore`, or a clamped 120 would
+  read as agreeing with criteria it never matched.
+- Existing rows get `NULL` — honestly "not checked", since nothing checked them
+  when they were graded. A read-only audit at the time of writing found
+  **2 of 5** papers carrying a rubric breakdown were inconsistent, both already
+  GRADED. Small sample, but that is the whole production corpus.
+
+**Not fixed, and the bigger problem:** on that activity the rubric itself does
+not match the assignment. A *Narrative Essay* is graded 40% on "Content &
+Evidence on **Global/National Issues**" and 30% on "Audience Awareness &
+Inclusivity", with nothing measuring mechanics. Every pupil is marked down on
+the 40-point criterion — the AI's own feedback says the same sentence about all
+four — so it cannot discriminate, and the incomplete paper scores the *same 22*
+there as a complete one. Only Organization separates them, which is why the
+class compresses into 67–83 and an incomplete paper still lands at 65. That is a
+rubric-selection problem (see §8.7), not a grading-engine one.

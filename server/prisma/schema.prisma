@@ -353,6 +353,18 @@ model Submission {
   /// Same treatment as gradeLevelAssumed: never blocks the save, just flags
   /// the paper for the teacher's second look in the HITL workspace.
   scoreFeedbackMismatch Boolean           @default(false)
+  /// Set when the AI's own arithmetic disagrees with itself on this paper:
+  /// the headline score does not match the criteria it is meant to be the sum
+  /// of, or a criterion was scored outside the band the model itself labelled
+  /// it with. Both were found in live data and neither is caught by
+  /// scoreFeedbackMismatch, which asks whether a shortfall was *explained*,
+  /// not whether the numbers add up.
+  ///
+  /// A sentence rather than a boolean, because "these two numbers disagree" is
+  /// only actionable if the teacher is told which two. Null means they agree.
+  /// Never corrects the score: a disagreement means the output is untrustworthy
+  /// on this paper, and choosing one of its answers would be guessing which.
+  rubricScoreNote       String?
   /// True when a rubric genuinely existed for this activity — the activity's
   /// own rubric or its lesson's defaultRubric — but its JSON could not be
   /// parsed, so grading silently fell through to a lower-priority tier (the

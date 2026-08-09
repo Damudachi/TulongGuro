@@ -45,7 +45,7 @@ function makePrismaFake() {
   const models = new Map();
   const defaults = {
     findUnique: null, findFirst: null, findMany: [], count: 0,
-    create: {}, update: {}, updateMany: { count: 0 },
+    create: {}, createMany: { count: 0 }, update: {}, updateMany: { count: 0 },
     delete: {}, deleteMany: { count: 0 },
     aggregate: {}, groupBy: [], upsert: {},
   };
@@ -1090,6 +1090,93 @@ describe('a transferred student\'s exported grade uses their whole subject histo
     // Nothing left unreviewed — the mark was validated before the move.
     const notice = lines.find(l => l.startsWith('# Carried over:'));
     expect(notice).not.toContain('not yet validated');
+  });
+});
+
+describe('saveCurriculumRubrics links each lesson to the right school template', () => {
+  // Revising a curriculum means deleting it and re-uploading — the upload route
+  // refuses a second one for the same (school, gradeLevel, subject). Because
+  // RubricTemplate.curriculumId is onDelete: SetNull, the OLD templates survive
+  // that delete under their old names holding their old criteria.
+  const CURRICULUM = { id: 'cur-1', schoolId: 'school-1', gradeLevel: 'Grade 6', subject: 'English', title: 'English 6' };
+
+  const lessonWith = (title, criteria) => ({ title, outputType: 'Essay', defaultRubric: { criteria } });
+  const OLD_CRITERIA = [{ name: 'Content', points: 60 }, { name: 'Organization', points: 40 }];
+  const NEW_CRITERIA = [{ name: 'Content', points: 50 }, { name: 'Mechanics', points: 50 }];
+
+  it('reuses a template that is genuinely the same rubric under the same name', async () => {
+    const { saveCurriculumRubrics } = require('../server.js');
+    const lesson = lessonWith('Week 3: Short Story', OLD_CRITERIA);
+
+    prismaFake.rubricTemplate.findMany.mockResolvedValue([
+      { id: 'tpl-old', name: 'Week 3: Short Story — English Grade 6', criteria: JSON.stringify(OLD_CRITERIA) },
+    ]);
+
+    const report = await saveCurriculumRubrics(CURRICULUM, [lesson]);
+
+    // Nothing new written — it really is the same rubric.
+    expect(prismaFake.rubricTemplate.createMany).not.toHaveBeenCalled();
+    // ...but the lesson still has to point at it, or the Activity Builder
+    // falls back to the unnamed embedded copy.
+    expect(report.templateIdByLesson.get(lesson)).toBe('tpl-old');
+  });
+
+  it('does not link a revised lesson to the superseded template it merely shares a name with', async () => {
+    const { saveCurriculumRubrics } = require('../server.js');
+    const lesson = lessonWith('Week 3: Short Story', NEW_CRITERIA);
+
+    // The survivor of the delete-and-reupload: same name, OLD criteria.
+    const survivor = { id: 'tpl-stale', name: 'Week 3: Short Story — English Grade 6', criteria: JSON.stringify(OLD_CRITERIA) };
+    prismaFake.rubricTemplate.findMany.mockImplementation(({ where }) => (
+      // First call enumerates what the school already has; the read-back after
+      // the write is filtered by the names this import produced.
+      where?.name
+        ? Promise.resolve([{ id: 'tpl-new', name: 'Week 3: Short Story — English Grade 6 (2)' }])
+        : Promise.resolve([survivor])
+    ));
+
+    const report = await saveCurriculumRubrics(CURRICULUM, [lesson]);
+
+    // The revision is written rather than silently skipped as "already there",
+    // under a name that does not collide.
+    expect(prismaFake.rubricTemplate.createMany).toHaveBeenCalled();
+    const written = prismaFake.rubricTemplate.createMany.mock.calls[0][0].data;
+    expect(written).toHaveLength(1);
+    expect(written[0].name).toBe('Week 3: Short Story — English Grade 6 (2)');
+    expect(JSON.parse(written[0].criteria)).toEqual(NEW_CRITERIA);
+
+    // And the lesson points at the NEW template. Pointing at tpl-stale is the
+    // bug: resolveDefaultRubric's linked-template tier wins over the embedded
+    // copy, so teachers would grade against criteria the admin had replaced.
+    expect(report.templateIdByLesson.get(lesson)).toBe('tpl-new');
+    expect(report.templateIdByLesson.get(lesson)).not.toBe('tpl-stale');
+  });
+
+  it('names a template after the lesson it belongs to, not its output type', async () => {
+    const { saveCurriculumRubrics } = require('../server.js');
+    const lesson = lessonWith('Week 3: Short Story', OLD_CRITERIA);
+    prismaFake.rubricTemplate.findMany.mockResolvedValue([]);
+
+    await saveCurriculumRubrics(CURRICULUM, [lesson]);
+
+    const written = prismaFake.rubricTemplate.createMany.mock.calls[0][0].data;
+    // "Essay — English Grade 6" told a teacher browsing their rubric list
+    // nothing about which week's work it was written for.
+    expect(written[0].name).toBe('Week 3: Short Story — English Grade 6');
+  });
+
+  it('keeps the output-type name for a rubric genuinely shared by several lessons', async () => {
+    const { saveCurriculumRubrics } = require('../server.js');
+    const a = lessonWith('Week 1: Recount', OLD_CRITERIA);
+    const b = lessonWith('Week 2: Anecdote', OLD_CRITERIA);
+    prismaFake.rubricTemplate.findMany.mockResolvedValue([]);
+
+    const report = await saveCurriculumRubrics(CURRICULUM, [a, b]);
+
+    const written = prismaFake.rubricTemplate.createMany.mock.calls[0][0].data;
+    expect(written).toHaveLength(1);
+    expect(written[0].name).toBe('Essay — English Grade 6');
+    expect(report.merged).toBe(1);
   });
 });
 
