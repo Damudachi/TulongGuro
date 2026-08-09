@@ -170,6 +170,43 @@ model Section {
   students   User[]   @relation("StudentSection")
 }
 
+/// When a student moved between sections, and who moved them.
+///
+/// A User has exactly one Section, so a move repoints that single field and
+/// leaves no trace of what came before. Every screen that finds a learner's
+/// work by walking Section -> Class -> Activity -> Submission therefore loses
+/// what they did before the move, and the section they arrive into shows them
+/// MISSING against activities they were never present for. Nothing is deleted
+/// by a move; it just becomes unreachable from the places that need it, and
+/// misread by the places that find it.
+///
+/// This is the missing fact. `User.sectionId` still answers "where are they
+/// now" and is unchanged; this answers "since when", which is what tells
+/// "did not hand it in" from "had already left before it was set".
+///
+/// Append-only. schoolId is denormalized onto the row for the same reason
+/// GradingAuditLog denormalizes studentId/activityId: the record has to stay
+/// meaningful after the section it points at is deleted.
+model SectionTransfer {
+  id            String   @id @default(uuid())
+  studentId     String
+  /// Null on a learner's first enrolment — they came from nowhere.
+  fromSectionId String?
+  /// Null when a learner is unassigned rather than moved, which is what the
+  /// admin remove-student route already does when they have submitted work.
+  toSectionId   String?
+  transferredAt DateTime @default(now())
+  /// The teacher or admin who did it. Null for a system-generated row.
+  actorId       String?
+  schoolId      String?
+  reason        String?
+  createdAt     DateTime @default(now())
+
+  @@index([studentId, transferredAt])
+  @@index([fromSectionId])
+  @@index([toSectionId])
+}
+
 /// A school-wide curriculum for one grade level + subject, published by an
 /// admin. Teachers get it suggested when they create a matching course shell.
 model Curriculum {
@@ -352,6 +389,15 @@ model Submission {
   /// them rather than an internal code — and recorded because "excused" with
   /// no reason is exactly the kind of adjustment a parent asks about later.
   excusedReason         String?
+  /// Set only on rows a section transfer created — the pre-arrival activities
+  /// auto-excused when a learner joined a section partway through.
+  ///
+  /// It is what makes a mis-click reversible without an undo screen: moving
+  /// the learner back out deletes rows carrying this id that no human has
+  /// touched (attemptCount 0, both scores null), and can never reach a mark a
+  /// teacher entered. Nullable, so every existing row is "not created by a
+  /// transfer" without a backfill.
+  transferId            String?
   status                String            @default("PENDING")
   /// When the teacher published this result to the student.
   ///

@@ -1073,7 +1073,7 @@ git commit -m "feat: add carriedOverForClass, the one lookup every merged read s
 
 **Files:**
 - Modify: `server/server.js:7198-7320` — `GET /api/teacher/:teacherId/student/:studentId/gradebook`
-- Modify: `src/pages/teacher/Gradebook.jsx` — the student drill-down panel
+- Modify: `src/pages/teacher/GradebookStudent.jsx` — the student drill-down panel (it is the sole consumer of that endpoint, at line 76; `Gradebook.jsx` is the section-level shell and never calls it)
 - Test: `server/tests/route-wiring.test.js` (append)
 
 **Interfaces:**
@@ -1447,7 +1447,27 @@ git commit -m "feat: export a transferred student's whole subject history, not a
 
 **Interfaces:**
 - Consumes: `carriedOverForClass`.
-- Produces: `studentTrends[].transferredOut: boolean`; `needsSupport` excludes transferred-out students.
+- Produces: no new response fields.
+
+> **CORRECTED IN REVIEW — this task's Step 4 as originally written was wrong twice.**
+>
+> 1. **Pooling must skip the teacher's own classes.** `graded` is scoped
+>    `activity.classId IN classIds` across ALL the teacher's classes, so where one
+>    teacher takes the subject in both the old and new section, those submissions are
+>    already in `byStudent` and pooling them again double-counts — corrupting
+>    `avgPercent`, the class average, the bands and the at-risk flag. Skip carried
+>    submissions whose `activity.classId` is in `classIds`, as Task 6 does.
+>
+> 2. **The `transferredOut` flag must NOT be added.** It cannot be correct here:
+>    `uniqueStudents` comes from `section.students` (the live roster), so a departed
+>    student is never in it to flag, and the only learners the flag can match are
+>    those who left *and came back* — dropping a currently-enrolled, possibly
+>    struggling child off their own teacher's action list. The requirement is already
+>    satisfied structurally; see the spec's "Transferred-out students" section.
+>
+> Also required: `CARRIED_OVER_SELECT` must gain `subject: true` and `gradeLevel: true`
+> on its `class` select, because `workingAverageAcrossSubjects` keys per-subject
+> grouping on exactly those. Without them carried work becomes a phantom extra subject.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1650,7 +1670,7 @@ git commit -m "fix: stop erasing a departed student from a section's skill timel
 
 **Files:**
 - Modify: `server/server.js:7165-7192` — `GET /api/teacher/:teacherId/gradebook`
-- Modify: `src/pages/teacher/Gradebook.jsx` — roster rendering
+- Modify: `src/pages/teacher/GradebookClass.jsx` — roster rendering (it fetches `/gradebook?classId=` at line 61 and renders the student rows)
 - Test: `server/tests/route-wiring.test.js` (append)
 
 **Interfaces:**
@@ -2262,12 +2282,16 @@ In section 4, add:
 | **Transfers before this shipped have no record.** Those learners are treated as always having been in their current section. | Which is exactly what every screen assumed before, so nothing regressed — but a move that happened last term will not show carried-over work. |
 ```
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: Do NOT commit**
 
-```bash
-cd .. && git add HANDOFF.md
-git commit -m "docs: update baselines and add P11 section-transfer QA"
-```
+> **CORRECTED IN EXECUTION.** This step originally said to `git add HANDOFF.md`.
+> That was wrong: `HANDOFF.md` is listed in `.gitignore` (line 35), has never been
+> tracked (`git log --all -- HANDOFF.md` is empty), and was excluded by the repo
+> owner's own commit `7b75006`. Committing it would require `git add -f`, which
+> overrides a deliberate decision that is not a plan step's to override.
+>
+> Task 13's deliverable is the edited file on disk. If the owner wants it in
+> version control, `git add -f HANDOFF.md` remains available to them.
 
 ---
 

@@ -8,7 +8,10 @@
 -- treats that as current rather than archived — hiding a roster that nobody
 -- can then find again is the worse failure.
 
-ALTER TABLE "Section" ADD COLUMN "schoolYear" TEXT;
+-- Guarded: the column was already applied out-of-band via `db push` before
+-- this migration was recorded in `_prisma_migrations`, so a plain ADD COLUMN
+-- fails on replay against a database that already has it.
+ALTER TABLE "Section" ADD COLUMN IF NOT EXISTS "schoolYear" TEXT;
 
 -- Backfill: every existing section is treated as belonging to the current
 -- school year. This is a point-in-time constant, not a computed value — the
@@ -20,4 +23,7 @@ UPDATE "Section" SET "schoolYear" = '2026-2027' WHERE "schoolYear" IS NULL;
 
 -- Sections are listed newest-year-first and filtered to the current year, both
 -- of which read this column on every load.
-CREATE INDEX "Section_schoolYear_idx" ON "Section"("schoolYear");
+--
+-- Guarded for the same out-of-band reason as the column above: replaying
+-- this migration must not fail if a prior partial run already created it.
+CREATE INDEX IF NOT EXISTS "Section_schoolYear_idx" ON "Section"("schoolYear");

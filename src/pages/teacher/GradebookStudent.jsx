@@ -148,7 +148,7 @@ export default function GradebookStudent() {
           <>
             {/* ── Mobile: one card per activity ── */}
             <div className="md:hidden space-y-3">
-              {rows.map(row => {
+              {rows.filter(row => !row.carriedOver).map(row => {
                 const statusInfo = STATUS_STYLES[row.status] || STATUS_STYLES.UPCOMING;
                 return (
                   <div key={row.activityId} className="tg-card p-4">
@@ -204,7 +204,7 @@ export default function GradebookStudent() {
                   </tr>
                 </thead>
                 <tbody>
-                  {rows.map(row => {
+                  {rows.filter(row => !row.carriedOver).map(row => {
                     const statusInfo = STATUS_STYLES[row.status] || STATUS_STYLES.UPCOMING;
                     return (
                       <tr key={row.activityId} className="border-b border-cream-200 last:border-0 hover:bg-cream-50">
@@ -236,6 +236,36 @@ export default function GradebookStudent() {
                 </tbody>
               </table>
             </div>
+
+            {/* ── Carried over from a previous section ──
+                Read-only: marked by another teacher, so no Grade or Excuse
+                control appears here — this drill-down can show that work but
+                must never let this teacher re-grade, excuse or release it. */}
+            {rows.some(row => row.carriedOver) && (
+              <div className="mt-6">
+                <h4 className="text-xs font-extrabold uppercase tracking-wide text-navy-400 mb-2">
+                  Carried over from {rows.find(row => row.carriedOver)?.fromSection}
+                </h4>
+                <p className="text-xs text-navy-400 font-semibold mb-3">
+                  Marked by their previous teacher. These count toward the subject grade and
+                  cannot be changed here.
+                </p>
+                <div className="rounded-3xl border-2 border-cream-200 bg-white divide-y divide-cream-200 overflow-hidden">
+                  {rows.filter(row => row.carriedOver).map(row => (
+                    <div key={row.submissionId} className="px-4 py-3 text-sm flex items-center justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="font-bold text-navy-700 truncate">{row.activityTitle}</p>
+                        {row.className && <p className="text-xs text-navy-400 font-semibold truncate">{row.className}</p>}
+                        {row.feedback && <p className="text-xs text-navy-400 truncate">{row.feedback}</p>}
+                      </div>
+                      <span className="text-sm font-extrabold text-navy-700 shrink-0">
+                        {row.grade === null ? '—' : `${row.grade}/${row.totalScore}`}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </>
         )}
       </div>
