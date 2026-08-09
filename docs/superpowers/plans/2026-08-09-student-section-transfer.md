@@ -1073,7 +1073,7 @@ git commit -m "feat: add carriedOverForClass, the one lookup every merged read s
 
 **Files:**
 - Modify: `server/server.js:7198-7320` — `GET /api/teacher/:teacherId/student/:studentId/gradebook`
-- Modify: `src/pages/teacher/Gradebook.jsx` — the student drill-down panel
+- Modify: `src/pages/teacher/GradebookStudent.jsx` — the student drill-down panel (it is the sole consumer of that endpoint, at line 76; `Gradebook.jsx` is the section-level shell and never calls it)
 - Test: `server/tests/route-wiring.test.js` (append)
 
 **Interfaces:**
@@ -1650,7 +1650,7 @@ git commit -m "fix: stop erasing a departed student from a section's skill timel
 
 **Files:**
 - Modify: `server/server.js:7165-7192` — `GET /api/teacher/:teacherId/gradebook`
-- Modify: `src/pages/teacher/Gradebook.jsx` — roster rendering
+- Modify: `src/pages/teacher/GradebookClass.jsx` — roster rendering (it fetches `/gradebook?classId=` at line 61 and renders the student rows)
 - Test: `server/tests/route-wiring.test.js` (append)
 
 **Interfaces:**
