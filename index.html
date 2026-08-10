@@ -3,9 +3,22 @@
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- viewport-fit=cover is what makes env(safe-area-inset-*) report real
+         numbers on a notched phone; without it the bottom dock's existing
+         safe-area padding (index.css) silently evaluates to zero and the dock
+         sits under the home indicator once installed. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="theme-color" content="#2B59C3" />
     <meta name="description" content="TulongGuro — AI-assisted grading and learning for Philippine schools." />
+
+    <!-- Installable to the home screen. Android reads the manifest; iOS still
+         wants its own apple-touch-icon and standalone hints, so both are here. -->
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-title" content="TulongGuro" />
 
     <!-- Rounded display/body faces. Schools on weak connections fall back to
          the system rounded stack declared in tailwind.config.js, so the app
