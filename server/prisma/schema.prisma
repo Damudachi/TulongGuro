@@ -121,8 +121,30 @@ model User {
   ownedSections     Section[]        @relation("TeacherSections")
   submissions       Submission[]
   notifications     Notification[]
+  badges            StudentBadge[]
   school            School?          @relation(fields: [schoolId], references: [id])
   section           Section?         @relation("StudentSection", fields: [sectionId], references: [id])
+}
+
+/// A badge a learner has earned, kept so it can never be taken away again.
+///
+/// Every other badge condition is a function of the learner's own work and
+/// could be recomputed on demand. Class Champion cannot: it depends on how
+/// classmates are doing, so a badge shown in October would vanish in June
+/// because someone else improved — through no fault of the child holding it.
+/// Recording the moment it was first reached is what makes "earned" mean
+/// earned. The accepted trade is that a later grade correction no longer
+/// un-earns a badge.
+model StudentBadge {
+  id        String   @id @default(uuid())
+  studentId String
+  /// The badge's stable id, e.g. "comeback-kid". Matches BADGE_IDS in badges.js.
+  badgeId   String
+  earnedAt  DateTime @default(now())
+  student   User     @relation(fields: [studentId], references: [id], onDelete: Cascade)
+
+  @@unique([studentId, badgeId])
+  @@index([studentId])
 }
 
 /// A student-facing notification — "your grade was released," to start.

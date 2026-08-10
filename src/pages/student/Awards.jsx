@@ -1,25 +1,53 @@
 import { useState, useEffect } from 'react';
-import { Trophy, Star, Lock, Zap, BookOpen, Award } from 'lucide-react';
+import {
+  Trophy, Star, Lock, Zap, BookOpen, Award, Flag, Medal, TrendingUp, Rocket,
+  BarChart3, Target, Clock, Compass, Flame, GraduationCap,
+} from 'lucide-react';
 import { API_URL, apiFetch } from '../../config';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
 
 /**
  * Presentation only. What each badge *means* — and whether it has been earned —
- * is decided server-side in computeBadges(), because it depends on the student's
- * actual submissions and the school's passing grade.
+ * is decided server-side in badges.js, because it depends on the student's
+ * actual submissions, the school's passing grade, and for Class Champion how
+ * the rest of the section is doing.
  *
  * This page used to own the conditions as well, and unlocked every badge purely
  * on a star count: "Read and applied 3 reading strategies" opened at 3 stars,
  * which one 90+ essay grants. The descriptions promised things the check never
  * looked at, so a pupil could be congratulated for work they had not done.
+ *
+ * An id with no entry here still renders, via FALLBACK_STYLE — a badge the
+ * server knows about and this file does not must never blank the page.
  */
 const BADGE_STYLES = {
-  'first-star':     { icon: Star,     tile: 'bg-sun-400',     shell: 'bg-sun-100 border-sun-200',         ink: 'text-sun-800' },
-  bookworm:         { icon: BookOpen, tile: 'bg-royal-500',   shell: 'bg-royal-100 border-royal-200',     ink: 'text-royal-700' },
-  'grammar-master': { icon: Zap,      tile: 'bg-lilac-400',   shell: 'bg-lilac-100 border-lilac-200',     ink: 'text-lilac-700' },
-  'honor-student':  { icon: Trophy,   tile: 'bg-magenta-500', shell: 'bg-magenta-100 border-magenta-200', ink: 'text-magenta-700' },
-  'essay-champion': { icon: Award,    tile: 'bg-aqua-500',    shell: 'bg-aqua-100 border-aqua-200',       ink: 'text-aqua-800' },
+  // ── The original five ──
+  'first-star':       { icon: Star,          tile: 'bg-sun-400',     shell: 'bg-sun-100 border-sun-200',         ink: 'text-sun-800' },
+  bookworm:           { icon: BookOpen,      tile: 'bg-royal-500',   shell: 'bg-royal-100 border-royal-200',     ink: 'text-royal-700' },
+  'grammar-master':   { icon: Zap,           tile: 'bg-lilac-400',   shell: 'bg-lilac-100 border-lilac-200',     ink: 'text-lilac-700' },
+  'honor-student':    { icon: Trophy,        tile: 'bg-magenta-500', shell: 'bg-magenta-100 border-magenta-200', ink: 'text-magenta-700' },
+  'essay-champion':   { icon: Award,         tile: 'bg-aqua-500',    shell: 'bg-aqua-100 border-aqua-200',       ink: 'text-aqua-800' },
+
+  // ── Getting started ──
+  'first-steps':      { icon: Flag,          tile: 'bg-aqua-400',    shell: 'bg-aqua-100 border-aqua-200',       ink: 'text-aqua-800' },
+
+  // ── Standing ──
+  'class-champion':   { icon: Medal,         tile: 'bg-sun-500',     shell: 'bg-sun-100 border-sun-200',         ink: 'text-sun-800' },
+
+  // ── Recovery. Warm colours on purpose: these are the badges most likely to
+  //    reach a child who has been behind, and they should not look like the
+  //    consolation shelf. ──
+  'comeback-kid':     { icon: TrendingUp,    tile: 'bg-magenta-400', shell: 'bg-magenta-100 border-magenta-200', ink: 'text-magenta-700' },
+  turnaround:         { icon: Rocket,        tile: 'bg-magenta-600', shell: 'bg-magenta-100 border-magenta-200', ink: 'text-magenta-700' },
+  'steady-climber':   { icon: BarChart3,     tile: 'bg-royal-400',   shell: 'bg-royal-100 border-royal-200',     ink: 'text-royal-700' },
+  'personal-best':    { icon: Target,        tile: 'bg-lilac-500',   shell: 'bg-lilac-100 border-lilac-200',     ink: 'text-lilac-700' },
+
+  // ── Effort ──
+  'always-on-time':   { icon: Clock,         tile: 'bg-aqua-600',    shell: 'bg-aqua-100 border-aqua-200',       ink: 'text-aqua-800' },
+  'all-rounder':      { icon: Compass,       tile: 'bg-royal-600',   shell: 'bg-royal-100 border-royal-200',     ink: 'text-royal-700' },
+  dedicated:          { icon: Flame,         tile: 'bg-sun-600',     shell: 'bg-sun-100 border-sun-200',         ink: 'text-sun-800' },
+  'strategy-scholar': { icon: GraduationCap, tile: 'bg-lilac-600',   shell: 'bg-lilac-100 border-lilac-200',     ink: 'text-lilac-700' },
 };
 
 const FALLBACK_STYLE = { icon: Award, tile: 'bg-royal-500', shell: 'bg-royal-100 border-royal-200', ink: 'text-royal-700' };
