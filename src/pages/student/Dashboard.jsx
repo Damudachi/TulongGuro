@@ -9,6 +9,7 @@ import { ONBOARDING, hasSeenOnboarding, markOnboardingSeen } from '../../utils/o
 import SchoolBadge from '../../components/SchoolBadge';
 import { StatTile } from '../../components/PageHeader';
 import { firstNameFromRoster } from '../../utils/roster';
+import { getStoredUser } from '../../utils/session';
 
 /**
  * Shown once, the first time a learner has a grade to actually look at.
@@ -46,7 +47,10 @@ function EmptyState({ icon: Icon, title, hint }) {
 export default function StudentDashboard() {
   const passingGrade = usePassingGrade();
   const [data, setData] = useState(null);
-  const [isLoading, setIsLoading] = useState(true);
+  // Starts false when there is nobody signed in: with no id there is nothing
+  // to fetch, so the spinner would only ever be taken away again on the first
+  // commit. See getStoredUser.
+  const [isLoading, setIsLoading] = useState(() => !!getStoredUser().id);
   const [showWelcome, setShowWelcome] = useState(false);
 
   const dismissWelcome = () => {
@@ -55,8 +59,8 @@ export default function StudentDashboard() {
   };
 
   useEffect(() => {
-    const user = JSON.parse(localStorage.getItem('user') || '{}');
-    if (!user.id) return setIsLoading(false);
+    const user = getStoredUser();
+    if (!user.id) return;
     apiFetch(`${API_URL}/api/student/${user.id}/dashboard`)
       .then(r => r.json())
       .then(d => {

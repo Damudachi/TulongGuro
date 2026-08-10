@@ -35,7 +35,9 @@ function describeRubricReport(report, { alreadySaved } = {}) {
 export default function AdminCurriculum() {
   const admin = JSON.parse(localStorage.getItem('user') || '{}');
   const [curriculums, setCurriculums] = useState([]);
-  const [isLoading, setIsLoading] = useState(true);
+  // No admin id means there is nothing to fetch, so this must not open on a
+  // spinner that only the first commit would take away again (see load below).
+  const [isLoading, setIsLoading] = useState(() => !!admin.id);
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState({ gradeLevel: '', subject: '', title: '', description: '' });
   const [file, setFile] = useState(null);
@@ -47,7 +49,7 @@ export default function AdminCurriculum() {
   const [busy, setBusy] = useState(false);
 
   const load = useCallback(() => {
-    if (!admin.id) return setIsLoading(false);
+    if (!admin.id) return;
     apiFetch(`${API_URL}/api/admin/${admin.id}/curriculums`)
       .then(r => r.json())
       .then(d => { if (d.success) setCurriculums(d.curriculums || []); })

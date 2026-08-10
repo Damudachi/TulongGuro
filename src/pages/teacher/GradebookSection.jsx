@@ -2,18 +2,21 @@ import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { Users, Download, Loader2, BookOpen } from 'lucide-react';
 import { API_URL, apiFetch } from '../../config';
+import { getStoredUser } from '../../utils/session';
 import PageHeader from '../../components/PageHeader';
 
 export default function GradebookSection() {
   const { sectionId } = useParams();
   const navigate = useNavigate();
   const [teacherClasses, setTeacherClasses] = useState([]);
-  const [isLoading, setIsLoading] = useState(true);
+  // Nobody signed in means there is nothing to fetch, so this must not open on
+  // a spinner that only the first commit would take away again.
+  const [isLoading, setIsLoading] = useState(() => !!getStoredUser().id);
   const [exportingClassId, setExportingClassId] = useState(null);
 
   useEffect(() => {
-    const user = JSON.parse(localStorage.getItem('user') || '{}');
-    if (!user.id) return setIsLoading(false);
+    const user = getStoredUser();
+    if (!user.id) return;
     apiFetch(`${API_URL}/api/teacher/${user.id}/classes`).then(r => r.json()).then(d => { if (d.success) setTeacherClasses(d.classes || []); }).catch(() => {}) /* a failed read leaves the empty state, which is what renders */
       .finally(() => setIsLoading(false));
   }, [sectionId]);

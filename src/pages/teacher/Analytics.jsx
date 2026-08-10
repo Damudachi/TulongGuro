@@ -4,6 +4,7 @@ import {
   LifeBuoy, Trophy, Target, TrendingUp, TrendingDown, Minus, ClipboardList,
 } from 'lucide-react';
 import { API_URL, apiFetch } from '../../config';
+import { getStoredUser } from '../../utils/session';
 import { bandsFor, bandFor, toPoints, pct, DEFAULT_PASSING_GRADE } from '../../utils/grading';
 import SkillProgressChart from '../../components/SkillProgressChart';
 
@@ -81,7 +82,9 @@ function ClassSpread({ bands, total, passingGrade }) {
 export default function Analytics() {
   const [data, setData] = useState(null);
   const [sectionsList, setSectionsList] = useState([]);
-  const [isLoading, setIsLoading] = useState(true);
+  // Nobody signed in means there is nothing to fetch, so this must not open on
+  // a spinner that only the first commit would take away again.
+  const [isLoading, setIsLoading] = useState(() => !!getStoredUser().id);
   const [selectedSectionId, setSelectedSectionId] = useState(null);
   const [showSelector, setShowSelector] = useState(true);
   const [selectedStudent, setSelectedStudent] = useState(null);
@@ -92,8 +95,8 @@ export default function Analytics() {
   const [skillFilter, setSkillFilter] = useState(null);
 
   useEffect(() => {
-    const user = JSON.parse(localStorage.getItem('user') || '{}');
-    if (!user.id) return setIsLoading(false);
+    const user = getStoredUser();
+    if (!user.id) return;
     apiFetch(`${API_URL}/api/teacher/${user.id}/sections`)
       .then(r => r.json())
       .then(d => { if (d.success) setSectionsList(d.sections || []); })
@@ -105,6 +108,7 @@ export default function Analytics() {
     if (showSelector) return;
     const user = JSON.parse(localStorage.getItem('user') || '{}');
     if (!user.id) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- flipping the loading flag ahead of an async read; the rule's alternative is a data-fetching library this app doesn't use
     setIsLoading(true);
     const url = selectedSectionId
       ? `${API_URL}/api/teacher/${user.id}/analytics?sectionId=${selectedSectionId}`

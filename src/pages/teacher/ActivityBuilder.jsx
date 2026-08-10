@@ -315,6 +315,7 @@ export default function ActivityBuilder() {
       outputType: form.type,
     });
     if (!applied) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- reacting to three rubric sources that arrive asynchronously; there is no render-time equivalent
     setRubricCriteria(applied.criteria);
     setRubricType(applied.type);
     setSelectedOption(applied.option);
@@ -325,6 +326,7 @@ export default function ActivityBuilder() {
   // looking at "No rubric selected" with no obvious next step.
   useEffect(() => {
     if (!rubricTouched && !isEditMode && rubricMode === 'template' && !selectedOption && builtinRubrics.length === 0) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- same: only knowable once the async rubric loads have all settled
       setShowRubricEditor(true);
     }
   }, [rubricTouched, isEditMode, rubricMode, selectedOption, builtinRubrics]);
@@ -388,6 +390,7 @@ export default function ActivityBuilder() {
   const [loadError, setLoadError] = useState('');
   useEffect(() => {
     if (!isEditMode || !editActivityId) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- flipping the loading flag ahead of an async read; the rule's alternative is a data-fetching library this app doesn't use
     setIsLoadingEdit(true);
     setLoadError('');
     apiFetch(`${API_URL}/api/activities/${editActivityId}`)
@@ -569,7 +572,7 @@ export default function ActivityBuilder() {
       } else {
         setExtractionError(data.error || 'Could not extract rubric criteria.');
       }
-    } catch (err) {
+    } catch {
       setExtractionError('Network error while extracting rubric. Please try again.');
     } finally {
       setIsExtracting(false);
@@ -620,7 +623,7 @@ export default function ActivityBuilder() {
       } else {
         alert('Failed to save template: ' + data.error);
       }
-    } catch (err) {
+    } catch {
       alert('Network error while saving template.');
     }
   };
@@ -726,7 +729,7 @@ export default function ActivityBuilder() {
   };
 
   // ── Criterion Editor (shared by Manual + Upload extracted) ──
-  const renderCriterionEditor = (criteria, isUploadExtracted = false) => (
+  const renderCriterionEditor = (criteria) => (
     <div className="space-y-3">
       {criteria.map((c, i) => (
         <div key={i} className="p-3 bg-slate-50 rounded-lg border border-slate-200 space-y-2">
@@ -1338,7 +1341,7 @@ export default function ActivityBuilder() {
                       <Save className="w-3.5 h-3.5" /> Save as Template
                     </button>
                   </div>
-                  {renderCriterionEditor(extractedCriteria, true)}
+                  {renderCriterionEditor(extractedCriteria)}
                 </div>
               )}
             </div>

@@ -14,6 +14,10 @@ export default function NotificationBell() {
   const [notifications, setNotifications] = useState([]);
   const [unreadCount, setUnreadCount] = useState(0);
   const [isOpen, setIsOpen] = useState(false);
+  // "now" for the relative timestamps, pinned to the last poll rather than read
+  // off the clock while rendering. The poll below runs every minute, which is
+  // exactly the resolution these labels are shown in, so nothing goes stale.
+  const [polledAt, setPolledAt] = useState(0);
   const panelRef = useRef(null);
 
   const load = () => {
@@ -23,6 +27,7 @@ export default function NotificationBell() {
         if (d.success) {
           setNotifications(d.notifications || []);
           setUnreadCount(d.unreadCount || 0);
+          setPolledAt(Date.now());
         }
       })
       .catch(() => {});
@@ -62,7 +67,7 @@ export default function NotificationBell() {
   };
 
   const formatWhen = (iso) => {
-    const diffMs = Date.now() - new Date(iso).getTime();
+    const diffMs = polledAt - new Date(iso).getTime();
     const mins = Math.round(diffMs / 60000);
     if (mins < 1) return 'just now';
     if (mins < 60) return `${mins}m ago`;

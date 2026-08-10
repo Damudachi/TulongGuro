@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
-import { Plus, Search, FileText, User, ArrowLeft, Clock, CheckCircle2, AlertCircle, UploadCloud, Trash2, PenLine } from 'lucide-react';
+import { Plus, Search, FileText, ArrowLeft, Clock, CheckCircle2, AlertCircle, UploadCloud, Trash2, PenLine } from 'lucide-react';
 import { API_URL, apiFetch } from '../../config';
 import { ACTIVITY_TYPES } from '../../constants/activityTypes';
 import { isPastDeadline, formatDeadline } from '../../utils/deadlines';
@@ -116,7 +116,7 @@ export default function ClassHub() {
       } else {
         alert('Failed: ' + data.error);
       }
-    } catch (e) {
+    } catch {
       alert('Network error');
     } finally {
       setIsSavingEdit(false);
@@ -135,7 +135,7 @@ export default function ClassHub() {
       } else {
         alert('Failed: ' + data.error);
       }
-    } catch (e) {
+    } catch {
       alert('Network error');
     } finally {
       setIsDeleting(false);

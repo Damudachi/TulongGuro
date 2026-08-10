@@ -38,8 +38,6 @@ export default function ManageSections() {
   const [showArchived, setShowArchived] = useState(false);
   const archivedCount = sections.filter(s => s.isArchived).length;
 
-  useEffect(() => { fetchSections(); }, []);
-
   /**
    * Fix a misspelt name. The student ID is their login and is left alone —
    * see the route's comment.
@@ -114,6 +112,12 @@ export default function ManageSections() {
       if (data.success) setSections(data.sections);
     } catch (e) { console.error(e); }
   };
+
+  // Declared after fetchSections on purpose. It used to sit near the top of the
+  // component and call a `const` defined 60 lines below it — which happens to
+  // work only because effects run after render, and is a temporal-dead-zone
+  // error the moment anything calls it earlier.
+  useEffect(() => { fetchSections(); }, []);
 
   /** Rows to send, or null once the teacher has been asked to fix a date. */
   const payloadFrom = (rows) => rosterPayload(rows, alert);
@@ -210,7 +214,7 @@ export default function ManageSections() {
       } else {
         alert("Extraction failed: " + data.error);
       }
-    } catch (error) {
+    } catch {
       alert("Network error during extraction.");
     } finally {
       setIsExtracting(false);
@@ -248,7 +252,7 @@ export default function ManageSections() {
         const extracted = parseRosterLines(data.names.join('\n'));
         setAddStudentRows(prev => withBlankRow([...prev.filter(isFilledRow), ...extracted]));
       } else { alert('Extraction failed: ' + data.error); }
-    } catch (error) { alert('Network error during extraction.'); }
+    } catch { alert('Network error during extraction.'); }
     finally {
       setIsExtractingEdit(false);
       if (editFileRef.current) editFileRef.current.value = '';

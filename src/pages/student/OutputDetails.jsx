@@ -66,6 +66,7 @@ export default function OutputDetails() {
 
   useEffect(() => {
     if (!outputId || outputId === 'test123') {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- seeds the built-in demo record; the real path below is an async read
       setSub({
         activity: { title: 'Noli Me Tangere Reflection', class: { name: 'Filipino 10' } },
         hitlScore: 88, aiScore: 85,
@@ -133,7 +134,7 @@ export default function OutputDetails() {
                 fullDesc = `${band.label} — ${band.description}`;
               }
             }
-          } catch (e) { /* ignore */ }
+          } catch { /* ignore */ }
         }
         return {
           name: r.criterionName, score: r.score, max: r.maxPoints, desc: fullDesc,

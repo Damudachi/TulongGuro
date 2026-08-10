@@ -92,7 +92,7 @@ export default function Register() {
       } else {
         setError(data.error || 'Registration failed. Please try again.');
       }
-    } catch (e) {
+    } catch {
       setError('Network Error. Please check your connection.');
     } finally {
       setIsSubmitting(false);

@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { ArrowLeft, UploadCloud, X, Loader2, Wifi, WifiOff, ShieldCheck, Info, FileText, Camera, Sparkles, Plus, CheckCircle2, AlertTriangle, ClipboardCheck, RefreshCw } from 'lucide-react';
 import { getQueue, buildJob, enqueue, flushQueue } from '../../utils/offlineQueue';
@@ -88,15 +88,21 @@ export default function BatchUpload() {
         })
         .catch(() => {}) /* a failed read leaves the empty state, which is what renders */;
     }
+  }, [classId, activityId]);
+
+  // Connectivity, kept separate from the roster read above so that switching
+  // activity doesn't tear down and re-register these listeners.
+  useEffect(() => {
     const goOnline = () => { setIsOnline(true); setQueuedCount(getQueue().length); };
     const goOffline = () => setIsOnline(false);
     window.addEventListener('online', goOnline);
     window.addEventListener('offline', goOffline);
     return () => { window.removeEventListener('online', goOnline); window.removeEventListener('offline', goOffline); };
-  }, [classId]);
+  }, []);
 
   useEffect(() => {
     if (!activityId) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- flipping the loading flag ahead of an async read; the rule's alternative is a data-fetching library this app doesn't use
     setIsLoadingSubmissions(true);
     apiFetch(`${API_URL}/api/activities/${activityId}/submissions`)
       .then(r => r.json())
@@ -105,15 +111,17 @@ export default function BatchUpload() {
       .finally(() => setIsLoadingSubmissions(false));
   }, [activityId]);
 
-  const refreshAiPlan = () => {
+  // Memoised on activityId so the effects below can depend on it honestly
+  // without re-firing on every render.
+  const refreshAiPlan = useCallback(() => {
     if (!activityId) return;
     apiFetch(`${API_URL}/api/teacher/activities/${activityId}/ai-check`)
       .then(r => r.json())
       .then(d => { if (d.success) setAiPlan(d); })
       .catch(() => {});
-  };
+  }, [activityId]);
 
-  useEffect(refreshAiPlan, [activityId, activitySubmissions.length]);
+  useEffect(refreshAiPlan, [refreshAiPlan, activitySubmissions.length]);
 
   // Poll a running job. Stops as soon as the server reports it finished, so a
   // completed run costs no further requests.
@@ -153,7 +161,7 @@ export default function BatchUpload() {
         .catch(() => {});
     }, 2500);
     return () => clearInterval(timer);
-  }, [aiJob?.jobId, aiJob?.state, activityId]);
+  }, [aiJob?.jobId, aiJob?.state, aiJob?.bootId, activityId, refreshAiPlan]);
 
   /**
    * Ask the server to stop the run.

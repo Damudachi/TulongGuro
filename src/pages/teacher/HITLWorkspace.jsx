@@ -9,6 +9,21 @@ import { ONBOARDING, hasSeenOnboarding, markOnboardingSeen } from '../../utils/o
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
 
+/**
+ * Confetti particle positions, generated once at module load.
+ *
+ * These were four Math.random() calls inside the render body, which re-rolled
+ * every particle on every re-render while the celebration was on screen — the
+ * confetti visibly teleported rather than falling. Fixed values also make the
+ * render pure, which is what React's own lint rules are asking for here.
+ */
+const CONFETTI = Array.from({ length: 40 }, () => ({
+  left: Math.random() * 100,
+  duration: 2 + Math.random() * 3,
+  delay: Math.random() * 1.5,
+  rotation: Math.random() * 360,
+}));
+
 /** Try to parse structured AI feedback JSON. Returns null if plain string or if it contains an AI error. */
 function parseStructuredFeedback(raw) {
   if (!raw || typeof raw !== 'string') return null;
@@ -109,7 +124,9 @@ export default function HITLWorkspace() {
   const [saveError, setSaveError] = useState('');
   const [covData, setCovData] = useState(null);
   const [skillAnalysisOpen, setSkillAnalysisOpen] = useState(false);
-  const [showTooltip, setShowTooltip] = useState(false);
+  // Read straight from the onboarding store on first render: shown once, so
+  // there is nothing to re-check later and nothing worth a spare render pass.
+  const [showTooltip, setShowTooltip] = useState(() => !hasSeenOnboarding(ONBOARDING.TEACHER_COPILOT_TIP));
   const [showCelebration, setShowCelebration] = useState(false);
   const chatEndRef = useRef(null);
 
@@ -124,18 +141,13 @@ export default function HITLWorkspace() {
   const [isReplacing, setIsReplacing] = useState(false);
   const replaceFileInputRef = useRef(null);
 
-  useEffect(() => {
-    if (!hasSeenOnboarding(ONBOARDING.TEACHER_COPILOT_TIP)) {
-      setShowTooltip(true);
-    }
-  }, []);
-
   // Computed feedbackText for AI Co-Pilot & backwards compat
   const feedbackText = isStructured ? flattenFeedback(structuredFeedback) : legacyFeedbackText;
 
   useEffect(() => {
     // A failure belongs to the paper it happened on — carrying it onto the next
     // learner in a queue run would accuse a save that never ran.
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- flipping the loading flag ahead of an async read; the rule's alternative is a data-fetching library this app doesn't use
     setSaveError('');
     if (!submissionId || submissionId === 'test123') {
       setLegacyFeedbackText("Your reflection on Crisostomo Ibarra's motivations was deep and insightful. However, the essay lacked clear paragraph transitions.");
@@ -193,7 +205,7 @@ export default function HITLWorkspace() {
                 // realising nothing was actually assessed.
                 setScores({ content: rd.content?.score ?? 0, organization: rd.organization?.score ?? 0, grammar: rd.grammar?.score ?? 0 });
               }
-            } catch { }
+            } catch { /* unparseable rubricData leaves the editor as it is */ }
           } else if (sub.aiScore === null && sub.status === 'PENDING') {
             if (sub.activity?.rubric) {
               try {
@@ -211,7 +223,7 @@ export default function HITLWorkspace() {
             }
           }
           if (sub.covData) {
-            try { setCovData(JSON.parse(sub.covData)); } catch { }
+            try { setCovData(JSON.parse(sub.covData)); } catch { /* no COV data to show */ }
           }
           if (sub.status === 'GRADED') setIsApproved(true);
         }
@@ -635,10 +647,10 @@ export default function HITLWorkspace() {
               // state. Never to invented mid-band scores.
               setScores({ content: rd.content?.score ?? 0, organization: rd.organization?.score ?? 0, grammar: rd.grammar?.score ?? 0 });
             }
-          } catch { }
+          } catch { /* unparseable rubricData leaves the editor as it is */ }
         }
         if (sub.covData) {
-          try { setCovData(JSON.parse(sub.covData)); } catch { }
+          try { setCovData(JSON.parse(sub.covData)); } catch { /* no COV data to show */ }
         }
       } else if (data.code === 'PRIVACY_VIOLATION') {
         // The scan was refused before any rubric grading ran. Merge the flagged
@@ -649,7 +661,7 @@ export default function HITLWorkspace() {
         alert('Analysis failed: ' + (data.error || 'Unknown error'));
         window.location.reload();
       }
-    } catch (e) {
+    } catch {
       alert('Network error during analysis.');
     } finally {
       setIsAnalyzing(false);
@@ -1599,17 +1611,17 @@ export default function HITLWorkspace() {
         <div className="fixed inset-0 z-[100] pointer-events-none flex items-center justify-center">
           {/* CSS Confetti particles */}
           <div className="absolute inset-0 overflow-hidden">
-            {Array.from({ length: 40 }).map((_, i) => (
+            {CONFETTI.map((c, i) => (
               <div
                 key={i}
                 className="absolute w-3 h-3 rounded-sm"
                 style={{
-                  left: `${Math.random() * 100}%`,
+                  left: `${c.left}%`,
                   top: '-10px',
                   backgroundColor: ['#10b981', '#3b82f6', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899'][i % 6],
-                  animation: `confettiFall ${2 + Math.random() * 3}s ease-in forwards`,
-                  animationDelay: `${Math.random() * 1.5}s`,
-                  transform: `rotate(${Math.random() * 360}deg)`,
+                  animation: `confettiFall ${c.duration}s ease-in forwards`,
+                  animationDelay: `${c.delay}s`,
+                  transform: `rotate(${c.rotation}deg)`,
                 }}
               />
             ))}

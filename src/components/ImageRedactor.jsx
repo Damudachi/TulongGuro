@@ -26,10 +26,16 @@ export default function ImageRedactor({ imageSrc, onConfirm, onCancel, perspecti
   const [currentRect, setCurrentRect] = useState(null);
   const [scale, setScale] = useState(1);
 
-  // Load image
+  // Load image, and fit it to the viewport as it arrives. The auto-fit is done
+  // here in onload rather than in an effect keyed on `img` because the zoom
+  // buttons own this state too — it is a starting point, not a derived value.
   useEffect(() => {
     const image = new Image();
-    image.onload = () => setImg(image);
+    image.onload = () => {
+      setImg(image);
+      const maxW = Math.min(window.innerWidth - 48, 600);
+      setScale(Math.min(maxW / image.width, 1));
+    };
     image.src = imageSrc;
   }, [imageSrc]);
 
@@ -57,14 +63,6 @@ export default function ImageRedactor({ imageSrc, onConfirm, onCancel, perspecti
   }, [img, rects, currentRect, scale]);
 
   useEffect(() => { draw(); }, [draw]);
-
-  // Compute auto scale
-  useEffect(() => {
-    if (!img) return;
-    const maxW = Math.min(window.innerWidth - 48, 600);
-    const s = maxW / img.width;
-    setScale(Math.min(s, 1));
-  }, [img]);
 
   const getCanvasCoords = (e) => {
     const canvas = canvasRef.current;

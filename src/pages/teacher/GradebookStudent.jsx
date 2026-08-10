@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { FileText, Loader2, CalendarOff, Undo2 } from 'lucide-react';
 import { API_URL, apiFetch } from '../../config';
+import { getStoredUser } from '../../utils/session';
 import PageHeader from '../../components/PageHeader';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
@@ -67,12 +68,14 @@ function ExcuseAction({ row, busy, onClick, className }) {
 export default function GradebookStudent() {
   const { studentId } = useParams();
   const [data, setData] = useState(null);
-  const [isLoading, setIsLoading] = useState(true);
+  // Nobody signed in means there is nothing to fetch, so this must not open on
+  // a spinner that only the first commit would take away again.
+  const [isLoading, setIsLoading] = useState(() => !!getStoredUser().id);
   const [busyActivityId, setBusyActivityId] = useState(null);
 
   const load = useCallback(() => {
-    const user = JSON.parse(localStorage.getItem('user') || '{}');
-    if (!user.id) return setIsLoading(false);
+    const user = getStoredUser();
+    if (!user.id) return;
     return apiFetch(`${API_URL}/api/teacher/${user.id}/student/${studentId}/gradebook`)
       .then(r => r.json())
       .then(d => { if (d.success) setData(d); })

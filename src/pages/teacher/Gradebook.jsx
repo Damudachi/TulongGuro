@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { Link, useSearchParams, useNavigate } from 'react-router-dom';
 import { Users, Search, Download, Loader2, ChevronRight, BarChart2 } from 'lucide-react';
 import { API_URL, apiFetch } from '../../config';
+import { getStoredUser } from '../../utils/session';
 import PageHeader from '../../components/PageHeader';
 import { gradeChip } from '../../utils/grading';
 import { usePassingGrade } from '../../utils/useSchool';
@@ -17,8 +18,18 @@ export default function Gradebook() {
   const [searchParams] = useSearchParams();
   const classIdParam = searchParams.get('classId') || '';
   const [data, setData] = useState(null);
-  const [isLoading, setIsLoading] = useState(true);
+  // Nobody signed in means there is nothing to fetch, so this must not open on
+  // a spinner that only the first commit would take away again.
+  const [isLoading, setIsLoading] = useState(() => !!getStoredUser().id);
   const [selectedClassId, setSelectedClassId] = useState(classIdParam);
+  // ?classId= in the URL wins whenever it changes — the picker below can still
+  // move off it afterwards. Synced here rather than in an effect so a linked-to
+  // class isn't rendered once as "no class selected" first.
+  const [lastClassIdParam, setLastClassIdParam] = useState(classIdParam);
+  if (lastClassIdParam !== classIdParam) {
+    setLastClassIdParam(classIdParam);
+    if (classIdParam) setSelectedClassId(classIdParam);
+  }
   const [teacherClasses, setTeacherClasses] = useState([]); // classes list for section/class picker
   const [search, setSearch] = useState('');
   const [exportingSectionId, setExportingSectionId] = useState(null);
@@ -72,17 +83,14 @@ export default function Gradebook() {
   };
 
   useEffect(() => {
-    if (classIdParam) setSelectedClassId(classIdParam);
-  }, [classIdParam]);
-
-  useEffect(() => {
-    const user = JSON.parse(localStorage.getItem('user') || '{}');
-    if (!user.id) return setIsLoading(false);
+    const user = getStoredUser();
+    if (!user.id) return;
     // Fetch teacher-level classes for the section picker
     apiFetch(`${API_URL}/api/teacher/${user.id}/classes`).then(r => r.json()).then(d => { if (d.success) setTeacherClasses(d.classes || []); }).catch(() => {});
     // Only fetch gradebook data when a specific class is selected
     if (selectedClassId) {
       const url = `${API_URL}/api/teacher/${user.id}/gradebook?classId=${selectedClassId}`;
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- flipping the loading flag ahead of an async read; the rule's alternative is a data-fetching library this app doesn't use
       setIsLoading(true);
       apiFetch(url).then(r => r.json())
         .then(d => { if (d.success) setData(d); })

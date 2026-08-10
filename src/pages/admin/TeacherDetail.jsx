@@ -27,7 +27,9 @@ export default function AdminTeacherDetail() {
   const admin = JSON.parse(localStorage.getItem('user') || '{}');
 
   const [data, setData] = useState(null);
-  const [isLoading, setIsLoading] = useState(true);
+  // No admin id means there is nothing to fetch, so this must not open on a
+  // spinner that only the first commit would take away again (see load below).
+  const [isLoading, setIsLoading] = useState(() => !!admin.id);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
 
@@ -57,7 +59,7 @@ export default function AdminTeacherDetail() {
   }, [error, notice]);
 
   const load = useCallback(() => {
-    if (!admin.id) return setIsLoading(false);
+    if (!admin.id) return;
     apiFetch(`${API_URL}/api/admin/${admin.id}/teachers/${teacherId}`)
       .then(r => r.json())
       .then(d => {
