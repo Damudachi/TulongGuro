@@ -1,4 +1,3 @@
-/* eslint-env serviceworker */
 /**
  * TulongGuro service worker.
  *

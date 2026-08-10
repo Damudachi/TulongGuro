@@ -165,6 +165,12 @@ export default function ManageSections() {
 
   const handleCreate = async (e) => {
     e.preventDefault();
+    // The input is marked `required`, which HTML5 satisfies with a single
+    // space — so a name of nothing but whitespace reached the server, trimmed
+    // to '' and created a section with no name at all. The server refuses that
+    // now; this only saves the round trip and keeps the typed roster in place.
+    const sectionName = name.trim();
+    if (!sectionName) return alert('Please give this section a name — for example "Grade 6 - Sampaguita".');
     const studentsList = payloadFrom(studentRows);
     if (!studentsList) return;
     if (!studentsList.length) return alert('Please add at least one learner.');
@@ -172,7 +178,7 @@ export default function ManageSections() {
     setNewAccounts([]);
     try {
       await submitRoster({
-        sectionName: name, grade: gradeLevel, studentsList, allowMove: false,
+        sectionName, grade: gradeLevel, studentsList, allowMove: false,
         onDone: () => { setName(''); setGradeLevel(''); setStudentRows(emptyRoster()); setShowForm(false); }
       });
     } catch { alert('Network error.'); }

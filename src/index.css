@@ -156,4 +156,30 @@
   .tg-tap {
     @apply min-h-11 min-w-11 md:min-h-0 md:min-w-0;
   }
+
+  /* A row control that stays out of the way until the pointer arrives.
+
+     Written as `opacity-0 group-hover:opacity-100`, this was a defect: there
+     is no hover on a touch screen, so the control never became visible. It
+     stayed in the DOM and stayed tappable, which is worse than absent — the
+     rename, reset-password and remove buttons on the admin roster were the
+     only route to those jobs, and on a phone nobody could find them. This app
+     ships a standalone manifest specifically so it is used from a phone.
+
+     Inverted here: hiding only happens where hovering is possible. A coarse
+     pointer never matches the query, so the control simply stays visible.
+     Keyboard focus brings it back on a fine pointer, which the hover-only
+     version also got wrong. */
+  .reveal-on-hover {
+    @apply transition-opacity;
+  }
+  @media (hover: hover) {
+    .reveal-on-hover {
+      opacity: 0;
+    }
+    .group:hover .reveal-on-hover,
+    .reveal-on-hover:focus-visible {
+      opacity: 1;
+    }
+  }
 }

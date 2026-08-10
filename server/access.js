@@ -55,4 +55,51 @@ function staffMayAccess(cls, { callerId, callerSchoolId } = {}) {
   return !!callerId && cls.teacherId === callerId;
 }
 
-module.exports = { classSchoolId, staffMayAccess };
+/**
+ * Which school a learner belongs to, or null if that cannot be established.
+ *
+ * Their own column first, their section's second. Both directions occur:
+ * User.schoolId was added after Section.schoolId — scripts/backfill-student-school.js
+ * exists for exactly the rosters that predate it — while a learner moved
+ * between sections can carry a school of their own before the new section has
+ * one stamped.
+ */
+function studentSchoolId(student) {
+  return student?.schoolId ?? student?.section?.schoolId ?? null;
+}
+
+/**
+ * Whether a staff caller may read this learner's record.
+ *
+ * authorizePath lets teachers and admins into /api/student/... deliberately —
+ * the teacher analytics screen charts a selected learner through the same
+ * endpoint the learner's own dashboard uses — and a comment there said
+ * ownership was checked in the handlers. It was not, in any of the five. The
+ * id in the URL was the only thing deciding whose record came back, and
+ * releaseFilterFor withholds unreleased marks from students but not from
+ * staff, so an outside teacher saw grades the learner's own school had not
+ * published yet.
+ *
+ * Same two rungs as staffMayAccess, for the same reasons:
+ *
+ *   1. The learner has a school -> the caller must belong to the same one.
+ *      School-scoped rather than adviser-scoped because a subject teacher who
+ *      does not advise the section still teaches the learner, and a coordinator
+ *      reads across the whole year level.
+ *
+ *   2. No school anywhere — an unaffiliated teacher's sandbox. Nothing to
+ *      compare, so the narrow answer: only their section's adviser. Falling
+ *      through to allow here is the exact shape of the bug staffMayAccess was
+ *      written to close.
+ *
+ * @param {object|null|undefined} student            with `schoolId` and `section` loaded
+ * @param {{callerId: string, callerSchoolId: string|null}} caller
+ */
+function staffMayReadStudent(student, { callerId, callerSchoolId } = {}) {
+  if (!student) return false;
+  const schoolId = studentSchoolId(student);
+  if (schoolId) return !!callerSchoolId && callerSchoolId === schoolId;
+  return !!callerId && student.section?.teacherId === callerId;
+}
+
+module.exports = { classSchoolId, staffMayAccess, studentSchoolId, staffMayReadStudent };

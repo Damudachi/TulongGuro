@@ -442,15 +442,15 @@ export default function AdminSectionDetail() {
                 </span>
               )}
               <button onClick={() => renameStudent(s)} disabled={busy} title="Correct the spelling of this name"
-                className="p-1.5 rounded-md text-slate-300 hover:text-brand-navy hover:bg-blue-50 opacity-0 group-hover:opacity-100 transition-opacity shrink-0 disabled:opacity-30">
+                className="p-1.5 rounded-md text-slate-300 hover:text-brand-navy hover:bg-blue-50 reveal-on-hover shrink-0 disabled:opacity-30">
                 <Pencil className="w-3.5 h-3.5" />
               </button>
               <button onClick={() => resetStudentPassword(s)} disabled={busy} title="Reset password to birthdate"
-                className="p-1.5 rounded-md text-slate-300 hover:text-brand-navy hover:bg-blue-50 opacity-0 group-hover:opacity-100 transition-opacity shrink-0 disabled:opacity-30">
+                className="p-1.5 rounded-md text-slate-300 hover:text-brand-navy hover:bg-blue-50 reveal-on-hover shrink-0 disabled:opacity-30">
                 <KeyRound className="w-3.5 h-3.5" />
               </button>
               <button onClick={() => removeStudent(s)} disabled={busy} title="Remove from section"
-                className="p-1.5 rounded-md text-slate-300 hover:text-red-500 hover:bg-red-50 opacity-0 group-hover:opacity-100 transition-opacity shrink-0 disabled:opacity-30">
+                className="p-1.5 rounded-md text-slate-300 hover:text-red-500 hover:bg-red-50 reveal-on-hover shrink-0 disabled:opacity-30">
                 <Trash2 className="w-3.5 h-3.5" />
               </button>
             </div>

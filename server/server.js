@@ -21,7 +21,7 @@ const {
   configureRevocation, markRevoked,
   loginRateLimit, registerRateLimit, platformRateLimit, changePasswordRateLimit,
 } = require('./auth');
-const { classSchoolId, staffMayAccess } = require('./access');
+const { classSchoolId, staffMayAccess, staffMayReadStudent } = require('./access');
 const { currentSchoolYear, isCurrentSchoolYear, compareSchoolYearsDesc } = require('./schoolYear');
 const { getAllTopics, getTopicById, getTopicAIGuidance } = require('./depedTopics');
 const { getAllRubricTemplates, getRubricTemplateById } = require('./rubricTemplates');
@@ -4441,6 +4441,20 @@ app.post('/api/teacher/sections', async (req, res) => {
     // attributing data under another teacher's id.
     const teacherId = req.auth.sub;
     const { name, studentsList, gradeLevel, allowMove, schoolYear } = req.body;
+
+    // Before anything else touches it. `name.trim()` used to run first, so a
+    // missing or non-string name threw a TypeError that surfaced as a 500,
+    // while a name of nothing but spaces — which the form's `required`
+    // attribute accepts — trimmed to '' and was created, leaving a real
+    // section with no name in every picker and gradebook on the platform.
+    const sectionName = typeof name === 'string' ? name.trim() : '';
+    if (!sectionName) {
+      return res.status(400).json({
+        success: false,
+        error: 'Please give this section a name — for example "Grade 6 - Sampaguita".',
+      });
+    }
+
     const creator = await prisma.user.findUnique({ where: { id: teacherId } });
     const schoolId = creator?.schoolId || null;
     const targetYear = typeof schoolYear === 'string' && schoolYear.trim()
@@ -4460,7 +4474,7 @@ app.post('/api/teacher/sections', async (req, res) => {
     // duplicated the first time it is touched.
     let section = await prisma.section.findFirst({
       where: {
-        name: name.trim(),
+        name: sectionName,
         ...(schoolId ? { schoolId } : { teacherId }),
         OR: [{ schoolYear: targetYear }, { schoolYear: null }],
       },
@@ -4509,7 +4523,7 @@ app.post('/api/teacher/sections', async (req, res) => {
     } else {
       section = await prisma.section.create({
         data: {
-          name: name.trim(), teacherId, schoolId, gradeLevel: gradeLevel || null,
+          name: sectionName, teacherId, schoolId, gradeLevel: gradeLevel || null,
           // Stamped at creation rather than left to be inferred later: a
           // section carries forward across years otherwise, and last year's
           // rosters end up sitting beside this year's with nothing telling
@@ -5467,6 +5481,49 @@ async function staffMayAccessClass(cls, authSub) {
     ? await prisma.user.findUnique({ where: { id: authSub }, select: { schoolId: true } })
     : null;
   return staffMayAccess(cls, { callerId: authSub, callerSchoolId: caller?.schoolId ?? null });
+}
+
+/**
+ * The Prisma select a learner needs for staffMayReadStudent to judge them.
+ * Both arms of the ladder, for the same reason CLASS_TENANCY_SELECT names
+ * both of its own: a missing `section` would read as "no school" and quietly
+ * demote the check to the sandbox rung.
+ */
+const STUDENT_TENANCY_SELECT = {
+  schoolId: true,
+  section: { select: { schoolId: true, teacherId: true } },
+};
+
+/**
+ * Guard for the /api/student/:studentId/... reads that staff share with the
+ * learner. Answers `true` and leaves the response alone when the caller may
+ * proceed; otherwise sends the refusal itself and answers `false`.
+ *
+ * A STUDENT caller has already been proved to be reading their own record by
+ * authorizePath, so there is nothing left to compare. Everyone else is staff
+ * from somewhere, and somewhere is the whole question.
+ *
+ * Deliberately silent about whether the id exists: a 403 for both an unknown
+ * learner and one in another school means the endpoint cannot be used to test
+ * whether a given uuid is real.
+ */
+async function mayReadStudent(req, res, studentId) {
+  if (req.auth?.role === 'STUDENT') return true;
+
+  const [student, caller] = await Promise.all([
+    prisma.user.findUnique({ where: { id: studentId }, select: STUDENT_TENANCY_SELECT }),
+    prisma.user.findUnique({ where: { id: req.auth.sub }, select: { schoolId: true } }),
+  ]);
+
+  if (staffMayReadStudent(student, { callerId: req.auth.sub, callerSchoolId: caller?.schoolId ?? null })) {
+    return true;
+  }
+  res.status(403).json({
+    success: false,
+    code: 'FORBIDDEN',
+    error: 'You can only view learners from your own school.',
+  });
+  return false;
 }
 
 async function staffOwnsActivitySchool(activityId, authSub) {
@@ -7859,6 +7916,7 @@ app.post('/api/notifications/:id/read', async (req, res) => {
 // ─────────────────────────────────────────
 app.get('/api/student/:studentId/dashboard', async (req, res) => {
   try {
+    if (!(await mayReadStudent(req, res, req.params.studentId))) return;
     const student = await prisma.user.findUnique({
       where: { id: req.params.studentId },
       include: { section: { include: { classes: true } } }
@@ -8136,6 +8194,7 @@ const SKILL_PROGRESS_ACTIVITY_SELECT = {
 
 app.get('/api/student/:studentId/skill-progress', async (req, res) => {
   try {
+    if (!(await mayReadStudent(req, res, req.params.studentId))) return;
     const submissions = await prisma.submission.findMany({
       where: { studentId: req.params.studentId, status: 'GRADED', rubricData: { not: null }, ...releaseFilterFor(req.auth) },
       include: { activity: { select: SKILL_PROGRESS_ACTIVITY_SELECT } }
@@ -8486,6 +8545,7 @@ app.get('/api/teacher/:teacherId/student/:studentId/gradebook', async (req, res)
 // ─────────────────────────────────────────
 app.get('/api/student/:studentId/activities', async (req, res) => {
   try {
+    if (!(await mayReadStudent(req, res, req.params.studentId))) return;
     const student = await prisma.user.findUnique({
       where: { id: req.params.studentId },
       include: {
@@ -8529,6 +8589,7 @@ app.get('/api/student/:studentId/activities', async (req, res) => {
 app.get('/api/student/:studentId/subjects', async (req, res) => {
   try {
     const { studentId } = req.params;
+    if (!(await mayReadStudent(req, res, studentId))) return;
     const student = await prisma.user.findUnique({
       where: { id: studentId },
       include: {
@@ -9100,6 +9161,7 @@ app.get('/api/rubric-templates/builtin', (req, res) => {
 app.get('/api/student/:studentId/analytics', async (req, res) => {
   try {
     const { studentId } = req.params;
+    if (!(await mayReadStudent(req, res, studentId))) return;
     const submissions = await prisma.submission.findMany({
       where: { studentId, status: 'GRADED', archivedAt: null, ...releaseFilterFor(req.auth) },
       include: {

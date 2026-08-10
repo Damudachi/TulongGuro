@@ -581,7 +581,7 @@ export default function SubmitWork() {
                             Page {idx + 1}
                           </div>
                           <button onClick={(e) => { e.stopPropagation(); removeFile(idx); }}
-                            className="absolute top-2 right-2 bg-red-500 text-white w-7 h-7 flex items-center justify-center rounded-full opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity hover:bg-red-600 shadow-pop">
+                            className="absolute top-2 right-2 bg-red-500 text-white w-7 h-7 flex items-center justify-center rounded-full reveal-on-hover hover:bg-red-600 shadow-pop">
                             <span className="text-xs font-bold">✕</span>
                             <span className="sr-only">Remove page {idx + 1}</span>
                           </button>

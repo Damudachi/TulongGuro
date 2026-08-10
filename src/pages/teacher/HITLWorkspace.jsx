@@ -1254,7 +1254,7 @@ export default function HITLWorkspace() {
                         <div key={idx} className="relative bg-slate-50 border border-slate-200 rounded-xl p-4 group">
                           <button
                             onClick={() => removeAreaForGrowth(idx)}
-                            className="absolute top-2 right-2 p-1 rounded-full text-slate-300 hover:text-red-500 hover:bg-red-50 transition-colors opacity-0 group-hover:opacity-100"
+                            className="absolute top-2 right-2 p-1 rounded-full text-slate-300 hover:text-red-500 hover:bg-red-50 transition-colors reveal-on-hover"
                             title="Remove"
                           >
                             <Trash2 className="w-3.5 h-3.5" />
@@ -1307,7 +1307,7 @@ export default function HITLWorkspace() {
                           />
                           <button
                             onClick={() => removeActionStep(idx)}
-                            className="shrink-0 p-1.5 rounded-full text-slate-300 hover:text-red-500 hover:bg-red-50 transition-colors opacity-0 group-hover:opacity-100 mt-0.5"
+                            className="shrink-0 p-1.5 rounded-full text-slate-300 hover:text-red-500 hover:bg-red-50 transition-colors reveal-on-hover mt-0.5"
                             title="Remove"
                           >
                             <Trash2 className="w-3.5 h-3.5" />
