@@ -2168,3 +2168,42 @@ describe('GET /api/student/:id/dashboard badges', () => {
     expect(badges.find(b => b.id === 'honor-student').earned).toBe(true);
   });
 });
+
+describe('the badge store is an enhancement, not a dependency', () => {
+  const STUDENT = 'student-nostore';
+
+  it('still serves the dashboard when StudentBadge cannot be read', async () => {
+    // The shape of a deploy where the app is live before its migration is.
+    // Losing the trophy cabinet must not cost the learner their dashboard.
+    prismaFake.user.findUnique.mockImplementation(({ where }) => {
+      if (where.id === STUDENT) {
+        return Promise.resolve({
+          id: STUDENT, name: 'No Store', username: 'nostore',
+          sectionId: null, schoolId: null, sessionsValidFrom: null,
+          section: null,
+        });
+      }
+      return Promise.resolve({ sessionsValidFrom: null });
+    });
+    prismaFake.submission.findMany.mockResolvedValue([{
+      id: 'sub-1', studentId: STUDENT, hitlScore: 95, aiScore: null, status: 'GRADED',
+      isLate: false, readingStrategy: null, skillScores: null,
+      gradedAt: '2026-03-01T00:00:00Z', createdAt: '2026-03-01T00:00:00Z',
+      updatedAt: '2026-03-01T00:00:00Z', releasedAt: new Date(),
+      activity: { type: 'Essay', points: 100, class: { subject: 'English', gradeLevel: 'Grade 6' } },
+    }]);
+    prismaFake.activity.findMany.mockResolvedValue([]);
+    prismaFake.studentBadge.findMany.mockRejectedValue(new Error('relation "StudentBadge" does not exist'));
+
+    const res = await call('GET', `/api/student/${STUDENT}/dashboard`, {
+      token: tokenFor({ id: STUDENT, role: 'STUDENT' }),
+    });
+
+    expect(res.status).toBe(200);
+    const { badges } = await res.json();
+    expect(badges).toHaveLength(15);
+    expect(badges.find(b => b.id === 'first-star').earned).toBe(true);
+    // Nothing was written, because nothing could be read.
+    expect(prismaFake.studentBadge.createMany).not.toHaveBeenCalled();
+  });
+});

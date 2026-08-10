@@ -7683,11 +7683,22 @@ async function sectionRankTop3({ studentId, sectionId, schoolId, auth }) {
  * one screen in the app whose whole job is to tell them what they achieved.
  */
 async function badgesForStudent({ studentId, submissions, passingGrade, sectionId, schoolId, auth }) {
-  const stored = await prisma.studentBadge.findMany({
-    where: { studentId },
-    select: { badgeId: true },
-  });
-  const already = new Set(stored.map(b => b.badgeId));
+  // The store is an enhancement, not a dependency. render.yaml runs
+  // `migrate deploy` before the app starts, so StudentBadge is normally there
+  // before this code serves anything — but if it ever is not, fourteen of the
+  // fifteen badges are still perfectly computable from the learner's own work,
+  // and a child's dashboard must not 500 over a trophy cabinet.
+  let already = new Set();
+  let storeAvailable = true;
+  try {
+    const stored = await prisma.studentBadge.findMany({
+      where: { studentId },
+      select: { badgeId: true },
+    });
+    already = new Set(stored.map(b => b.badgeId));
+  } catch {
+    storeAvailable = false;
+  }
 
   // Two guards keep the section-wide query rare: once the badge is held it is
   // never recomputed, and a learner with too little work to be ranked fairly
@@ -7710,13 +7721,18 @@ async function badgesForStudent({ studentId, submissions, passingGrade, sectionI
   const computed = badgeRules.computeBadges(submissions, passingGrade, { rankTop3 });
 
   const newlyEarned = computed.filter(b => b.earned && !already.has(b.id)).map(b => b.id);
-  if (newlyEarned.length > 0) {
-    // skipDuplicates because two tabs loading the dashboard at once would
-    // otherwise race on the unique pair.
-    await prisma.studentBadge.createMany({
-      data: newlyEarned.map(badgeId => ({ studentId, badgeId })),
-      skipDuplicates: true,
-    });
+  if (storeAvailable && newlyEarned.length > 0) {
+    try {
+      // skipDuplicates because two tabs loading the dashboard at once would
+      // otherwise race on the unique pair.
+      await prisma.studentBadge.createMany({
+        data: newlyEarned.map(badgeId => ({ studentId, badgeId })),
+        skipDuplicates: true,
+      });
+    } catch {
+      // Failing to record it costs permanence, not the badge itself — the
+      // learner still sees everything they have earned on this load.
+    }
   }
 
   // Anything on record counts as earned even if today's data no longer says so
