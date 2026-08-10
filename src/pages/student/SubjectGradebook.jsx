@@ -35,7 +35,26 @@ export default function SubjectGradebook() {
 
   const visibleSubjects = subjectFilter ? subjects.filter(s => s.id === subjectFilter) : subjects;
   const allGraded = subjects.flatMap(s => s.activities.map(a => a.submission?.percent)).filter(p => p !== null && p !== undefined);
-  const overall = allGraded.length ? Math.round(allGraded.reduce((a, b) => a + b, 0) / allGraded.length) : null;
+
+  /**
+   * The general average, averaged from each subject's own figure.
+   *
+   * This used to be a flat mean of every activity's raw percent — the method
+   * grading.js keeps only as the "before" side of its fairness regression test
+   * and describes as no longer live anywhere in the app. It was live here, on a
+   * screen a learner reads as their report card.
+   *
+   * Two things made it disagree with the number on their dashboard. It ignored
+   * the DepEd component weights (a Quarterly Assessment counted the same as one
+   * quiz), and it ignored points (a 20-point seatwork counted the same as a
+   * 100-point exam). The server has already applied both to produce each
+   * subject's overallGrade, so averaging those reproduces exactly what
+   * workingAverageAcrossSubjects computes for the dashboard.
+   */
+  const subjectAverages = subjects.map(s => s.overallGrade).filter(v => typeof v === 'number');
+  const overall = subjectAverages.length
+    ? Math.round(subjectAverages.reduce((a, b) => a + b, 0) / subjectAverages.length)
+    : null;
 
   return (
     <div className="p-4 md:p-8 max-w-4xl mx-auto pb-24">
@@ -59,8 +78,13 @@ export default function SubjectGradebook() {
             <div>
               <p className="text-green-100 text-xs uppercase tracking-wider font-bold mb-1">General Average</p>
               <p className="text-4xl font-extrabold">{overall !== null ? `${overall}%` : '—'}</p>
+              {/* Names the subjects the average actually covers, not the total
+                  the learner is enrolled in — a subject with no released work
+                  yet is not in the figure and must not be implied to be. */}
               <p className="text-green-100 text-xs mt-1">
-                Across {allGraded.length} graded activit{allGraded.length === 1 ? 'y' : 'ies'} in {subjects.length} subject{subjects.length === 1 ? '' : 's'}
+                Across {allGraded.length} graded activit{allGraded.length === 1 ? 'y' : 'ies'} in{' '}
+                {subjectAverages.length} subject{subjectAverages.length === 1 ? '' : 's'}
+                {subjectAverages.length < subjects.length && ` of ${subjects.length}`}
               </p>
             </div>
             <TrendingUp className="w-14 h-14 opacity-30" />
