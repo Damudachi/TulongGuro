@@ -45,6 +45,7 @@ export default function Login() {
   const [identifier, setIdentifier] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState(
     // apiFetch redirects here with ?expired=1 when a token is rejected, so
     // the form explains itself instead of looking like it lost the password.
@@ -57,6 +58,13 @@ export default function Login() {
 
   const handleLogin = async (e) => {
     e.preventDefault();
+    // Guarded like the registration form. On a slow school connection this
+    // button gave no sign it had been pressed, so it got pressed again — and
+    // the server rate-limits log-in attempts, so an impatient double-tap spent
+    // two of them and brought a lockout closer for someone typing the right
+    // password.
+    if (isSubmitting) return;
+    setIsSubmitting(true);
     setErrorMsg('');
     try {
       const response = await apiFetch(`${API_URL}/api/auth/login`, {
@@ -76,8 +84,10 @@ export default function Login() {
         // never wrong.
         setErrorMsg(data.error || 'Invalid credentials. Please check your details and try again.');
       }
-    } catch (err) {
+    } catch {
       setErrorMsg('Cannot connect to server.');
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
@@ -203,10 +213,11 @@ export default function Login() {
 
             <button
               type="submit"
+              disabled={isSubmitting}
               className={`w-full rounded-full py-4 font-bold text-sm shadow-pop transition-all
-                          active:translate-y-1 active:shadow-none ${cfg.button}`}
+                          active:translate-y-1 active:shadow-none disabled:opacity-60 ${cfg.button}`}
             >
-              Log in as {cfg.label}
+              {isSubmitting ? 'Signing in…' : `Log in as ${cfg.label}`}
             </button>
 
             {errorMsg && (
