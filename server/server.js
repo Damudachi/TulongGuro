@@ -7230,11 +7230,17 @@ app.put('/api/teacher/submissions/:id/grade', async (req, res) => {
 // ─────────────────────────────────────────
 app.get('/api/teacher/:teacherId/analytics', async (req, res) => {
   try {
-    const { classId, sectionId } = req.query;
+    const { classId, sectionId, subject } = req.query;
     // Get all classes for this teacher, optionally filtered
     const whereClause = { teacherId: req.params.teacherId };
     if (classId) whereClause.id = classId;
     if (sectionId) whereClause.sectionId = sectionId;
+    // One subject at a time, across whatever sections are in scope. classId
+    // could already narrow to a single class, but a subject teacher carries
+    // the same subject into several sections and wants them together — and a
+    // self-contained homeroom teacher wants the opposite, one subject out of
+    // the several they teach the same children. Both are this one filter.
+    if (subject) whereClause.subject = subject;
     // Get all classes for this teacher
     const classes = await prisma.class.findMany({
       where: whereClause,

@@ -79,13 +79,31 @@ function ClassSpread({ bands, total, passingGrade }) {
   );
 }
 
+/**
+ * Sentinel for the skill filter, kept distinct from `null` (= no filter at
+ * all). A curriculum skill id could never collide with it.
+ */
+const NO_SKILL = '__no-skill__';
+
 export default function Analytics() {
   const [data, setData] = useState(null);
-  const [sectionsList, setSectionsList] = useState([]);
+  // The teacher's own classes, which is what "my sections" has to be derived
+  // from. This used to read /api/teacher/:id/sections — but that endpoint
+  // deliberately returns every section in the *school*, because colleagues
+  // share blocks and the section screen needs to show them all. Here that was
+  // wrong twice over: the chooser listed sections this teacher has nothing to
+  // do with, and picking one produced a blank page, since the analytics query
+  // below is scoped to classes they teach and matched none.
+  const [myClasses, setMyClasses] = useState([]);
   // Nobody signed in means there is nothing to fetch, so this must not open on
   // a spinner that only the first commit would take away again.
   const [isLoading, setIsLoading] = useState(() => !!getStoredUser().id);
   const [selectedSectionId, setSelectedSectionId] = useState(null);
+  // Null means every subject this teacher takes in whatever section is in
+  // scope. A self-contained homeroom teacher takes five subjects with the same
+  // children, and averaging Filipino into Mathematics tells them nothing about
+  // either.
+  const [selectedSubject, setSelectedSubject] = useState(null);
   const [showSelector, setShowSelector] = useState(true);
   const [selectedStudent, setSelectedStudent] = useState(null);
   const [studentData, setStudentData] = useState(null);
@@ -97,9 +115,9 @@ export default function Analytics() {
   useEffect(() => {
     const user = getStoredUser();
     if (!user.id) return;
-    apiFetch(`${API_URL}/api/teacher/${user.id}/sections`)
+    apiFetch(`${API_URL}/api/teacher/${user.id}/classes`)
       .then(r => r.json())
-      .then(d => { if (d.success) setSectionsList(d.sections || []); })
+      .then(d => { if (d.success) setMyClasses(d.classes || []); })
       .catch(() => {})
       .finally(() => setIsLoading(false));
   }, []);
@@ -110,15 +128,17 @@ export default function Analytics() {
     if (!user.id) return;
     // eslint-disable-next-line react-hooks/set-state-in-effect -- flipping the loading flag ahead of an async read; the rule's alternative is a data-fetching library this app doesn't use
     setIsLoading(true);
-    const url = selectedSectionId
-      ? `${API_URL}/api/teacher/${user.id}/analytics?sectionId=${selectedSectionId}`
-      : `${API_URL}/api/teacher/${user.id}/analytics`;
-    apiFetch(url).then(r => r.json())
+    const params = new URLSearchParams();
+    if (selectedSectionId) params.set('sectionId', selectedSectionId);
+    if (selectedSubject) params.set('subject', selectedSubject);
+    const query = params.toString();
+    apiFetch(`${API_URL}/api/teacher/${user.id}/analytics${query ? `?${query}` : ''}`)
+      .then(r => r.json())
       .then(d => setData(d.success ? d : null))
       .catch(() => {}) /* a failed read leaves the empty state, which is what renders */
       .finally(() => setIsLoading(false));
     setSkillFilter(null);
-  }, [selectedSectionId, showSelector]);
+  }, [selectedSectionId, selectedSubject, showSelector]);
 
   const loadStudentDetail = (student) => {
     setSelectedStudent(student);
@@ -154,9 +174,49 @@ export default function Analytics() {
     .map(s => ({ ...s, count: activityBreakdown.filter(a => a.skills?.includes(s.id)).length }))
     .filter(s => s.count > 0);
 
-  const visibleActivities = skillFilter
-    ? activityBreakdown.filter(a => a.skills?.includes(skillFilter))
-    : activityBreakdown;
+  // ── Activities that carry no skill at all ──
+  // An activity graded straight to a score, with no rubric, has nothing to
+  // classify: skillsForActivity reads the rubric (or, failing that, the
+  // per-criterion scores on a submission) and comes back empty. Those rows
+  // belong in this table — a score is exactly what "how each activity went"
+  // is about — but they used to be unreachable the moment any skill chip was
+  // pressed, and the chip counts never added up to the All count with no
+  // explanation of where the rest went. Given their own filter, they are
+  // countable and findable, which also makes them easy to spot as the ones
+  // that would carry skills if they were given a rubric.
+  const noSkillCount = activityBreakdown.filter(a => !a.skills?.length).length;
+
+  // ── What this teacher actually handles ──
+  // One entry per section they teach into, carrying the subjects they take
+  // there. A section they merely advise, with no class of their own in it,
+  // has nothing to report and is left out.
+  const mySections = [...myClasses.reduce((acc, c) => {
+    if (!c.section) return acc;
+    const entry = acc.get(c.section.id) || {
+      id: c.section.id,
+      name: c.section.name,
+      studentCount: c.section._count?.students ?? 0,
+      subjects: new Set(),
+    };
+    if (c.subject) entry.subjects.add(c.subject);
+    acc.set(c.section.id, entry);
+    return acc;
+  }, new Map()).values()].map(s => ({ ...s, subjects: [...s.subjects].sort() }));
+
+  // Subjects offered by the chip row: those taught in the chosen section, or
+  // every subject this teacher takes when the view spans all their sections.
+  const subjectOptions = [...new Set(
+    myClasses
+      .filter(c => !selectedSectionId || c.sectionId === selectedSectionId)
+      .map(c => c.subject)
+      .filter(Boolean)
+  )].sort();
+
+  const visibleActivities = skillFilter === null
+    ? activityBreakdown
+    : skillFilter === NO_SKILL
+      ? activityBreakdown.filter(a => !a.skills?.length)
+      : activityBreakdown.filter(a => a.skills?.includes(skillFilter));
 
   // ── One student's detail ──
   if (selectedStudent) {
@@ -273,7 +333,11 @@ export default function Analytics() {
 
   // ── Section chooser ──
   if (showSelector) {
-    const list = sectionsList.length ? sectionsList : sections;
+    // Derived from the teacher's own classes, so a section only appears if
+    // they actually teach into it. `sections` off the analytics payload says
+    // the same thing, but only once a view has been loaded — and this screen
+    // is what comes first.
+    const list = mySections.length ? mySections : sections;
     return (
       <div className="p-4 md:p-8 max-w-4xl mx-auto pb-24">
         <div className="mb-6">
@@ -283,22 +347,31 @@ export default function Analytics() {
           <p className="text-slate-500 text-sm mt-1">See how each section is doing and who could use a hand.</p>
         </div>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-          <button onClick={() => { setSelectedSectionId(null); setShowSelector(false); }}
+          <button onClick={() => { setSelectedSectionId(null); setSelectedSubject(null); setShowSelector(false); }}
             className="bg-white border-2 border-navy-700/10 rounded-3xl p-5 text-left hover:border-royal-400 shadow-pop transition-colors">
             <Users className="w-6 h-6 text-royal-500 mb-2" />
             <p className="font-extrabold text-navy-800">All my sections</p>
             <p className="text-xs text-slate-500 mt-0.5">Everything at once</p>
           </button>
           {list.map(s => (
-            <button key={s.id} onClick={() => { setSelectedSectionId(s.id); setShowSelector(false); }}
+            <button key={s.id} onClick={() => { setSelectedSectionId(s.id); setSelectedSubject(null); setShowSelector(false); }}
               className="bg-white border-2 border-navy-700/10 rounded-3xl p-5 text-left hover:border-royal-400 shadow-pop transition-colors">
               <Users className="w-6 h-6 text-aqua-500 mb-2" />
               <p className="font-extrabold text-navy-800">{s.name}</p>
               <p className="text-xs text-slate-500 mt-0.5">
                 {s._count?.students ?? s.studentCount ?? 0} students
               </p>
+              {s.subjects?.length > 0 && (
+                <p className="text-[11px] text-slate-400 mt-1">{s.subjects.join(' · ')}</p>
+              )}
             </button>
           ))}
+          {list.length === 0 && (
+            <div className="sm:col-span-2 text-center py-10 border-2 border-dashed border-slate-200 rounded-3xl text-slate-400">
+              <p className="font-bold text-slate-500">No classes yet</p>
+              <p className="text-sm mt-1">Create a class for one of your sections and its insights will appear here.</p>
+            </div>
+          )}
         </div>
       </div>
     );
@@ -306,22 +379,62 @@ export default function Analytics() {
 
   const hasData = summary.gradedCount > 0;
   const classBand = bandFor(summary.classAverage, passingGrade);
+  // Which section this page is showing, so the heading says so — with a
+  // subject chip row underneath, "Class Insights" alone stops being enough to
+  // tell two views apart.
+  const sectionLabel = selectedSectionId
+    ? (mySections.find(s => s.id === selectedSectionId)?.name
+       || sections.find(s => s.id === selectedSectionId)?.name
+       || null)
+    : null;
 
   return (
     <div className="p-4 md:p-8 max-w-6xl mx-auto space-y-6 pb-24">
       <div className="flex items-start gap-4">
         <button aria-label="Back to section chooser"
-          onClick={() => { setShowSelector(true); setSelectedSectionId(null); }}
+          onClick={() => { setShowSelector(true); setSelectedSectionId(null); setSelectedSubject(null); }}
           className="w-10 h-10 rounded-2xl bg-white border-2 border-navy-700/10 text-royal-600 grid place-items-center shadow-pop shrink-0">
           <ArrowLeft className="w-4 h-4" />
         </button>
         <div>
-          <h1 className="text-2xl font-extrabold text-navy-800">Class Insights</h1>
+          <h1 className="text-2xl font-extrabold text-navy-800">
+            Class Insights
+            {sectionLabel && <span className="text-slate-400 font-bold"> · {sectionLabel}</span>}
+          </h1>
           <p className="text-slate-500 text-sm mt-1">
             How your students are doing, and where a little help would go furthest.
           </p>
         </div>
       </div>
+
+      {/* ── Subject ──
+          Every figure below — the class average, the at-risk list, the
+          per-activity table — is computed across whatever classes are in
+          scope. For a homeroom teacher taking five subjects with the same
+          children that meant one number spanning all five, which describes
+          none of them. */}
+      {subjectOptions.length > 1 && (
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-[11px] font-extrabold uppercase tracking-wider text-slate-400 mr-1">Subject</span>
+          <button type="button" onClick={() => setSelectedSubject(null)}
+            className={cn('px-3 py-1 rounded-full text-xs font-bold border-2 transition-all',
+              selectedSubject === null
+                ? 'border-navy-700 bg-navy-700 text-white'
+                : 'border-slate-200 text-slate-500 hover:border-navy-300')}>
+            All subjects
+          </button>
+          {subjectOptions.map(subject => (
+            <button key={subject} type="button"
+              onClick={() => setSelectedSubject(selectedSubject === subject ? null : subject)}
+              className={cn('px-3 py-1 rounded-full text-xs font-bold border-2 transition-all',
+                selectedSubject === subject
+                  ? 'border-royal-500 bg-royal-500 text-white'
+                  : 'border-slate-200 text-slate-500 hover:border-royal-300')}>
+              {subject}
+            </button>
+          ))}
+        </div>
+      )}
 
       {!hasData ? (
         <div className="text-center py-16 border-2 border-dashed border-slate-200 rounded-3xl text-slate-400">
@@ -427,6 +540,17 @@ export default function Analytics() {
                         : 'border-slate-200 text-slate-500 hover:border-navy-300')}>
                     All ({activityBreakdown.length})
                   </button>
+                  {noSkillCount > 0 && (
+                    <button type="button"
+                      onClick={() => setSkillFilter(skillFilter === NO_SKILL ? null : NO_SKILL)}
+                      title="Graded straight to a score, so there is no rubric to read a skill from"
+                      className={cn('px-3 py-1 rounded-full text-xs font-bold border-2 transition-all',
+                        skillFilter === NO_SKILL
+                          ? 'border-slate-500 bg-slate-500 text-white'
+                          : 'border-dashed border-slate-300 text-slate-500 hover:border-slate-400')}>
+                      No skill tags ({noSkillCount})
+                    </button>
+                  )}
                   {skillFilterOptions.map(s => (
                     <button key={s.id} type="button"
                       onClick={() => setSkillFilter(skillFilter === s.id ? null : s.id)}
@@ -460,7 +584,7 @@ export default function Analytics() {
                           <td className="py-3">
                             <p className="font-bold text-navy-800">{a.title}</p>
                             <p className="text-[11px] text-slate-400">{a.type} · {a.points} pts</p>
-                            {a.skills?.length > 0 && (
+                            {a.skills?.length > 0 ? (
                               <div className="flex flex-wrap gap-1 mt-1">
                                 {a.skills.map(id => {
                                   const s = skillById[id];
@@ -473,6 +597,14 @@ export default function Analytics() {
                                   );
                                 })}
                               </div>
+                            ) : (
+                              // Says why the row is bare rather than leaving it
+                              // looking like a skill that failed to load. The
+                              // average beside it is still real — this activity
+                              // simply has no rubric to read a skill from.
+                              <p className="text-[10px] text-slate-400 mt-1 italic">
+                                Score only — no rubric, so no skill breakdown
+                              </p>
                             )}
                           </td>
                           <td className="py-3 text-center">
