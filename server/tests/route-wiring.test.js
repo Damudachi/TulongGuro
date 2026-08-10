@@ -2037,3 +2037,173 @@ describe('excusing a student who has since transferred out', () => {
     expect(prismaFake.submission.create).not.toHaveBeenCalled();
   });
 });
+
+// ───────────────────────────────────────────────────────────────────
+// Badges: what the learner is told, and what never leaves the server
+// ───────────────────────────────────────────────────────────────────
+
+describe('GET /api/student/:id/dashboard badges', () => {
+  const STUDENT = 'student-badges';
+  const SECTION = 'sec-badges';
+
+  /** A graded, released submission for this learner. */
+  const graded = (percent, day) => ({
+    id: `sub-${day}`,
+    studentId: STUDENT,
+    hitlScore: percent,
+    aiScore: null,
+    status: 'GRADED',
+    isLate: false,
+    readingStrategy: null,
+    skillScores: null,
+    gradedAt: `2026-03-0${day}T00:00:00Z`,
+    createdAt: `2026-03-0${day}T00:00:00Z`,
+    updatedAt: `2026-03-0${day}T00:00:00Z`,
+    releasedAt: new Date(),
+    activity: { type: 'Essay', points: 100, class: { subject: 'English', gradeLevel: 'Grade 6' } },
+  });
+
+  const armStudent = ({ own = [], storedBadges = [] } = {}) => {
+    prismaFake.user.findUnique.mockImplementation(({ where }) => {
+      if (where.id === STUDENT) {
+        return Promise.resolve({
+          id: STUDENT, name: 'Badge Learner', username: 'badge-1',
+          sectionId: SECTION, schoolId: null, sessionsValidFrom: null,
+          section: { id: SECTION, schoolId: null, classes: [] },
+        });
+      }
+      return Promise.resolve({ sessionsValidFrom: null });
+    });
+    prismaFake.submission.findMany.mockResolvedValue(own);
+    prismaFake.studentBadge.findMany.mockResolvedValue(storedBadges.map(badgeId => ({ badgeId })));
+    prismaFake.activity.findMany.mockResolvedValue([]);
+  };
+
+  const fetchBadges = async () => {
+    const res = await call('GET', `/api/student/${STUDENT}/dashboard`, {
+      token: tokenFor({ id: STUDENT, role: 'STUDENT' }),
+    });
+    expect(res.status).toBe(200);
+    return (await res.json()).badges;
+  };
+
+  it('returns the full badge set with earned flags', async () => {
+    armStudent({ own: [graded(95, 1)] });
+
+    const badges = await fetchBadges();
+    expect(badges).toHaveLength(15);
+    expect(badges.find(b => b.id === 'first-steps').earned).toBe(true);
+    expect(badges.find(b => b.id === 'first-star').earned).toBe(true);
+    expect(badges.find(b => b.id === 'dedicated').earned).toBe(false);
+  });
+
+  it('leaks nothing about a classmate', async () => {
+    // The rank query loads the whole section server-side. The response must
+    // carry one boolean about this learner and nothing that could be assembled
+    // into a leaderboard — no names, no ids, no other averages.
+    armStudent({ own: [1, 2, 3, 4, 5].map(d => graded(90, d)) });
+    prismaFake.user.findMany.mockResolvedValue([{ id: STUDENT }, { id: 'classmate-1' }]);
+
+    const res = await call('GET', `/api/student/${STUDENT}/dashboard`, {
+      token: tokenFor({ id: STUDENT, role: 'STUDENT' }),
+    });
+    const body = await res.text();
+
+    // The section really was loaded — otherwise this asserts nothing.
+    expect(prismaFake.user.findMany).toHaveBeenCalled();
+    expect(body).not.toContain('classmate-1');
+    const champion = JSON.parse(body).badges.find(b => b.id === 'class-champion');
+    expect(Object.keys(champion).sort()).toEqual(
+      ['desc', 'earned', 'icon', 'id', 'passingGrade', 'progress', 'target', 'title']
+    );
+  });
+
+  it('does not run the section query once the badge is already held', async () => {
+    // The optimisation that keeps ranking off the hot path: held badges are
+    // never recomputed.
+    armStudent({ own: [1, 2, 3, 4, 5].map(d => graded(90, d)), storedBadges: ['class-champion'] });
+
+    const badges = await fetchBadges();
+    expect(badges.find(b => b.id === 'class-champion').earned).toBe(true);
+    expect(prismaFake.user.findMany).not.toHaveBeenCalled();
+  });
+
+  it('does not rank a learner with too little work to be ranked fairly', async () => {
+    armStudent({ own: [graded(99, 1)] });
+
+    const badges = await fetchBadges();
+    expect(prismaFake.user.findMany).not.toHaveBeenCalled();
+    expect(badges.find(b => b.id === 'class-champion').earned).toBe(false);
+  });
+
+  it('keeps a stored badge earned even when the current data no longer says so', async () => {
+    // A re-grade must not take a badge back off a child.
+    armStudent({ own: [graded(40, 1)], storedBadges: ['first-star'] });
+
+    const badges = await fetchBadges();
+    const firstStar = badges.find(b => b.id === 'first-star');
+    expect(firstStar.earned).toBe(true);
+    expect(firstStar.progress).toBe(firstStar.target);
+  });
+
+  it('writes newly earned badges exactly once, skipping duplicates', async () => {
+    armStudent({ own: [graded(95, 1)], storedBadges: ['first-steps'] });
+
+    await fetchBadges();
+    expect(prismaFake.studentBadge.createMany).toHaveBeenCalledTimes(1);
+    const arg = prismaFake.studentBadge.createMany.mock.calls[0][0];
+    expect(arg.skipDuplicates).toBe(true);
+    // first-steps was already on record, so it is not written again.
+    expect(arg.data.map(d => d.badgeId)).not.toContain('first-steps');
+    expect(arg.data.map(d => d.badgeId)).toContain('first-star');
+  });
+
+  it('still returns badges when the rank query fails', async () => {
+    armStudent({ own: [1, 2, 3, 4, 5].map(d => graded(90, d)) });
+    prismaFake.user.findMany.mockRejectedValue(new Error('db down'));
+
+    const badges = await fetchBadges();
+    expect(badges).toHaveLength(15);
+    expect(badges.find(b => b.id === 'class-champion').earned).toBe(false);
+    expect(badges.find(b => b.id === 'honor-student').earned).toBe(true);
+  });
+});
+
+describe('the badge store is an enhancement, not a dependency', () => {
+  const STUDENT = 'student-nostore';
+
+  it('still serves the dashboard when StudentBadge cannot be read', async () => {
+    // The shape of a deploy where the app is live before its migration is.
+    // Losing the trophy cabinet must not cost the learner their dashboard.
+    prismaFake.user.findUnique.mockImplementation(({ where }) => {
+      if (where.id === STUDENT) {
+        return Promise.resolve({
+          id: STUDENT, name: 'No Store', username: 'nostore',
+          sectionId: null, schoolId: null, sessionsValidFrom: null,
+          section: null,
+        });
+      }
+      return Promise.resolve({ sessionsValidFrom: null });
+    });
+    prismaFake.submission.findMany.mockResolvedValue([{
+      id: 'sub-1', studentId: STUDENT, hitlScore: 95, aiScore: null, status: 'GRADED',
+      isLate: false, readingStrategy: null, skillScores: null,
+      gradedAt: '2026-03-01T00:00:00Z', createdAt: '2026-03-01T00:00:00Z',
+      updatedAt: '2026-03-01T00:00:00Z', releasedAt: new Date(),
+      activity: { type: 'Essay', points: 100, class: { subject: 'English', gradeLevel: 'Grade 6' } },
+    }]);
+    prismaFake.activity.findMany.mockResolvedValue([]);
+    prismaFake.studentBadge.findMany.mockRejectedValue(new Error('relation "StudentBadge" does not exist'));
+
+    const res = await call('GET', `/api/student/${STUDENT}/dashboard`, {
+      token: tokenFor({ id: STUDENT, role: 'STUDENT' }),
+    });
+
+    expect(res.status).toBe(200);
+    const { badges } = await res.json();
+    expect(badges).toHaveLength(15);
+    expect(badges.find(b => b.id === 'first-star').earned).toBe(true);
+    // Nothing was written, because nothing could be read.
+    expect(prismaFake.studentBadge.createMany).not.toHaveBeenCalled();
+  });
+});

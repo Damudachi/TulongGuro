@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { CheckCircle2, Clock, AlertCircle, Loader2, FileText, ChevronRight, BookOpen, UserCheck } from 'lucide-react';
 import { API_URL, apiFetch } from '../../config';
+import { getStoredUser } from '../../utils/session';
 import { submissionWindow, formatDeadline } from '../../utils/deadlines';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
@@ -20,14 +21,17 @@ export default function SubjectActivities() {
   const [searchParams, setSearchParams] = useSearchParams();
   const subjectFilter = searchParams.get('subject') || '';
   const [subjects, setSubjects] = useState([]);
-  const [isLoading, setIsLoading] = useState(true);
+  // Nobody signed in means there is nothing to fetch, so this must not open on
+  // a spinner that only the first commit would take away again.
+  const [isLoading, setIsLoading] = useState(() => !!getStoredUser().id);
 
   useEffect(() => {
-    const user = JSON.parse(localStorage.getItem('user') || '{}');
-    if (!user.id) return setIsLoading(false);
+    const user = getStoredUser();
+    if (!user.id) return;
     apiFetch(`${API_URL}/api/student/${user.id}/subjects`)
       .then(r => r.json())
       .then(d => { if (d.success) setSubjects(d.subjects || []); })
+      .catch(() => {}) /* a failed read leaves the empty state, which is what renders */
       .finally(() => setIsLoading(false));
   }, []);
 

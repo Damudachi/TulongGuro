@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { ArrowLeft, UploadCloud, X, Loader2, Wifi, WifiOff, ShieldCheck, Info, FileText, Camera, Sparkles, Plus, CheckCircle2, AlertTriangle, ClipboardCheck, RefreshCw } from 'lucide-react';
 import { getQueue, buildJob, enqueue, flushQueue } from '../../utils/offlineQueue';
@@ -45,6 +45,7 @@ export default function BatchUpload() {
   const [aiPlan, setAiPlan] = useState(null);     // { ready, batchSize, requestsNeeded, capacity }
   const [aiJob, setAiJob] = useState(null);
   const [isStartingAi, setIsStartingAi] = useState(false);
+  const [isCancellingAi, setIsCancellingAi] = useState(false);
 
   // Per-student staged pages (picked but not yet uploaded), and upload-in-flight tracking.
   // Shape: { [studentId]: { pages: [{ file, preview }] } }
@@ -84,33 +85,43 @@ export default function BatchUpload() {
           setStudents(d.classData?.section?.students || []);
           const activity = d.classData?.activities?.find(a => a.id === activityId) || null;
           setActivityMeta(activity);
-        });
+        })
+        .catch(() => {}) /* a failed read leaves the empty state, which is what renders */;
     }
+  }, [classId, activityId]);
+
+  // Connectivity, kept separate from the roster read above so that switching
+  // activity doesn't tear down and re-register these listeners.
+  useEffect(() => {
     const goOnline = () => { setIsOnline(true); setQueuedCount(getQueue().length); };
     const goOffline = () => setIsOnline(false);
     window.addEventListener('online', goOnline);
     window.addEventListener('offline', goOffline);
     return () => { window.removeEventListener('online', goOnline); window.removeEventListener('offline', goOffline); };
-  }, [classId]);
+  }, []);
 
   useEffect(() => {
     if (!activityId) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- flipping the loading flag ahead of an async read; the rule's alternative is a data-fetching library this app doesn't use
     setIsLoadingSubmissions(true);
     apiFetch(`${API_URL}/api/activities/${activityId}/submissions`)
       .then(r => r.json())
       .then(d => { if (d.success) setActivitySubmissions(d.submissions || []); })
+      .catch(() => {}) /* a failed read leaves the empty state, which is what renders */
       .finally(() => setIsLoadingSubmissions(false));
   }, [activityId]);
 
-  const refreshAiPlan = () => {
+  // Memoised on activityId so the effects below can depend on it honestly
+  // without re-firing on every render.
+  const refreshAiPlan = useCallback(() => {
     if (!activityId) return;
     apiFetch(`${API_URL}/api/teacher/activities/${activityId}/ai-check`)
       .then(r => r.json())
       .then(d => { if (d.success) setAiPlan(d); })
       .catch(() => {});
-  };
+  }, [activityId]);
 
-  useEffect(refreshAiPlan, [activityId, activitySubmissions.length]);
+  useEffect(refreshAiPlan, [refreshAiPlan, activitySubmissions.length]);
 
   // Poll a running job. Stops as soon as the server reports it finished, so a
   // completed run costs no further requests.
@@ -143,13 +154,40 @@ export default function BatchUpload() {
             // Pull the refreshed scores in so the roster reflects the run.
             apiFetch(`${API_URL}/api/activities/${activityId}/submissions`)
               .then(r => r.json())
-              .then(s => { if (s.success) setActivitySubmissions(s.submissions || []); });
+              .then(s => { if (s.success) setActivitySubmissions(s.submissions || []); })
+              .catch(() => {}) /* a failed read leaves the empty state, which is what renders */;
           }
         })
         .catch(() => {});
     }, 2500);
     return () => clearInterval(timer);
-  }, [aiJob?.jobId, aiJob?.state, activityId]);
+  }, [aiJob?.jobId, aiJob?.state, aiJob?.bootId, activityId, refreshAiPlan]);
+
+  /**
+   * Ask the server to stop the run.
+   *
+   * It finishes the paper it is on and skips the rest, so what has already
+   * been checked stays checked — the poll above picks up the new state on its
+   * next tick and the panel switches to the finished summary.
+   */
+  const cancelAiCheck = async () => {
+    if (!aiJob?.jobId) return;
+    if (!window.confirm('Stop this AI check? Papers already checked keep their results; the rest will not be checked.')) return;
+    setIsCancellingAi(true);
+    try {
+      const res = await apiFetch(`${API_URL}/api/teacher/ai-jobs/${aiJob.jobId}`, { method: 'DELETE' });
+      const d = await res.json().catch(() => null);
+      if (!res.ok || !d?.success) {
+        alert(d?.error || 'Could not stop the check. It is still running.');
+        return;
+      }
+      setAiJob(d);
+    } catch {
+      alert('Could not reach the server. The check is still running.');
+    } finally {
+      setIsCancellingAi(false);
+    }
+  };
 
   const startAiCheck = async () => {
     setIsStartingAi(true);
@@ -729,6 +767,17 @@ export default function BatchUpload() {
                     You can leave this page — the check keeps running.
                   </p>
                 </div>
+                {/* The server has always been able to stop a run; nothing ever
+                    asked it to. A teacher who starts a 30-paper check on the
+                    wrong activity had no way back, and the daily AI quota is
+                    small enough that one mistaken run can block the rest of
+                    the day's marking. Papers already checked are kept. */}
+                <button onClick={cancelAiCheck} disabled={isCancellingAi}
+                  title="Stop after the paper being checked right now"
+                  className="shrink-0 text-xs font-bold text-slate-600 border-2 border-slate-200 px-3 py-2 rounded-lg
+                             hover:bg-red-50 hover:text-red-600 hover:border-red-200 disabled:opacity-40 transition-colors">
+                  {isCancellingAi ? 'Stopping…' : 'Stop check'}
+                </button>
               </div>
             ) : aiJob ? (
               /* Finished */

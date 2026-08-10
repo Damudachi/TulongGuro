@@ -82,7 +82,12 @@ function normalizeRangeCriteria(criteria, rubricType, defaultBands) {
   if (rubricType !== 'range') return criteria;
   return criteria.map(c => {
     const bands = c.bands?.length ? c.bands : defaultBands;
-    const top = Math.max(...bands.map(b => bandScoreNumber(b.score)), 0);
+    // `b?.score` and the NaN filter, because a sparse or partially-filled band
+    // array must degrade to a real number here rather than poisoning the total
+    // — NaN compares false against every threshold, so it slips past the
+    // validation that exists to catch a zero-weight rubric.
+    const scores = bands.map(b => bandScoreNumber(b?.score)).filter(n => Number.isFinite(n));
+    const top = Math.max(...scores, 0);
     return { ...c, bands, points: top };
   });
 }
@@ -310,6 +315,7 @@ export default function ActivityBuilder() {
       outputType: form.type,
     });
     if (!applied) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- reacting to three rubric sources that arrive asynchronously; there is no render-time equivalent
     setRubricCriteria(applied.criteria);
     setRubricType(applied.type);
     setSelectedOption(applied.option);
@@ -320,6 +326,7 @@ export default function ActivityBuilder() {
   // looking at "No rubric selected" with no obvious next step.
   useEffect(() => {
     if (!rubricTouched && !isEditMode && rubricMode === 'template' && !selectedOption && builtinRubrics.length === 0) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- same: only knowable once the async rubric loads have all settled
       setShowRubricEditor(true);
     }
   }, [rubricTouched, isEditMode, rubricMode, selectedOption, builtinRubrics]);
@@ -368,57 +375,63 @@ export default function ActivityBuilder() {
   }, [classId]);
 
   // ── Edit Mode: Fetch existing activity and pre-fill form ──
+  //
+  // Asks for the activity directly. This used to fetch every class the teacher
+  // owns and hunt for the activity in `cls.activities` — a list the classes
+  // endpoint deliberately caps at the 10 most recent per class. Editing the
+  // eleventh-oldest activity therefore found nothing, left every field at its
+  // blank default, and then refused to save with "Every rubric criterion needs
+  // a name" — about an activity whose rubric was perfectly intact. A teacher
+  // who filled that name in to get past it would have overwritten the real
+  // title, points, deadline and rubric with defaults.
+  //
+  // GET /api/activities/:id existed the whole time, is school-scoped, and
+  // returns every field this form needs.
+  const [loadError, setLoadError] = useState('');
   useEffect(() => {
     if (!isEditMode || !editActivityId) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- flipping the loading flag ahead of an async read; the rule's alternative is a data-fetching library this app doesn't use
     setIsLoadingEdit(true);
-    apiFetch(`${API_URL}/api/activities/${editActivityId}/submissions`)
-      .then(r => r.json())
-      .catch(() => null);
-    // Fetch the activity from the class activities list
-    // We need a direct activity fetch. Let's use the submissions endpoint parent activity.
-    // Actually, there's no direct activity fetch, so we'll use the class endpoint.
-    // For now, we'll fetch from a search across teacher classes.
-    const user = JSON.parse(localStorage.getItem('user') || '{}');
-    if (!user.id) { setIsLoadingEdit(false); return; }
-    apiFetch(`${API_URL}/api/teacher/${user.id}/classes`)
-      .then(r => r.json())
-      .then(data => {
-        if (!data.success) return;
-        for (const cls of data.classes) {
-          const activity = cls.activities?.find(a => a.id === editActivityId);
-          if (activity) {
-            setForm({
-              title: activity.title || '',
-              type: activity.type || 'Essay',
-              topic: activity.topic || '',
-              points: activity.points || 100,
-              deadline: activity.deadline ? String(activity.deadline).split('T')[0] : '',
-              lateUntil: activity.lateUntil ? String(activity.lateUntil).split('T')[0] : '',
-              instructions: activity.instructions || '',
-              submissionMode: activity.submissionMode || 'TEACHER_UPLOAD',
-              maxAttempts: activity.maxAttempts || 1,
-              component: activity.component || 'WW',
-            });
-            // Pre-fill rubric if it exists. This is the activity's rubric of
-            // record, so nothing may overwrite it.
-            if (activity.classLessonId) setSelectedLessonId(activity.classLessonId);
-            if (activity.rubric) {
-              try {
-                const parsed = JSON.parse(activity.rubric);
-                if (parsed.criteria?.length) {
-                  setRubricCriteria(parsed.criteria);
-                  setRubricType(rubricTypeOf(parsed, parsed.criteria));
-                  if (parsed.source) setRubricMode(parsed.source);
-                  setSelectedOption('custom');
-                  setRubricTouched(true);
-                }
-              } catch {}
+    setLoadError('');
+    apiFetch(`${API_URL}/api/activities/${editActivityId}`)
+      .then(async (r) => {
+        const data = await r.json().catch(() => null);
+        if (!r.ok || !data?.success || !data.activity) {
+          // Said out loud rather than leaving a blank form that looks like a
+          // new activity and silently discards the real one on save.
+          setLoadError(data?.error || 'This activity could not be loaded, so nothing has been filled in. Go back and try again.');
+          return;
+        }
+        const activity = data.activity;
+        setForm({
+          title: activity.title || '',
+          type: activity.type || 'Essay',
+          topic: activity.topic || '',
+          points: activity.points || 100,
+          deadline: activity.deadline ? String(activity.deadline).split('T')[0] : '',
+          lateUntil: activity.lateUntil ? String(activity.lateUntil).split('T')[0] : '',
+          instructions: activity.instructions || '',
+          submissionMode: activity.submissionMode || 'TEACHER_UPLOAD',
+          maxAttempts: activity.maxAttempts || 1,
+          component: activity.component || 'WW',
+        });
+        // Pre-fill rubric if it exists. This is the activity's rubric of
+        // record, so nothing may overwrite it.
+        if (activity.classLessonId) setSelectedLessonId(activity.classLessonId);
+        if (activity.rubric) {
+          try {
+            const parsed = JSON.parse(activity.rubric);
+            if (parsed.criteria?.length) {
+              setRubricCriteria(parsed.criteria);
+              setRubricType(rubricTypeOf(parsed, parsed.criteria));
+              if (parsed.source) setRubricMode(parsed.source);
+              setSelectedOption('custom');
+              setRubricTouched(true);
             }
-            break;
-          }
+          } catch { /* a rubric that will not parse leaves the editor as it is */ }
         }
       })
-      .catch(() => {})
+      .catch(() => setLoadError('Could not reach the server, so this activity has not been loaded.'))
       .finally(() => setIsLoadingEdit(false));
   }, [isEditMode, editActivityId]);
 
@@ -442,7 +455,13 @@ export default function ActivityBuilder() {
     const setter = rubricMode === 'upload' && extractedCriteria ? setExtractedCriteria : setRubricCriteria;
     setter(prev => prev.map((c, ci) => {
       if (ci !== criterionIdx) return c;
-      const bands = [...(c.bands || [])];
+      // Seeded from the same defaults the editor renders when a criterion has
+      // no bands of its own. Starting from [] instead let an edit to the third
+      // row write index 2 of an empty array, leaving holes at 0 and 1 — and a
+      // hole spreads as `undefined`, so Math.max returned NaN, the rubric
+      // total became NaN, and `total <= 0` is *false* for NaN, so the
+      // "adds up to zero" guard waved it through and saved null weights.
+      const bands = (c.bands?.length ? c.bands : DEFAULT_RANGE_BANDS).map(b => ({ ...b }));
       bands[bandIdx] = { ...bands[bandIdx], [field]: field === 'score' ? parseInt(val) || 0 : val };
       return { ...c, bands };
     }));
@@ -553,7 +572,7 @@ export default function ActivityBuilder() {
       } else {
         setExtractionError(data.error || 'Could not extract rubric criteria.');
       }
-    } catch (err) {
+    } catch {
       setExtractionError('Network error while extracting rubric. Please try again.');
     } finally {
       setIsExtracting(false);
@@ -604,7 +623,7 @@ export default function ActivityBuilder() {
       } else {
         alert('Failed to save template: ' + data.error);
       }
-    } catch (err) {
+    } catch {
       alert('Network error while saving template.');
     }
   };
@@ -631,6 +650,12 @@ export default function ActivityBuilder() {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    // Saving a form that never loaded would write blank defaults over a real
+    // activity's title, points, deadline and rubric.
+    if (isEditMode && (isLoadingEdit || loadError)) {
+      alert(loadError || 'This activity is still loading. Please wait before saving.');
+      return;
+    }
     // Only standard rubrics are weighted in percent; a range rubric's total is
     // whatever its bands add up to, so holding it to 100 made it unsavable —
     // the points field it would need to fix is hidden in range mode.
@@ -652,7 +677,9 @@ export default function ActivityBuilder() {
       setShowRubricEditor(true);
       return;
     }
-    if (totalPercentage <= 0) {
+    // `> 0` rather than `<= 0`: NaN fails both, and the version that asked
+    // `<= 0` therefore let a broken total through instead of catching it.
+    if (!(totalPercentage > 0)) {
       alert('The rubric criteria add up to zero, so nothing could be scored against it.');
       setShowRubricEditor(true);
       return;
@@ -702,7 +729,7 @@ export default function ActivityBuilder() {
   };
 
   // ── Criterion Editor (shared by Manual + Upload extracted) ──
-  const renderCriterionEditor = (criteria, isUploadExtracted = false) => (
+  const renderCriterionEditor = (criteria) => (
     <div className="space-y-3">
       {criteria.map((c, i) => (
         <div key={i} className="p-3 bg-slate-50 rounded-lg border border-slate-200 space-y-2">
@@ -766,6 +793,21 @@ export default function ActivityBuilder() {
         <ArrowLeft className="w-4 h-4 mr-1" /> Back to Class
       </button>
       <h1 className="text-2xl font-bold text-brand-slate mb-6">{isEditMode ? 'Edit Activity' : 'Create New Activity'}</h1>
+
+      {/* Edit mode fills these fields from the server. Showing the blank form
+          while that is in flight reads as "this activity has no title" rather
+          than "not loaded yet", which is the state a teacher would type over. */}
+      {isLoadingEdit && (
+        <div className="flex items-center gap-2 text-sm text-slate-500 bg-slate-50 border-2 border-slate-200 rounded-xl px-4 py-3 mb-6">
+          <Loader2 className="w-4 h-4 animate-spin" /> Loading this activity…
+        </div>
+      )}
+
+      {loadError && (
+        <div role="alert" className="flex items-start gap-2 text-sm font-bold text-red-700 bg-red-50 border-2 border-red-200 rounded-xl px-4 py-3 mb-6">
+          <X className="w-4 h-4 shrink-0 mt-0.5" /> {loadError}
+        </div>
+      )}
 
       <form className="space-y-6" onSubmit={handleSubmit}>
 
@@ -1299,7 +1341,7 @@ export default function ActivityBuilder() {
                       <Save className="w-3.5 h-3.5" /> Save as Template
                     </button>
                   </div>
-                  {renderCriterionEditor(extractedCriteria, true)}
+                  {renderCriterionEditor(extractedCriteria)}
                 </div>
               )}
             </div>

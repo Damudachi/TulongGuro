@@ -16,7 +16,9 @@ export default function TeacherLayout() {
   useSchoolTheme();
   const location = useLocation();
   const [warningCount, setWarningCount] = useState(0);
-  const [queueCount, setQueueCount] = useState(0);
+  // Seeded from the queue rather than from 0-then-corrected on mount, so the
+  // badge is right on the first paint after a reload with work still queued.
+  const [queueCount, setQueueCount] = useState(() => getQueue().length);
   const [onlineStatus, setOnlineStatus] = useState(navigator.onLine);
   const user = JSON.parse(localStorage.getItem('user') || '{}');
 
@@ -31,8 +33,6 @@ export default function TeacherLayout() {
         })
         .catch(() => {});
     }
-    // Offline queue badge
-    setQueueCount(getQueue().length);
     // Online/offline listeners
     const goOnline = () => { setOnlineStatus(true); setQueueCount(getQueue().length); };
     const goOffline = () => setOnlineStatus(false);

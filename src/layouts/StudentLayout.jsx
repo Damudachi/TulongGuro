@@ -17,6 +17,15 @@ export default function StudentLayout() {
   useSchoolTheme();
   const location = useLocation();
   const [expandedSubjects, setExpandedSubjects] = useState(location.pathname.startsWith('/student/subjects'));
+  // Navigating into a subject re-opens the group, but only on the navigation
+  // itself — a learner who collapses it while already inside stays collapsed.
+  // Done here rather than in an effect so the sidebar is never painted closed
+  // and then immediately re-rendered open.
+  const [lastPath, setLastPath] = useState(location.pathname);
+  if (lastPath !== location.pathname) {
+    setLastPath(location.pathname);
+    if (location.pathname.startsWith('/student/subjects')) setExpandedSubjects(true);
+  }
   const user = JSON.parse(localStorage.getItem('user') || '{}');
 
   // OQ-4: a submission queued offline (SubmitWork.jsx) only ever drains if
@@ -35,12 +44,6 @@ export default function StudentLayout() {
     });
     return unsubscribe;
   }, []);
-
-  useEffect(() => {
-    if (location.pathname.startsWith('/student/subjects')) {
-      setExpandedSubjects(true);
-    }
-  }, [location.pathname]);
 
   const navItems = [
     { name: 'Home', path: '/student/dashboard', icon: Home },

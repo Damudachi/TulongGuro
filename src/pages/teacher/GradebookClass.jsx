@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { Download, ChevronDown, Loader2 } from 'lucide-react';
 import { API_URL, apiFetch } from '../../config';
+import { getStoredUser } from '../../utils/session';
 import PageHeader from '../../components/PageHeader';
 import { gradeChip } from '../../utils/grading';
 import { usePassingGrade } from '../../utils/useSchool';
@@ -15,7 +16,9 @@ export default function GradebookClass() {
   const scoreTone = (v) => gradeChip(v, passingGrade, 'text-navy-300');
   const { classId } = useParams();
   const [data, setData] = useState(null);
-  const [isLoading, setIsLoading] = useState(true);
+  // Nobody signed in means there is nothing to fetch, so this must not open on
+  // a spinner that only the first commit would take away again.
+  const [isLoading, setIsLoading] = useState(() => !!getStoredUser().id);
   const [showExportMenu, setShowExportMenu] = useState(false);
   const [exporting, setExporting] = useState(false);
   const menuRef = useRef(null);
@@ -56,9 +59,10 @@ export default function GradebookClass() {
   };
 
   useEffect(() => {
-    const user = JSON.parse(localStorage.getItem('user') || '{}');
-    if (!user.id) return setIsLoading(false);
-    apiFetch(`${API_URL}/api/teacher/${user.id}/gradebook?classId=${classId}`).then(r => r.json()).then(d => { if (d.success) setData(d); }).finally(() => setIsLoading(false));
+    const user = getStoredUser();
+    if (!user.id) return;
+    apiFetch(`${API_URL}/api/teacher/${user.id}/gradebook?classId=${classId}`).then(r => r.json()).then(d => { if (d.success) setData(d); }).catch(() => {}) /* a failed read leaves the empty state, which is what renders */
+      .finally(() => setIsLoading(false));
   }, [classId]);
 
   if (isLoading) return (

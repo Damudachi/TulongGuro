@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { Plus, FileText, Filter, ChevronRight, Loader2, UploadCloud, X, Sparkles } from 'lucide-react';
 import { API_URL, apiFetch } from '../../config';
+import { getStoredUser } from '../../utils/session';
 import { ONBOARDING, hasSeenOnboarding, markOnboardingSeen, clearOnboardingSeen } from '../../utils/onboarding';
 import { GRADE_LEVELS, SUBJECTS, SCHOOL_YEARS, DEFAULT_SCHOOL_YEAR } from '../../constants/school';
 import SchoolBadge from '../../components/SchoolBadge';
@@ -25,6 +26,7 @@ function useCurriculumSuggestion(gradeLevel, subject) {
   useEffect(() => {
     const user = JSON.parse(localStorage.getItem('user') || '{}');
     if (!user.id || !gradeLevel || !subject) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- drops a stale async result once its inputs go away
       setSuggestion(null);
       return;
     }
@@ -266,6 +268,11 @@ function WizardEmptyState({ onComplete, sections = [] }) {
                     if (e.target.value === 'new') {
                       setIsCreatingNew(true);
                       setSectionId('');
+                      // Cleared, not carried over. Picking an existing section
+                      // fills sectionName with its name; switching to "create
+                      // new" then offered that same name as the new section's,
+                      // one Enter away from a near-duplicate roster.
+                      setSectionName('');
                     } else {
                       setIsCreatingNew(false);
                       setSectionId(e.target.value);
@@ -435,7 +442,9 @@ export default function TeacherDashboard() {
   const [isCreatingClass, setIsCreatingClass] = useState(false);
   const [useModalCurriculum, setUseModalCurriculum] = useState(true);
   const [filters, setFilters] = useState({ gradeLevel: '', subject: '' });
-  const [isLoading, setIsLoading] = useState(true);
+  // Nobody signed in means there is nothing to fetch, so this must not open on
+  // a spinner that only the first commit would take away again.
+  const [isLoading, setIsLoading] = useState(() => !!getStoredUser().id);
   const [setup, setSetup] = useState(null);
   const [setupHidden, setSetupHidden] = useState(() => hasSeenOnboarding(ONBOARDING.TEACHER_SETUP_HIDDEN));
   // Set when the teacher asks for the guide back, so it reappears even once
@@ -460,8 +469,8 @@ export default function TeacherDashboard() {
     useCurriculumSuggestion(form.gradeLevel, form.subject);
 
   useEffect(() => {
-    const user = JSON.parse(localStorage.getItem('user') || '{}');
-    if (!user.id) return setIsLoading(false);
+    const user = getStoredUser();
+    if (!user.id) return;
     Promise.all([
       apiFetch(`${API_URL}/api/teacher/${user.id}/classes`).then(r => r.json()),
       apiFetch(`${API_URL}/api/teacher/${user.id}/sections`).then(r => r.json()),
@@ -472,7 +481,11 @@ export default function TeacherDashboard() {
       // Whether the checklist appears is decided by these counts, not by a
       // stored step — see the note in SetupChecklist.
       if (setupData.success) setSetup(setupData.setup);
-    }).finally(() => setIsLoading(false));
+    })
+      // Promise.all rejects if any of the three does, so one dropped request
+      // took the whole dashboard load down as an unhandled rejection.
+      .catch(() => {})
+      .finally(() => setIsLoading(false));
   }, []);
 
   const handleAddClass = async (e) => {
@@ -517,7 +530,7 @@ export default function TeacherDashboard() {
             if (parseData.success) {
               setModalParseStatus(`Done! Extracted ${parseData.lessons?.length || 0} lessons.`);
             }
-          } catch {}
+          } catch { /* a malformed stored value just means no draft to restore */ }
           await new Promise(r => setTimeout(r, 1500));
           setModalIsParsing(false);
         }
@@ -529,7 +542,7 @@ export default function TeacherDashboard() {
         alert('Failed: ' + data.error);
         setIsCreatingClass(false);
       }
-    } catch (e) {
+    } catch {
       alert('Network error');
       setIsCreatingClass(false);
     }

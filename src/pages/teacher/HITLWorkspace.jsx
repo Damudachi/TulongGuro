@@ -9,6 +9,21 @@ import { ONBOARDING, hasSeenOnboarding, markOnboardingSeen } from '../../utils/o
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
 
+/**
+ * Confetti particle positions, generated once at module load.
+ *
+ * These were four Math.random() calls inside the render body, which re-rolled
+ * every particle on every re-render while the celebration was on screen — the
+ * confetti visibly teleported rather than falling. Fixed values also make the
+ * render pure, which is what React's own lint rules are asking for here.
+ */
+const CONFETTI = Array.from({ length: 40 }, () => ({
+  left: Math.random() * 100,
+  duration: 2 + Math.random() * 3,
+  delay: Math.random() * 1.5,
+  rotation: Math.random() * 360,
+}));
+
 /** Try to parse structured AI feedback JSON. Returns null if plain string or if it contains an AI error. */
 function parseStructuredFeedback(raw) {
   if (!raw || typeof raw !== 'string') return null;
@@ -105,9 +120,13 @@ export default function HITLWorkspace() {
   const [isChatLoading, setIsChatLoading] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [isApproved, setIsApproved] = useState(false);
+  /** Why the last validate attempt did not record a mark. '' when all is well. */
+  const [saveError, setSaveError] = useState('');
   const [covData, setCovData] = useState(null);
   const [skillAnalysisOpen, setSkillAnalysisOpen] = useState(false);
-  const [showTooltip, setShowTooltip] = useState(false);
+  // Read straight from the onboarding store on first render: shown once, so
+  // there is nothing to re-check later and nothing worth a spare render pass.
+  const [showTooltip, setShowTooltip] = useState(() => !hasSeenOnboarding(ONBOARDING.TEACHER_COPILOT_TIP));
   const [showCelebration, setShowCelebration] = useState(false);
   const chatEndRef = useRef(null);
 
@@ -122,16 +141,14 @@ export default function HITLWorkspace() {
   const [isReplacing, setIsReplacing] = useState(false);
   const replaceFileInputRef = useRef(null);
 
-  useEffect(() => {
-    if (!hasSeenOnboarding(ONBOARDING.TEACHER_COPILOT_TIP)) {
-      setShowTooltip(true);
-    }
-  }, []);
-
   // Computed feedbackText for AI Co-Pilot & backwards compat
   const feedbackText = isStructured ? flattenFeedback(structuredFeedback) : legacyFeedbackText;
 
   useEffect(() => {
+    // A failure belongs to the paper it happened on — carrying it onto the next
+    // learner in a queue run would accuse a save that never ran.
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- flipping the loading flag ahead of an async read; the rule's alternative is a data-fetching library this app doesn't use
+    setSaveError('');
     if (!submissionId || submissionId === 'test123') {
       setLegacyFeedbackText("Your reflection on Crisostomo Ibarra's motivations was deep and insightful. However, the essay lacked clear paragraph transitions.");
       setReadingStrategy("Focus on 'Signpost Words' (however, therefore, consequently) in your next reading assignment.");
@@ -188,7 +205,7 @@ export default function HITLWorkspace() {
                 // realising nothing was actually assessed.
                 setScores({ content: rd.content?.score ?? 0, organization: rd.organization?.score ?? 0, grammar: rd.grammar?.score ?? 0 });
               }
-            } catch { }
+            } catch { /* unparseable rubricData leaves the editor as it is */ }
           } else if (sub.aiScore === null && sub.status === 'PENDING') {
             if (sub.activity?.rubric) {
               try {
@@ -206,11 +223,12 @@ export default function HITLWorkspace() {
             }
           }
           if (sub.covData) {
-            try { setCovData(JSON.parse(sub.covData)); } catch { }
+            try { setCovData(JSON.parse(sub.covData)); } catch { /* no COV data to show */ }
           }
           if (sub.status === 'GRADED') setIsApproved(true);
         }
       })
+      .catch(() => {}) /* a failed read leaves the empty state, which is what renders */
       .finally(() => setIsLoading(false));
   }, [submissionId]);
 
@@ -394,15 +412,27 @@ export default function HITLWorkspace() {
   };
 
   // ── Save / Validate ──
+  /**
+   * Records the mark.
+   *
+   * The response is checked, not just awaited. `fetch` resolves on 4xx, so the
+   * earlier bare `await` treated a refusal as a success: the screen approved
+   * the paper, fired the celebration and — in a queue run — advanced to the
+   * next learner, with nothing written. The server has live refusal paths here
+   * (a score it will not trust, 400; a paper belonging to a colleague's class,
+   * 403 — see tests/route-wiring.test.js), and a grade of record silently
+   * failing to save is the worst failure this screen has.
+   */
   const handleValidate = async () => {
     setIsSaving(true);
+    setSaveError('');
     try {
       if (submissionId && submissionId !== 'test123') {
         const user = JSON.parse(localStorage.getItem('user') || '{}');
         const hitlFeedback = isStructured
           ? serializeStructuredFeedback(structuredFeedback)
           : legacyFeedbackText;
-        await apiFetch(`${API_URL}/api/teacher/submissions/${submissionId}/grade`, {
+        const res = await apiFetch(`${API_URL}/api/teacher/submissions/${submissionId}/grade`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -415,6 +445,19 @@ export default function HITLWorkspace() {
             rubricData: dynamicRubric ? dynamicRubric.map(r => ({ ...r, score: scores[r.criterionName] })) : { content: { score: scores.content, max: 40 }, organization: { score: scores.organization, max: 30 }, grammar: { score: scores.grammar, max: 30 } }
           })
         });
+
+        // The server's own wording where there is any — it is more specific
+        // than anything this screen could guess ("Score must be between 0 and
+        // 100", "not your class").
+        const data = await res.json().catch(() => null);
+        if (!res.ok || !data?.success) {
+          setSaveError(
+            data?.error ||
+            `The mark was not saved (server said ${res.status}). Nothing has been recorded — please try again.`
+          );
+          setIsSaving(false);
+          return;   // stay on this paper: not approved, no celebration, no advance
+        }
       }
       setIsApproved(true);
 
@@ -425,10 +468,11 @@ export default function HITLWorkspace() {
         setShowCelebration(true);
         setTimeout(() => setShowCelebration(false), 6000);
       }
-    } catch (e) {
-      alert('Save failed. Please try again.');
+    } catch {
+      // Network-level failure. Same rule as a refusal above: nothing was
+      // recorded, so the screen must not move on.
+      setSaveError('Could not reach the server, so the mark was not saved. Check your connection and try again.');
       setIsSaving(false);
-      setIsEditingAssessment(false);
       return;
     }
     setIsSaving(false);
@@ -603,10 +647,10 @@ export default function HITLWorkspace() {
               // state. Never to invented mid-band scores.
               setScores({ content: rd.content?.score ?? 0, organization: rd.organization?.score ?? 0, grammar: rd.grammar?.score ?? 0 });
             }
-          } catch { }
+          } catch { /* unparseable rubricData leaves the editor as it is */ }
         }
         if (sub.covData) {
-          try { setCovData(JSON.parse(sub.covData)); } catch { }
+          try { setCovData(JSON.parse(sub.covData)); } catch { /* no COV data to show */ }
         }
       } else if (data.code === 'PRIVACY_VIOLATION') {
         // The scan was refused before any rubric grading ran. Merge the flagged
@@ -617,7 +661,7 @@ export default function HITLWorkspace() {
         alert('Analysis failed: ' + (data.error || 'Unknown error'));
         window.location.reload();
       }
-    } catch (e) {
+    } catch {
       alert('Network error during analysis.');
     } finally {
       setIsAnalyzing(false);
@@ -1114,7 +1158,13 @@ export default function HITLWorkspace() {
                     onChange={e => setScores(prev => ({ ...prev, [item.key]: parseInt(e.target.value) }))}
                     className={`w-full accent-brand-navy ${!isEditingAssessment ? 'opacity-50 cursor-not-allowed' : ''}`} />
                   <div className="w-full bg-slate-100 rounded-full h-2 mt-1">
-                    <div className={cn('h-2 rounded-full transition-all', item.color)} style={{ width: `${(scores[item.key] / item.max) * 100}%` }} />
+                    {/* Guarded the same way as the percentage label above it.
+                        `scores` starts empty, so before a criterion is touched
+                        this divided undefined by the max and set the bar to
+                        "NaN%" — an invalid width the browser drops, leaving a
+                        bar that never moved off zero even once scored. */}
+                    <div className={cn('h-2 rounded-full transition-all', item.color)}
+                      style={{ width: `${item.max ? Math.max(0, Math.min(100, ((scores[item.key] || 0) / item.max) * 100)) : 0}%` }} />
                   </div>
                 </div>
               ))}
@@ -1375,7 +1425,17 @@ export default function HITLWorkspace() {
         </div>
 
         {/* Footer Buttons */}
-        <div className="p-4 bg-white border-t border-slate-200 flex gap-3 sticky bottom-0 z-10">
+        <div className="bg-white border-t border-slate-200 sticky bottom-0 z-10">
+        {/* Sits directly above the button that failed, inside the sticky
+            footer, so it cannot be scrolled out of sight — a save failure the
+            teacher does not see is the same as no message at all. */}
+        {saveError && (
+          <div role="alert" className="mx-4 mt-4 flex items-start gap-2 rounded-xl border-2 border-red-200 bg-red-50 px-3 py-2.5 text-sm font-bold text-red-700">
+            <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+            <span className="min-w-0">{saveError}</span>
+          </div>
+        )}
+        <div className="p-4 flex gap-3">
           {queueActivityId ? (
             <button onClick={handleSkip}
               title="Come back to this one at the end of the run (S)"
@@ -1421,6 +1481,7 @@ export default function HITLWorkspace() {
               {isSaving ? 'Saving...' : isAnalyzing ? 'AI checking...' : awaitingAiCheck ? 'Waiting for AI check' : (isApproved ? 'Save Changes' : queueActivityId ? 'Validate & next' : 'Validate')}
             </button>
           )}
+        </div>
         </div>
       </div>
 
@@ -1550,17 +1611,17 @@ export default function HITLWorkspace() {
         <div className="fixed inset-0 z-[100] pointer-events-none flex items-center justify-center">
           {/* CSS Confetti particles */}
           <div className="absolute inset-0 overflow-hidden">
-            {Array.from({ length: 40 }).map((_, i) => (
+            {CONFETTI.map((c, i) => (
               <div
                 key={i}
                 className="absolute w-3 h-3 rounded-sm"
                 style={{
-                  left: `${Math.random() * 100}%`,
+                  left: `${c.left}%`,
                   top: '-10px',
                   backgroundColor: ['#10b981', '#3b82f6', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899'][i % 6],
-                  animation: `confettiFall ${2 + Math.random() * 3}s ease-in forwards`,
-                  animationDelay: `${Math.random() * 1.5}s`,
-                  transform: `rotate(${Math.random() * 360}deg)`,
+                  animation: `confettiFall ${c.duration}s ease-in forwards`,
+                  animationDelay: `${c.delay}s`,
+                  transform: `rotate(${c.rotation}deg)`,
                 }}
               />
             ))}

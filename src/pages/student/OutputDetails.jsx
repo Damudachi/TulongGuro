@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { ArrowLeft, Lightbulb, Trophy, Image as ImageIcon, Loader2, ChevronDown, ChevronUp, CheckCircle2, AlertTriangle, Target, MessageCircle, Sparkles } from 'lucide-react';
+import { ArrowLeft, Lightbulb, Trophy, Image as ImageIcon, Loader2, ChevronDown, ChevronUp, CheckCircle2, AlertTriangle, Target, Sparkles } from 'lucide-react';
 import { API_URL, apiFetch } from '../../config';
 import SubmissionImage from '../../components/SubmissionImage';
 
@@ -63,10 +63,10 @@ export default function OutputDetails() {
   const [showImage, setShowImage] = useState(false);
   const [showGrowth, setShowGrowth] = useState(false);
   const [showActions, setShowActions] = useState(false);
-  const [chatMessage, setChatMessage] = useState('');
 
   useEffect(() => {
     if (!outputId || outputId === 'test123') {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- seeds the built-in demo record; the real path below is an async read
       setSub({
         activity: { title: 'Noli Me Tangere Reflection', class: { name: 'Filipino 10' } },
         hitlScore: 88, aiScore: 85,
@@ -98,6 +98,10 @@ export default function OutputDetails() {
     apiFetch(`${API_URL}/api/submissions/${outputId}`)
       .then(r => r.json())
       .then(d => { if (d.success) setSub(d.submission); })
+      // Without this a dropped connection rejected unhandled. The page still
+      // falls through to "Submission not found", which is the right thing to
+      // show, but the rejection should not escape.
+      .catch(() => {})
       .finally(() => setIsLoading(false));
   }, [outputId]);
 
@@ -130,7 +134,7 @@ export default function OutputDetails() {
                 fullDesc = `${band.label} — ${band.description}`;
               }
             }
-          } catch (e) { /* ignore */ }
+          } catch { /* ignore */ }
         }
         return {
           name: r.criterionName, score: r.score, max: r.maxPoints, desc: fullDesc,
@@ -188,30 +192,44 @@ export default function OutputDetails() {
             </p>
           ) : (
           <div className="space-y-5">
-            {rubricItems.map((item, i) => (
-              <div key={i} className="relative group">
-                <div className="flex justify-between text-sm mb-1.5">
-                  <span className="font-medium text-slate-700">{item.name}</span>
-                  <div className="flex items-center gap-2">
-                    {/* Criterion scores are raw rubric points (e.g. 38 of 40), not
-                        percentages. They used to be labelled "%" and then re-scaled
-                        as if they were, which showed a pupil "38% / 40%" worth
-                        "38 pts" on a 100-point activity. */}
-                    <span className="font-bold text-slate-900">{item.score} / {item.max}</span>
-                    <span className="text-xs text-brand-navy font-bold">({Math.round((item.score / item.max) * 100)}%)</span>
+            {rubricItems.map((item, i) => {
+              // A criterion worth 0 points divides to NaN (or Infinity), which
+              // renders as "NaN%" next to a child's mark and an invalid bar
+              // width. Show the raw points and no percentage instead — the
+              // percentage is the derived figure, so it is the one to drop.
+              const pct = item.max > 0
+                ? Math.max(0, Math.min(100, (item.score / item.max) * 100))
+                : null;
+              return (
+                <div key={i}>
+                  <div className="flex justify-between text-sm mb-1.5">
+                    <span className="font-medium text-slate-700">{item.name}</span>
+                    <div className="flex items-center gap-2">
+                      {/* Criterion scores are raw rubric points (e.g. 38 of 40), not
+                          percentages. They used to be labelled "%" and then re-scaled
+                          as if they were, which showed a pupil "38% / 40%" worth
+                          "38 pts" on a 100-point activity. */}
+                      <span className="font-bold text-slate-900">{item.score} / {item.max}</span>
+                      {pct !== null && (
+                        <span className="text-xs text-brand-navy font-bold">({Math.round(pct)}%)</span>
+                      )}
+                    </div>
                   </div>
-                </div>
-                {item.desc && (
-                  <div className="hidden group-hover:block absolute bottom-full mb-2 left-0 right-0 bg-slate-800 text-white text-[10px] p-2 rounded z-10 pointer-events-none">
-                    {item.desc}
+                  <div className="w-full bg-slate-100 rounded-full h-3">
+                    <div className={cn('h-3 rounded-full transition-all duration-700', item.color)}
+                      style={{ width: `${pct ?? 0}%` }} />
                   </div>
-                )}
-                <div className="w-full bg-slate-100 rounded-full h-3">
-                  <div className={cn('h-3 rounded-full transition-all duration-700', item.color)}
-                    style={{ width: `${(item.score / item.max) * 100}%` }} />
+                  {/* Was a hover-only tooltip. Learners are on phones and
+                      tablets, where there is no hover at all, so the band the
+                      teacher actually awarded — the sentence explaining *why*
+                      this score — was unreachable on the device most of them
+                      use. Shown plainly instead. */}
+                  {item.desc && (
+                    <p className="text-xs text-slate-500 mt-1.5 leading-relaxed">{item.desc}</p>
+                  )}
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
           )}
         </div>

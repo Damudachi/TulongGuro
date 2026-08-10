@@ -23,7 +23,9 @@ const COMPONENTS = [
 export default function AdminGrading() {
   const admin = JSON.parse(localStorage.getItem('user') || '{}');
   const [data, setData] = useState(null);
-  const [isLoading, setIsLoading] = useState(true);
+  // No admin id means there is nothing to fetch, so this must not open on a
+  // spinner that only the first commit would take away again (see load below).
+  const [isLoading, setIsLoading] = useState(() => !!admin.id);
   const [error, setError] = useState('');
   const [savedNote, setSavedNote] = useState('');
   const [busy, setBusy] = useState(false);
@@ -36,7 +38,7 @@ export default function AdminGrading() {
   const [form, setForm] = useState({ gradeLevel: '', subject: '', WW: 30, PT: 50, QA: 20 });
 
   const load = useCallback(() => {
-    if (!admin.id) return setIsLoading(false);
+    if (!admin.id) return;
     apiFetch(`${API_URL}/api/admin/${admin.id}/grading`)
       .then(r => r.json())
       .then(d => {
@@ -86,11 +88,22 @@ export default function AdminGrading() {
 
   const resetPolicy = async (policyId, label) => {
     if (!window.confirm(`Reset ${label} to the DepEd default weights?`)) return;
-    setBusy(true);
+    setBusy(true); setError('');
     try {
-      await apiFetch(`${API_URL}/api/admin/${admin.id}/grading/policy/${policyId}`, { method: 'DELETE' });
+      const res = await apiFetch(`${API_URL}/api/admin/${admin.id}/grading/policy/${policyId}`, { method: 'DELETE' });
+      const d = await res.json().catch(() => null);
+      // Checked, not assumed. This used to announce the reset whatever came
+      // back, so a refused delete (404, or another school's policy id) left the
+      // admin believing the subject was back on the DepEd weights while it was
+      // still running their override — and every grade in it computed on the
+      // weights they thought they had just removed.
+      if (!res.ok || !d?.success) {
+        return setError(d?.error || `Could not reset ${label}. Its weights are unchanged.`);
+      }
       flash(`${label} is back on the DepEd default.`);
       load();
+    } catch {
+      setError('Network error. Nothing was changed.');
     } finally { setBusy(false); }
   };
 
@@ -100,10 +113,16 @@ export default function AdminGrading() {
     </div>
   );
 
+  // Ordered by the canonical grade list, then subject. Sorting the composed
+  // label instead put "Grade 10" between "Grade 1" and "Grade 2" — neither
+  // localeCompare nor a plain sort reads the number as a number.
   const allRows = [
     ...(data?.policies || []).map(p => ({ ...p, label: `${p.gradeLevel} — ${p.subject}` })),
     ...(data?.usingDefaults || []).map(p => ({ ...p, label: `${p.gradeLevel} — ${p.subject}` })),
-  ].sort((a, b) => a.label.localeCompare(b.label));
+  ].sort((a, b) =>
+    GRADE_LEVELS.indexOf(a.gradeLevel) - GRADE_LEVELS.indexOf(b.gradeLevel) ||
+    String(a.subject).localeCompare(String(b.subject))
+  );
 
   return (
     <div className="p-4 md:p-8 max-w-4xl mx-auto pb-24">

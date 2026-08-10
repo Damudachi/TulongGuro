@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { ArrowLeft, Camera, UploadCloud, FileText, CheckCircle2, Clock, Loader2, ChevronRight, AlertTriangle, ShieldCheck, BookOpen, Calendar, Award, RefreshCw, Eye } from 'lucide-react';
+import { ArrowLeft, Camera, UploadCloud, FileText, CheckCircle2, Clock, Loader2, ChevronRight, AlertTriangle, ShieldCheck, Calendar, Award, RefreshCw, Eye } from 'lucide-react';
 import { API_URL, apiFetch, MAX_SUBMISSION_PAGES } from '../../config';
+import { getStoredUser } from '../../utils/session';
 import SubmissionImage from '../../components/SubmissionImage';
 import ImageRedactor from '../../components/ImageRedactor';
 import { deadlineInstant, formatDeadline, submissionWindow } from '../../utils/deadlines';
@@ -24,7 +25,9 @@ export default function SubmitWork() {
   const [previews, setPreviews] = useState([]);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [result, setResult] = useState(null);
-  const [isLoading, setIsLoading] = useState(true);
+  // Nobody signed in means there is nothing to fetch, so this must not open on
+  // a spinner that only the first commit would take away again.
+  const [isLoading, setIsLoading] = useState(() => !!getStoredUser().id);
   const [privacyConfirmed, setPrivacyConfirmed] = useState(false);
   const [showPrivacyModal, setShowPrivacyModal] = useState(false);
   const [resubmitMode, setResubmitMode] = useState(false);
@@ -37,8 +40,8 @@ export default function SubmitWork() {
   const [cameFromLink, setCameFromLink] = useState(false);
 
   useEffect(() => {
-    const user = JSON.parse(localStorage.getItem('user') || '{}');
-    if (!user.id) return setIsLoading(false);
+    const user = getStoredUser();
+    if (!user.id) return;
     apiFetch(`${API_URL}/api/student/${user.id}/activities`)
       .then(r => r.json())
       .then(d => {
@@ -56,6 +59,7 @@ export default function SubmitWork() {
           }
         }
       })
+      .catch(() => {}) /* a failed read leaves the empty state, which is what renders */
       .finally(() => setIsLoading(false));
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -217,7 +221,7 @@ export default function SubmitWork() {
       } else {
         alert('Submission failed: ' + (data.error || 'Unknown error'));
       }
-    } catch (e) {
+    } catch {
       // Only a genuine network failure falls back to the offline queue — a
       // server that answered and said no must not be retried behind the
       // student's back.
@@ -443,9 +447,15 @@ export default function SubmitWork() {
                 <span className="tg-pill bg-sun-100 text-sun-800">
                   <Clock className="w-3 h-3" /> Awaiting Teacher Review
                 </span>
-                <span className="text-xs font-semibold text-navy-400">
-                  Submitted {new Date(sub.updatedAt || Date.now()).toLocaleDateString('en-PH', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}
-                </span>
+                {/* Only rendered when there is a real timestamp. The fallback
+                    was `sub.updatedAt || Date.now()`, which read the clock
+                    during render and, more to the point, stamped a submission
+                    with "now" when the server had not told us when it landed. */}
+                {sub.updatedAt && (
+                  <span className="text-xs font-semibold text-navy-400">
+                    Submitted {new Date(sub.updatedAt).toLocaleDateString('en-PH', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}
+                  </span>
+                )}
               </div>
               {sub.imageUrl && (
                 <div className="rounded-2xl overflow-hidden border-2 border-cream-200 bg-cream-50">

@@ -41,6 +41,8 @@ const { SKILLS: CURRICULUM_SKILLS, classifyCriterion } = require('./skillTaxonom
 const AI_SKILLS = ['vocabulary', 'punctuation', 'thematicFlow', 'sentenceStructure'];
 const grading = require('./grading');
 const transfers = require('./transfers');
+// Badge conditions — pure, and tested without a database. See badges.js.
+const badgeRules = require('./badges');
 
 require('dotenv').config({ path: path.join(__dirname, '.env') });
 
@@ -7618,63 +7620,124 @@ app.get('/api/teacher/student/:studentId/analytics', async (req, res) => {
  * Badges are one-off achievements, each with its own condition. Stars are the
  * separate per-activity currency (see grading.js).
  *
- * They used to be the same thing wearing two labels: every badge unlocked purely
- * on a star count, so "Read and applied 3 reading strategies" unlocked at 3
- * stars — which a single 90+ essay grants — and "Perfect grammar score" never
- * looked at grammar at all. A pupil could be shown an award describing something
- * they had not done. Each badge now evaluates the condition its own description
- * promises, and reports progress toward it so the locked state can say how far
- * off it is.
+ * The conditions live in badges.js — pure, and tested there without a database.
+ * What stays here is only what needs one: the section standing that Class
+ * Champion depends on, and the record that makes an earned badge permanent.
  *
- * `progress`/`target` are counts in the badge's own unit, so the UI renders
- * "2 of 3" without knowing what any badge measures.
+ * They used to be the same thing wearing two labels: every badge unlocked
+ * purely on a star count, so "Read and applied 3 reading strategies" unlocked
+ * at 3 stars — which a single 90+ essay grants — and "Perfect grammar score"
+ * never looked at grammar at all. A pupil could be shown an award describing
+ * something they had not done.
  */
-function computeBadges(submissions, passingGrade) {
-  const graded = (submissions || []).filter(s => (s.hitlScore ?? s.aiScore ?? null) !== null);
-  const percentOf = (s) => s.hitlScore ?? s.aiScore ?? 0;
 
-  const outstanding = graded.filter(s => percentOf(s) >= 90).length;
-  const withStrategy = graded.filter(s => s.readingStrategy && s.readingStrategy.trim()
-    && !/^n\/?a$/i.test(s.readingStrategy.trim())).length;
+/**
+ * Is this learner in the top 3 of their section by general average?
+ *
+ * Deliberately expensive and deliberately rare — every other badge reads work
+ * the caller has already loaded, while this one has to grade the whole section.
+ * badgesForStudent below is what keeps it off the hot path.
+ *
+ * Nothing about a classmate leaves this function. It returns one boolean about
+ * the caller; no name, score or position of any other learner is returned, so
+ * there is nothing here for the browser to reconstruct a leaderboard from.
+ */
+async function sectionRankTop3({ studentId, sectionId, schoolId, auth }) {
+  const classmates = await prisma.user.findMany({
+    where: { sectionId, role: 'STUDENT' },
+    select: { id: true },
+  });
+  if (classmates.length === 0) return false;
+  const ids = classmates.map(c => c.id);
 
-  // "Perfect grammar" means full marks on the AI's language-mechanics skills.
-  // Both are scored out of 25 by the grading prompt.
-  const perfectGrammar = graded.filter(s => {
-    if (!s.skillScores) return false;
+  // One query for the whole section rather than one per learner.
+  const all = await prisma.submission.findMany({
+    where: { studentId: { in: ids }, status: 'GRADED', ...releaseFilterFor(auth) },
+    include: { activity: { include: { class: true } } },
+  });
+
+  const byStudent = new Map(ids.map(id => [id, []]));
+  for (const s of all) byStudent.get(s.studentId)?.push(s);
+
+  // The same function behind the average the learner already sees on their own
+  // dashboard, so the badge and that number can never disagree. The shared
+  // policy cache is the reason this is one policy read per subject rather than
+  // one per student.
+  const policyFor = makePolicyCache(schoolId);
+  const averages = [];
+  for (const id of ids) {
+    const { average } = await workingAverageAcrossSubjects(byStudent.get(id) || [], schoolId, policyFor);
+    averages.push({ studentId: id, average });
+  }
+
+  return badgeRules.isTop3(averages, studentId);
+}
+
+/**
+ * The learner's badges: conditions evaluated now, unioned with everything they
+ * have ever earned, and anything newly reached written down.
+ *
+ * Recording them is what lets Class Champion mean "you reached the top 3"
+ * instead of "you are in the top 3 today". A badge that evaporates because a
+ * classmate improved punishes a child for someone else's work, and this is the
+ * one screen in the app whose whole job is to tell them what they achieved.
+ */
+async function badgesForStudent({ studentId, submissions, passingGrade, sectionId, schoolId, auth }) {
+  // The store is an enhancement, not a dependency. render.yaml runs
+  // `migrate deploy` before the app starts, so StudentBadge is normally there
+  // before this code serves anything — but if it ever is not, fourteen of the
+  // fifteen badges are still perfectly computable from the learner's own work,
+  // and a child's dashboard must not 500 over a trophy cabinet.
+  let already = new Set();
+  let storeAvailable = true;
+  try {
+    const stored = await prisma.studentBadge.findMany({
+      where: { studentId },
+      select: { badgeId: true },
+    });
+    already = new Set(stored.map(b => b.badgeId));
+  } catch {
+    storeAvailable = false;
+  }
+
+  // Two guards keep the section-wide query rare: once the badge is held it is
+  // never recomputed, and a learner with too little work to be ranked fairly
+  // is not ranked at all — the same volume bar Honor Student uses.
+  let rankTop3 = null;
+  if (!already.has('class-champion') && sectionId) {
+    const gradedCount = (submissions || []).filter(s => (s.hitlScore ?? s.aiScore ?? null) !== null).length;
+    if (gradedCount >= 5) {
+      try {
+        rankTop3 = await sectionRankTop3({ studentId, sectionId, schoolId, auth });
+      } catch {
+        // Ranking is the one condition that can fail on its own. Losing it
+        // must not cost the learner the fourteen badges that do not need it,
+        // so this stays null — "not determined", which never reads as earned.
+        rankTop3 = null;
+      }
+    }
+  }
+
+  const computed = badgeRules.computeBadges(submissions, passingGrade, { rankTop3 });
+
+  const newlyEarned = computed.filter(b => b.earned && !already.has(b.id)).map(b => b.id);
+  if (storeAvailable && newlyEarned.length > 0) {
     try {
-      const sk = JSON.parse(s.skillScores);
-      return sk.punctuation >= 25 || sk.sentenceStructure >= 25;
-    } catch { return false; }
-  }).length;
+      // skipDuplicates because two tabs loading the dashboard at once would
+      // otherwise race on the unique pair.
+      await prisma.studentBadge.createMany({
+        data: newlyEarned.map(badgeId => ({ studentId, badgeId })),
+        skipDuplicates: true,
+      });
+    } catch {
+      // Failing to record it costs permanence, not the badge itself — the
+      // learner still sees everything they have earned on this load.
+    }
+  }
 
-  const essays = graded.filter(s => (s.activity?.type || '').toLowerCase().includes('essay')).length;
-
-  // Honour roll is a *sustained* average, so it needs both the volume and the
-  // mean — five 90s, not one lucky 98.
-  const honourEligible = graded.length >= 5;
-  const overallAvg = graded.length
-    ? graded.reduce((sum, s) => sum + percentOf(s), 0) / graded.length
-    : 0;
-
-  const defs = [
-    { id: 'first-star', title: 'First Star', icon: 'star',
-      desc: 'Scored 90 or above on a graded activity',
-      progress: Math.min(outstanding, 1), target: 1 },
-    { id: 'bookworm', title: 'Bookworm', icon: 'book',
-      desc: 'Received 3 personalised reading strategies',
-      progress: Math.min(withStrategy, 3), target: 3 },
-    { id: 'grammar-master', title: 'Grammar Master', icon: 'zap',
-      desc: 'Perfect punctuation or sentence-structure score on any activity',
-      progress: Math.min(perfectGrammar, 1), target: 1 },
-    { id: 'honor-student', title: 'Honor Student', icon: 'trophy',
-      desc: 'Averaged 90 or above across at least 5 graded activities',
-      progress: honourEligible && overallAvg >= 90 ? 5 : Math.min(graded.length, 4), target: 5 },
-    { id: 'essay-champion', title: 'Essay Champion', icon: 'award',
-      desc: 'Completed 10 graded essay submissions',
-      progress: Math.min(essays, 10), target: 10 },
-  ];
-
-  return defs.map(b => ({ ...b, earned: b.progress >= b.target, passingGrade }));
+  // Anything on record counts as earned even if today's data no longer says so
+  // — that is the whole point of having recorded it.
+  return computed.map(b => (already.has(b.id) ? { ...b, earned: true, progress: b.target } : b));
 }
 
 // ─────────────────────────────────────────
@@ -7754,7 +7817,14 @@ app.get('/api/student/:studentId/dashboard', async (req, res) => {
     ]).size;
     const { passingGrade } = await gradingSettingsFor(schoolIdForStudent);
     const stars = grading.starsFor(submissions, passingGrade);
-    const badges = computeBadges(submissions, passingGrade);
+    const badges = await badgesForStudent({
+      studentId: req.params.studentId,
+      submissions,
+      passingGrade,
+      sectionId: student?.sectionId ?? null,
+      schoolId: schoolIdForStudent,
+      auth: req.auth,
+    });
 
     // Dynamically calculate avgSkills from recent submissions
     const avgSkills = {};

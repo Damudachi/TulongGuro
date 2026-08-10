@@ -54,16 +54,18 @@ export default function SkillProgressChart({
   emptyMessage = 'Complete your activities and get them graded to see your skill progress.'
 }) {
   const [data, setData] = useState(null);
-  const [isLoading, setIsLoading] = useState(true);
   const [activeTab, setActiveTab] = useState('summary');
   const url = dataUrl || (studentId ? `${API_URL}/api/student/${studentId}/skill-progress` : null);
+  // With no url there is nothing to wait for, so this opens straight on the
+  // empty message rather than a spinner the first commit would clear.
+  const [isLoading, setIsLoading] = useState(() => !!url);
 
   useEffect(() => {
-    if (!url) { setIsLoading(false); return; }
-    setIsLoading(true);
+    if (!url) return;
     apiFetch(url)
       .then(r => r.json())
       .then(d => { if (d.success) setData(d); })
+      .catch(() => {}) /* a failed read leaves the empty state, which is what renders */
       .finally(() => setIsLoading(false));
   }, [url]);
 

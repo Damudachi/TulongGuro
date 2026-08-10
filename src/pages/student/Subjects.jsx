@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { BookOpen, ChevronRight, ArrowLeft, Loader2, FileText, CheckCircle2, Clock, AlertCircle, MessageSquare } from 'lucide-react';
 import { API_URL, apiFetch } from '../../config';
+import { getStoredUser } from '../../utils/session';
 import { gradeTone, gradeChip, DEFAULT_PASSING_GRADE } from '../../utils/grading';
 import { submissionWindow, formatDeadline } from '../../utils/deadlines';
 
@@ -31,15 +32,17 @@ const themeFor = (index) => SUBJECT_THEMES[index % SUBJECT_THEMES.length];
 
 export default function Subjects() {
   const [subjects, setSubjects] = useState([]);
-  const [isLoading, setIsLoading] = useState(true);
+  // Nobody signed in means there is nothing to fetch, so this must not open on
+  // a spinner that only the first commit would take away again.
+  const [isLoading, setIsLoading] = useState(() => !!getStoredUser().id);
   const [selected, setSelected] = useState(null); // { subject, themeIndex }
   const [activeTab, setActiveTab] = useState('activities');
   // The school's own threshold, so colours match what the school counts as passing.
   const [passingGrade, setPassingGrade] = useState(DEFAULT_PASSING_GRADE);
 
   useEffect(() => {
-    const user = JSON.parse(localStorage.getItem('user') || '{}');
-    if (!user.id) return setIsLoading(false);
+    const user = getStoredUser();
+    if (!user.id) return;
     apiFetch(`${API_URL}/api/student/${user.id}/subjects`)
       .then(r => r.json())
       .then(d => {
@@ -47,6 +50,7 @@ export default function Subjects() {
         setSubjects(d.subjects);
         if (typeof d.passingGrade === 'number') setPassingGrade(d.passingGrade);
       })
+      .catch(() => {}) /* a failed read leaves the empty state, which is what renders */
       .finally(() => setIsLoading(false));
   }, []);
 

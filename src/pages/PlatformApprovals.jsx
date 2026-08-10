@@ -61,6 +61,7 @@ export default function PlatformApprovals() {
     }
   }, [key, status]);
 
+  // eslint-disable-next-line react-hooks/set-state-in-effect -- flipping the loading flag ahead of an async read; the rule's alternative is a data-fetching library this app doesn't use
   useEffect(() => { load(); }, [load]);
 
   const act = async (school, action, body) => {

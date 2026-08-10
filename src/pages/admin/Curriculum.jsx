@@ -35,7 +35,9 @@ function describeRubricReport(report, { alreadySaved } = {}) {
 export default function AdminCurriculum() {
   const admin = JSON.parse(localStorage.getItem('user') || '{}');
   const [curriculums, setCurriculums] = useState([]);
-  const [isLoading, setIsLoading] = useState(true);
+  // No admin id means there is nothing to fetch, so this must not open on a
+  // spinner that only the first commit would take away again (see load below).
+  const [isLoading, setIsLoading] = useState(() => !!admin.id);
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState({ gradeLevel: '', subject: '', title: '', description: '' });
   const [file, setFile] = useState(null);
@@ -47,10 +49,11 @@ export default function AdminCurriculum() {
   const [busy, setBusy] = useState(false);
 
   const load = useCallback(() => {
-    if (!admin.id) return setIsLoading(false);
+    if (!admin.id) return;
     apiFetch(`${API_URL}/api/admin/${admin.id}/curriculums`)
       .then(r => r.json())
       .then(d => { if (d.success) setCurriculums(d.curriculums || []); })
+      .catch(() => {}) /* a failed read leaves the empty state, which is what renders */
       .finally(() => setIsLoading(false));
   }, [admin.id]);
 
@@ -95,6 +98,10 @@ export default function AdminCurriculum() {
       const res = await apiFetch(`${API_URL}/api/admin/${admin.id}/curriculums/${curriculum.id}`, { method: 'DELETE' });
       const d = await res.json();
       if (d.success) load(); else alert(d.error);
+    } catch {
+      // finally alone cleared the busy flag and said nothing, so a dropped
+      // connection looked identical to a completed delete.
+      alert('Could not reach the server. This curriculum has not been deleted.');
     } finally { setBusy(false); }
   };
 
@@ -131,15 +138,23 @@ export default function AdminCurriculum() {
         setLessonDraft({ title: '', outputType: 'Essay', weekNumber: '', description: '' });
         load();
       } else alert(d.error);
+    } catch {
+      alert('Could not reach the server. The lesson has not been added.');
     } finally { setBusy(false); }
   };
 
-  const handleDeleteLesson = async (curriculumId, lessonId) => {
+  const handleDeleteLesson = async (curriculumId, lessonId, lessonTitle) => {
+    // Confirmed, like every other delete on this page. This one alone removed a
+    // lesson on a single click — and a curriculum lesson carries the rubric
+    // that new classes are built from.
+    if (!confirm(`Delete the lesson "${lessonTitle || 'this lesson'}"? Classes already created from it keep their own copy.`)) return;
     setBusy(true);
     try {
       const res = await apiFetch(`${API_URL}/api/admin/${admin.id}/curriculums/${curriculumId}/lessons/${lessonId}`, { method: 'DELETE' });
       const d = await res.json();
       if (d.success) load(); else alert(d.error);
+    } catch {
+      alert('Could not reach the server. The lesson has not been deleted.');
     } finally { setBusy(false); }
   };
 
@@ -239,7 +254,7 @@ export default function AdminCurriculum() {
                                 )}
                               </div>
                             </div>
-                            <button onClick={() => handleDeleteLesson(c.id, l.id)} disabled={busy}
+                            <button onClick={() => handleDeleteLesson(c.id, l.id, l.title)} disabled={busy}
                               className="p-1.5 rounded-md text-slate-300 hover:text-red-500 hover:bg-red-50 shrink-0 disabled:opacity-40">
                               <Trash2 className="w-3.5 h-3.5" />
                             </button>

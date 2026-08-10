@@ -1,7 +1,9 @@
 import { useState, useEffect } from 'react';
-import { useNavigate, useParams, Link } from 'react-router-dom';
+import { useNavigate, useParams, Link, Navigate } from 'react-router-dom';
 import { ArrowLeft, BookOpen, Award, Calendar, FileText, Loader2, Clock, CheckCircle2, UserCheck, ChevronRight } from 'lucide-react';
 import { API_URL, apiFetch } from '../../config';
+import { submissionWindow, formatDeadline } from '../../utils/deadlines';
+import { getStoredUser } from '../../utils/session';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
 
@@ -16,14 +18,17 @@ export default function ActivityDetails() {
   const navigate = useNavigate();
   const { activityId } = useParams();
   const [activity, setActivity] = useState(null);
-  const [isLoading, setIsLoading] = useState(true);
+  // Nothing to fetch without both of these, so this must not open on a spinner
+  // that only the first commit would take away again.
+  const [isLoading, setIsLoading] = useState(() => !!getStoredUser().id && !!activityId);
 
   useEffect(() => {
-    const user = JSON.parse(localStorage.getItem('user') || '{}');
-    if (!user.id || !activityId) return setIsLoading(false);
+    const user = getStoredUser();
+    if (!user.id || !activityId) return;
     apiFetch(`${API_URL}/api/student/${user.id}/activities/${activityId}`)
       .then(r => r.json())
       .then(d => { if (d.success) setActivity(d.activity); })
+      .catch(() => {}) /* a failed read leaves the empty state, which is what renders */
       .finally(() => setIsLoading(false));
   }, [activityId]);
 
@@ -43,14 +48,21 @@ export default function ActivityDetails() {
   }
 
   // A student-submit activity shouldn't land here — send it to the submit flow.
+  // Rendered as <Navigate>, not called as navigate(): calling it in the render
+  // body queues a router state update while this component is still rendering,
+  // which React reports as updating one component during another's render.
   if (activity.submissionMode === 'STUDENT_SUBMIT') {
-    navigate(`/student/submit?activityId=${activity.id}`, { replace: true });
-    return null;
+    return <Navigate to={`/student/submit?activityId=${activity.id}`} replace />;
   }
 
   const sub = activity.mySubmission;
-  const dueDate = activity.deadline ? new Date(activity.deadline) : null;
-  const isPastDeadline = dueDate && dueDate < new Date();
+  // Through the shared helper, like every other screen. This page tested
+  // `new Date(deadline) < new Date()`, which parses a bare "YYYY-MM-DD" as
+  // midnight UTC — 8:00 AM in Manila — so the due-date chip turned red over
+  // breakfast on the day the work was actually due, on the one page whose job
+  // is to reassure a learner that their teacher is handling the submission.
+  // The local const also shadowed the helper's own name.
+  const { isClosed } = submissionWindow(activity);
   const isGraded = sub?.status === 'GRADED';
 
   return (
@@ -74,12 +86,16 @@ export default function ActivityDetails() {
               <span className="block text-[10px] uppercase tracking-wider font-bold mb-1 text-blue-200">Points</span>
               <span className="text-lg font-bold flex items-center"><Award className="w-4 h-4 mr-1.5" /> {activity.points}</span>
             </div>
-            {dueDate && (
-              <div className={cn('px-4 py-2.5 rounded-xl backdrop-blur-sm', isPastDeadline ? 'bg-red-500/30' : 'bg-white/15')}>
+            {activity.deadline && (
+              <div className={cn('px-4 py-2.5 rounded-xl backdrop-blur-sm', isClosed ? 'bg-red-500/30' : 'bg-white/15')}>
                 <span className="block text-[10px] uppercase tracking-wider font-bold mb-1 text-blue-200">Due Date</span>
                 <span className="text-lg font-bold flex items-center">
                   <Calendar className="w-4 h-4 mr-1.5" />
-                  {dueDate.toLocaleDateString('en-PH', { month: 'short', day: 'numeric', year: 'numeric' })}
+                  {/* formatDeadline reads the date parts directly, so the label
+                      cannot roll a day backwards on a device set to another
+                      timezone the way toLocaleDateString on the parsed instant
+                      could. */}
+                  {formatDeadline(activity.deadline, { month: 'short', day: 'numeric', year: 'numeric' })}
                 </span>
               </div>
             )}

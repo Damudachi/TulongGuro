@@ -35,7 +35,9 @@ export default function AdminRubrics() {
   const admin = JSON.parse(localStorage.getItem('user') || '{}');
   const [rubrics, setRubrics] = useState([]);
   const [builtins, setBuiltins] = useState([]);
-  const [isLoading, setIsLoading] = useState(true);
+  // No admin id means there is nothing to fetch, so this must not open on a
+  // spinner that only the first commit would take away again (see load below).
+  const [isLoading, setIsLoading] = useState(() => !!admin.id);
   const [showForm, setShowForm] = useState(false);
   const [name, setName] = useState('');
   const [criteria, setCriteria] = useState([{ ...BLANK_CRITERION }]);
@@ -49,7 +51,7 @@ export default function AdminRubrics() {
   const [retagForm, setRetagForm] = useState({ gradeLevel: '', subject: '' });
 
   const load = useCallback(() => {
-    if (!admin.id) return setIsLoading(false);
+    if (!admin.id) return;
     Promise.all([
       apiFetch(`${API_URL}/api/admin/${admin.id}/rubrics`).then(r => r.json()),
       apiFetch(`${API_URL}/api/rubric-templates/builtin`).then(r => r.json()).catch(() => ({}))

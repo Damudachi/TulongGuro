@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
-import { ClipboardList, Check, ChevronDown, ChevronRight, Edit2, Trash2, Plus, X } from 'lucide-react';
+import { ClipboardList, ChevronDown, ChevronRight, Edit2, Trash2, Plus, X } from 'lucide-react';
 import { API_URL, apiFetch } from '../../config';
+import { getStoredUser } from '../../utils/session';
 
 // Helper for dynamic band colors based on label
 const getBandColor = (label, index, totalBands) => {
@@ -58,18 +59,12 @@ export default function RubricManager() {
   // every other class in the school is graded against.
   const [schoolRubrics, setSchoolRubrics] = useState([]);
   const [prebuiltRubrics, setPrebuiltRubrics] = useState([]);
-  const [teacherId, setTeacherId] = useState(null);
+  // Never changes for the life of the page — read on the first render instead
+  // of being set from an effect after one render without it.
+  const teacherId = getStoredUser().id || null;
 
   // Edit State
   const [editingRubric, setEditingRubric] = useState(null);
-
-  useEffect(() => {
-    const user = JSON.parse(localStorage.getItem('user') || '{}');
-    if (user.id) {
-      setTeacherId(user.id);
-      fetchSavedRubrics(user.id);
-    }
-  }, []);
 
   useEffect(() => {
     apiFetch(`${API_URL}/api/rubric-templates/builtin`)
@@ -98,6 +93,14 @@ export default function RubricManager() {
     }
   };
 
+  // Declared after fetchSavedRubrics on purpose. It sat above the function and
+  // called it — a temporal-dead-zone reference that only works because effects
+  // run after render.
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- async read; nothing is set before the first await
+    if (teacherId) fetchSavedRubrics(teacherId);
+  }, [teacherId]);
+
   const toggleExpand = (id) => setExpandedId(prev => prev === id ? null : id);
 
   const isAlreadySaved = (name) => savedRubrics.some(r => r.name === name);
@@ -110,7 +113,7 @@ export default function RubricManager() {
       const data = await res.json().catch(() => ({}));
       if (res.ok && data.success) fetchSavedRubrics(teacherId);
       else alert(data.error || 'Could not delete this rubric.');
-    } catch(e) {
+    } catch {
       alert('Network error while deleting the rubric.');
     }
   };
