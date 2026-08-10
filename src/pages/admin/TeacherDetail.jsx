@@ -597,7 +597,7 @@ export default function AdminTeacherDetail() {
                       </div>
                       <button onClick={() => removeStudent(section, s)} disabled={busy}
                         title="Remove student"
-                        className="p-1.5 rounded-md text-slate-300 hover:text-red-500 hover:bg-red-50 opacity-0 group-hover:opacity-100 transition-opacity shrink-0 disabled:opacity-30">
+                        className="p-1.5 rounded-md text-slate-300 hover:text-red-500 hover:bg-red-50 reveal-on-hover shrink-0 disabled:opacity-30">
                         <Trash2 className="w-3.5 h-3.5" />
                       </button>
                     </div>

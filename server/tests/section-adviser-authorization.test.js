@@ -306,3 +306,62 @@ describe('POST /api/teacher/classes keeps a class inside its own school', () => 
     expect(prismaFake.class.create).toHaveBeenCalled();
   });
 });
+
+/**
+ * The section name is the first thing the handler touches — `name.trim()` runs
+ * before anything checks that a name arrived at all, or that what arrived is a
+ * string.
+ *
+ * Two different failures came out of that. A missing or non-string name threw
+ * inside the try block and surfaced as a 500 carrying a JavaScript TypeError,
+ * which is the wrong answer to bad input from a client. And a name of nothing
+ * but spaces satisfied the form's `required` attribute, trimmed to '', and was
+ * created — leaving a real section with no name, indistinguishable from any
+ * other blank one in every section picker, gradebook and analytics selector on
+ * the platform.
+ *
+ * The refusal has to come before any write: a 400 that still created the row
+ * would be the same defect wearing a different status code.
+ */
+describe('POST /api/teacher/sections requires a real name', () => {
+  const rejected = [
+    ['the field is missing entirely', {}],
+    ['it is an empty string', { name: '' }],
+    ['it is only whitespace', { name: '   ' }],
+    ['it is a number', { name: 123 }],
+    ['it is null', { name: null }],
+    ['it is an array', { name: [] }],
+  ];
+
+  for (const [label, body] of rejected) {
+    it(`400s when ${label}, and creates nothing`, async () => {
+      const res = await postSection(tokenFor(OLD_ADVISER), { gradeLevel: 'Grade 6', studentsList: [], ...body });
+
+      expect(res.status).toBe(400);
+      expect(prismaFake.section.create).not.toHaveBeenCalled();
+    });
+  }
+
+  it('explains what is wrong rather than leaking a TypeError', async () => {
+    const res = await postSection(tokenFor(OLD_ADVISER), { gradeLevel: 'Grade 6' });
+    const body = await res.json();
+
+    expect(body.success).toBe(false);
+    expect(body.error).toMatch(/name/i);
+    expect(body.error).not.toMatch(/trim|undefined|TypeError/);
+  });
+
+  it('accepts a name padded with spaces, and stores it trimmed', async () => {
+    signedInAs(OLD_ADVISER);
+    prismaFake.section.findFirst.mockResolvedValue(null);
+    prismaFake.section.create.mockResolvedValue({ id: SECTION, name: SECTION_NAME });
+
+    const res = await postSection(tokenFor(OLD_ADVISER), {
+      name: `  ${SECTION_NAME}  `, gradeLevel: 'Grade 6', studentsList: [],
+    });
+
+    expect(res.status).toBe(200);
+    expect(prismaFake.section.create).toHaveBeenCalledTimes(1);
+    expect(prismaFake.section.create.mock.calls[0][0].data.name).toBe(SECTION_NAME);
+  });
+});

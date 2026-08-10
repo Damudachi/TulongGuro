@@ -213,7 +213,10 @@ export default function StudentDashboard() {
                     <p className="text-[10px] font-semibold text-navy-400">
                       {dueDate.toLocaleDateString('en-PH', { month: 'short', day: 'numeric' })}
                     </p>
-                    <p className="text-[10px] font-extrabold text-royal-600 mt-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                    {/* The whole card is a Link, so tapping always worked —
+                        but this was the only thing saying so, and on a phone
+                        it never appeared. Now it is simply always there. */}
+                    <p className="text-[10px] font-extrabold text-royal-600 mt-1 reveal-on-hover">
                       {item.submissionMode === 'STUDENT_SUBMIT' ? 'Submit Now →' : 'View Details →'}
                     </p>
                   </div>

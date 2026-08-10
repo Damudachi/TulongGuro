@@ -46,6 +46,22 @@ export default defineConfig([
       }],
     },
   },
+  // The service worker runs in neither Node nor a window: `self`, `caches`,
+  // `clients` and `skipWaiting` are its globals. It used to declare them with
+  // an `/* eslint-env serviceworker */` comment, which ESLint 10 removed
+  // support for — so `npm run lint` had been failing outright since the PWA
+  // commit. Declaring the environment here is the replacement, and it has to
+  // be a config block rather than a comment because public/ matched no
+  // `files:` entry at all: with the comment simply deleted, every one of those
+  // globals would have linted as undefined instead.
+  {
+    files: ['public/sw.js'],
+    languageOptions: {
+      globals: globals.serviceworker,
+      sourceType: 'script',
+    },
+    extends: [js.configs.recommended],
+  },
   {
     files: ['src/**/*.{js,jsx}'],
     extends: [
