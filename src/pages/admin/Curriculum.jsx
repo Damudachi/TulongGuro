@@ -96,6 +96,10 @@ export default function AdminCurriculum() {
       const res = await apiFetch(`${API_URL}/api/admin/${admin.id}/curriculums/${curriculum.id}`, { method: 'DELETE' });
       const d = await res.json();
       if (d.success) load(); else alert(d.error);
+    } catch {
+      // finally alone cleared the busy flag and said nothing, so a dropped
+      // connection looked identical to a completed delete.
+      alert('Could not reach the server. This curriculum has not been deleted.');
     } finally { setBusy(false); }
   };
 
@@ -132,15 +136,23 @@ export default function AdminCurriculum() {
         setLessonDraft({ title: '', outputType: 'Essay', weekNumber: '', description: '' });
         load();
       } else alert(d.error);
+    } catch {
+      alert('Could not reach the server. The lesson has not been added.');
     } finally { setBusy(false); }
   };
 
-  const handleDeleteLesson = async (curriculumId, lessonId) => {
+  const handleDeleteLesson = async (curriculumId, lessonId, lessonTitle) => {
+    // Confirmed, like every other delete on this page. This one alone removed a
+    // lesson on a single click — and a curriculum lesson carries the rubric
+    // that new classes are built from.
+    if (!confirm(`Delete the lesson "${lessonTitle || 'this lesson'}"? Classes already created from it keep their own copy.`)) return;
     setBusy(true);
     try {
       const res = await apiFetch(`${API_URL}/api/admin/${admin.id}/curriculums/${curriculumId}/lessons/${lessonId}`, { method: 'DELETE' });
       const d = await res.json();
       if (d.success) load(); else alert(d.error);
+    } catch {
+      alert('Could not reach the server. The lesson has not been deleted.');
     } finally { setBusy(false); }
   };
 
@@ -240,7 +252,7 @@ export default function AdminCurriculum() {
                                 )}
                               </div>
                             </div>
-                            <button onClick={() => handleDeleteLesson(c.id, l.id)} disabled={busy}
+                            <button onClick={() => handleDeleteLesson(c.id, l.id, l.title)} disabled={busy}
                               className="p-1.5 rounded-md text-slate-300 hover:text-red-500 hover:bg-red-50 shrink-0 disabled:opacity-40">
                               <Trash2 className="w-3.5 h-3.5" />
                             </button>

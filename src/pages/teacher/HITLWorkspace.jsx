@@ -1146,7 +1146,13 @@ export default function HITLWorkspace() {
                     onChange={e => setScores(prev => ({ ...prev, [item.key]: parseInt(e.target.value) }))}
                     className={`w-full accent-brand-navy ${!isEditingAssessment ? 'opacity-50 cursor-not-allowed' : ''}`} />
                   <div className="w-full bg-slate-100 rounded-full h-2 mt-1">
-                    <div className={cn('h-2 rounded-full transition-all', item.color)} style={{ width: `${(scores[item.key] / item.max) * 100}%` }} />
+                    {/* Guarded the same way as the percentage label above it.
+                        `scores` starts empty, so before a criterion is touched
+                        this divided undefined by the max and set the bar to
+                        "NaN%" — an invalid width the browser drops, leaving a
+                        bar that never moved off zero even once scored. */}
+                    <div className={cn('h-2 rounded-full transition-all', item.color)}
+                      style={{ width: `${item.max ? Math.max(0, Math.min(100, ((scores[item.key] || 0) / item.max) * 100)) : 0}%` }} />
                   </div>
                 </div>
               ))}

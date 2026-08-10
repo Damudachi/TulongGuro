@@ -50,17 +50,27 @@ export default function ClassHub() {
 
   const handleCreateActivity = async (e) => {
     e.preventDefault();
-    const res = await apiFetch(`${API_URL}/api/teacher/activities`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...newActivity, classId, classLessonId: selectedLessonId || null })
-    });
-    const data = await res.json();
-    if (data.success) {
+    try {
+      const res = await apiFetch(`${API_URL}/api/teacher/activities`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...newActivity, classId, classLessonId: selectedLessonId || null })
+      });
+      const data = await res.json().catch(() => null);
+      // There was no else and no catch here at all: a refusal — the server
+      // rejects an activity with no rubric, or one on a class that is not
+      // yours — left the modal open with the form untouched and nothing said,
+      // so pressing Create simply appeared to do nothing at all.
+      if (!res.ok || !data?.success) {
+        alert(data?.error || 'That activity could not be created. Nothing has been saved.');
+        return;
+      }
       setClassData(prev => ({ ...prev, activities: [data.activity, ...prev.activities] }));
       setShowActivityForm(false);
       setNewActivity({ title: '', type: 'Essay', points: 100, instructions: '', deadline: '', submissionMode: 'TEACHER_UPLOAD' });
       setSelectedLessonId('');
+    } catch {
+      alert('Could not reach the server, so the activity was not created.');
     }
   };
 
