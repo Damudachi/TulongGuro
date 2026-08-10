@@ -1,8 +1,16 @@
-import { useState, useEffect } from 'react';
-import { User, Bell, Shield, Save, Lock, Eye, EyeOff, Loader2 } from 'lucide-react';
+import { useState } from 'react';
+import { User, Shield, Lock, Eye, EyeOff, Loader2 } from 'lucide-react';
 import PageHeader from '../../components/PageHeader';
-import Toggle from '../../components/Toggle';
 import { API_URL, apiFetch, setSession } from '../../config';
+
+/**
+ * The Bio field and the Notifications tab used to live here. Both wrote to
+ * localStorage and nothing read them back: the bio was captioned "tell your
+ * students a bit about yourself" and no student page has ever displayed it,
+ * and there is no notification delivery for the toggle to govern. Both
+ * reported "Saved!" and changed nothing, on one device only. Removed rather
+ * than left as decoration — what remains here is what actually takes effect.
+ */
 
 /** Read-only account field — these are set by the school admin. */
 function LockedField({ label, value }) {
@@ -19,38 +27,15 @@ function LockedField({ label, value }) {
 
 export default function Settings() {
   const [activeTab, setActiveTab] = useState('profile');
-  const [user, setUser] = useState(null);
-  const [bio, setBio] = useState('');
-  const [notifications, setNotifications] = useState({
-    pushAlerts: false,
-  });
+  // Read once at first render rather than in an effect — the stored user does
+  // not change while this page is open, so a load-then-setState pass only
+  // bought an extra render.
+  const [user] = useState(() => JSON.parse(localStorage.getItem('user') || '{}'));
   const [passwords, setPasswords] = useState({ current: '', newPass: '', confirm: '' });
   const [showPassword, setShowPassword] = useState(false);
   const [saveMsg, setSaveMsg] = useState('');
   const [pwError, setPwError] = useState('');
   const [pwBusy, setPwBusy] = useState(false);
-
-  useEffect(() => {
-    const stored = JSON.parse(localStorage.getItem('user') || '{}');
-    setUser(stored);
-    // Load saved preferences
-    const savedNotifs = JSON.parse(localStorage.getItem('notifPrefs') || 'null');
-    if (savedNotifs) setNotifications(savedNotifs);
-    const savedBio = localStorage.getItem('teacherBio') || '';
-    setBio(savedBio);
-  }, []);
-
-  const handleSaveBio = () => {
-    localStorage.setItem('teacherBio', bio);
-    setSaveMsg('Bio saved!');
-    setTimeout(() => setSaveMsg(''), 2000);
-  };
-
-  const handleSaveNotifs = () => {
-    localStorage.setItem('notifPrefs', JSON.stringify(notifications));
-    setSaveMsg('Notification preferences saved!');
-    setTimeout(() => setSaveMsg(''), 2000);
-  };
 
   /**
    * Change the signed-in teacher's password.
@@ -90,7 +75,6 @@ export default function Settings() {
 
   const tabs = [
     { id: 'profile', label: 'Profile Information', short: 'Profile', icon: User },
-    { id: 'notifications', label: 'Notifications', short: 'Alerts', icon: Bell },
     { id: 'security', label: 'Security & Password', short: 'Security', icon: Shield },
   ];
 
@@ -139,34 +123,6 @@ export default function Settings() {
                   <p className="text-xs text-navy-400 font-semibold">
                     Name, email, and school are set by your administrator and cannot be changed here.
                   </p>
-
-                  <div className="border-t-2 border-cream-200 pt-5">
-                    <label className="tg-label">Bio (Optional)</label>
-                    <textarea rows="3" value={bio} onChange={(e) => setBio(e.target.value)}
-                      className="tg-input resize-y"
-                      placeholder="Tell your students a bit about yourself..." />
-                    <div className="flex justify-end mt-3">
-                      <button onClick={handleSaveBio} type="button" className="tg-btn-primary !py-2.5 !px-5">
-                        <Save className="w-4 h-4" /> Save Bio
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              </>
-            )}
-
-            {activeTab === 'notifications' && (
-              <>
-                <h2 className="font-display text-lg font-extrabold text-navy-700 mb-3">Notification Preferences</h2>
-                <div className="divide-y-2 divide-cream-200">
-                  <Toggle label="Push notifications for urgent alerts"
-                    checked={notifications.pushAlerts}
-                    onChange={(v) => setNotifications(p => ({ ...p, pushAlerts: v }))} />
-                </div>
-                <div className="flex justify-end mt-6">
-                  <button onClick={handleSaveNotifs} type="button" className="tg-btn-primary !py-2.5 !px-5">
-                    <Save className="w-4 h-4" /> Save Preferences
-                  </button>
                 </div>
               </>
             )}

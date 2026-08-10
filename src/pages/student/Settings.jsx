@@ -1,43 +1,34 @@
 import { useState } from 'react';
-import { Bell, Shield, Eye, Download, Save, Loader2, EyeOff } from 'lucide-react';
+import { Shield, Download, Loader2, EyeOff, Eye } from 'lucide-react';
 import PageHeader from '../../components/PageHeader';
-import Toggle from '../../components/Toggle';
 import { API_URL, apiFetch, setSession } from '../../config';
 
-const NOTIF_KEY = 'studentNotifPrefs';
-const PRIVACY_KEY = 'studentPrivacyPrefs';
-
-const DEFAULT_NOTIFS = {
-  emailNotifications: true,
-  pushNotifications: false,
-};
-
-const DEFAULT_PRIVACY = {
-  profileVisibility: 'public',
-  showAwards: true,
-};
-
+/**
+ * What a learner can actually change about their account.
+ *
+ * This page used to carry a Notifications tab (email/push) and a Privacy tab
+ * (Profile Visibility, Show Awards on Profile). Both wrote to localStorage and
+ * nothing anywhere read them back, so "Save Changes" reported success and
+ * changed nothing — and being per-device, they would not have followed the
+ * child to the classroom computer even if they had worked.
+ *
+ * The privacy pair was the worse of the two: there is no public profile in
+ * this application. student/Profile.jsx renders the signed-in learner's own
+ * record and nobody else can reach it, so "Profile Visibility" governed
+ * nothing while telling a child their work could be hidden. A privacy promise
+ * that is not enforced is worse than no control at all, so both are gone
+ * rather than left as decoration.
+ */
 const TABS = [
-  { id: 'notifications', label: 'Notifications', short: 'Alerts', icon: Bell },
-  { id: 'privacy', label: 'Privacy', short: 'Privacy', icon: Eye },
   { id: 'security', label: 'Security', short: 'Security', icon: Shield },
-  { id: 'data', label: 'Data & Privacy', short: 'Data', icon: Download },
+  { id: 'data', label: 'Your Data', short: 'Data', icon: Download },
 ];
 
-/** Read once when state is first created — avoids a load-then-setState effect. */
-function readPrefs(key, fallback) {
-  try {
-    return JSON.parse(localStorage.getItem(key) || 'null') || fallback;
-  } catch {
-    return fallback;
-  }
-}
-
 export default function Settings() {
-  const [activeTab, setActiveTab] = useState('notifications');
-  const [notifications, setNotifications] = useState(() => readPrefs(NOTIF_KEY, DEFAULT_NOTIFS));
-  const [privacy, setPrivacy] = useState(() => readPrefs(PRIVACY_KEY, DEFAULT_PRIVACY));
+  const [activeTab, setActiveTab] = useState('security');
   const [saveMsg, setSaveMsg] = useState('');
+  const [isDownloading, setIsDownloading] = useState(false);
+  const [downloadError, setDownloadError] = useState('');
 
   const [passwords, setPasswords] = useState({ current: '', newPass: '', confirm: '' });
   const [showPassword, setShowPassword] = useState(false);
@@ -81,17 +72,65 @@ export default function Settings() {
     }
   };
 
-  const handleSave = () => {
-    localStorage.setItem(NOTIF_KEY, JSON.stringify(notifications));
-    localStorage.setItem(PRIVACY_KEY, JSON.stringify(privacy));
-    setSaveMsg('Settings saved!');
-    setTimeout(() => setSaveMsg(''), 2000);
-  };
+  /**
+   * Hand the learner a copy of their own record.
+   *
+   * This was a button with no handler at all — it looked like a working data
+   * export and did nothing when pressed. It reads the same dashboard endpoint
+   * the rest of the learner's pages use, so it can only ever contain what they
+   * are already allowed to see: their profile, stars, badges and released
+   * grades. Nothing about a classmate is in it, and no new endpoint was needed.
+   */
+  const handleDownload = async () => {
+    setDownloadError('');
+    setIsDownloading(true);
+    let url;
+    try {
+      const user = JSON.parse(localStorage.getItem('user') || '{}');
+      if (!user.id) throw new Error('no session');
 
-  /** Discard unsaved edits by re-reading whatever was last persisted. */
-  const handleReset = () => {
-    setNotifications(readPrefs(NOTIF_KEY, DEFAULT_NOTIFS));
-    setPrivacy(readPrefs(PRIVACY_KEY, DEFAULT_PRIVACY));
+      const res = await apiFetch(`${API_URL}/api/student/${user.id}/dashboard`);
+      const d = await res.json().catch(() => null);
+      if (!res.ok || !d?.success) throw new Error('request failed');
+
+      const payload = {
+        exportedAt: new Date().toISOString(),
+        student: {
+          name: d.student?.name ?? user.name ?? null,
+          studentId: d.student?.username ?? user.username ?? null,
+          section: d.student?.section?.name ?? null,
+        },
+        stars: d.stars ?? 0,
+        generalAverage: d.avgGrade ?? null,
+        badgesEarned: (d.badges || []).filter(b => b.earned).map(b => ({ title: b.title, description: b.desc })),
+        // Only released work reaches this endpoint, so this is exactly the set
+        // of grades the learner has already been shown.
+        grades: (d.submissions || []).map(s => ({
+          activity: s.activity?.title ?? null,
+          class: s.activity?.class?.name ?? null,
+          score: s.hitlScore ?? s.aiScore ?? null,
+          outOf: s.activity?.points ?? null,
+          date: s.updatedAt ?? null,
+        })),
+      };
+
+      const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+      url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `my-tulongguro-data-${new Date().toISOString().slice(0, 10)}.json`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+
+      setSaveMsg('Your data has been downloaded.');
+      setTimeout(() => setSaveMsg(''), 4000);
+    } catch {
+      setDownloadError("Couldn't prepare your data just now. Please check your connection and try again.");
+    } finally {
+      if (url) URL.revokeObjectURL(url);
+      setIsDownloading(false);
+    }
   };
 
   return (
@@ -127,45 +166,6 @@ export default function Settings() {
 
           {/* ── Content ── */}
           <div className="md:col-span-2 tg-card p-5 md:p-6">
-            {activeTab === 'notifications' && (
-              <>
-                <h2 className="font-display text-lg font-extrabold text-navy-700 mb-3">Notifications</h2>
-                <div className="divide-y-2 divide-cream-200">
-                  <Toggle accent="bg-royal-600" label="Email Notifications"
-                    checked={notifications.emailNotifications}
-                    onChange={(v) => setNotifications(p => ({ ...p, emailNotifications: v }))} />
-                  <Toggle accent="bg-royal-600" label="Push Notifications"
-                    checked={notifications.pushNotifications}
-                    onChange={(v) => setNotifications(p => ({ ...p, pushNotifications: v }))} />
-                </div>
-              </>
-            )}
-
-            {activeTab === 'privacy' && (
-              <>
-                <h2 className="font-display text-lg font-extrabold text-navy-700 mb-5">Privacy</h2>
-                <div className="space-y-4">
-                  <div>
-                    <label className="tg-label">Profile Visibility</label>
-                    <select
-                      value={privacy.profileVisibility}
-                      onChange={(e) => setPrivacy(p => ({ ...p, profileVisibility: e.target.value }))}
-                      className="tg-input"
-                    >
-                      <option value="public">Public</option>
-                      <option value="private">Private</option>
-                      <option value="school-only">School Only</option>
-                    </select>
-                  </div>
-                  <div className="border-t-2 border-cream-200">
-                    <Toggle accent="bg-royal-600" label="Show Awards on Profile"
-                      checked={privacy.showAwards}
-                      onChange={(v) => setPrivacy(p => ({ ...p, showAwards: v }))} />
-                  </div>
-                </div>
-              </>
-            )}
-
             {activeTab === 'security' && (
               <>
                 <h2 className="font-display text-lg font-extrabold text-navy-700 mb-1">Change your password</h2>
@@ -224,29 +224,23 @@ export default function Settings() {
 
             {activeTab === 'data' && (
               <>
-                <h2 className="font-display text-lg font-extrabold text-navy-700 mb-5">Data &amp; Privacy</h2>
-                <button type="button" className="tg-btn-ghost !py-2.5 !px-5">
-                  <Download className="w-4 h-4" /> Download Your Data
+                <h2 className="font-display text-lg font-extrabold text-navy-700 mb-1">Your Data</h2>
+                <p className="text-sm text-navy-500 mb-5">
+                  Save a copy of everything this app keeps about you — your details, your stars and
+                  badges, and every grade your teacher has released to you. It downloads as a file
+                  you can keep.
+                </p>
+                {downloadError && (
+                  <p role="alert" className="mb-4 text-sm font-bold text-red-700 bg-red-50 border-2 border-red-200 rounded-2xl px-4 py-3">
+                    {downloadError}
+                  </p>
+                )}
+                <button type="button" onClick={handleDownload} disabled={isDownloading}
+                  className="tg-btn-ghost !py-2.5 !px-5 disabled:opacity-50">
+                  {isDownloading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
+                  {isDownloading ? 'Preparing…' : 'Download Your Data'}
                 </button>
               </>
-            )}
-
-            {/* Save row — only for the tabs that hold editable preferences. */}
-            {(activeTab === 'notifications' || activeTab === 'privacy') && (
-              <div className="flex gap-3 mt-6 pt-5 border-t-2 border-cream-200">
-                <button onClick={handleReset} type="button" className="tg-btn-ghost flex-1 !py-2.5">
-                  Cancel
-                </button>
-                <button
-                  onClick={handleSave}
-                  type="button"
-                  className="flex-1 inline-flex items-center justify-center gap-2 rounded-full py-2.5 px-5 font-bold text-sm
-                             text-white bg-royal-600 shadow-pop hover:bg-royal-700
-                             active:translate-y-1 active:shadow-none transition-all"
-                >
-                  <Save className="w-4 h-4" /> Save Changes
-                </button>
-              </div>
             )}
           </div>
         </div>

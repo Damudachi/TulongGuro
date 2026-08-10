@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import { Users, Plus, Loader2, Trash2, KeyRound, X, Copy, Check, GraduationCap, BookOpen, ClipboardList, ChevronRight, Search } from 'lucide-react';
 import { API_URL, apiFetch } from '../../config';
+import { GRADE_LEVELS } from '../../constants/school';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
 
@@ -123,7 +124,11 @@ export default function AdminTeachers() {
     (acc[key] = acc[key] || []).push(s);
     return acc;
   }, {});
-  const gradeKeys = Object.keys(sectionsByGrade).sort();
+  // Ordered by the canonical grade list, the same way Manage Block Sections
+  // does it — a plain sort puts "Grade 10" between "Grade 1" and "Grade 2".
+  const gradeOrder = [...GRADE_LEVELS, 'Unassigned grade level'];
+  const gradeKeys = Object.keys(sectionsByGrade)
+    .sort((a, b) => gradeOrder.indexOf(a) - gradeOrder.indexOf(b));
 
   return (
     <div className="p-4 md:p-8 max-w-5xl mx-auto pb-24">

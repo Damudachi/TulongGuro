@@ -105,6 +105,8 @@ export default function HITLWorkspace() {
   const [isChatLoading, setIsChatLoading] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [isApproved, setIsApproved] = useState(false);
+  /** Why the last validate attempt did not record a mark. '' when all is well. */
+  const [saveError, setSaveError] = useState('');
   const [covData, setCovData] = useState(null);
   const [skillAnalysisOpen, setSkillAnalysisOpen] = useState(false);
   const [showTooltip, setShowTooltip] = useState(false);
@@ -132,6 +134,9 @@ export default function HITLWorkspace() {
   const feedbackText = isStructured ? flattenFeedback(structuredFeedback) : legacyFeedbackText;
 
   useEffect(() => {
+    // A failure belongs to the paper it happened on — carrying it onto the next
+    // learner in a queue run would accuse a save that never ran.
+    setSaveError('');
     if (!submissionId || submissionId === 'test123') {
       setLegacyFeedbackText("Your reflection on Crisostomo Ibarra's motivations was deep and insightful. However, the essay lacked clear paragraph transitions.");
       setReadingStrategy("Focus on 'Signpost Words' (however, therefore, consequently) in your next reading assignment.");
@@ -394,15 +399,27 @@ export default function HITLWorkspace() {
   };
 
   // ── Save / Validate ──
+  /**
+   * Records the mark.
+   *
+   * The response is checked, not just awaited. `fetch` resolves on 4xx, so the
+   * earlier bare `await` treated a refusal as a success: the screen approved
+   * the paper, fired the celebration and — in a queue run — advanced to the
+   * next learner, with nothing written. The server has live refusal paths here
+   * (a score it will not trust, 400; a paper belonging to a colleague's class,
+   * 403 — see tests/route-wiring.test.js), and a grade of record silently
+   * failing to save is the worst failure this screen has.
+   */
   const handleValidate = async () => {
     setIsSaving(true);
+    setSaveError('');
     try {
       if (submissionId && submissionId !== 'test123') {
         const user = JSON.parse(localStorage.getItem('user') || '{}');
         const hitlFeedback = isStructured
           ? serializeStructuredFeedback(structuredFeedback)
           : legacyFeedbackText;
-        await apiFetch(`${API_URL}/api/teacher/submissions/${submissionId}/grade`, {
+        const res = await apiFetch(`${API_URL}/api/teacher/submissions/${submissionId}/grade`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -415,6 +432,19 @@ export default function HITLWorkspace() {
             rubricData: dynamicRubric ? dynamicRubric.map(r => ({ ...r, score: scores[r.criterionName] })) : { content: { score: scores.content, max: 40 }, organization: { score: scores.organization, max: 30 }, grammar: { score: scores.grammar, max: 30 } }
           })
         });
+
+        // The server's own wording where there is any — it is more specific
+        // than anything this screen could guess ("Score must be between 0 and
+        // 100", "not your class").
+        const data = await res.json().catch(() => null);
+        if (!res.ok || !data?.success) {
+          setSaveError(
+            data?.error ||
+            `The mark was not saved (server said ${res.status}). Nothing has been recorded — please try again.`
+          );
+          setIsSaving(false);
+          return;   // stay on this paper: not approved, no celebration, no advance
+        }
       }
       setIsApproved(true);
 
@@ -425,10 +455,11 @@ export default function HITLWorkspace() {
         setShowCelebration(true);
         setTimeout(() => setShowCelebration(false), 6000);
       }
-    } catch (e) {
-      alert('Save failed. Please try again.');
+    } catch {
+      // Network-level failure. Same rule as a refusal above: nothing was
+      // recorded, so the screen must not move on.
+      setSaveError('Could not reach the server, so the mark was not saved. Check your connection and try again.');
       setIsSaving(false);
-      setIsEditingAssessment(false);
       return;
     }
     setIsSaving(false);
@@ -1375,7 +1406,17 @@ export default function HITLWorkspace() {
         </div>
 
         {/* Footer Buttons */}
-        <div className="p-4 bg-white border-t border-slate-200 flex gap-3 sticky bottom-0 z-10">
+        <div className="bg-white border-t border-slate-200 sticky bottom-0 z-10">
+        {/* Sits directly above the button that failed, inside the sticky
+            footer, so it cannot be scrolled out of sight — a save failure the
+            teacher does not see is the same as no message at all. */}
+        {saveError && (
+          <div role="alert" className="mx-4 mt-4 flex items-start gap-2 rounded-xl border-2 border-red-200 bg-red-50 px-3 py-2.5 text-sm font-bold text-red-700">
+            <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+            <span className="min-w-0">{saveError}</span>
+          </div>
+        )}
+        <div className="p-4 flex gap-3">
           {queueActivityId ? (
             <button onClick={handleSkip}
               title="Come back to this one at the end of the run (S)"
@@ -1421,6 +1462,7 @@ export default function HITLWorkspace() {
               {isSaving ? 'Saving...' : isAnalyzing ? 'AI checking...' : awaitingAiCheck ? 'Waiting for AI check' : (isApproved ? 'Save Changes' : queueActivityId ? 'Validate & next' : 'Validate')}
             </button>
           )}
+        </div>
         </div>
       </div>
 
