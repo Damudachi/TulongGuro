@@ -275,6 +275,37 @@ describe('the staff who should reach a learner still can', () => {
   });
 });
 
+/**
+ * The teacher-facing detail screen, which is a different route reached from
+ * Analytics rather than from the learner's own dashboard.
+ *
+ * This one was half-right, and the half that worked disguised the half that
+ * did not. Submissions are scoped to `class.teacherId = req.auth.sub`, so an
+ * outside teacher saw no work — but the `findUnique` that loads the learner
+ * had no scope at all, so the screen still named them. A manual pass found it
+ * exactly that way: the learner's name and Student ID, and "no activity found"
+ * underneath.
+ *
+ * A name and a login are not a lesser leak than a grade. The Student ID is
+ * what the learner signs in with.
+ */
+describe('the teacher-facing student detail is scoped too', () => {
+  const path = `/api/teacher/student/${VICTIM}/analytics`;
+
+  it('refuses a teacher from another school', async () => {
+    const res = await get(path, signToken({ id: 'teacher-in-school-a', role: 'TEACHER', schoolId: SCHOOL_A }));
+    expect(res.status).toBe(403);
+    const body = await res.text();
+    expect(body).not.toContain('Maria Santos');
+    expect(body).not.toContain('maria.santos');
+  });
+
+  it('still lets a teacher in the same school open it', async () => {
+    const res = await get(path, signToken({ id: 'teacher-in-school-b', role: 'TEACHER', schoolId: SCHOOL_B }));
+    expect(res.status).toBe(200);
+  });
+});
+
 describe('a student still cannot read another student', () => {
   it('refuses a classmate in the same school', async () => {
     const res = await get(
