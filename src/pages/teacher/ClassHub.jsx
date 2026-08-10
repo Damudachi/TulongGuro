@@ -36,6 +36,7 @@ export default function ClassHub() {
     apiFetch(`${API_URL}/api/classes/${classId}`)
       .then(r => r.json())
       .then(d => { if (d.success) setClassData(d.classData); })
+      .catch(() => {}) /* a failed read leaves the empty state, which is what renders */
       .finally(() => setIsLoading(false));
   }, [classId]);
 

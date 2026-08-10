@@ -56,6 +56,7 @@ export default function SubmitWork() {
           }
         }
       })
+      .catch(() => {}) /* a failed read leaves the empty state, which is what renders */
       .finally(() => setIsLoading(false));
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 

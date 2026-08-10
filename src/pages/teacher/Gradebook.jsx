@@ -86,6 +86,7 @@ export default function Gradebook() {
       setIsLoading(true);
       apiFetch(url).then(r => r.json())
         .then(d => { if (d.success) setData(d); })
+        .catch(() => {}) /* a failed read leaves the empty state, which is what renders */
         .finally(() => setIsLoading(false));
     } else {
       // Clear gradebook view until a class is chosen

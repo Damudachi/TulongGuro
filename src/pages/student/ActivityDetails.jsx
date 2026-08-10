@@ -24,6 +24,7 @@ export default function ActivityDetails() {
     apiFetch(`${API_URL}/api/student/${user.id}/activities/${activityId}`)
       .then(r => r.json())
       .then(d => { if (d.success) setActivity(d.activity); })
+      .catch(() => {}) /* a failed read leaves the empty state, which is what renders */
       .finally(() => setIsLoading(false));
   }, [activityId]);
 

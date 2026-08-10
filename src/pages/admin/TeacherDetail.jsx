@@ -64,6 +64,7 @@ export default function AdminTeacherDetail() {
         if (d.success) setData(d);
         else setError(d.error || 'Could not load this teacher.');
       })
+      .catch(() => {}) /* a failed read leaves the empty state, which is what renders */
       .finally(() => setIsLoading(false));
   }, [admin.id, teacherId]);
 

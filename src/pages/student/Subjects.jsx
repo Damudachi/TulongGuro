@@ -47,6 +47,7 @@ export default function Subjects() {
         setSubjects(d.subjects);
         if (typeof d.passingGrade === 'number') setPassingGrade(d.passingGrade);
       })
+      .catch(() => {}) /* a failed read leaves the empty state, which is what renders */
       .finally(() => setIsLoading(false));
   }, []);
 

@@ -111,6 +111,7 @@ export default function Analytics() {
       : `${API_URL}/api/teacher/${user.id}/analytics`;
     apiFetch(url).then(r => r.json())
       .then(d => setData(d.success ? d : null))
+      .catch(() => {}) /* a failed read leaves the empty state, which is what renders */
       .finally(() => setIsLoading(false));
     setSkillFilter(null);
   }, [selectedSectionId, showSelector]);
@@ -121,6 +122,7 @@ export default function Analytics() {
     apiFetch(`${API_URL}/api/teacher/student/${student.id}/analytics`)
       .then(r => r.json())
       .then(d => { if (d.success) setStudentData(d); })
+      .catch(() => {}) /* a failed read leaves the empty state, which is what renders */
       .finally(() => setLoadingStudent(false));
   };
 

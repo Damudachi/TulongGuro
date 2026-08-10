@@ -30,6 +30,7 @@ export default function AdminTeachers() {
     apiFetch(`${API_URL}/api/admin/${admin.id}/overview`)
       .then(r => r.json())
       .then(d => { if (d.success) setData(d); })
+      .catch(() => {}) /* a failed read leaves the empty state, which is what renders */
       .finally(() => setIsLoading(false));
   }, [admin.id]);
 

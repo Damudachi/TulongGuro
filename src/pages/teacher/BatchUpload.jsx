@@ -85,7 +85,8 @@ export default function BatchUpload() {
           setStudents(d.classData?.section?.students || []);
           const activity = d.classData?.activities?.find(a => a.id === activityId) || null;
           setActivityMeta(activity);
-        });
+        })
+        .catch(() => {}) /* a failed read leaves the empty state, which is what renders */;
     }
     const goOnline = () => { setIsOnline(true); setQueuedCount(getQueue().length); };
     const goOffline = () => setIsOnline(false);
@@ -100,6 +101,7 @@ export default function BatchUpload() {
     apiFetch(`${API_URL}/api/activities/${activityId}/submissions`)
       .then(r => r.json())
       .then(d => { if (d.success) setActivitySubmissions(d.submissions || []); })
+      .catch(() => {}) /* a failed read leaves the empty state, which is what renders */
       .finally(() => setIsLoadingSubmissions(false));
   }, [activityId]);
 
@@ -144,7 +146,8 @@ export default function BatchUpload() {
             // Pull the refreshed scores in so the roster reflects the run.
             apiFetch(`${API_URL}/api/activities/${activityId}/submissions`)
               .then(r => r.json())
-              .then(s => { if (s.success) setActivitySubmissions(s.submissions || []); });
+              .then(s => { if (s.success) setActivitySubmissions(s.submissions || []); })
+              .catch(() => {}) /* a failed read leaves the empty state, which is what renders */;
           }
         })
         .catch(() => {});

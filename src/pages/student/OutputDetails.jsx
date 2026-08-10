@@ -97,7 +97,7 @@ export default function OutputDetails() {
     apiFetch(`${API_URL}/api/submissions/${outputId}`)
       .then(r => r.json())
       .then(d => { if (d.success) setSub(d.submission); })
-      // Without this a dropped connection rejected unhandled; the page still
+      // Without this a dropped connection rejected unhandled. The page still
       // falls through to "Submission not found", which is the right thing to
       // show, but the rejection should not escape.
       .catch(() => {})

@@ -216,6 +216,7 @@ export default function HITLWorkspace() {
           if (sub.status === 'GRADED') setIsApproved(true);
         }
       })
+      .catch(() => {}) /* a failed read leaves the empty state, which is what renders */
       .finally(() => setIsLoading(false));
   }, [submissionId]);
 

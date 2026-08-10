@@ -477,7 +477,11 @@ export default function TeacherDashboard() {
       // Whether the checklist appears is decided by these counts, not by a
       // stored step — see the note in SetupChecklist.
       if (setupData.success) setSetup(setupData.setup);
-    }).finally(() => setIsLoading(false));
+    })
+      // Promise.all rejects if any of the three does, so one dropped request
+      // took the whole dashboard load down as an unhandled rejection.
+      .catch(() => {})
+      .finally(() => setIsLoading(false));
   }, []);
 
   const handleAddClass = async (e) => {

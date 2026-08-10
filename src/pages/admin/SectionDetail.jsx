@@ -51,6 +51,7 @@ export default function AdminSectionDetail() {
         if (d.success) setData(d);
         else setError(d.error || 'Could not load this section.');
       })
+      .catch(() => {}) /* a failed read leaves the empty state, which is what renders */
       .finally(() => setIsLoading(false));
   }, [admin.id, sectionId]);
 

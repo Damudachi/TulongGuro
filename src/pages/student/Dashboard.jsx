@@ -67,6 +67,7 @@ export default function StudentDashboard() {
           setShowWelcome(true);
         }
       })
+      .catch(() => {}) /* a failed read leaves the empty state, which is what renders */
       .finally(() => setIsLoading(false));
   }, []);
 

@@ -58,7 +58,8 @@ export default function GradebookClass() {
   useEffect(() => {
     const user = JSON.parse(localStorage.getItem('user') || '{}');
     if (!user.id) return setIsLoading(false);
-    apiFetch(`${API_URL}/api/teacher/${user.id}/gradebook?classId=${classId}`).then(r => r.json()).then(d => { if (d.success) setData(d); }).finally(() => setIsLoading(false));
+    apiFetch(`${API_URL}/api/teacher/${user.id}/gradebook?classId=${classId}`).then(r => r.json()).then(d => { if (d.success) setData(d); }).catch(() => {}) /* a failed read leaves the empty state, which is what renders */
+      .finally(() => setIsLoading(false));
   }, [classId]);
 
   if (isLoading) return (

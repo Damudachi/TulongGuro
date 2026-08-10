@@ -14,7 +14,8 @@ export default function GradebookSection() {
   useEffect(() => {
     const user = JSON.parse(localStorage.getItem('user') || '{}');
     if (!user.id) return setIsLoading(false);
-    apiFetch(`${API_URL}/api/teacher/${user.id}/classes`).then(r => r.json()).then(d => { if (d.success) setTeacherClasses(d.classes || []); }).finally(() => setIsLoading(false));
+    apiFetch(`${API_URL}/api/teacher/${user.id}/classes`).then(r => r.json()).then(d => { if (d.success) setTeacherClasses(d.classes || []); }).catch(() => {}) /* a failed read leaves the empty state, which is what renders */
+      .finally(() => setIsLoading(false));
   }, [sectionId]);
 
   const classes = (teacherClasses || []).filter(c => c.sectionId === sectionId);
