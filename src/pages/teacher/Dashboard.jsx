@@ -266,6 +266,11 @@ function WizardEmptyState({ onComplete, sections = [] }) {
                     if (e.target.value === 'new') {
                       setIsCreatingNew(true);
                       setSectionId('');
+                      // Cleared, not carried over. Picking an existing section
+                      // fills sectionName with its name; switching to "create
+                      // new" then offered that same name as the new section's,
+                      // one Enter away from a near-duplicate roster.
+                      setSectionName('');
                     } else {
                       setIsCreatingNew(false);
                       setSectionId(e.target.value);

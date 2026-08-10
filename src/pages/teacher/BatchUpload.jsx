@@ -45,6 +45,7 @@ export default function BatchUpload() {
   const [aiPlan, setAiPlan] = useState(null);     // { ready, batchSize, requestsNeeded, capacity }
   const [aiJob, setAiJob] = useState(null);
   const [isStartingAi, setIsStartingAi] = useState(false);
+  const [isCancellingAi, setIsCancellingAi] = useState(false);
 
   // Per-student staged pages (picked but not yet uploaded), and upload-in-flight tracking.
   // Shape: { [studentId]: { pages: [{ file, preview }] } }
@@ -150,6 +151,32 @@ export default function BatchUpload() {
     }, 2500);
     return () => clearInterval(timer);
   }, [aiJob?.jobId, aiJob?.state, activityId]);
+
+  /**
+   * Ask the server to stop the run.
+   *
+   * It finishes the paper it is on and skips the rest, so what has already
+   * been checked stays checked — the poll above picks up the new state on its
+   * next tick and the panel switches to the finished summary.
+   */
+  const cancelAiCheck = async () => {
+    if (!aiJob?.jobId) return;
+    if (!window.confirm('Stop this AI check? Papers already checked keep their results; the rest will not be checked.')) return;
+    setIsCancellingAi(true);
+    try {
+      const res = await apiFetch(`${API_URL}/api/teacher/ai-jobs/${aiJob.jobId}`, { method: 'DELETE' });
+      const d = await res.json().catch(() => null);
+      if (!res.ok || !d?.success) {
+        alert(d?.error || 'Could not stop the check. It is still running.');
+        return;
+      }
+      setAiJob(d);
+    } catch {
+      alert('Could not reach the server. The check is still running.');
+    } finally {
+      setIsCancellingAi(false);
+    }
+  };
 
   const startAiCheck = async () => {
     setIsStartingAi(true);
@@ -729,6 +756,17 @@ export default function BatchUpload() {
                     You can leave this page — the check keeps running.
                   </p>
                 </div>
+                {/* The server has always been able to stop a run; nothing ever
+                    asked it to. A teacher who starts a 30-paper check on the
+                    wrong activity had no way back, and the daily AI quota is
+                    small enough that one mistaken run can block the rest of
+                    the day's marking. Papers already checked are kept. */}
+                <button onClick={cancelAiCheck} disabled={isCancellingAi}
+                  title="Stop after the paper being checked right now"
+                  className="shrink-0 text-xs font-bold text-slate-600 border-2 border-slate-200 px-3 py-2 rounded-lg
+                             hover:bg-red-50 hover:text-red-600 hover:border-red-200 disabled:opacity-40 transition-colors">
+                  {isCancellingAi ? 'Stopping…' : 'Stop check'}
+                </button>
               </div>
             ) : aiJob ? (
               /* Finished */

@@ -77,9 +77,17 @@ export default function AdminTeachers() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ password })
       });
-      const d = await res.json();
-      if (d.success) setCreatedCredentials({ email: teacher.email, password });
-      else alert(d.error || 'Reset failed.');
+      const d = await res.json().catch(() => null);
+      // Checked against the status too: a 500 that returns an HTML error page
+      // parses to null, which `d.success` alone would read as a plain failure
+      // with no message.
+      if (res.ok && d?.success) setCreatedCredentials({ email: teacher.email, password });
+      else alert(d?.error || 'Reset failed. Their existing password still works.');
+    } catch {
+      // Without this the promise rejected unhandled: the spinner cleared and
+      // the admin was told nothing at all, having just been asked to confirm
+      // something destructive.
+      alert('Could not reach the server. Their password has not been changed.');
     } finally {
       setBusyTeacherId(null);
     }
@@ -90,9 +98,14 @@ export default function AdminTeachers() {
     setBusyTeacherId(teacher.id);
     try {
       const res = await apiFetch(`${API_URL}/api/admin/${admin.id}/teachers/${teacher.id}`, { method: 'DELETE' });
-      const d = await res.json();
-      if (d.success) load();
-      else alert(d.error || 'Could not remove this teacher.');
+      const d = await res.json().catch(() => null);
+      if (res.ok && d?.success) load();
+      // The server refuses when the teacher still has learners in their
+      // sections, and names how many — that message is the whole point of the
+      // guard, so it must not be swallowed.
+      else alert(d?.error || 'Could not remove this teacher. Nothing has been changed.');
+    } catch {
+      alert('Could not reach the server. This teacher has not been removed.');
     } finally {
       setBusyTeacherId(null);
     }
