@@ -4579,6 +4579,30 @@ app.post('/api/teacher/classes', (req, res, next) => {
       return res.status(400).json({ success: false, error: 'Missing required fields: sectionId and teacherId are required.' });
     }
 
+    // ── The section has to be one this teacher could legitimately teach ──
+    // Deliberately *not* an adviser check: teaching into a section somebody
+    // else advises is the normal shape of a subject teacher's week, and the
+    // class picker offers every section in the school for exactly that reason.
+    // The bar is the school, and it was missing entirely — sectionId was taken
+    // on trust and written straight onto the class, so a section id belonging
+    // to another school would attach that school's roster to this teacher's
+    // gradebook and analytics, both of which read class.section.students.
+    const [creator, targetSection] = await Promise.all([
+      prisma.user.findUnique({ where: { id: teacherId }, select: { schoolId: true } }),
+      prisma.section.findUnique({ where: { id: sectionId }, select: { id: true, schoolId: true, teacherId: true } }),
+    ]);
+    if (!targetSection) {
+      return res.status(404).json({ success: false, error: 'Section not found.' });
+    }
+    // Their own section counts however it is labelled — a roster created
+    // before sections carried a schoolId would otherwise become unusable to
+    // the very teacher who made it.
+    const mayTeachHere = targetSection.teacherId === teacherId
+      || (creator?.schoolId && targetSection.schoolId === creator.schoolId);
+    if (!mayTeachHere) {
+      return res.status(403).json({ success: false, error: 'That section belongs to another school.' });
+    }
+
     // Guard against double-submits (impatient click, retried request): the same
     // teacher + section + subject + school year is always the same course shell.
     const duplicate = await prisma.class.findFirst({

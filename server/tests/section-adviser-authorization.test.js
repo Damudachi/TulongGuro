@@ -234,3 +234,75 @@ describe('POST /api/teacher/sections respects who advises the section', () => {
     expect(prismaFake.section.create).toHaveBeenCalled();
   });
 });
+
+/**
+ * A class may be created in a section this teacher does not advise — that is
+ * the ordinary shape of a subject teacher's week, and the class picker offers
+ * every section in the school for exactly that reason. The bar is the school,
+ * and there was none: sectionId was taken on trust and written onto the class,
+ * so an id belonging to another school would attach that school's roster to
+ * this teacher's gradebook and analytics, both of which read
+ * class.section.students.
+ */
+describe('POST /api/teacher/classes keeps a class inside its own school', () => {
+  const postClass = (token, body) =>
+    fetch(`${baseUrl}/api/teacher/classes`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+
+  const newClassBody = (sectionId) => ({
+    name: 'Filipino 10', gradeLevel: 'Grade 10', subject: 'Filipino',
+    schoolYear: '2026-2027', sectionId,
+  });
+
+  it('refuses a section belonging to another school', async () => {
+    signedInAs(OTHER);
+    prismaFake.section.findUnique.mockResolvedValue({
+      id: 'far-away-section', schoolId: 'school-b', teacherId: 'someone-else',
+    });
+
+    const res = await postClass(tokenFor(OTHER), newClassBody('far-away-section'));
+
+    expect(res.status).toBe(403);
+    expect(prismaFake.class.create).not.toHaveBeenCalled();
+  });
+
+  it('refuses a section id that does not exist', async () => {
+    signedInAs(OTHER);
+    // section.findUnique answers null by default.
+    const res = await postClass(tokenFor(OTHER), newClassBody('no-such-section'));
+
+    expect(res.status).toBe(404);
+    expect(prismaFake.class.create).not.toHaveBeenCalled();
+  });
+
+  it('allows a colleague\'s section in the same school', async () => {
+    signedInAs(OTHER);
+    prismaFake.section.findUnique.mockResolvedValue({
+      id: SECTION, schoolId: SCHOOL, teacherId: NEW_ADVISER,
+    });
+    prismaFake.class.create.mockResolvedValue({ id: 'class-1', name: 'Filipino 10' });
+
+    const res = await postClass(tokenFor(OTHER), newClassBody(SECTION));
+
+    expect(res.status).toBe(200);
+    expect(prismaFake.class.create).toHaveBeenCalled();
+  });
+
+  it('allows their own section even when it carries no school', async () => {
+    // A roster created before sections had a schoolId must stay usable by the
+    // teacher who made it.
+    signedInAs(OTHER);
+    prismaFake.section.findUnique.mockResolvedValue({
+      id: 'legacy-section', schoolId: null, teacherId: OTHER,
+    });
+    prismaFake.class.create.mockResolvedValue({ id: 'class-2', name: 'Filipino 10' });
+
+    const res = await postClass(tokenFor(OTHER), newClassBody('legacy-section'));
+
+    expect(res.status).toBe(200);
+    expect(prismaFake.class.create).toHaveBeenCalled();
+  });
+});

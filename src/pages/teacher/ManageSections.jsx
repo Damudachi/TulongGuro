@@ -438,6 +438,16 @@ export default function ManageSections() {
           {byGrade[grade].map(section => {
             const isOpen = expandedId === section.id;
             const studentCount = section._count?.students || section.students?.length || 0;
+            // ── Whose roster this is ──
+            // Every section in the school is listed, because colleagues teach
+            // the same blocks and need to see them. Changing one is the
+            // adviser's alone, and the server has always said so — adding a
+            // learner, correcting a spelling and resetting a password all come
+            // back 403 for anybody else. The controls were rendered anyway, so
+            // the only way to discover that was to fill the form in and press
+            // the button. Compared against false so a payload without the
+            // field still behaves as it did.
+            const canEdit = section.isOwn !== false;
             return (
               <div key={section.id} className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
                 <div className="w-full p-4 flex justify-between items-center hover:bg-slate-50 transition-colors">
@@ -465,11 +475,13 @@ export default function ManageSections() {
                     </div>
                   </button>
                   <div className="flex items-center gap-2">
-                    <button onClick={(e) => { e.stopPropagation(); setEditingSectionId(prev => prev === section.id ? null : section.id); setAddStudentRows(emptyRoster()); if (expandedId !== section.id) setExpandedId(section.id); }}
-                      className={`p-2 rounded-lg transition-colors ${editingSectionId === section.id ? 'bg-brand-navy text-white' : 'text-slate-400 hover:text-brand-navy hover:bg-blue-50'}`}
-                      title="Add students to this section">
-                      <Pencil className="w-4 h-4" />
-                    </button>
+                    {canEdit && (
+                      <button onClick={(e) => { e.stopPropagation(); setEditingSectionId(prev => prev === section.id ? null : section.id); setAddStudentRows(emptyRoster()); if (expandedId !== section.id) setExpandedId(section.id); }}
+                        className={`p-2 rounded-lg transition-colors ${editingSectionId === section.id ? 'bg-brand-navy text-white' : 'text-slate-400 hover:text-brand-navy hover:bg-blue-50'}`}
+                        title="Add students to this section">
+                        <Pencil className="w-4 h-4" />
+                      </button>
+                    )}
                     <button onClick={() => toggleSection(section.id)}>
                       <ChevronDown className={`w-5 h-5 text-slate-400 transition-transform duration-200 ${isOpen ? 'rotate-180' : ''}`} />
                     </button>
@@ -527,24 +539,28 @@ export default function ManageSections() {
                                 </p>
                               )}
                             </div>
-                            <button
-                              type="button"
-                              onClick={() => renameStudent(section.id, s)}
-                              className="shrink-0 text-[11px] font-bold text-brand-navy border border-slate-200 bg-white px-2.5 py-1.5 rounded-lg hover:bg-slate-50 flex items-center gap-1"
-                              title={`Correct ${s.name}'s spelling`}
-                            >
-                              <Pencil className="w-3 h-3" /> Rename
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => resetStudentPassword(section.id, s)}
-                              disabled={resettingId === s.id}
-                              className="shrink-0 text-[11px] font-bold text-brand-navy border border-slate-200 bg-white px-2.5 py-1.5 rounded-lg hover:bg-slate-50 disabled:opacity-50 flex items-center gap-1"
-                              title={`Reset ${s.name}'s password`}
-                            >
-                              <KeyRound className="w-3 h-3" />
-                              {resettingId === s.id ? 'Resetting…' : 'Reset password'}
-                            </button>
+                            {canEdit && (
+                              <>
+                                <button
+                                  type="button"
+                                  onClick={() => renameStudent(section.id, s)}
+                                  className="shrink-0 text-[11px] font-bold text-brand-navy border border-slate-200 bg-white px-2.5 py-1.5 rounded-lg hover:bg-slate-50 flex items-center gap-1"
+                                  title={`Correct ${s.name}'s spelling`}
+                                >
+                                  <Pencil className="w-3 h-3" /> Rename
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => resetStudentPassword(section.id, s)}
+                                  disabled={resettingId === s.id}
+                                  className="shrink-0 text-[11px] font-bold text-brand-navy border border-slate-200 bg-white px-2.5 py-1.5 rounded-lg hover:bg-slate-50 disabled:opacity-50 flex items-center gap-1"
+                                  title={`Reset ${s.name}'s password`}
+                                >
+                                  <KeyRound className="w-3 h-3" />
+                                  {resettingId === s.id ? 'Resetting…' : 'Reset password'}
+                                </button>
+                              </>
+                            )}
                           </div>
                         ))}
                       </div>
