@@ -6,6 +6,7 @@ import PlatformApprovals from './pages/PlatformApprovals';
 import TeacherLayout from './layouts/TeacherLayout';
 import StudentLayout from './layouts/StudentLayout';
 import AdminLayout from './layouts/AdminLayout';
+import UpdatePrompt from './components/UpdatePrompt';
 
 // Admin Pages
 import AdminTeachers from './pages/admin/Teachers';
@@ -104,6 +105,7 @@ function App() {
           <Route path="settings" element={<StudentSettings />} />
         </Route>
       </Routes>
+      <UpdatePrompt />
     </Router>
   );
 }
