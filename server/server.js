@@ -21,7 +21,7 @@ const {
   configureRevocation, markRevoked,
   loginRateLimit, registerRateLimit, platformRateLimit, changePasswordRateLimit,
 } = require('./auth');
-const { classSchoolId, staffMayAccess, staffMayReadStudent } = require('./access');
+const { classSchoolId, staffMayAccess, staffMayReadStudent, REAL_WORK } = require('./access');
 const { currentSchoolYear, isCurrentSchoolYear, compareSchoolYearsDesc } = require('./schoolYear');
 const { getAllTopics, getTopicById, getTopicAIGuidance } = require('./depedTopics');
 const { getAllRubricTemplates, getRubricTemplateById } = require('./rubricTemplates');
@@ -2607,7 +2607,7 @@ app.delete('/api/admin/:adminId/classes/:classId', async (req, res) => {
       include: {
         teacher: true,
         section: { select: { schoolId: true } },
-        activities: { select: { id: true, _count: { select: { submissions: true } } } }
+        activities: { select: { id: true, _count: { select: { submissions: { where: REAL_WORK } } } } }
       }
     });
     if (!cls || classSchoolId(cls) !== admin.schoolId) {
@@ -2654,7 +2654,7 @@ app.get('/api/admin/:adminId/sections/:sectionId', async (req, res) => {
         include: {
           teacher: { select: { id: true, name: true, email: true } },
           students: {
-            select: { id: true, name: true, username: true, _count: { select: { submissions: true } } },
+            select: { id: true, name: true, username: true, _count: { select: { submissions: { where: REAL_WORK } } } },
             orderBy: { username: 'asc' }
           },
           classes: {
@@ -2776,7 +2776,7 @@ app.delete('/api/admin/:adminId/sections/:sectionId/students/:studentId', async 
     const section = await sectionInSchool(admin, req.params.sectionId);
     const student = await prisma.user.findUnique({
       where: { id: req.params.studentId },
-      include: { _count: { select: { submissions: true } } }
+      include: { _count: { select: { submissions: { where: REAL_WORK } } } }
     });
     if (!student || student.sectionId !== section.id || student.role !== 'STUDENT') {
       return res.status(404).json({ success: false, error: 'Student not found in this section.' });
@@ -7671,6 +7671,14 @@ app.get('/api/teacher/:teacherId/analytics', async (req, res) => {
 // Per-student analytics detail
 app.get('/api/teacher/student/:studentId/analytics', async (req, res) => {
   try {
+    // Scoping the submissions below is not enough on its own. It was, for the
+    // grades — an outside teacher saw no work, because those are filtered to
+    // classes they teach — but the lookup that follows had no scope, so the
+    // screen still named the learner and printed the Student ID they sign in
+    // with. A manual pass found it in exactly that state: full name, Student
+    // ID, and "no activity found" underneath.
+    if (!(await mayReadStudent(req, res, req.params.studentId))) return;
+
     const student = await prisma.user.findUnique({
       where: { id: req.params.studentId },
       // schoolId is needed to look up the school's own grading policy, which

@@ -102,4 +102,32 @@ function staffMayReadStudent(student, { callerId, callerSchoolId } = {}) {
   return !!callerId && student.section?.teacherId === callerId;
 }
 
-module.exports = { classSchoolId, staffMayAccess, studentSchoolId, staffMayReadStudent };
+/**
+ * A submission row that represents work, rather than a placeholder for work
+ * that has not happened.
+ *
+ * Enrolling a learner back-fills one PENDING row per activity already in their
+ * section's classes, so the activity roster can list everybody as awaiting
+ * work. Counting those as submissions told an admin that a learner enrolled a
+ * minute ago had "2 submitted", refused to delete a class nobody had submitted
+ * to, and kept accounts alive to protect work that did not exist.
+ *
+ * Three signals, not one. An image means they turned something in. A score
+ * means a mark was recorded — score entry writes those without an upload, so
+ * reading "no image" as "no work" would delete the account of a learner whose
+ * only grade was typed in by hand. A placeholder carries none of the three.
+ *
+ * Shaped as a Prisma `where` so it can be dropped straight into a filtered
+ * relation count: `_count: { select: { submissions: { where: REAL_WORK } } }`.
+ */
+const REAL_WORK = {
+  OR: [
+    { imageUrl: { not: null } },
+    { hitlScore: { not: null } },
+    { aiScore: { not: null } },
+  ],
+};
+
+module.exports = {
+  classSchoolId, staffMayAccess, studentSchoolId, staffMayReadStudent, REAL_WORK,
+};
