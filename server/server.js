@@ -3465,14 +3465,22 @@ app.post('/api/teacher/quick-setup', async (req, res) => {
 
     const result = await prisma.$transaction(async (tx) => {
       const section = await tx.section.create({
-        data: { name: sectionName.trim(), teacherId, schoolId }
+        // Stamped here for the same reason POST /api/teacher/sections stamps
+        // it: a section with no year is reused across years by the name lookup
+        // there, so next June's intake would be enrolled onto this year's
+        // roster alongside their grades.
+        data: { name: sectionName.trim(), teacherId, schoolId, schoolYear: currentSchoolYear() }
       });
       const cls = await tx.class.create({
         data: {
           name: `${subject} — ${gradeLevel}`,
           gradeLevel,
           subject,
-          schoolYear: schoolYear || '2024-2025',
+          // Was hard-coded to '2024-2025'. Not cosmetic: computeRetainUntil
+          // reads this to decide when a class's work may be deleted, so a
+          // wrong year moves that date — and it is also what the exported
+          // gradebook prints as the school year on the sheet.
+          schoolYear: schoolYear || currentSchoolYear(),
           teacherId,
           sectionId: section.id
         }
@@ -3577,7 +3585,12 @@ app.get('/api/teacher/:teacherId/sections', async (req, res) => {
   });
 });
 
-app.post('/api/teacher/extract-students', upload.single('file'), async (req, res) => {
+/**
+ * Reads a roster spreadsheet into names. Pure file parsing — it touches no
+ * database and nothing on req.auth, which is why the same handler serves both
+ * staff areas below rather than being copied into a second one.
+ */
+const extractStudentsHandler = async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ success: false, error: 'No file uploaded.' });
 
@@ -3671,7 +3684,14 @@ app.post('/api/teacher/extract-students', upload.single('file'), async (req, res
     try { if (req.file && req.file.path) require('fs').unlinkSync(req.file.path); } catch (e) {}
     res.status(500).json({ success: false, error: error.message });
   }
-});
+};
+
+app.post('/api/teacher/extract-students', upload.single('file'), extractStudentsHandler);
+// The admin's roster editor is the teacher's, so it needs the same auto-fill.
+// Mounted under /api/admin/:adminId/ rather than shared on the teacher path
+// because authorizePath gates that whole area on role === 'TEACHER' — an
+// admin calling it there is refused before the handler is reached.
+app.post('/api/admin/:adminId/extract-students', upload.single('file'), extractStudentsHandler);
 
 /**
  * Adds student names to a section, creating accounts as needed.
@@ -4443,11 +4463,38 @@ app.post('/api/teacher/sections', async (req, res) => {
         name: name.trim(),
         ...(schoolId ? { schoolId } : { teacherId }),
         OR: [{ schoolYear: targetYear }, { schoolYear: null }],
-      }
+      },
+      // Only so a refusal below can say whose section it is. A teacher told
+      // "that name is taken" with no name attached has nobody to go and ask.
+      include: { teacher: { select: { id: true, name: true } } },
     });
     let isExisting = false;
 
     if (section) {
+      // ── Reuse is not the same as ownership ──
+      // The lookup above is scoped to the school, not to the caller, which is
+      // deliberate: colleagues teach the same block and the section is shared.
+      // But *writing* to one is the adviser's alone — PUT .../students/:id and
+      // its /password sibling have always enforced that, and the section list
+      // marks each row `isOwn` so the client can too. This path enforced
+      // nothing, so it was the way around both.
+      //
+      // The case that surfaced it: an admin reassigns a section (PUT
+      // /api/admin/:adminId/sections/:sectionId takes a teacherId), and the
+      // previous adviser — who can no longer so much as fix a spelling there —
+      // could still enrol learners onto it by submitting the same name. With
+      // allowMove that also pulls those learners off whichever roster they
+      // were on. Nothing in the UI offered it; typing a name that already
+      // exists was enough.
+      if (section.teacherId !== teacherId) {
+        const adviser = section.teacher?.name;
+        return res.status(403).json({
+          success: false,
+          error: `"${section.name}" is already a section here, advised by ${adviser || 'another teacher'}. `
+            + 'Only its adviser or a school admin can add learners to it. '
+            + 'Ask them to add these names, or use a different section name.',
+        });
+      }
       isExisting = true;
       // Backfill grade level and school year if the section predates either
       // field. Only ever fills a blank — an existing year is left alone, since

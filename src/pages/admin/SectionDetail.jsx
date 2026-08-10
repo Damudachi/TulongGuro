@@ -8,7 +8,8 @@ import { API_URL, apiFetch } from '../../config';
 import { GRADE_LEVELS } from '../../constants/school';
 import StudentCredentials from '../../components/StudentCredentials';
 import SectionMoveConfirm from '../../components/SectionMoveConfirm';
-import { normalizeRosterName } from '../../utils/roster';
+import RosterEditor from '../../components/RosterEditor';
+import { parseRosterLines, isFilledRow, rosterPayload, emptyRoster, withBlankRow, normalizeRosterName } from '../../utils/roster';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
 
@@ -33,7 +34,12 @@ export default function AdminSectionDetail() {
   const [editing, setEditing] = useState(false);
   const [form, setForm] = useState({ name: '', gradeLevel: '', teacherId: '' });
   const [addOpen, setAddOpen] = useState(false);
-  const [studentsText, setStudentsText] = useState('');
+  // The same roster editor the teacher uses, for the same reason: this screen
+  // was a textarea of bare names, so every account an admin created here got a
+  // random password — while the help text under it described the birthday one.
+  const [studentRows, setStudentRows] = useState(emptyRoster);
+  const [isExtracting, setIsExtracting] = useState(false);
+  const rosterFileRef = useRef(null);
   const [newAccounts, setNewAccounts] = useState([]);
   const [moveRequest, setMoveRequest] = useState(null);
 
@@ -87,8 +93,10 @@ export default function AdminSectionDetail() {
    * moving them; confirming replays the same request with it on.
    */
   const addStudents = async ({ allowMove = false, studentsList } = {}) => {
-    const list = studentsList || studentsText.split('\n').map(s => s.trim()).filter(Boolean);
-    if (list.length === 0) return;
+    // On a replay the list is handed back verbatim; otherwise it is read off
+    // the editor, which returns null when a typed birthday is unreadable.
+    const list = studentsList || rosterPayload(studentRows, alert);
+    if (!list || list.length === 0) return;
     const d = await call(
       `${API_URL}/api/admin/${admin.id}/sections/${sectionId}/students`,
       { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ studentsList: list, allowMove }) },
@@ -101,9 +109,38 @@ export default function AdminSectionDetail() {
     if (d.pendingMoves?.length) {
       setMoveRequest({ studentsList: list, moves: d.pendingMoves });
     } else {
-      setStudentsText('');
+      setStudentRows(emptyRoster());
       setAddOpen(false);
       setMoveRequest(null);
+    }
+  };
+
+  /** Auto-fill from a roster spreadsheet, same as the teacher's editor. */
+  const handleRosterFile = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setIsExtracting(true);
+    const formData = new FormData();
+    formData.append('file', file);
+    try {
+      const res = await apiFetch(`${API_URL}/api/admin/${admin.id}/extract-students`, {
+        method: 'POST',
+        body: formData,
+      });
+      const d = await res.json().catch(() => null);
+      if (d?.success && d.names) {
+        // Appended to whatever is already typed, and re-parsed so an extracted
+        // "Name, 03/15/2014" still lands in two columns.
+        const extracted = parseRosterLines(d.names.join('\n'));
+        setStudentRows(prev => withBlankRow([...prev.filter(isFilledRow), ...extracted]));
+      } else {
+        setError(d?.error || 'Could not read that file.');
+      }
+    } catch {
+      setError('Network error while reading the file.');
+    } finally {
+      setIsExtracting(false);
+      e.target.value = '';   // so picking the same file again still fires
     }
   };
 
@@ -214,7 +251,7 @@ export default function AdminSectionDetail() {
           setMoveRequest(null);
           addStudents({ allowMove: true, studentsList: req.studentsList });
         }}
-        onCancel={() => { setMoveRequest(null); setStudentsText(''); setAddOpen(false); }}
+        onCancel={() => { setMoveRequest(null); setStudentRows(emptyRoster()); setAddOpen(false); }}
       />
 
       {error && (
@@ -286,7 +323,7 @@ export default function AdminSectionDetail() {
               </p>
             </div>
             <div className="flex gap-1 shrink-0">
-              <button onClick={() => { setAddOpen(o => !o); setStudentsText(''); }} title="Add students"
+              <button onClick={() => { setAddOpen(o => !o); setStudentRows(emptyRoster()); }} title="Add students"
                 className={cn('p-2 rounded-lg', addOpen ? 'bg-brand-navy text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200')}>
                 <UserPlus className="w-4 h-4" />
               </button>
@@ -328,18 +365,20 @@ export default function AdminSectionDetail() {
       {/* Add students */}
       {addOpen && (
         <div className="bg-blue-50/60 border border-blue-200 rounded-2xl p-4 mb-6">
-          <label className="block text-xs font-medium text-slate-600 mb-1">Student names — last name first, one per line</label>
-          <textarea rows={4} value={studentsText}
-            onChange={e => setStudentsText(e.target.value.split('\n').map(normalizeRosterName).join('\n'))}
-            placeholder={'Dela Cruz Juan\nSantos Maria Clara'}
-            className="w-full border border-slate-200 p-2 rounded-lg text-sm outline-none focus:ring-2 focus:ring-brand-navy resize-none bg-white" />
-          <p className="text-[11px] text-slate-400 mt-1">
+          <RosterEditor
+            rows={studentRows}
+            onChange={setStudentRows}
+            onPickFile={() => rosterFileRef.current?.click()}
+            isExtracting={isExtracting}
+            fileRef={rosterFileRef}
+            onFileChange={handleRosterFile}
+          />
+          <p className="text-[11px] text-slate-400 mt-2">
             Enter names <span className="font-bold text-slate-500">last name first</span> — e.g. <span className="font-mono">Dela Cruz, Juan Miguel</span>. Rosters and gradebooks sort by this, and the optional comma after the surname is what lets us greet the learner by their real first name.
             Anyone already enrolled in another section is listed for you to confirm before being moved.
-            Password: their birthday as MMDDYYYY, or a random code shown once after adding if there is no birthday on file.
           </p>
           <div className="flex gap-2 mt-2">
-            <button onClick={() => addStudents({})} disabled={busy || !studentsText.trim()}
+            <button onClick={() => addStudents({})} disabled={busy || !studentRows.some(isFilledRow)}
               className="text-xs font-bold text-white bg-brand-navy px-3 py-2 rounded-lg hover:bg-blue-900 flex items-center gap-1.5 disabled:opacity-40">
               {busy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <UserPlus className="w-3.5 h-3.5" />} Add Students
             </button>
