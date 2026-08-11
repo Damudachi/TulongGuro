@@ -46,6 +46,16 @@ export default function Login() {
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  /**
+   * Whether this sign-in should outlive the app being closed.
+   *
+   * Off by default, and deliberately so: the same phone gets passed down a row
+   * of students, and a session that quietly survives on a borrowed device is
+   * worth more to the wrong person than the convenience is worth to the right
+   * one. Ticking it is one tap, and it is what a teacher on their own phone
+   * wants — which is the case that produced "I have to log in every time".
+   */
+  const [stayLoggedIn, setStayLoggedIn] = useState(false);
   const [errorMsg, setErrorMsg] = useState(
     // apiFetch redirects here with ?expired=1 when a token is rejected, so
     // the form explains itself instead of looking like it lost the password.
@@ -75,7 +85,7 @@ export default function Login() {
       const data = await response.json();
 
       if (data.success) {
-        setSession(data.user, data.token);
+        setSession(data.user, data.token, { remember: stayLoggedIn });
         navigate(cfg.home);
       } else {
         // The server distinguishes a wrong password from a school that is still
@@ -210,6 +220,26 @@ export default function Login() {
                 </button>
               </div>
             </div>
+
+            {/* A real checkbox rather than a styled div: it is reachable by
+                keyboard, announced as a checkbox, and the whole label is a tap
+                target — which on a phone is the difference between a control
+                people use and one they miss. */}
+            <label className="flex items-start gap-3 cursor-pointer select-none -mt-1">
+              <input
+                type="checkbox"
+                checked={stayLoggedIn}
+                onChange={(e) => setStayLoggedIn(e.target.checked)}
+                className="mt-0.5 w-5 h-5 shrink-0 rounded-md border-2 border-navy-700/20 accent-royal-500 cursor-pointer"
+              />
+              <span>
+                <span className="block text-sm font-bold text-navy-600">Keep me signed in</span>
+                <span className="block text-xs font-semibold text-navy-400 leading-relaxed">
+                  Stay signed in on this device. Leave this off on a shared or
+                  classroom device — signing out is always available in the menu.
+                </span>
+              </span>
+            </label>
 
             <button
               type="submit"

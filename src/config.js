@@ -14,44 +14,53 @@ export const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
  */
 export const MAX_SUBMISSION_PAGES = 12;
 
-const TOKEN_KEY = 'tg_token';
+import { readToken, storeSession, clearStoredSession, renewStoredToken } from './utils/session';
 
-export const getToken = () => localStorage.getItem(TOKEN_KEY);
-
-/** Called on login. The token, not the user id, is what authenticates calls. */
-export const setSession = (user, token) => {
-  localStorage.setItem('user', JSON.stringify(user));
-  if (token) localStorage.setItem(TOKEN_KEY, token);
-};
-
-export const clearSession = () => {
-  localStorage.removeItem(TOKEN_KEY);
-  localStorage.removeItem('user');
-};
+export const getToken = () => readToken();
 
 /**
- * Sign out everywhere, then locally.
+ * Called on login. The token, not the user id, is what authenticates calls.
  *
- * Dropping the token from this browser is enough for the person at the
- * keyboard, but a token that has been copied elsewhere stays valid until it
- * expires. Telling the server first ends every session for this account, which
- * is what signing out of a shared classroom machine has to mean.
+ * `remember` decides whether the session outlives the app being closed — see
+ * utils/session.js. Omitting it keeps an existing session where it already is,
+ * which is what the password-change screens want.
+ */
+export const setSession = (user, token, options) => storeSession(user, token, options);
+
+export const clearSession = () => clearStoredSession();
+
+/**
+ * Sign out: locally first, then everywhere.
  *
- * The local clear happens regardless — if the network call fails, the user
- * still gets signed out of this browser rather than being stuck.
+ * The order is the entire point, and it used to be the other way round. This
+ * awaited the server before touching localStorage, so between tapping Sign Out
+ * and the API answering, the token was still sitting in this browser. On a cold
+ * Render instance that is tens of seconds — and anything that ended the page in
+ * that window took the pending `clearSession()` with it, because a promise
+ * continuation does not survive a navigation. Sign out, paste
+ * /teacher/dashboard into the address bar, and the guard found a valid session
+ * and let you back in. Reported exactly that way, from production.
+ *
+ * `keepalive` was already here for that reason and only ever covered half of
+ * it: it keeps the *request* alive across an unload, not the JavaScript waiting
+ * on it. Clearing first needs no promise to survive at all.
+ *
+ * The server call still matters and still goes out — a token that has been
+ * copied elsewhere stays valid until it expires, and /api/auth/logout ends
+ * every session for the account. It is simply no longer what the local sign-out
+ * waits on. Callers may still await this to know the revoke landed.
  */
 export const logout = async () => {
   const token = getToken();
-  if (token) {
-    try {
-      await fetch(`${API_URL}/api/auth/logout`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${token}` },
-        keepalive: true,   // survives the navigation that follows
-      });
-    } catch { /* offline, or the token was already dead — clear locally anyway */ }
-  }
   clearSession();
+  if (!token) return;
+  try {
+    await fetch(`${API_URL}/api/auth/logout`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+      keepalive: true,   // survives the navigation that follows
+    });
+  } catch { /* offline, or the token was already dead — this browser is signed out either way */ }
 };
 
 /**
@@ -84,8 +93,11 @@ export async function apiFetch(input, init = {}) {
   //
   // Reading this header at all depends on the API listing it in the CORS
   // exposedHeaders — the two are a pair, and neither works alone.
+  // Kept in whichever store the session is already in, so a renewal never
+  // promotes a "just this once" sign-in into a remembered one — and never
+  // resurrects a session that was signed out while this call was in flight.
   const renewed = res.headers.get('X-Renewed-Token');
-  if (renewed) localStorage.setItem(TOKEN_KEY, renewed);
+  if (renewed) renewStoredToken(renewed);
 
   // The operator approvals page authenticates with PLATFORM_ADMIN_KEY, not a
   // user session, so a 401 there means "wrong key" — not "your session ended".

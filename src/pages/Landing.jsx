@@ -1,5 +1,6 @@
 import { useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, Navigate } from 'react-router-dom';
+import { resumeTo } from '../utils/session';
 import {
   BookOpen, Sparkles, ScanLine, ClipboardCheck, BarChart3, WifiOff,
   ShieldCheck, ArrowRight, GraduationCap, Users, Building2, Check, Menu, X,
@@ -100,6 +101,25 @@ const STEPS = [
 
 export default function Landing() {
   const [menuOpen, setMenuOpen] = useState(false);
+
+  /**
+   * The way back in.
+   *
+   * This is the app's front door and the PWA's start_url, so an installed app
+   * opens here every single launch. Someone who asked to be kept signed in gets
+   * taken to their own screens instead of being shown the marketing page and a
+   * log-in button — that button was the entire reason the app asked for a
+   * password every morning.
+   *
+   * Read during render rather than in an effect so the brochure never flashes
+   * up first. `replace` keeps it out of history: back from the dashboard should
+   * leave the app, not bounce off here and forward again.
+   *
+   * Signing out clears the session, so this stops applying the moment it should
+   * — and /login is always reachable directly for switching accounts.
+   */
+  const resume = resumeTo();
+  if (resume) return <Navigate to={resume} replace />;
 
   const navLinks = [
     { label: 'Features', href: '#features' },

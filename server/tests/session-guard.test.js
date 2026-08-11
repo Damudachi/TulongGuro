@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { sessionFor, guardVerdict } from '../../src/utils/session.js';
+import { sessionFor, guardVerdict, resumeTo } from '../../src/utils/session.js';
 
 /**
  * Who is allowed to render a role's screens.
@@ -105,5 +105,53 @@ describe('guardVerdict decides what a role area should do', () => {
     set('tg_token', 'a.signed.token');
     set('user', JSON.stringify({ id: 'x', role: 'SUPERUSER' }));
     expect(guardVerdict('TEACHER')).toEqual({ allow: false, to: '/login' });
+  });
+});
+
+/**
+ * The other half of the guard, and the one that was missing.
+ *
+ * guardVerdict answers "may this session be here?" for the role areas. Nothing
+ * answered the entry question — "there is a session, why are we showing the
+ * front door?" — so the public pages showed a log-in form to someone already
+ * holding a valid week-long token. In a browser tab that is invisible, because
+ * people return to a bookmarked /teacher/dashboard. An installed PWA always
+ * cold-starts at the manifest's start_url, which is '/', so every single launch
+ * landed on the marketing page whose only way in is the log-in form. Reported
+ * as "I still need to log in every time", and that is exactly what it was.
+ */
+describe('resumeTo decides whether a public page should step aside', () => {
+  it('renders the public page when there is no session', () => {
+    expect(resumeTo()).toBe(null);
+  });
+
+  it('sends a signed-in teacher to their dashboard', () => {
+    signedInAs('TEACHER');
+    expect(resumeTo()).toBe('/teacher/dashboard');
+  });
+
+  it('sends a signed-in student to their dashboard', () => {
+    signedInAs('STUDENT');
+    expect(resumeTo()).toBe('/student/dashboard');
+  });
+
+  it('sends a signed-in admin to their own home', () => {
+    signedInAs('ADMIN');
+    expect(resumeTo()).toBe('/admin/teachers');
+  });
+
+  it('renders the public page when the token is gone but the user blob is not', () => {
+    // Half a session is not a session — the same rule sessionFor already
+    // applies. Redirecting on the blob alone would bounce a signed-out user
+    // into a dashboard that immediately 401s back to /login.
+    set('user', JSON.stringify({ id: 'user-1', role: 'TEACHER' }));
+    expect(resumeTo()).toBe(null);
+  });
+
+  it('renders the public page for an unrecognised stored role', () => {
+    // There is nowhere to send them, and the log-in form is the way out.
+    set('tg_token', 'a.signed.token');
+    set('user', JSON.stringify({ id: 'x', role: 'SUPERUSER' }));
+    expect(resumeTo()).toBe(null);
   });
 });
