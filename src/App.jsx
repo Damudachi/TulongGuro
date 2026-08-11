@@ -44,6 +44,7 @@ import StudentSettings from './pages/student/Settings';
 import Subjects from './pages/student/Subjects';
 import SubjectActivities from './pages/student/SubjectActivities';
 import SubjectGradebook from './pages/student/SubjectGradebook';
+import RequireRole from './components/RequireRole';
 
 function App() {
   return (
@@ -57,7 +58,7 @@ function App() {
         <Route path="/platform/approvals" element={<PlatformApprovals />} />
 
         {/* Admin Routes */}
-        <Route path="/admin" element={<AdminLayout />}>
+        <Route path="/admin" element={<RequireRole role="ADMIN"><AdminLayout /></RequireRole>}>
           <Route index element={<Navigate to="teachers" />} />
           <Route path="teachers" element={<AdminTeachers />} />
           <Route path="teachers/:teacherId" element={<AdminTeacherDetail />} />
@@ -69,7 +70,7 @@ function App() {
         </Route>
 
         {/* Teacher Routes */}
-        <Route path="/teacher" element={<TeacherLayout />}>
+        <Route path="/teacher" element={<RequireRole role="TEACHER"><TeacherLayout /></RequireRole>}>
           <Route index element={<Navigate to="dashboard" />} />
           <Route path="dashboard" element={<TeacherDashboard />} />
           <Route path="class/:classId" element={<ClassHub />} />
@@ -91,7 +92,7 @@ function App() {
         </Route>
 
         {/* Student Routes */}
-        <Route path="/student" element={<StudentLayout />}>
+        <Route path="/student" element={<RequireRole role="STUDENT"><StudentLayout /></RequireRole>}>
           <Route index element={<Navigate to="dashboard" />} />
           <Route path="dashboard" element={<StudentDashboard />} />
           <Route path="output/:outputId" element={<OutputDetails />} />
