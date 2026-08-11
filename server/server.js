@@ -20,6 +20,7 @@ const {
   signToken, authenticate, authorizePath,
   configureRevocation, markRevoked,
   loginRateLimit, registerRateLimit, platformRateLimit, changePasswordRateLimit,
+  RENEWED_TOKEN_HEADER,
 } = require('./auth');
 const { classSchoolId, staffMayAccess, staffMayReadStudent, REAL_WORK } = require('./access');
 const { currentSchoolYear, isCurrentSchoolYear, compareSchoolYearsDesc } = require('./schoolYear');
@@ -274,7 +275,12 @@ const aiApiKeys = (() => {
 const aiApiKey = aiApiKeys[0]?.value || '';
 const aiConfigured = aiApiKeys.length > 0;
 
-app.use(cors());
+// The renewed-session header has to be named explicitly: CORS hides every
+// response header from JavaScript by default except a short safelist, and the
+// frontend is on a different origin to this API in production. Without this
+// the header arrives on the wire, the browser refuses to expose it, and
+// sessions quietly stop sliding — while everything looks correct in curl.
+app.use(cors({ exposedHeaders: [RENEWED_TOKEN_HEADER] }));
 app.use(express.json());
 
 // File storage: Supabase Storage in production, local disk in development.

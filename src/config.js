@@ -74,6 +74,19 @@ export async function apiFetch(input, init = {}) {
 
   const res = await fetch(input, { ...init, headers });
 
+  // ── The sliding session ──
+  // Sessions lapse after a week of not being used, but renew while they are.
+  // The server reissues a token once the current one is past halfway through
+  // its life and returns it here; swapping it in is the whole client side of
+  // it, and it happens on whichever call the user happened to trigger. So a
+  // teacher who opens the app at least weekly is never asked to sign in
+  // again, and one who leaves it for eight days is asked once.
+  //
+  // Reading this header at all depends on the API listing it in the CORS
+  // exposedHeaders — the two are a pair, and neither works alone.
+  const renewed = res.headers.get('X-Renewed-Token');
+  if (renewed) localStorage.setItem(TOKEN_KEY, renewed);
+
   // The operator approvals page authenticates with PLATFORM_ADMIN_KEY, not a
   // user session, so a 401 there means "wrong key" — not "your session ended".
   // Treating it as the latter signed the operator out of an unrelated admin

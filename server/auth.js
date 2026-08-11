@@ -24,8 +24,28 @@
 
 const crypto = require('crypto');
 
-/** How long a session lasts. A school day plus room for a long evening of marking. */
-const TOKEN_TTL_SECONDS = 12 * 60 * 60;
+/**
+ * How long a session lasts without being used.
+ *
+ * Was twelve hours — a school day plus an evening of marking — which meant a
+ * teacher using the app daily on their own phone signed in again every
+ * morning. Sessions renew while they are in use now (see dueForRenewal), so
+ * this is no longer "how long you may stay signed in" but "how long the app
+ * may sit untouched before asking again". A week covers a half-term break's
+ * worth of weekends without leaving an abandoned session alive for months.
+ */
+const TOKEN_TTL_SECONDS = 7 * 24 * 60 * 60;
+
+/** Past this fraction of its life, a token is reissued on the next request. */
+const RENEW_AFTER = 0.5;
+
+/**
+ * Where a renewed session arrives. Must also be listed in the CORS
+ * `exposedHeaders` — frontend and API are separate origins in production, and
+ * a header the browser will not let JavaScript read is a feature that never
+ * fires while looking perfectly correct on the wire.
+ */
+const RENEWED_TOKEN_HEADER = 'X-Renewed-Token';
 
 const b64url = (buf) => Buffer.from(buf).toString('base64url');
 
@@ -65,6 +85,25 @@ function signToken(user) {
     exp: now + TOKEN_TTL_SECONDS,
   }));
   return `${payload}.${sign(payload)}`;
+}
+
+/**
+ * Whether this token has lived long enough to be worth replacing.
+ *
+ * The sliding half of the session. Renewing on every request would re-sign
+ * constantly and write to localStorage on every call; renewing only at the
+ * brink would miss anyone who closes the app for a day. Halfway costs one
+ * signature per few days of use.
+ *
+ * A payload missing either timestamp gets nothing. It cannot be reasoned
+ * about, and the failure mode of guessing is handing out a brand-new
+ * full-length session on the strength of a malformed token.
+ */
+function dueForRenewal(claims, now = Math.floor(Date.now() / 1000)) {
+  if (!claims || typeof claims.iat !== 'number' || typeof claims.exp !== 'number') return false;
+  const lifetime = claims.exp - claims.iat;
+  if (lifetime <= 0) return false;
+  return (now - claims.iat) > lifetime * RENEW_AFTER;
 }
 
 /** The payload of a valid, unexpired token, or null. Never throws. */
@@ -185,6 +224,17 @@ async function authenticate(req, res, next) {
     return res.status(401).json({ success: false, code: 'UNAUTHENTICATED', error: 'Please sign in again.' });
   }
   req.auth = claims;
+
+  // The sliding window, done where every authenticated request already passes.
+  // Sent as a header rather than in the body because the body belongs to the
+  // route — there is no shape shared across a hundred handlers to add a field
+  // to, and a header needs no handler to cooperate. apiFetch picks it up.
+  if (dueForRenewal(claims)) {
+    res.set(RENEWED_TOKEN_HEADER, signToken({
+      id: claims.sub, role: claims.role, schoolId: claims.schoolId,
+    }));
+  }
+
   next();
 }
 
@@ -344,6 +394,8 @@ function authorizePath(req, res, next) {
 
 module.exports = {
   TOKEN_TTL_SECONDS,
+  RENEWED_TOKEN_HEADER,
+  dueForRenewal,
   signToken,
   verifyToken,
   authenticate,
