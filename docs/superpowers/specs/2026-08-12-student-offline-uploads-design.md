@@ -53,10 +53,11 @@ and nothing repairs it.
 
 | Question | Decision |
 |---|---|
-| Scope | Student upload only. Teacher batch upload stays as-is this round. |
+| Scope | Student upload, then teacher upload (added after the first round of testing) |
 | Where cached activities live | App-managed snapshot in localStorage, not a service-worker rule |
 | Snapshot lifetime | Per signed-in user, cleared on logout, expires after 7 days |
 | Grades offline | Never cached. No status, no score, no image URL. |
+| Learner names offline | Only in the teacher's class snapshot, and only because batch upload cannot attribute a paper without them. Id and name; never LRN or email. |
 
 **Why an app-managed snapshot rather than whitelisting the endpoint in `sw.js`:**
 a service-worker rule caches whatever the endpoint returns, grades included,
@@ -133,6 +134,27 @@ student.
 What this constrains is wording. Offline the app says "saved on this device" and
 "will send when you're back". It never says "submitted", because the server has
 not seen it and may yet refuse it.
+
+### 5a. The teacher path (added after testing)
+
+Three snapshots, all under the same lifetime and sign-out rules:
+
+- **Classes** (`tg_teacher_<userId>`) — the dashboard's class list. Counts only,
+  never people. Without it `Dashboard.jsx:638` renders the first-run setup
+  wizard, so a teacher with twelve classes and no signal was invited to create
+  their first one.
+- **One class** (`tg_class_<userId>_<classId>`) — its activities and its roster.
+  **This is the only place learner names are written to disk.** Batch upload
+  cannot attribute a scanned paper without them, so the trade is made
+  deliberately and scoped as narrowly as it can be: the teacher's own class, on
+  the teacher's own device, id and name only. LRN, email, and everything on a
+  submission stay out.
+- ClassHub and BatchUpload read these when their fetch fails, and both label
+  what they show as a saved copy with the date.
+
+`ClassHub.jsx` also stopped saying "Class not found." on a failed read. That is
+a claim about the class; offline the app knows only that it could not ask, and a
+teacher who had just seen the class on their dashboard read it as deletion.
 
 ### 6. Tests
 

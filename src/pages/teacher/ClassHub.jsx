@@ -1,9 +1,11 @@
 import { useState, useEffect } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
-import { Plus, Search, FileText, ArrowLeft, Clock, CheckCircle2, AlertCircle, UploadCloud, Trash2, PenLine } from 'lucide-react';
+import { Plus, Search, FileText, ArrowLeft, Clock, CheckCircle2, AlertCircle, UploadCloud, Trash2, PenLine, CloudOff } from 'lucide-react';
 import { API_URL, apiFetch } from '../../config';
 import { ACTIVITY_TYPES } from '../../constants/activityTypes';
 import { isPastDeadline, formatDeadline } from '../../utils/deadlines';
+import { getStoredUser } from '../../utils/session';
+import { saveClassSnapshot, readClassSnapshot } from '../../utils/offlineSnapshot';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
 
@@ -18,6 +20,11 @@ export default function ClassHub() {
   const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState('activities');
   const [classData, setClassData] = useState(null);
+  // Could not ask, as opposed to asked and told no. See the render below.
+  const [loadFailed, setLoadFailed] = useState(false);
+  // Set when this class came off the device, so the page can qualify what it
+  // shows and hide the actions that need a server to be honest about.
+  const [savedAt, setSavedAt] = useState(null);
   const [search, setSearch] = useState('');
   const [isLoading, setIsLoading] = useState(true);
   const [showActivityForm, setShowActivityForm] = useState(false);
@@ -35,8 +42,21 @@ export default function ClassHub() {
   useEffect(() => {
     apiFetch(`${API_URL}/api/classes/${classId}`)
       .then(r => r.json())
-      .then(d => { if (d.success) setClassData(d.classData); })
-      .catch(() => {}) /* a failed read leaves the empty state, which is what renders */
+      .then(d => {
+        if (!d.success) return;
+        setClassData(d.classData);
+        saveClassSnapshot(getStoredUser().id, classId, d.classData);
+      })
+      // "Class not found." is a claim about the class. Offline the app knows
+      // nothing about whether it exists — only that it could not ask — and a
+      // teacher who has just been shown the class on their dashboard reads
+      // that message as their work having been deleted.
+      .catch(() => {
+        const snapshot = readClassSnapshot(getStoredUser().id, classId);
+        if (!snapshot) return setLoadFailed(true);
+        setClassData(snapshot);
+        setSavedAt(snapshot.savedAt);
+      })
       .finally(() => setIsLoading(false));
   }, [classId]);
 
@@ -143,6 +163,16 @@ export default function ClassHub() {
   };
 
   if (isLoading) return <div className="flex items-center justify-center h-64 text-slate-400">Loading class...</div>;
+  if (!classData && loadFailed) return (
+    <div className="p-8 max-w-md mx-auto text-center">
+      <CloudOff className="w-10 h-10 mx-auto mb-3 text-navy-300" />
+      <p className="font-display text-lg font-extrabold text-navy-700 mb-1">Can't open this class right now</p>
+      <p className="text-sm text-navy-500 leading-relaxed">
+        You appear to be offline. Your class is still here — its activities and learners need a connection to load.
+        Queued uploads are safe and will send when you're back.
+      </p>
+    </div>
+  );
   if (!classData) return <div className="p-8 text-center text-slate-500">Class not found.</div>;
 
   const students = classData.section?.students || [];
@@ -161,6 +191,20 @@ export default function ClassHub() {
           <p className="text-slate-500 text-sm">{classData.schoolYear} • {classData.section?.name} • {students.length} Students</p>
         </div>
       </div>
+
+      {savedAt && (
+        <div className="mb-6 bg-sun-100 border-2 border-sun-200 rounded-2xl p-4 flex items-start gap-3">
+          <CloudOff className="w-5 h-5 text-sun-700 shrink-0 mt-0.5" />
+          <div>
+            <p className="text-sm font-extrabold text-navy-700">You're offline — saved copy of this class</p>
+            <p className="text-sm text-navy-600 mt-0.5 leading-relaxed">
+              From {new Date(savedAt).toLocaleDateString('en-PH', { month: 'long', day: 'numeric', hour: 'numeric', minute: '2-digit' })}.
+              You can upload against these activities and they'll send when you're back. Grades and submission
+              counts aren't available offline, and creating or editing an activity needs a connection.
+            </p>
+          </div>
+        </div>
+      )}
 
       {/* Left-over sandbox from the removed auto-seed. Nothing creates these
           any more, so this banner exists only to get the remaining ones

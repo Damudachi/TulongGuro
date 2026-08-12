@@ -26,9 +26,10 @@
 
 const KEY_PREFIX = 'tg_activities_';
 const TEACHER_PREFIX = 'tg_teacher_';
+const CLASS_PREFIX = 'tg_class_';
 
-/** Both namespaces are wiped together on sign-out. */
-const ALL_PREFIXES = [KEY_PREFIX, TEACHER_PREFIX];
+/** Every namespace is wiped together on sign-out. */
+const ALL_PREFIXES = [KEY_PREFIX, TEACHER_PREFIX, CLASS_PREFIX];
 
 /** A saved list older than this is not shown at all. A school year's deadlines
  *  move; a week is long enough to cover a stretch without signal and short
@@ -188,6 +189,68 @@ export function readTeacherSnapshot(userId) {
     return null;
   }
   if (!snapshot || !Array.isArray(snapshot.classes)) return null;
+
+  const savedAt = Date.parse(snapshot.savedAt);
+  if (!Number.isFinite(savedAt) || Date.now() - savedAt > SNAPSHOT_MAX_AGE_MS) return null;
+
+  return snapshot;
+}
+
+/**
+ * One class, deep enough for a teacher to upload against it with no signal:
+ * its activities, and the roster to say which scanned paper belongs to whom.
+ *
+ * ── Why learner names are here, when they are nowhere else ──
+ * Batch upload cannot work without them. A teacher with a stack of papers has
+ * to attribute each one, and there is no way to ask that question without a
+ * list of who is in the room. Every other snapshot in this file avoids names
+ * because it can; this one cannot, so it is scoped to the narrowest thing that
+ * still works: the teacher's own class, on the teacher's own device, id and
+ * name only, cleared at sign-out and expired after a week like the rest.
+ *
+ * Still excluded, and these are not oversights: LRN, email, and anything on a
+ * submission — score, feedback, or the path to the scanned paper itself.
+ * Uploading needs to know who is in the class, not how any of them are doing.
+ */
+const KEEP_CLASS_DETAIL = ['id', 'name', 'subject', 'gradeLevel', 'schoolYear'];
+const KEEP_LEARNER = ['id', 'name'];
+const KEEP_CLASS_ACTIVITY = ['id', 'title', 'type', 'points', 'deadline', 'lateUntil', 'maxAttempts', 'instructions', 'submissionMode'];
+
+export function saveClassSnapshot(userId, classId, classData) {
+  const disk = store();
+  if (!disk || !userId || !classId || !classData) return;
+
+  const snapshot = {
+    savedAt: new Date().toISOString(),
+    ...pick(classData, KEEP_CLASS_DETAIL),
+    activities: (classData.activities || []).map((a) => pick(a, KEEP_CLASS_ACTIVITY)),
+  };
+  if (classData.section) {
+    snapshot.section = {
+      ...pick(classData.section, KEEP_SECTION),
+      students: (classData.section.students || []).map((s) => pick(s, KEEP_LEARNER)),
+    };
+  }
+
+  try {
+    disk.setItem(`${CLASS_PREFIX}${userId}_${classId}`, JSON.stringify(snapshot));
+  } catch (e) {
+    console.warn('[OfflineSnapshot] Could not save the class:', e.message);
+  }
+}
+
+/** @returns {{ savedAt: string, activities: Array, section?: object } | null} */
+export function readClassSnapshot(userId, classId) {
+  const disk = store();
+  if (!disk || !userId || !classId) return null;
+
+  let snapshot;
+  try {
+    snapshot = JSON.parse(disk.getItem(`${CLASS_PREFIX}${userId}_${classId}`) || 'null');
+  } catch {
+    return null;
+  }
+  if (!snapshot || !Array.isArray(snapshot.activities)) return null;
 
   const savedAt = Date.parse(snapshot.savedAt);
   if (!Number.isFinite(savedAt) || Date.now() - savedAt > SNAPSHOT_MAX_AGE_MS) return null;

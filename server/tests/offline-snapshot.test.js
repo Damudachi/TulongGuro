@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
   saveActivitySnapshot, mergeActivitySnapshot, readActivitySnapshot,
   saveTeacherSnapshot, readTeacherSnapshot,
+  saveClassSnapshot, readClassSnapshot,
   clearActivitySnapshots, SNAPSHOT_MAX_AGE_MS,
 } from '../../src/utils/offlineSnapshot.js';
 import { clearStoredSession, storeSession } from '../../src/utils/session.js';
@@ -275,6 +276,101 @@ describe('the teacher snapshot', () => {
   it('is absent rather than throwing on corrupt storage', () => {
     localStorage.setItem('tg_teacher_tch_1', 'not json at all');
     expect(readTeacherSnapshot('tch_1')).toBeNull();
+  });
+});
+
+describe('the class snapshot a teacher uploads against', () => {
+  /**
+   * The one place learner names are written to disk, and only because batch
+   * upload is meaningless without them — a teacher holding a stack of scanned
+   * papers has to say which paper belongs to whom, and there is no way to ask
+   * that question without a roster.
+   *
+   * Scoped as tightly as that reason allows: the teacher's own classes, on the
+   * teacher's own device, gone at sign-out, gone after a week. Names and ids
+   * only — no score, no submission, no scanned paper.
+   */
+  const classData = (over = {}) => ({
+    id: 'cls_1',
+    name: 'English 7 — Rosal',
+    subject: 'English',
+    section: {
+      id: 'sec_1',
+      name: 'Rosal',
+      students: [
+        { id: 'stu_1', name: 'Santos, Maria', lrn: '123456789012', email: 'maria@example.com' },
+        { id: 'stu_2', name: 'Cruz, Jose', lrn: '210987654321', email: 'jose@example.com' },
+      ],
+    },
+    activities: [{
+      id: 'act_1', title: 'Essay on Rizal', type: 'ESSAY', points: 20,
+      deadline: '2026-08-20T15:00:00.000Z', submissionMode: 'TEACHER_UPLOAD',
+      submissions: [{ id: 'sub_1', hitlScore: 88, imageUrl: '/uploads/a.jpg' }],
+    }],
+    ...over,
+  });
+
+  it('keeps the roster, so a paper can be assigned to a learner offline', () => {
+    saveClassSnapshot('tch_1', 'cls_1', classData());
+    const saved = readClassSnapshot('tch_1', 'cls_1');
+    expect(saved.section.students).toHaveLength(2);
+    expect(saved.section.students[0]).toEqual({ id: 'stu_1', name: 'Santos, Maria' });
+  });
+
+  it('keeps only the name and id of a learner, nothing else on the record', () => {
+    saveClassSnapshot('tch_1', 'cls_1', classData());
+    const raw = localStorage.getItem('tg_class_tch_1_cls_1');
+    expect(raw).not.toMatch(/123456789012|maria@example|lrn|email/);
+  });
+
+  it('keeps the activities to upload against, without their submissions', () => {
+    saveClassSnapshot('tch_1', 'cls_1', classData());
+    const saved = readClassSnapshot('tch_1', 'cls_1');
+    expect(saved.activities[0].title).toBe('Essay on Rizal');
+    expect(saved.activities[0].submissions).toBeUndefined();
+
+    const raw = localStorage.getItem('tg_class_tch_1_cls_1');
+    expect(raw).not.toMatch(/hitlScore|imageUrl|uploads|submissions/);
+  });
+
+  it('keeps one class apart from another', () => {
+    saveClassSnapshot('tch_1', 'cls_1', classData({ name: 'A' }));
+    saveClassSnapshot('tch_1', 'cls_2', classData({ id: 'cls_2', name: 'B' }));
+    expect(readClassSnapshot('tch_1', 'cls_1').name).toBe('A');
+    expect(readClassSnapshot('tch_1', 'cls_2').name).toBe('B');
+  });
+
+  it('keeps one teacher apart from another', () => {
+    saveClassSnapshot('tch_1', 'cls_1', classData({ name: 'Mine' }));
+    expect(readClassSnapshot('tch_2', 'cls_1')).toBeNull();
+  });
+
+  it('expires, and goes at sign-out, like every other snapshot', () => {
+    vi.useFakeTimers();
+    const day1 = new Date('2026-08-01T00:00:00.000Z').getTime();
+    vi.setSystemTime(day1);
+    saveClassSnapshot('tch_1', 'cls_1', classData());
+
+    vi.setSystemTime(day1 + SNAPSHOT_MAX_AGE_MS + 1000);
+    expect(readClassSnapshot('tch_1', 'cls_1')).toBeNull();
+
+    vi.setSystemTime(day1);
+    saveClassSnapshot('tch_1', 'cls_1', classData());
+    clearStoredSession();
+    expect(readClassSnapshot('tch_1', 'cls_1')).toBeNull();
+  });
+
+  it('survives a class with no section or no activities', () => {
+    saveClassSnapshot('tch_1', 'cls_1', { id: 'cls_1', name: 'Bare' });
+    const saved = readClassSnapshot('tch_1', 'cls_1');
+    expect(saved.name).toBe('Bare');
+    expect(saved.activities).toEqual([]);
+    expect(saved.section).toBeUndefined();
+  });
+
+  it('is absent rather than throwing on corrupt storage', () => {
+    localStorage.setItem('tg_class_tch_1_cls_1', 'nonsense');
+    expect(readClassSnapshot('tch_1', 'cls_1')).toBeNull();
   });
 });
 

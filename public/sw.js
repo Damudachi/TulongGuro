@@ -19,7 +19,7 @@
  * hard and replaced wholesale when the hash changes.
  */
 
-const VERSION = 'v3';
+const VERSION = 'v4';
 const SHELL = `tg-shell-${VERSION}`;    // index.html + icons + manifest
 const ASSETS = `tg-assets-${VERSION}`;  // /assets/* — content-hashed, immutable
 const FONTS = `tg-fonts-${VERSION}`;    // Google Fonts, cross-origin
@@ -37,15 +37,38 @@ const SHELL_URLS = [
  * Put the shell in the cache, tolerating individual failures so one 404 does
  * not fail the whole install and leave the app with no worker at all.
  *
- * Called again on activate, and again after any successful navigation, because
+ * Called on install, on activate, and after any successful navigation, because
  * tolerating a failure is only safe if something later repairs it. It did not,
  * and a phone whose very first install ran on a flaky connection was left
  * permanently without '/' in the cache — which is a device that can never open
  * offline no matter how many times it is used online afterwards.
+ *
+ * cache.add() is a fetch, so with no signal it populates nothing. That is why
+ * this inherits from the outgoing version's cache: a worker that activates
+ * while offline must end up with a shell either way, or bumping VERSION would
+ * itself be what breaks the app for a phone that has no connection to rebuild
+ * from. Reported as "it opened offline once, then showed the offline page" —
+ * the update had activated in between and taken the shell with it.
  */
-function cacheShell() {
-  return caches.open(SHELL)
-    .then((cache) => Promise.allSettled(SHELL_URLS.map((u) => cache.add(u))));
+async function cacheShell() {
+  const cache = await caches.open(SHELL);
+  await Promise.allSettled(SHELL_URLS.map((u) => cache.add(u)));
+
+  // Whatever the network could not supply, take from the previous version
+  // before it is deleted. caches.match() searches every cache, including the
+  // older shells that activate() is about to clear.
+  await Promise.all(SHELL_URLS.map(async (url) => {
+    if (await cache.match(url)) return;
+    const inherited = await caches.match(url, { ignoreSearch: true });
+    if (inherited) await cache.put(url, inherited.clone());
+  }));
+}
+
+/** Whether the shell can actually serve a cold offline launch. The one entry
+ *  that matters is '/' — every route falls back to it. */
+async function shellIsUsable() {
+  const cache = await caches.open(SHELL);
+  return !!(await cache.match('/', { ignoreSearch: true }));
 }
 
 self.addEventListener('install', (event) => {
@@ -69,9 +92,17 @@ self.addEventListener('install', (event) => {
 self.addEventListener('activate', (event) => {
   const keep = new Set([SHELL, ASSETS, FONTS]);
   event.waitUntil(
-    caches.keys()
-      .then((keys) => Promise.all(keys.filter((k) => !keep.has(k)).map((k) => caches.delete(k))))
-      .then(() => cacheShell())
+    // Fill the new shell BEFORE clearing the old one, and only clear it once
+    // the new one can actually serve a launch. The reverse order deleted a
+    // working cache and then failed to rebuild it with no signal, which is the
+    // worst possible moment to be holding nothing.
+    cacheShell()
+      .then(() => shellIsUsable())
+      .then((usable) => {
+        if (!usable) return;   // Keep the old caches; they are all this device has.
+        return caches.keys()
+          .then((keys) => Promise.all(keys.filter((k) => !keep.has(k)).map((k) => caches.delete(k))));
+      })
       .then(() => self.clients.claim())
   );
 });

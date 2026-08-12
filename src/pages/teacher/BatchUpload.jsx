@@ -3,6 +3,8 @@ import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { ArrowLeft, UploadCloud, X, Loader2, Wifi, WifiOff, ShieldCheck, Info, FileText, Camera, Sparkles, Plus, CheckCircle2, AlertTriangle, ClipboardCheck, RefreshCw } from 'lucide-react';
 import { getQueue, buildJob, enqueue, flushQueue } from '../../utils/offlineQueue';
 import { API_URL, apiFetch, MAX_SUBMISSION_PAGES } from '../../config';
+import { getStoredUser } from '../../utils/session';
+import { saveClassSnapshot, readClassSnapshot } from '../../utils/offlineSnapshot';
 import SubmissionImage from '../../components/SubmissionImage';
 import ImageRedactor from '../../components/ImageRedactor';
 import { isRasterizable, rasterizeToPageImages } from '../../utils/fileRasterize';
@@ -30,6 +32,8 @@ export default function BatchUpload() {
   const [classId, setClassId] = useState(searchParams.get('classId') || '');
 
   const [students, setStudents] = useState([]);
+  // Set when the roster came off this device rather than the server.
+  const [rosterSavedAt, setRosterSavedAt] = useState(null);
   const [activityMeta, setActivityMeta] = useState(null);
   const [activitySubmissions, setActivitySubmissions] = useState([]);
   const [isLoadingSubmissions, setIsLoadingSubmissions] = useState(false);
@@ -85,8 +89,19 @@ export default function BatchUpload() {
           setStudents(d.classData?.section?.students || []);
           const activity = d.classData?.activities?.find(a => a.id === activityId) || null;
           setActivityMeta(activity);
+          saveClassSnapshot(getStoredUser().id, classId, d.classData);
         })
-        .catch(() => {}) /* a failed read leaves the empty state, which is what renders */;
+        .catch(() => {
+          // Without a roster this page renders "No students found" and the
+          // offline queue below it can never be reached — there is no way to
+          // say which scanned paper belongs to whom. This is the one snapshot
+          // that stores learner names, and this is what it is for.
+          const snapshot = readClassSnapshot(getStoredUser().id, classId);
+          if (!snapshot) return;
+          setStudents(snapshot.section?.students || []);
+          setActivityMeta(snapshot.activities.find(a => a.id === activityId) || null);
+          setRosterSavedAt(snapshot.savedAt);
+        });
     }
   }, [classId, activityId]);
 
@@ -448,7 +463,13 @@ export default function BatchUpload() {
       {!isOnline && (
         <div className="flex items-center gap-2 p-3 bg-amber-50 border border-amber-300 rounded-xl text-sm text-amber-800">
           <WifiOff className="w-4 h-4 shrink-0" />
-          <span><strong>You're offline.</strong> Your essays will be saved and uploaded automatically once you're connected again. </span>
+          <span>
+            <strong>You're offline.</strong> Your essays will be saved and uploaded automatically once you're connected again.
+            {rosterSavedAt && (
+              <> This class list was saved on {new Date(rosterSavedAt).toLocaleDateString('en-PH', { month: 'long', day: 'numeric' })} —
+              anyone enrolled since then won't be in it, and each upload is checked by the server when it sends.</>
+            )}
+          </span>
         </div>
       )}
       {isOnline && queuedCount > 0 && (

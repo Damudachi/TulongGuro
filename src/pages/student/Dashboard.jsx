@@ -10,7 +10,8 @@ import SchoolBadge from '../../components/SchoolBadge';
 import { StatTile } from '../../components/PageHeader';
 import { firstNameFromRoster } from '../../utils/roster';
 import { getStoredUser } from '../../utils/session';
-import { mergeActivitySnapshot } from '../../utils/offlineSnapshot';
+import { mergeActivitySnapshot, readActivitySnapshot } from '../../utils/offlineSnapshot';
+import { isPastDeadline } from '../../utils/deadlines';
 
 /**
  * Shown once, the first time a learner has a grade to actually look at.
@@ -53,6 +54,11 @@ export default function StudentDashboard() {
   // commit. See getStoredUser.
   const [isLoading, setIsLoading] = useState(() => !!getStoredUser().id);
   const [showWelcome, setShowWelcome] = useState(false);
+  // What the deadlines section falls back to when the read fails. Kept apart
+  // from `data` so nothing else on the page mistakes a saved list for a live
+  // dashboard — grades, stars and badges stay absent offline, as they should.
+  const [savedUpcoming, setSavedUpcoming] = useState(null);
+  const [savedAt, setSavedAt] = useState(null);
 
   const dismissWelcome = () => {
     markOnboardingSeen(ONBOARDING.STUDENT_WELCOME);
@@ -81,7 +87,19 @@ export default function StudentDashboard() {
           setShowWelcome(true);
         }
       })
-      .catch(() => {}) /* a failed read leaves the empty state, which is what renders */
+      .catch(() => {
+        // "No upcoming deadlines — you're all caught up! 🎉" was being shown to
+        // a student who had work due and merely had no signal. Congratulating
+        // someone for being finished when they are not is the one wrong answer
+        // this screen can give, so it falls back to the saved list and applies
+        // the same not-yet-past rule the server applies.
+        const snapshot = readActivitySnapshot(user.id);
+        if (!snapshot) return;
+        setSavedUpcoming(snapshot.activities
+          .filter(a => a.deadline && !isPastDeadline(a.deadline))
+          .sort((a, b) => new Date(a.deadline) - new Date(b.deadline)));
+        setSavedAt(snapshot.savedAt);
+      })
       .finally(() => setIsLoading(false));
   }, []);
 
@@ -102,7 +120,7 @@ export default function StudentDashboard() {
   const avgGradePartial = data?.avgGradePartial || false;
   const avgGradeSubjectsIncluded = data?.avgGradeSubjectsIncluded || 0;
   const avgGradeSubjectsTotal = data?.avgGradeSubjectsTotal || 0;
-  const upcomingDeadlines = data?.upcomingDeadlines || [];
+  const upcomingDeadlines = data?.upcomingDeadlines || savedUpcoming || [];
   const pendingSubmissions = data?.pendingSubmissions || [];
   const latestStrategy = data?.latestStrategy || null;
 
@@ -189,8 +207,16 @@ export default function StudentDashboard() {
         <h2 className="tg-section-title mb-4 flex items-center gap-2">
           <Clock className="w-5 h-5 text-navy-400" /> Upcoming Deadlines
         </h2>
+        {savedAt && (
+          <p className="text-xs font-semibold text-navy-400 mb-3 -mt-1">
+            You're offline — saved {new Date(savedAt).toLocaleDateString('en-PH', { month: 'long', day: 'numeric', hour: 'numeric', minute: '2-digit' })}.
+            Anything set since then won't be here yet.
+          </p>
+        )}
         {upcomingDeadlines.length === 0 ? (
-          <EmptyState icon={Clock} title="No upcoming deadlines" hint="You're all caught up! 🎉" />
+          savedAt
+            ? <EmptyState icon={Clock} title="Nothing saved to show" hint="Open this page with a connection once and your deadlines will be here next time." />
+            : <EmptyState icon={Clock} title="No upcoming deadlines" hint="You're all caught up! 🎉" />
         ) : (
           <div className="space-y-3">
             {upcomingDeadlines.map(item => {
