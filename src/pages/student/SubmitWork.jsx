@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { ArrowLeft, Camera, UploadCloud, FileText, CheckCircle2, Clock, Loader2, ChevronRight, AlertTriangle, ShieldCheck, Calendar, Award, RefreshCw, Eye } from 'lucide-react';
+import { ArrowLeft, Camera, UploadCloud, FileText, CheckCircle2, Clock, Loader2, ChevronRight, AlertTriangle, ShieldCheck, Calendar, Award, RefreshCw, Eye, CloudOff } from 'lucide-react';
 import { API_URL, apiFetch, MAX_SUBMISSION_PAGES } from '../../config';
 import { getStoredUser } from '../../utils/session';
 import SubmissionImage from '../../components/SubmissionImage';
@@ -8,6 +8,7 @@ import ImageRedactor from '../../components/ImageRedactor';
 import { deadlineInstant, formatDeadline, submissionWindow } from '../../utils/deadlines';
 import { isRasterizable, rasterizeToPageImages } from '../../utils/fileRasterize';
 import { enqueue, buildJob } from '../../utils/offlineQueue';
+import { saveActivitySnapshot, readActivitySnapshot } from '../../utils/offlineSnapshot';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
 
@@ -39,27 +40,54 @@ export default function SubmitWork() {
   // Track whether we arrived via a direct link (so "Back" goes to dashboard)
   const [cameFromLink, setCameFromLink] = useState(false);
 
+  // Set when the list on screen came off this device rather than the server, so
+  // every claim the page makes about it can be qualified. Null means live data.
+  const [savedListAt, setSavedListAt] = useState(null);
+  // The read failed and there was nothing saved to fall back on. Distinct from
+  // an empty list: "no activities yet" and "we couldn't reach yours" are
+  // different facts, and a student offline was previously told the first one.
+  const [listUnreachable, setListUnreachable] = useState(false);
+
   useEffect(() => {
     const user = getStoredUser();
     if (!user.id) return;
+
+    // Auto-select from ?activityId=, whether the list came from the server or
+    // off the disk — a student following a link from their dashboard while
+    // offline should land on the same activity, not on a bare list.
+    const autoSelect = (list) => {
+      const activityIdParam = searchParams.get('activityId');
+      if (!activityIdParam) return;
+      const match = list.find(a => a.id === activityIdParam);
+      if (!match) return;
+      setCameFromLink(true);
+      setSelected(match);
+      setShowPrivacyModal(true);
+    };
+
     apiFetch(`${API_URL}/api/student/${user.id}/activities`)
       .then(r => r.json())
       .then(d => {
-        if (d.success) {
-          setActivities(d.activities);
-          // Auto-select activity from URL param
-          const activityIdParam = searchParams.get('activityId');
-          if (activityIdParam) {
-            const match = d.activities.find(a => a.id === activityIdParam);
-            if (match) {
-              setCameFromLink(true);
-              setSelected(match);
-              setShowPrivacyModal(true);
-            }
-          }
-        }
+        if (!d.success) return;
+        setActivities(d.activities);
+        // Every successful read refreshes the copy kept for the next dropout.
+        // Only the fields in the snapshot's allow-list are written — no grade,
+        // no status, no path to a scanned paper.
+        saveActivitySnapshot(user.id, d.activities);
+        autoSelect(d.activities);
       })
-      .catch(() => {}) /* a failed read leaves the empty state, which is what renders */
+      .catch(() => {
+        // No network. Fall back to the list saved on the last online visit so
+        // the offline upload queue is reachable at all — without a list there
+        // is nothing to select, and a student with a photo of their essay has
+        // no way to hand it over. A missing or stale snapshot leaves the empty
+        // state, which is what already renders.
+        const snapshot = readActivitySnapshot(user.id);
+        if (!snapshot) { setListUnreachable(true); return; }
+        setActivities(snapshot.activities);
+        setSavedListAt(snapshot.savedAt);
+        autoSelect(snapshot.activities);
+      })
       .finally(() => setIsLoading(false));
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -325,6 +353,23 @@ export default function SubmitWork() {
     </div>
   );
 
+  // ─── SAVED-LIST NOTICE ─────────────────────────────────────────────
+  // Shown on both screens whenever the activities came off this device. The
+  // wording promises only what is true offline: the work is saved here, and it
+  // goes when the signal does. Never "submitted" — the server has not seen it.
+  const savedListNotice = savedListAt && (
+    <div className="mb-5 bg-sun-100 border-2 border-sun-200 rounded-3xl p-5 flex items-start gap-3">
+      <CloudOff className="w-5 h-5 text-sun-700 shrink-0 mt-0.5" />
+      <div>
+        <p className="text-sm font-extrabold text-navy-700">You're offline — this list was saved on this device</p>
+        <p className="text-sm text-navy-600 mt-0.5 leading-relaxed">
+          Last updated {new Date(savedListAt).toLocaleDateString('en-PH', { month: 'long', day: 'numeric', hour: 'numeric', minute: '2-digit' })}.
+          You can still take a photo and submit — it's saved here and sent automatically once you're back online.
+        </p>
+      </div>
+    </div>
+  );
+
   // ─── SUCCESS RESULT SCREEN ─────────────────────────────────────────
   if (result) {
     return (
@@ -404,7 +449,10 @@ export default function SubmitWork() {
                 </span>
               </div>
             )}
-            {(selected.maxAttempts === 0 || selected.maxAttempts > 1) && (
+            {/* A saved list carries no submission of its own (offlineSnapshot.js
+                keeps no grade or status), so offline this would read "0/2" and
+                assert that no attempt has been used — which it cannot know. */}
+            {!savedListAt && (selected.maxAttempts === 0 || selected.maxAttempts > 1) && (
               <div className="bg-white/15 px-3.5 py-2 rounded-xl">
                 <span className="block text-[10px] uppercase tracking-wider font-extrabold mb-0.5 text-royal-100">Attempts</span>
                 <span className="font-extrabold flex items-center">
@@ -425,6 +473,23 @@ export default function SubmitWork() {
               <FileText className="w-4 h-4 text-royal-500" /> Instructions
             </h2>
             <p className="text-sm text-navy-600 leading-relaxed whitespace-pre-wrap">{selected.instructions}</p>
+          </div>
+        )}
+
+        {savedListNotice}
+
+        {/* Offline, the page has no submission to check against, so it says so
+            rather than guessing. Guessing either way is worse: hiding the form
+            strands a student who never submitted, and showing it as a first
+            attempt hides that they may be spending their last one. */}
+        {savedListAt && (
+          <div className="mb-5 bg-white border-2 border-cream-300 rounded-3xl p-5 flex items-start gap-3">
+            <AlertTriangle className="w-5 h-5 text-navy-400 shrink-0 mt-0.5" />
+            <p className="text-sm text-navy-600 leading-relaxed font-semibold">
+              While you're offline we can't check whether you've already submitted this activity, or how many
+              attempts you have left. If it turns out this one can't be accepted, we'll tell you as soon as
+              you're back online.
+            </p>
           </div>
         )}
 
@@ -651,10 +716,25 @@ export default function SubmitWork() {
         <p className="text-navy-500 text-sm font-semibold mt-1">Choose an activity to view details and upload your work</p>
       </div>
 
+      {savedListNotice}
+
       {activities.length === 0 ? (
-        <div className="text-center py-12 border-2 border-dashed border-cream-300 rounded-[2rem]">
-          <FileText className="w-10 h-10 mx-auto mb-3 text-navy-300" />
-          <p className="text-sm font-bold text-navy-500">No activities assigned yet</p>
+        <div className="text-center py-12 border-2 border-dashed border-cream-300 rounded-[2rem] px-6">
+          {listUnreachable ? (
+            <>
+              <CloudOff className="w-10 h-10 mx-auto mb-3 text-navy-300" />
+              <p className="text-sm font-bold text-navy-500">We couldn't load your activities</p>
+              <p className="text-xs font-semibold text-navy-400 mt-1.5 max-w-sm mx-auto leading-relaxed">
+                You may be offline. Once you've opened this page with a signal, your activities are kept here
+                so you can still submit the next time you lose it.
+              </p>
+            </>
+          ) : (
+            <>
+              <FileText className="w-10 h-10 mx-auto mb-3 text-navy-300" />
+              <p className="text-sm font-bold text-navy-500">No activities assigned yet</p>
+            </>
+          )}
         </div>
       ) : (
         <div className="space-y-3">

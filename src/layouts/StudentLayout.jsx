@@ -6,7 +6,7 @@ import { twMerge } from 'tailwind-merge';
 import { useState, useEffect } from 'react';
 import { logout } from '../config';
 import NotificationBell from '../components/NotificationBell';
-import { initOfflineQueueListener } from '../utils/offlineQueue';
+import { initOfflineQueueListener, getQueue, QUEUE_CHANGED } from '../utils/offlineQueue';
 
 function cn(...inputs) {
   return twMerge(clsx(inputs));
@@ -28,11 +28,24 @@ export default function StudentLayout() {
   }
   const user = JSON.parse(localStorage.getItem('user') || '{}');
 
+  const [online, setOnline] = useState(navigator.onLine);
+  // Seeded from the queue rather than 0-then-corrected, so a student who
+  // reopens the app with work still waiting sees it on the first paint.
+  const [pendingCount, setPendingCount] = useState(() => getQueue().length);
+
   // OQ-4: a submission queued offline (SubmitWork.jsx) only ever drains if
   // something calls flushQueue() on reconnect — this is that something, the
   // student-side counterpart to TeacherLayout's listener.
   useEffect(() => {
-    const unsubscribe = initOfflineQueueListener(({ dropped, droppedReasons }) => {
+    const goOnline = () => { setOnline(true); setPendingCount(getQueue().length); };
+    const goOffline = () => { setOnline(false); setPendingCount(getQueue().length); };
+    const onQueued = () => setPendingCount(getQueue().length);
+    window.addEventListener('online', goOnline);
+    window.addEventListener('offline', goOffline);
+    window.addEventListener(QUEUE_CHANGED, onQueued);
+
+    const unsubscribe = initOfflineQueueListener(({ succeeded, dropped, droppedReasons }) => {
+      if (succeeded > 0 || dropped > 0) setPendingCount(getQueue().length);
       // Dropped (not just failed) means the server permanently rejected it —
       // e.g. the deadline passed while offline. Silence here would mean the
       // work is simply gone with no explanation, the exact failure OQ-2 fixed
@@ -42,7 +55,12 @@ export default function StudentLayout() {
         alert(`${dropped} saved submission${dropped > 1 ? 's' : ''} could not be uploaded:\n${reasons.map(r => `• ${r}`).join('\n')}`);
       }
     });
-    return unsubscribe;
+    return () => {
+      window.removeEventListener('online', goOnline);
+      window.removeEventListener('offline', goOffline);
+      window.removeEventListener(QUEUE_CHANGED, onQueued);
+      unsubscribe();
+    };
   }, []);
 
   const navItems = [
@@ -172,6 +190,22 @@ export default function StudentLayout() {
       </nav>
 
       <main className="flex-1 min-w-0 overflow-y-auto">
+        {/* The teacher has had this since the queue shipped; the student had
+            nothing, so losing signal looked exactly like the app breaking.
+            Worded for a learner holding a photo of their essay: say what will
+            happen to it, and never call it submitted before the server has it. */}
+        {(!online || pendingCount > 0) && (
+          <div className={cn(
+            'px-5 py-2.5 text-xs font-bold flex items-center gap-2 text-white',
+            !online ? 'bg-sun-600' : 'bg-royal-500'
+          )}>
+            {!online
+              ? (pendingCount > 0
+                ? `📵 You're offline. ${pendingCount} piece${pendingCount > 1 ? 's' : ''} of work saved here — we'll send ${pendingCount > 1 ? 'them' : 'it'} when you're back.`
+                : "📵 You're offline. Your work will be saved and sent when you're back.")
+              : `☁️ Back online — sending ${pendingCount} saved piece${pendingCount > 1 ? 's' : ''} of work...`}
+          </div>
+        )}
         <Outlet />
       </main>
 

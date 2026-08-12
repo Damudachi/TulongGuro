@@ -32,3 +32,4 @@ Thumbs.db
 # Logs
 *.log
 npm-debug.log*
+/issue on offline

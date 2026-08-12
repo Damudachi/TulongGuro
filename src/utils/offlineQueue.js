@@ -18,6 +18,10 @@ import { apiFetch } from '../config';
 
 const QUEUE_KEY = 'tg_upload_queue';
 
+/** Fired on window whenever a job is added, so a layout showing "N waiting"
+ *  can update without polling localStorage on a timer. */
+export const QUEUE_CHANGED = 'tg-queue-changed';
+
 /** Give up on a job after this many failed flushes so a permanently broken
  *  upload can't wedge the queue or grow it without bound. */
 const MAX_RETRIES = 5;
@@ -129,6 +133,10 @@ export async function enqueue(job) {
   queue.push(newJob);
   if (!writeQueue(queue)) return null;
   console.log(`[OfflineQueue] Queued job ${newJob.id} (${images.length} page(s)). Total jobs: ${queue.length}`);
+  // The layouts show a count of what is waiting, and nothing else tells them a
+  // job was just added — without this the banner keeps saying "0 waiting" until
+  // the next online/offline event, i.e. until the queue has already drained.
+  try { window.dispatchEvent(new CustomEvent(QUEUE_CHANGED)); } catch { /* no window in tests */ }
   return newJob;
 }
 

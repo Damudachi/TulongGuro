@@ -23,6 +23,8 @@
  * than simply not persisting would be a worse bug than the one this fixes.
  */
 
+import { clearActivitySnapshots } from './offlineSnapshot';
+
 const TOKEN_KEY = 'tg_token';
 const USER_KEY = 'user';
 
@@ -71,12 +73,20 @@ export function storeSession(user, token, { remember } = {}) {
   write(kind === 'local' ? localStore() : sessionStore(), TOKEN_KEY, token);
 }
 
-/** Forget everything, in both stores. */
+/**
+ * Forget everything, in both stores — including the offline activity list, so
+ * the next person to open a shared phone finds nothing of the last one's.
+ *
+ * Not the upload queue. Work saved offline belongs to the student who made it
+ * rather than to the session, and dropping it here would silently destroy an
+ * essay that was never sent. See clearActivitySnapshots().
+ */
 export function clearStoredSession() {
   for (const store of [localStore(), sessionStore()]) {
     drop(store, TOKEN_KEY);
     drop(store, USER_KEY);
   }
+  clearActivitySnapshots();
 }
 
 /**
