@@ -298,9 +298,16 @@ export default function SubmitWork() {
   // Inline JSX rather than a nested component so it isn't remounted on
   // every parent render.
   const privacyModal = (
+    /* The card is taller than a phone screen and had no way to scroll, so the
+       two buttons sat below the fold behind the system nav bar — the notice
+       could be read but not agreed to, which blocks submitting entirely. The
+       header and buttons are pinned and only the notice itself scrolls, so the
+       action is always on screen no matter how long the copy gets. dvh rather
+       than vh because the mobile URL bar changes the answer. */
     <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-navy-900/50 backdrop-blur-sm">
-      <div className="bg-white rounded-[2rem] w-full max-w-md overflow-hidden shadow-card-lg animate-pop-in">
-        <div className="bg-royal-500 p-7 text-center relative overflow-hidden">
+      <div className="bg-white rounded-[2rem] w-full max-w-md overflow-hidden shadow-card-lg animate-pop-in
+                      flex flex-col max-h-[calc(100dvh-2rem)]">
+        <div className="bg-royal-500 p-7 text-center relative overflow-hidden shrink-0">
           <div className="absolute -top-10 -right-8 w-36 h-36 rounded-full bg-white/10" aria-hidden="true" />
           <div className="relative">
             <div className="w-16 h-16 bg-white/20 rounded-3xl flex items-center justify-center mx-auto mb-4">
@@ -311,7 +318,7 @@ export default function SubmitWork() {
           </div>
         </div>
 
-        <div className="p-6 space-y-3">
+        <div className="p-6 space-y-3 overflow-y-auto overscroll-contain min-h-0">
           <div className="bg-royal-50 border-2 border-royal-100 rounded-2xl p-4">
             <p className="text-sm text-navy-700 font-semibold leading-relaxed">
               🤖 <strong>AI Processing:</strong> Your submitted work will be analyzed by an AI system (Google Gemini) to assist your teacher in grading. Your teacher will always review and finalize your grade.
@@ -336,7 +343,7 @@ export default function SubmitWork() {
           </div>
         </div>
 
-        <div className="px-6 pb-6 flex gap-3">
+        <div className="px-6 pb-6 pt-4 flex gap-3 shrink-0 border-t-2 border-cream-100 bg-white">
           <button onClick={handlePrivacyCancel} className="tg-btn-ghost flex-1">
             Cancel
           </button>

@@ -24,7 +24,20 @@ export function registerSW(onUpdateReady) {
     return;
   }
 
-  window.addEventListener('load', () => {
+  /**
+   * Registration is deferred to 'load' so it never competes with the first
+   * paint for bandwidth. But this function runs from a React effect, and an
+   * effect can run *after* load has already fired — which on a phone is not the
+   * edge case it sounds like, it is the common one: a fully cached PWA cold
+   * start finishes loading before React has mounted anything.
+   *
+   * A 'load' listener added after load has fired is never called. So on exactly
+   * the launches where every asset was already cached, register() was never
+   * reached, the browser never re-checked sw.js, and a shipped fix could not
+   * arrive no matter how many times the app was opened. Hence the readyState
+   * check: if the event is already past, do the work now.
+   */
+  const begin = () => {
     navigator.serviceWorker.register('/sw.js').then((reg) => {
       // Already waiting when this tab opened.
       if (reg.waiting && navigator.serviceWorker.controller) {
@@ -53,5 +66,8 @@ export function registerSW(onUpdateReady) {
       reloading = true;
       window.location.reload();
     });
-  });
+  };
+
+  if (document.readyState === 'complete') begin();
+  else window.addEventListener('load', begin, { once: true });
 }

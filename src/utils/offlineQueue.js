@@ -18,9 +18,17 @@ import { apiFetch } from '../config';
 
 const QUEUE_KEY = 'tg_upload_queue';
 
-/** Fired on window whenever a job is added, so a layout showing "N waiting"
- *  can update without polling localStorage on a timer. */
+/** Fired on window whenever the queue's contents change — a job added, or a
+ *  flush finished — so anything showing what is waiting can update without
+ *  polling localStorage on a timer. A flush is usually started by the layout's
+ *  reconnect listener, several components away from the screens that display
+ *  what is queued, and those screens would otherwise keep showing work as
+ *  pending long after it had been uploaded. */
 export const QUEUE_CHANGED = 'tg-queue-changed';
+
+function announceQueueChange() {
+  try { window.dispatchEvent(new CustomEvent(QUEUE_CHANGED)); } catch { /* no window in tests */ }
+}
 
 /** Give up on a job after this many failed flushes so a permanently broken
  *  upload can't wedge the queue or grow it without bound. */
@@ -133,10 +141,7 @@ export async function enqueue(job) {
   queue.push(newJob);
   if (!writeQueue(queue)) return null;
   console.log(`[OfflineQueue] Queued job ${newJob.id} (${images.length} page(s)). Total jobs: ${queue.length}`);
-  // The layouts show a count of what is waiting, and nothing else tells them a
-  // job was just added — without this the banner keeps saying "0 waiting" until
-  // the next online/offline event, i.e. until the queue has already drained.
-  try { window.dispatchEvent(new CustomEvent(QUEUE_CHANGED)); } catch { /* no window in tests */ }
+  announceQueueChange();
   return newJob;
 }
 
@@ -245,6 +250,7 @@ async function flushQueueInternal(onProgress) {
     onProgress?.(job, i, queue.length);
   }
 
+  if (succeeded > 0 || dropped > 0) announceQueueChange();
   return { succeeded, failed, dropped, droppedReasons };
 }
 

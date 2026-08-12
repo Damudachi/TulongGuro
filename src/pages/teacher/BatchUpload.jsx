@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { ArrowLeft, UploadCloud, X, Loader2, Wifi, WifiOff, ShieldCheck, Info, FileText, Camera, Sparkles, Plus, CheckCircle2, AlertTriangle, ClipboardCheck, RefreshCw } from 'lucide-react';
-import { getQueue, buildJob, enqueue, flushQueue } from '../../utils/offlineQueue';
+import { getQueue, buildJob, enqueue, flushQueue, QUEUE_CHANGED } from '../../utils/offlineQueue';
 import { API_URL, apiFetch, MAX_SUBMISSION_PAGES } from '../../config';
 import { getStoredUser } from '../../utils/session';
 import { saveClassSnapshot, readClassSnapshot } from '../../utils/offlineSnapshot';
@@ -16,6 +16,16 @@ function cn(...cls) { return cls.filter(Boolean).join(' '); }
  *  always already an image. This only still applies to the rare file that
  *  failed to render and fell back to being staged as-is. */
 const isImageFile = (file) => (file?.type || '').startsWith('image/');
+
+/** Which learners on this activity have an upload sitting in the offline queue.
+ *  Queued jobs carry the studentId and activityId they were built with, so the
+ *  queue is the source of truth and nothing has to be mirrored beside it. */
+const queuedStudentsFor = (activityId) => new Set(
+  getQueue()
+    .filter((job) => job.fields?.activityId === activityId)
+    .map((job) => job.fields?.studentId)
+    .filter(Boolean)
+);
 
 const SUBMISSION_STATUS = {
   PENDING: { label: 'Needs Review', color: 'bg-amber-100 text-amber-700' },
@@ -39,6 +49,10 @@ export default function BatchUpload() {
   const [isLoadingSubmissions, setIsLoadingSubmissions] = useState(false);
   const [isOnline, setIsOnline] = useState(navigator.onLine);
   const [queuedCount, setQueuedCount] = useState(getQueue().length);
+  // Who on this activity has work waiting to upload. Derived from the queue
+  // rather than tracked alongside it, so a reload — or a flush that happened on
+  // another screen — can never leave the two disagreeing.
+  const [queuedStudentIds, setQueuedStudentIds] = useState(() => queuedStudentsFor(activityId));
   const [isFlushing, setIsFlushing] = useState(false);
   const [piiConfirmed, setPiiConfirmed] = useState(false);
 
@@ -108,12 +122,23 @@ export default function BatchUpload() {
   // Connectivity, kept separate from the roster read above so that switching
   // activity doesn't tear down and re-register these listeners.
   useEffect(() => {
-    const goOnline = () => { setIsOnline(true); setQueuedCount(getQueue().length); };
+    const syncQueue = () => {
+      setQueuedCount(getQueue().length);
+      setQueuedStudentIds(queuedStudentsFor(activityId));
+    };
+    const goOnline = () => { setIsOnline(true); syncQueue(); };
     const goOffline = () => setIsOnline(false);
     window.addEventListener('online', goOnline);
     window.addEventListener('offline', goOffline);
-    return () => { window.removeEventListener('online', goOnline); window.removeEventListener('offline', goOffline); };
-  }, []);
+    // The reconnect flush is started by TeacherLayout, so without this the
+    // "saved on this device" pills would sit there after the work had gone.
+    window.addEventListener(QUEUE_CHANGED, syncQueue);
+    return () => {
+      window.removeEventListener('online', goOnline);
+      window.removeEventListener('offline', goOffline);
+      window.removeEventListener(QUEUE_CHANGED, syncQueue);
+    };
+  }, [activityId]);
 
   useEffect(() => {
     if (!activityId) return;
@@ -362,6 +387,7 @@ export default function BatchUpload() {
       // overwriting the submission's image instead of being combined.
       const job = await enqueue(buildJob(`${API_URL}/api/teacher/upload`, { studentId, activityId, skipGrading: 'true' }, pages.map(p => p.file)));
       setQueuedCount(getQueue().length);
+      setQueuedStudentIds(queuedStudentsFor(activityId));
       if (!job) {
         alert(`Could not save these ${pages.length} page(s) for later — this device has run out of offline storage. Please reconnect and upload now instead.`);
       }
@@ -407,6 +433,7 @@ export default function BatchUpload() {
     setIsFlushing(true);
     const result = await flushQueue();
     setQueuedCount(getQueue().length);
+    setQueuedStudentIds(queuedStudentsFor(activityId));
     setIsFlushing(false);
     // A queue that was entirely dropped (every job permanently rejected by the
     // server — e.g. released elsewhere while offline) reports "0 succeeded, 0
@@ -464,7 +491,10 @@ export default function BatchUpload() {
         <div className="flex items-center gap-2 p-3 bg-amber-50 border border-amber-300 rounded-xl text-sm text-amber-800">
           <WifiOff className="w-4 h-4 shrink-0" />
           <span>
-            <strong>You're offline.</strong> Your essays will be saved and uploaded automatically once you're connected again.
+            <strong>You're offline.</strong>{' '}
+            {queuedCount > 0
+              ? <><strong>{queuedCount}</strong> paper{queuedCount > 1 ? 's' : ''} saved on this device so far — they upload automatically once you're connected again.</>
+              : <>Your essays will be saved and uploaded automatically once you're connected again.</>}
             {rosterSavedAt && (
               <> This class list was saved on {new Date(rosterSavedAt).toLocaleDateString('en-PH', { month: 'long', day: 'numeric' })} —
               anyone enrolled since then won't be in it, and each upload is checked by the server when it sends.</>
@@ -600,6 +630,17 @@ export default function BatchUpload() {
                   <div className="flex-1 min-w-0">
                     <p className="font-semibold text-brand-slate truncate">{student.name}</p>
                     <p className="text-xs text-slate-500">{student.username}</p>
+                    {/* Queuing offline cleared the staged pages and said nothing,
+                        so the papers appeared to vanish and the only way to find
+                        out whether anything had been saved was to reconnect and
+                        watch. This is the receipt: it is read from the queue, so
+                        it survives a reload and disappears on its own once the
+                        job has actually flushed. */}
+                    {queuedStudentIds.has(student.id) && (
+                      <span className="mt-1.5 inline-flex items-center gap-1.5 rounded-full bg-amber-100 border border-amber-300 px-2.5 py-1 text-[11px] font-bold text-amber-800">
+                        <WifiOff className="w-3 h-3" /> Saved on this device — uploads when you're back online
+                      </span>
+                    )}
                     {privacyBlocked?.studentId === student.id && (
                       <div className="mt-2 flex items-start gap-2 p-2.5 rounded-lg bg-orange-50 border border-orange-300">
                         <ShieldCheck className="w-4 h-4 shrink-0 text-orange-600 mt-0.5" />
@@ -768,7 +809,7 @@ export default function BatchUpload() {
 
       {/* ── Class-wide AI check ── */}
       {(aiPlan?.ready > 0 || aiJob) && (
-        <div className="fixed bottom-0 left-0 right-0 z-40 border-t border-slate-200 bg-white/95 backdrop-blur px-4 py-3 shadow-[0_-4px_16px_rgba(15,23,42,0.08)]">
+        <div className="tg-above-dock fixed bottom-0 left-0 right-0 z-40 border-t border-slate-200 bg-white/95 backdrop-blur px-4 pt-3 shadow-[0_-4px_16px_rgba(15,23,42,0.08)]">
           <div className="max-w-5xl mx-auto">
             {/* Running */}
             {aiJob?.state === 'running' ? (

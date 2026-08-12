@@ -137,6 +137,27 @@
     padding-bottom: calc(0.75rem + env(safe-area-inset-bottom));
   }
 
+  /* A page's own fixed action bar sits at bottom-0, which on a phone is exactly
+     where the floating dock is — same corner, same z-40, and the dock is
+     painted after the page, so it wins. "Start AI checking" was unreachable
+     behind it. This lifts a bar's contents clear of the dock while its
+     background still runs to the bottom of the screen.
+
+     The number is the dock's own height, kept next to the rule that sets it:
+     pt-2 (0.5) + pill p-1.5 twice (0.75) + min-h-12 (3) + the gutter and inset
+     above ≈ 5rem. Anything using this must be a *fixed* bar; in the normal flow
+     the layout's pb-24 already handles clearance. */
+  .tg-above-dock {
+    padding-bottom: calc(5rem + env(safe-area-inset-bottom));
+  }
+
+  @media (min-width: 768px) {
+    /* No dock at md and up — the sidebar takes over. */
+    .tg-above-dock {
+      padding-bottom: 0.75rem;
+    }
+  }
+
   /* Clearance for the floating dock lives on the layout wrapper (pb-24) so it
      applies to every page, converted or not — this only adds page gutters. */
   .tg-page {
