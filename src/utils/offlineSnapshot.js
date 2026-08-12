@@ -25,6 +25,10 @@
  */
 
 const KEY_PREFIX = 'tg_activities_';
+const TEACHER_PREFIX = 'tg_teacher_';
+
+/** Both namespaces are wiped together on sign-out. */
+const ALL_PREFIXES = [KEY_PREFIX, TEACHER_PREFIX];
 
 /** A saved list older than this is not shown at all. A school year's deadlines
  *  move; a week is long enough to cover a stretch without signal and short
@@ -36,7 +40,31 @@ export const SNAPSHOT_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
  * so a field added to /api/student/:id/activities later is excluded by default
  * instead of being written to a shared phone until someone notices.
  */
-const KEEP = ['id', 'title', 'className', 'type', 'points', 'deadline', 'lateUntil', 'maxAttempts', 'instructions'];
+const KEEP = ['id', 'title', 'className', 'type', 'points', 'deadline', 'lateUntil', 'maxAttempts', 'instructions', 'submissionMode'];
+
+/**
+ * The teacher's equivalent: enough to recognise a class and open it, and
+ * nothing about the learners in it.
+ *
+ * A roster is a list of children's names. It is the one thing on this app most
+ * worth not writing to a device that might be borrowed, lost, or shared, and a
+ * teacher who is offline does not need it to see that their classes exist —
+ * which is the actual failure being fixed, an empty dashboard mistaking itself
+ * for a brand-new account and offering to set up a first class.
+ */
+const KEEP_CLASS = ['id', 'name', 'subject', 'gradeLevel', 'schoolYear'];
+
+/** The class card prints the section name and an activity count. `section` is
+ *  narrowed to its own two fields rather than stored whole, and `_count` holds
+ *  integers only — how many activities exist, never who is in the class. */
+const KEEP_SECTION = ['id', 'name'];
+
+function stripClass(cls) {
+  const out = pick(cls, KEEP_CLASS);
+  if (cls?.section) out.section = pick(cls.section, KEEP_SECTION);
+  if (typeof cls?._count?.activities === 'number') out._count = { activities: cls._count.activities };
+  return out;
+}
 
 const store = () => {
   try { return globalThis.localStorage ?? null; } catch { return null; }
@@ -44,13 +72,15 @@ const store = () => {
 
 const keyFor = (userId) => `${KEY_PREFIX}${userId}`;
 
-function strip(activity) {
+function pick(source, fields) {
   const out = {};
-  for (const field of KEEP) {
-    if (activity?.[field] !== undefined) out[field] = activity[field];
+  for (const field of fields) {
+    if (source?.[field] !== undefined) out[field] = source[field];
   }
   return out;
 }
+
+const strip = (activity) => pick(activity, KEEP);
 
 /**
  * Save the list this student just fetched. Called after every successful read,
@@ -98,6 +128,74 @@ export function readActivitySnapshot(userId) {
 }
 
 /**
+ * Fill the saved list in from a page that only sees part of it.
+ *
+ * The submit page fetches every student-submittable activity and can replace
+ * the snapshot outright. The dashboard sees only what is upcoming and not yet
+ * submitted; the subjects pages see a per-class slice with fewer fields on
+ * each. Those must upsert, never replace — otherwise a student who opened the
+ * home screen last would find most of their activities gone the next time they
+ * lost signal, which is worse than not having saved anything at all.
+ *
+ * Merging is per field for the same reason: a thinner source that omits
+ * lateUntil must not blank the one already stored.
+ */
+export function mergeActivitySnapshot(userId, activities) {
+  const disk = store();
+  if (!disk || !userId) return;
+
+  // An expired snapshot is not merged into — it is replaced. Keeping any of it
+  // would let stale entries ride along indefinitely on the back of each fresh
+  // merge, which is exactly what the expiry exists to prevent.
+  const existing = readActivitySnapshot(userId)?.activities || [];
+  const byId = new Map(existing.map((a) => [a.id, a]));
+
+  for (const incoming of activities || []) {
+    const clean = strip(incoming);
+    if (!clean.id) continue;
+    byId.set(clean.id, { ...(byId.get(clean.id) || {}), ...clean });
+  }
+
+  saveActivitySnapshot(userId, [...byId.values()]);
+}
+
+/**
+ * The teacher's classes, saved for the same reason and read the same way. See
+ * KEEP_CLASS for what is deliberately not in it.
+ */
+export function saveTeacherSnapshot(userId, { classes } = {}) {
+  const disk = store();
+  if (!disk || !userId) return;
+  try {
+    disk.setItem(`${TEACHER_PREFIX}${userId}`, JSON.stringify({
+      savedAt: new Date().toISOString(),
+      classes: (classes || []).map(stripClass),
+    }));
+  } catch (e) {
+    console.warn('[OfflineSnapshot] Could not save the class list:', e.message);
+  }
+}
+
+/** @returns {{ classes: Array, savedAt: string } | null} */
+export function readTeacherSnapshot(userId) {
+  const disk = store();
+  if (!disk || !userId) return null;
+
+  let snapshot;
+  try {
+    snapshot = JSON.parse(disk.getItem(`${TEACHER_PREFIX}${userId}`) || 'null');
+  } catch {
+    return null;
+  }
+  if (!snapshot || !Array.isArray(snapshot.classes)) return null;
+
+  const savedAt = Date.parse(snapshot.savedAt);
+  if (!Number.isFinite(savedAt) || Date.now() - savedAt > SNAPSHOT_MAX_AGE_MS) return null;
+
+  return snapshot;
+}
+
+/**
  * Drop every student's saved list on this device. Called on sign-out, and it
  * clears all of them rather than only the one signing out: the point is that
  * the next person to pick up the phone finds nothing of the last one's.
@@ -113,7 +211,7 @@ export function clearActivitySnapshots() {
   const keys = [];
   for (let i = 0; i < disk.length; i++) {
     const key = disk.key(i);
-    if (key?.startsWith(KEY_PREFIX)) keys.push(key);
+    if (ALL_PREFIXES.some((prefix) => key?.startsWith(prefix))) keys.push(key);
   }
   keys.forEach((key) => disk.removeItem(key));
 }

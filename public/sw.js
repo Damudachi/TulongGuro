@@ -19,7 +19,7 @@
  * hard and replaced wholesale when the hash changes.
  */
 
-const VERSION = 'v2';
+const VERSION = 'v3';
 const SHELL = `tg-shell-${VERSION}`;    // index.html + icons + manifest
 const ASSETS = `tg-assets-${VERSION}`;  // /assets/* — content-hashed, immutable
 const FONTS = `tg-fonts-${VERSION}`;    // Google Fonts, cross-origin
@@ -49,6 +49,20 @@ function cacheShell() {
 }
 
 self.addEventListener('install', (event) => {
+  // Take over as soon as this worker is installed, instead of waiting for every
+  // window to close and asking the page to prompt for it.
+  //
+  // The prompt (UpdatePrompt / registerSW.js) is the polite version and it was
+  // the right default for a cosmetic release, but it made a fix to the worker
+  // itself unreachable: a phone whose app cannot open offline is exactly a
+  // phone whose owner never sees an in-app "update ready" prompt to tap. One
+  // online launch now applies it. The cost, accepted deliberately: the page
+  // reloads itself when an update lands mid-use.
+  //
+  // skipWaiting lives in the *new* worker, so this reaches devices still on an
+  // older version — they fetch this file, install it, and it activates itself
+  // without the outgoing worker having to cooperate.
+  self.skipWaiting();
   event.waitUntil(cacheShell());
 });
 

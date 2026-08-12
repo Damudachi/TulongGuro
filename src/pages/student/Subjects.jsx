@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { BookOpen, ChevronRight, ArrowLeft, Loader2, FileText, CheckCircle2, Clock, AlertCircle, MessageSquare } from 'lucide-react';
 import { API_URL, apiFetch } from '../../config';
 import { getStoredUser } from '../../utils/session';
+import { mergeActivitySnapshot } from '../../utils/offlineSnapshot';
 import { gradeTone, gradeChip, DEFAULT_PASSING_GRADE } from '../../utils/grading';
 import { submissionWindow, formatDeadline } from '../../utils/deadlines';
 
@@ -49,6 +50,15 @@ export default function Subjects() {
         if (!d.success) return;
         setSubjects(d.subjects);
         if (typeof d.passingGrade === 'number') setPassingGrade(d.passingGrade);
+        // Same top-up as the dashboard does, from the per-class slice. The
+        // class name lives on the wrapper here, so it is folded into each
+        // activity — offline the submit list shows it under the title, and a
+        // bare title with no class is hard to tell apart from another.
+        mergeActivitySnapshot(user.id, (d.subjects || []).flatMap(cls =>
+          (cls.activities || [])
+            .filter(a => a.submissionMode === 'STUDENT_SUBMIT')
+            .map(a => ({ ...a, className: cls.name }))
+        ));
       })
       .catch(() => {}) /* a failed read leaves the empty state, which is what renders */
       .finally(() => setIsLoading(false));

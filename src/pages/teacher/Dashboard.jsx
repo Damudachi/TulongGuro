@@ -1,8 +1,9 @@
 import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
-import { Plus, FileText, Filter, ChevronRight, Loader2, UploadCloud, X, Sparkles } from 'lucide-react';
+import { Plus, FileText, Filter, ChevronRight, Loader2, UploadCloud, X, Sparkles, CloudOff } from 'lucide-react';
 import { API_URL, apiFetch } from '../../config';
 import { getStoredUser } from '../../utils/session';
+import { saveTeacherSnapshot, readTeacherSnapshot } from '../../utils/offlineSnapshot';
 import { ONBOARDING, hasSeenOnboarding, markOnboardingSeen, clearOnboardingSeen } from '../../utils/onboarding';
 import { GRADE_LEVELS, SUBJECTS, SCHOOL_YEARS, DEFAULT_SCHOOL_YEAR } from '../../constants/school';
 import SchoolBadge from '../../components/SchoolBadge';
@@ -433,6 +434,8 @@ function WizardEmptyState({ onComplete, sections = [] }) {
 
 export default function TeacherDashboard() {
   const [classes, setClasses] = useState([]);
+  // Set when the classes on screen came off this device rather than the server.
+  const [savedClassesAt, setSavedClassesAt] = useState(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [sections, setSections] = useState([]);
   const [form, setForm] = useState({ name: '', gradeLevel: '', subject: '', schoolYear: DEFAULT_SCHOOL_YEAR, sectionId: '' });
@@ -476,7 +479,10 @@ export default function TeacherDashboard() {
       apiFetch(`${API_URL}/api/teacher/${user.id}/sections`).then(r => r.json()),
       apiFetch(`${API_URL}/api/teacher/${user.id}/setup-status`).then(r => r.json())
     ]).then(([clsData, secData, setupData]) => {
-      if (clsData.success) setClasses(clsData.classes);
+      if (clsData.success) {
+        setClasses(clsData.classes);
+        saveTeacherSnapshot(user.id, { classes: clsData.classes });
+      }
       if (secData.success) setSections(secData.sections);
       // Whether the checklist appears is decided by these counts, not by a
       // stored step — see the note in SetupChecklist.
@@ -484,7 +490,17 @@ export default function TeacherDashboard() {
     })
       // Promise.all rejects if any of the three does, so one dropped request
       // took the whole dashboard load down as an unhandled rejection.
-      .catch(() => {})
+      .catch(() => {
+        // Offline, every one of the three fails, classes stays empty, and the
+        // empty state below is the first-run setup wizard — so a teacher with
+        // twelve classes and no signal was told to create their first one, and
+        // could not reach an activity to upload against. Showing the saved
+        // list instead keeps the shell they already have.
+        const snapshot = readTeacherSnapshot(user.id);
+        if (!snapshot) return;
+        setClasses(snapshot.classes);
+        setSavedClassesAt(snapshot.savedAt);
+      })
       .finally(() => setIsLoading(false));
   }, []);
 
@@ -631,6 +647,19 @@ export default function TeacherDashboard() {
                 {SUBJECTS.map(s => <option key={s} value={s}>{s}</option>)}
               </select>
             </div>
+          </div>
+        </div>
+      )}
+
+      {savedClassesAt && (
+        <div className="mb-5 bg-sun-100 border-2 border-sun-200 rounded-3xl p-5 flex items-start gap-3">
+          <CloudOff className="w-5 h-5 text-sun-700 shrink-0 mt-0.5" />
+          <div>
+            <p className="text-sm font-extrabold text-navy-700">You're offline — showing your saved classes</p>
+            <p className="text-sm text-navy-600 mt-0.5 leading-relaxed">
+              Last updated {new Date(savedClassesAt).toLocaleDateString('en-PH', { month: 'long', day: 'numeric', hour: 'numeric', minute: '2-digit' })}.
+              You can open a class and queue uploads; anything new since then won't appear until you're back online.
+            </p>
           </div>
         </div>
       )}

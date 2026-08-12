@@ -1,6 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
-  saveActivitySnapshot, readActivitySnapshot, clearActivitySnapshots, SNAPSHOT_MAX_AGE_MS,
+  saveActivitySnapshot, mergeActivitySnapshot, readActivitySnapshot,
+  saveTeacherSnapshot, readTeacherSnapshot,
+  clearActivitySnapshots, SNAPSHOT_MAX_AGE_MS,
 } from '../../src/utils/offlineSnapshot.js';
 import { clearStoredSession, storeSession } from '../../src/utils/session.js';
 
@@ -142,6 +144,137 @@ describe('offline activity snapshot', () => {
     saveActivitySnapshot('stu_1', [activity()]);
     clearActivitySnapshots();
     expect(localStorage.getItem('tg_upload_queue')).toBe('[{"id":"q_1"}]');
+  });
+});
+
+describe('merging a partial list into the saved one', () => {
+  // The submit page fetches the whole student-submittable list and can replace
+  // the snapshot outright. The dashboard and subjects pages see thinner slices
+  // — the dashboard drops anything already submitted or past its deadline —
+  // so they must fill in rather than overwrite, or simply opening the app on
+  // the home screen would quietly delete most of what could be submitted.
+
+  it('adds activities the snapshot did not have', () => {
+    saveActivitySnapshot('stu_1', [activity({ id: 'a' })]);
+    mergeActivitySnapshot('stu_1', [activity({ id: 'b' })]);
+    expect(readActivitySnapshot('stu_1').activities.map(a => a.id).sort()).toEqual(['a', 'b']);
+  });
+
+  it('keeps fields a thinner source does not carry', () => {
+    saveActivitySnapshot('stu_1', [activity({ id: 'a' })]);
+    // What /dashboard returns: no lateUntil, no instructions.
+    mergeActivitySnapshot('stu_1', [{ id: 'a', title: 'Renamed', points: 25, className: 'English 7 — Rosal' }]);
+
+    const [merged] = readActivitySnapshot('stu_1').activities;
+    expect(merged.title).toBe('Renamed');
+    expect(merged.points).toBe(25);
+    expect(merged.lateUntil).toBe('2026-08-22T15:00:00.000Z');
+    expect(merged.instructions).toBe('Write three paragraphs.');
+  });
+
+  it('never removes an activity the thinner source left out', () => {
+    saveActivitySnapshot('stu_1', [activity({ id: 'a' }), activity({ id: 'b' })]);
+    mergeActivitySnapshot('stu_1', [activity({ id: 'a' })]);
+    expect(readActivitySnapshot('stu_1').activities).toHaveLength(2);
+  });
+
+  it('starts a snapshot when there is none yet', () => {
+    mergeActivitySnapshot('stu_1', [activity({ id: 'a' })]);
+    expect(readActivitySnapshot('stu_1').activities).toHaveLength(1);
+  });
+
+  it('strips the same fields a full save does', () => {
+    mergeActivitySnapshot('stu_1', [activity({ mySubmission: { status: 'GRADED', grade: 18 } })]);
+    expect(readActivitySnapshot('stu_1').activities[0].mySubmission).toBeUndefined();
+  });
+
+  it('refreshes how recently the list was seen', () => {
+    vi.useFakeTimers();
+    const day1 = new Date('2026-08-01T00:00:00.000Z').getTime();
+    vi.setSystemTime(day1);
+    saveActivitySnapshot('stu_1', [activity({ id: 'a' })]);
+
+    // Six days later — still inside the window, so the merge has something to
+    // merge into, and the result must not expire on the original clock.
+    vi.setSystemTime(day1 + 6 * 24 * 60 * 60 * 1000);
+    mergeActivitySnapshot('stu_1', [activity({ id: 'b' })]);
+
+    vi.setSystemTime(day1 + 8 * 24 * 60 * 60 * 1000);
+    expect(readActivitySnapshot('stu_1').activities).toHaveLength(2);
+  });
+
+  it('does not resurrect an expired snapshot, it replaces it', () => {
+    vi.useFakeTimers();
+    const day1 = new Date('2026-08-01T00:00:00.000Z').getTime();
+    vi.setSystemTime(day1);
+    saveActivitySnapshot('stu_1', [activity({ id: 'old' })]);
+
+    vi.setSystemTime(day1 + SNAPSHOT_MAX_AGE_MS + 1000);
+    mergeActivitySnapshot('stu_1', [activity({ id: 'new' })]);
+
+    expect(readActivitySnapshot('stu_1').activities.map(a => a.id)).toEqual(['new']);
+  });
+});
+
+describe('the teacher snapshot', () => {
+  const cls = (over = {}) => ({
+    id: 'cls_1', name: 'English 7 — Rosal', subject: 'English', gradeLevel: 7,
+    schoolYear: '2026-2027',
+    section: { id: 'sec_1', name: 'Rosal' },
+    _count: { activities: 3 },
+    ...over,
+  });
+
+  it('reads back everything the class card prints', () => {
+    saveTeacherSnapshot('tch_1', { classes: [cls()] });
+    const [saved] = readTeacherSnapshot('tch_1').classes;
+    expect(saved.name).toBe('English 7 — Rosal');
+    expect(saved.schoolYear).toBe('2026-2027');
+    expect(saved.section.name).toBe('Rosal');
+    expect(saved._count.activities).toBe(3);
+  });
+
+  it('never stores a learner name, a score, or a scanned paper', () => {
+    saveTeacherSnapshot('tch_1', {
+      classes: [cls({
+        students: [{ id: 's1', name: 'Maria Santos' }],
+        section: { id: 'sec_1', name: 'Rosal', students: [{ name: 'Jose Cruz' }] },
+        overallGrade: 88,
+      })],
+    });
+    const raw = localStorage.getItem('tg_teacher_tch_1');
+    expect(raw).not.toMatch(/Maria|Jose|overallGrade/);
+  });
+
+  it('keeps counts but not the people they count', () => {
+    saveTeacherSnapshot('tch_1', { classes: [cls({ _count: { activities: 3, students: 41 } })] });
+    const [saved] = readTeacherSnapshot('tch_1').classes;
+    expect(saved._count).toEqual({ activities: 3 });
+  });
+
+  it('keeps each teacher separate and clears with the session', () => {
+    saveTeacherSnapshot('tch_1', { classes: [cls({ name: 'A' })] });
+    saveTeacherSnapshot('tch_2', { classes: [cls({ name: 'B' })] });
+    expect(readTeacherSnapshot('tch_1').classes[0].name).toBe('A');
+
+    clearStoredSession();
+    expect(readTeacherSnapshot('tch_1')).toBeNull();
+    expect(readTeacherSnapshot('tch_2')).toBeNull();
+  });
+
+  it('expires on the same clock as the student one', () => {
+    vi.useFakeTimers();
+    const day1 = new Date('2026-08-01T00:00:00.000Z').getTime();
+    vi.setSystemTime(day1);
+    saveTeacherSnapshot('tch_1', { classes: [cls()] });
+
+    vi.setSystemTime(day1 + SNAPSHOT_MAX_AGE_MS + 1000);
+    expect(readTeacherSnapshot('tch_1')).toBeNull();
+  });
+
+  it('is absent rather than throwing on corrupt storage', () => {
+    localStorage.setItem('tg_teacher_tch_1', 'not json at all');
+    expect(readTeacherSnapshot('tch_1')).toBeNull();
   });
 });
 

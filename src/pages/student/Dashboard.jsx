@@ -10,6 +10,7 @@ import SchoolBadge from '../../components/SchoolBadge';
 import { StatTile } from '../../components/PageHeader';
 import { firstNameFromRoster } from '../../utils/roster';
 import { getStoredUser } from '../../utils/session';
+import { mergeActivitySnapshot } from '../../utils/offlineSnapshot';
 
 /**
  * Shown once, the first time a learner has a grade to actually look at.
@@ -66,6 +67,15 @@ export default function StudentDashboard() {
       .then(d => {
         if (!d.success) return;
         setData(d);
+        // Keep the offline submit list topped up from the home screen too, so a
+        // student who never happens to open Submit Work while connected still
+        // has something to submit against when the signal goes. Partial and
+        // thinner than the submit page's own list — upcoming only, no
+        // lateUntil or instructions — hence a merge rather than a save.
+        // TEACHER_UPLOAD activities are dropped: the student cannot submit to
+        // them at all, and offering one offline would be a dead end.
+        mergeActivitySnapshot(user.id, (d.upcomingDeadlines || [])
+          .filter(a => a.submissionMode === 'STUDENT_SUBMIT'));
         // Only once there is released work to point at — see WELCOME.
         if (d.submissions?.length > 0 && !hasSeenOnboarding(ONBOARDING.STUDENT_WELCOME)) {
           setShowWelcome(true);
