@@ -25,7 +25,10 @@ const {
 const { classSchoolId, staffMayAccess, staffMayReadStudent, REAL_WORK } = require('./access');
 const { currentSchoolYear, isCurrentSchoolYear, compareSchoolYearsDesc } = require('./schoolYear');
 const { getAllTopics, getTopicById, getTopicAIGuidance } = require('./depedTopics');
-const { getAllRubricTemplates, getRubricTemplateById } = require('./rubricTemplates');
+// getRubricTemplateById is gone with the grader's topic-recommended rubric
+// tier: a built-in sample is something a teacher may choose, never something
+// the system applies on their behalf.
+const { getAllRubricTemplates } = require('./rubricTemplates');
 // Two distinct taxonomies coexist and are easy to confuse, so name them apart:
 //
 //   CURRICULUM_SKILLS — the four DepEd-aligned domains (reading, critical-media,
@@ -2891,198 +2894,6 @@ app.delete('/api/admin/:adminId/sections/:sectionId', async (req, res) => {
 
 // ── Curriculums ──
 
-/**
- * Promotes the rubrics the AI generated for each lesson into real, reusable
- * school rubric templates tagged with the curriculum's grade level + subject.
- *
- * Without this the rubric only lived inside CurriculumLesson.defaultRubric, so
- * a teacher could only reach it by picking that exact lesson. Lessons often
- * share one rubric shape, so identical ones are collapsed by name.
- *
- * Returns how many distinct templates were saved.
- */
-async function saveCurriculumRubrics(curriculum, lessons) {
-  // Keyed by the rubric's actual content, not by its output type. Keying on
-  // output type alone silently threw away real work: twelve lessons with twelve
-  // genuinely different essay rubrics collapsed into whichever one happened to
-  // come first, and the admin was told "1 rubric saved" with no hint that
-  // eleven had been discarded.
-  const signature = (criteria) => JSON.stringify(
-    criteria.map(c => [String(c.name || '').trim().toLowerCase(), Number(c.points) || 0])
-  );
-
-  const bySignature = new Map();
-  const signatureByLesson = new Map();
-  const skipped = [];
-
-  for (const lesson of lessons) {
-    const criteria = lesson.defaultRubric?.criteria;
-    const label = lesson.title || lesson.outputType || 'a lesson';
-    if (!Array.isArray(criteria) || criteria.length === 0) continue;   // no rubric to save
-
-    if (criteria.some(c => !String(c?.name || '').trim())) {
-      skipped.push({ lesson: label, reason: 'a criterion had no name' });
-      continue;
-    }
-    // Only a zero total is unusable — everything scores against the rubric's
-    // own total, so a rubric out of 50 is valid. Requiring exactly 100 here was
-    // dropping perfectly good rubrics the AI had extracted from the document.
-    const total = criteria.reduce((sum, c) => sum + (Number(c.points) || 0), 0);
-    if (total <= 0) {
-      skipped.push({ lesson: label, reason: 'its criteria added up to zero' });
-      continue;
-    }
-
-    const key = signature(criteria);
-    if (!bySignature.has(key)) {
-      bySignature.set(key, { key, outputType: lesson.outputType || 'Essay', criteria, lessons: [label] });
-    } else {
-      // Same rubric on another lesson — genuinely one template, as intended.
-      bySignature.get(key).lessons.push(label);
-    }
-    // Which template each lesson ends up on, so the lesson row can point at it
-    // and the Activity Builder can select the real template rather than an
-    // unnamed copy of the same criteria.
-    signatureByLesson.set(lesson, key);
-  }
-
-  if (bySignature.size === 0) {
-    return { saved: 0, merged: 0, skipped, names: [], templateIdByLesson: new Map() };
-  }
-
-  // ── Naming ──
-  //
-  // Lesson-led, not output-type-led. These templates were previously all named
-  // "Essay — English Grade 6", which told a teacher browsing "Your school
-  // rubrics" nothing about which week's work the rubric was written for — and
-  // meant the name shown when a lesson was picked in the Activity Builder bore
-  // no relation to the name in the rubric tab. A rubric genuinely shared by
-  // several lessons keeps the output-type name, because that is what it is.
-  const suffix = `${curriculum.subject} ${curriculum.gradeLevel}`;
-  const entries = [...bySignature.values()];
-  const candidates = entries.map(entry => ({
-    ...entry,
-    name: (entry.lessons.length === 1
-      // "Week 3: Elements of a Short Story — English Grade 6"
-      ? `${entry.lessons[0]} — ${suffix}`
-      // Shared by several lessons, so name it for what it grades.
-      : `${entry.outputType} — ${suffix}`).slice(0, 180),
-  }));
-
-  // Two lessons with the same title but different rubrics would collide. Number
-  // the later ones rather than letting the dedupe below silently drop them.
-  const seenNames = new Map();
-  for (const c of candidates) {
-    const n = (seenNames.get(c.name) || 0) + 1;
-    seenNames.set(c.name, n);
-    if (n > 1) c.name = `${c.name} (${n})`.slice(0, 180);
-  }
-
-  // ── Don't duplicate a template the school already has — but "same name" is
-  //    not "same rubric" ──
-  //
-  // Revising a curriculum means deleting it and re-uploading: the route
-  // refuses a second one for the same (school, gradeLevel, subject) and says
-  // "Delete it first to replace it". RubricTemplate.curriculumId is
-  // onDelete: SetNull, so the old templates SURVIVE that delete under their old
-  // names holding their old criteria.
-  //
-  // Matching on name alone then skipped the revised rubric as "already there"
-  // and — since the lesson now carries rubricTemplateId — stamped the new
-  // lesson with the SUPERSEDED template's id. The correct new criteria sat
-  // unread in defaultRubric while resolveDefaultRubric's linked-template tier
-  // won, so teachers built activities against the criteria the admin thought
-  // they had just replaced, silently. That failure mode did not exist before
-  // the link: the embedded copy always won, and drift meant nothing.
-  //
-  // So a name is only "taken" by a rubric that is genuinely the same rubric.
-  const existing = await prisma.rubricTemplate.findMany({
-    where: { schoolId: curriculum.schoolId },
-    select: { id: true, name: true, criteria: true }
-  });
-  /** The stored criteria JSON reduced to the same shape `signature` produces. */
-  const storedSignature = (criteriaJson) => {
-    try {
-      const parsed = JSON.parse(criteriaJson);
-      const list = Array.isArray(parsed) ? parsed : parsed?.criteria;
-      return Array.isArray(list) ? signature(list) : null;
-    } catch { return null; }
-  };
-  const existingByName = new Map();
-  for (const t of existing) {
-    if (!existingByName.has(t.name)) existingByName.set(t.name, []);
-    existingByName.get(t.name).push(t);
-  }
-  const takenNames = new Set(existing.map(t => t.name));
-
-  const fresh = [];
-  for (const c of candidates) {
-    const sig = signature(c.criteria);
-    const same = (existingByName.get(c.name) || []).find(t => storedSignature(t.criteria) === sig);
-    if (same) {
-      // Genuinely the same rubric under the same name — reuse it, and make
-      // sure the lesson links to it rather than to nothing.
-      c.existingId = same.id;
-      continue;
-    }
-    if (takenNames.has(c.name)) {
-      // Same name, different criteria: a revision. Number it rather than let
-      // the lesson point at the rubric it was meant to replace.
-      let n = 2;
-      while (takenNames.has(`${c.name} (${n})`)) n++;
-      c.name = `${c.name} (${n})`.slice(0, 180);
-    }
-    takenNames.add(c.name);
-    fresh.push(c);
-  }
-
-  if (fresh.length) {
-    await prisma.rubricTemplate.createMany({
-      data: fresh.map(r => ({
-        name: r.name,
-        criteria: JSON.stringify(r.criteria),
-        schoolId: curriculum.schoolId,
-        teacherId: null,
-        gradeLevel: curriculum.gradeLevel,
-        subject: curriculum.subject,
-        curriculumId: curriculum.id,
-        outputType: r.outputType
-      }))
-    });
-  }
-
-  // ── Which template each lesson landed on ──
-  //
-  // Read back by name rather than trusting createMany's count, because a name
-  // already taken by an earlier import is reused rather than duplicated — the
-  // lesson still has to point at that existing template, not at nothing.
-  const saved = await prisma.rubricTemplate.findMany({
-    where: { schoolId: curriculum.schoolId, name: { in: candidates.map(c => c.name) } },
-    select: { id: true, name: true },
-  });
-  const idByName = new Map(saved.map(r => [r.name, r.id]));
-  // existingId wins where the candidate matched a template already held under
-  // that name AND with the same criteria — that is the row to point at.
-  const idByKey = new Map();
-  for (const c of candidates) {
-    const id = c.existingId || idByName.get(c.name);
-    if (id) idByKey.set(c.key, id);
-  }
-  const templateIdByLesson = new Map();
-  for (const [lesson, key] of signatureByLesson) {
-    const id = idByKey.get(key);
-    if (id) templateIdByLesson.set(lesson, id);
-  }
-
-  // How many lessons shared a rubric with another — worth reporting so a
-  // count of 3 from 20 lessons doesn't look like something went wrong.
-  const merged = [...bySignature.values()].reduce((n, e) => n + Math.max(0, e.lessons.length - 1), 0);
-  console.log(`📐 Saved ${fresh.length} rubric template(s) from curriculum "${curriculum.title}"` +
-    `${merged ? `, ${merged} lesson(s) shared one` : ''}${skipped.length ? `, ${skipped.length} skipped` : ''}`);
-
-  return { saved: fresh.length, merged, skipped, names: fresh.map(r => r.name), templateIdByLesson };
-}
-
 app.get('/api/admin/:adminId/curriculums', async (req, res) => {
   try {
     const admin = await requireAdminSchool(req.params.adminId);
@@ -3097,8 +2908,12 @@ app.get('/api/admin/:adminId/curriculums', async (req, res) => {
 
 /**
  * Publish a curriculum for one grade level + subject. An uploaded PDF/DOCX is
- * parsed by the same extractor the per-class flow uses, so an admin gets
- * lessons + default rubrics generated once for the whole school.
+ * parsed by the same extractor the per-class flow uses, so an admin gets the
+ * document's lessons read out once for the whole school.
+ *
+ * Lessons only. The rubric a school marks this subject against is a separate,
+ * optional step the admin takes deliberately (POST /api/admin/:adminId/rubrics),
+ * because writing one is the school's job rather than this system's.
  */
 app.post('/api/admin/:adminId/curriculums', upload.single('curriculumFile'), async (req, res) => {
   try {
@@ -3125,7 +2940,6 @@ app.post('/api/admin/:adminId/curriculums', upload.single('curriculumFile'), asy
     // not found on disk": the file it was told to read had already been
     // removed by the very upload call two lines above it.
     let parseWarning = null;
-    let rubricReport = { saved: 0, merged: 0, skipped: [], names: [] };
     let lessons = [];
     if (req.file) {
       try {
@@ -3146,12 +2960,6 @@ app.post('/api/admin/:adminId/curriculums', upload.single('curriculumFile'), asy
     if (req.file && !parseWarning) {
       try {
         if (lessons.length) {
-          // Templates first: each lesson is then stored already pointing at the
-          // school rubric its criteria were saved as, so picking that lesson in
-          // the Activity Builder selects the template by id and shows the name
-          // the rubric tab shows. Saving the lessons first and back-filling
-          // would leave a window where the two disagreed.
-          rubricReport = await saveCurriculumRubrics(curriculum, lessons);
           await prisma.curriculumLesson.createMany({
             data: lessons.map(l => ({
               curriculumId: curriculum.id,
@@ -3159,8 +2967,12 @@ app.post('/api/admin/:adminId/curriculums', upload.single('curriculumFile'), asy
               description: l.description || null,
               outputType: l.outputType || 'Essay',
               weekNumber: l.weekNumber ?? null,
-              defaultRubric: l.defaultRubric ? JSON.stringify(l.defaultRubric) : null,
-              rubricTemplateId: rubricReport.templateIdByLesson?.get(l) || null
+              // Both null by design. A lesson read out of a document says what
+              // is taught that week, not how it should be marked — the admin
+              // attaches the school's rubric separately, or nobody does and
+              // the teacher chooses one per activity.
+              defaultRubric: null,
+              rubricTemplateId: null
             }))
           });
         } else {
@@ -3180,54 +2992,8 @@ app.post('/api/admin/:adminId/curriculums', upload.single('curriculumFile'), asy
     res.json({
       success: true,
       curriculum: saved,
-      savedRubrics: rubricReport.saved,
-      // What was merged or dropped, so "3 rubrics saved" from 20 lessons is
-      // explainable instead of looking like a failure.
-      rubricReport,
       warning: parseWarning
     });
-  } catch (e) { sendAdminError(res, e); }
-});
-
-/**
- * Save this curriculum's lesson rubrics as reusable school templates.
- *
- * Upload does this automatically; this endpoint covers curriculums that
- * predate the feature or whose lessons were added by hand afterwards.
- */
-app.post('/api/admin/:adminId/curriculums/:curriculumId/promote-rubrics', async (req, res) => {
-  try {
-    const admin = await requireAdminSchool(req.params.adminId);
-    const curriculum = await prisma.curriculum.findUnique({
-      where: { id: req.params.curriculumId },
-      include: { lessons: true }
-    });
-    if (!curriculum || curriculum.schoolId !== admin.schoolId) {
-      return res.status(404).json({ success: false, error: 'Curriculum not found in your school.' });
-    }
-
-    // saveCurriculumRubrics works on the parser's shape, so reparse the stored
-    // JSON. `title` is carried through because templates are now named after
-    // the lesson/week they belong to — without it every one of them would fall
-    // back to the output-type name.
-    const lessons = curriculum.lessons.map(l => {
-      let defaultRubric = null;
-      try { defaultRubric = l.defaultRubric ? JSON.parse(l.defaultRubric) : null; } catch { /* skip malformed */ }
-      return { id: l.id, title: l.title, outputType: l.outputType, defaultRubric };
-    });
-
-    const rubricReport = await saveCurriculumRubrics(curriculum, lessons);
-    // Point each lesson at the template its rubric was saved as. Upload does
-    // this at insert time; here the rows already exist, so it is an update.
-    for (const [lesson, templateId] of rubricReport.templateIdByLesson) {
-      await prisma.curriculumLesson.update({
-        where: { id: lesson.id },
-        data: { rubricTemplateId: templateId },
-      });
-    }
-
-    const { templateIdByLesson, ...report } = rubricReport;   // a Map does not serialise
-    res.json({ success: true, savedRubrics: report.saved, rubricReport: report });
   } catch (e) { sendAdminError(res, e); }
 });
 
@@ -3300,6 +3066,21 @@ app.get('/api/admin/:adminId/rubrics', async (req, res) => {
     });
     res.json({ success: true, rubrics });
   } catch (e) { sendAdminError(res, e); }
+});
+
+/**
+ * Read the school's rubric out of a document the admin uploaded.
+ *
+ * Same transcription the teacher's Activity Builder does, reachable by an admin
+ * — authorizePath keeps roles out of each other's areas, so this cannot simply
+ * be the teacher route. Saves nothing: the criteria come back for the admin to
+ * check and correct, and only a subsequent POST to /rubrics stores them.
+ */
+app.post('/api/admin/:adminId/rubrics/extract', upload.single('rubricFile'), async (req, res) => {
+  try {
+    await requireAdminSchool(req.params.adminId);
+  } catch (e) { return sendAdminError(res, e); }
+  return respondWithExtractedRubric(req, res);
 });
 
 app.post('/api/admin/:adminId/rubrics', async (req, res) => {
@@ -4700,7 +4481,7 @@ async function extractLessonsFromCurriculum(filePath, subjectInput, gradeLevelIn
 
 Analyze this uploaded curriculum/lesson plan document for ${subject} at ${gradeLevel} level.
 
-Extract ALL individual lessons, topics, or weekly units from the document. For each lesson, generate a default grading rubric appropriate for the lesson's expected output type.
+Extract ALL individual lessons, topics, or weekly units from the document.
 
 You MUST respond with valid JSON matching this exact schema:
 {
@@ -4709,35 +4490,17 @@ You MUST respond with valid JSON matching this exact schema:
       "title": "<Lesson/topic/week title, e.g. 'Week 1: Elements of a Short Story'>",
       "description": "<Brief 1-2 sentence description of what the lesson covers>",
       "weekNumber": <integer week number if identifiable, or null>,
-      "outputType": "<One of: Essay, Short Answer, Journal, Reflection, Creative Writing, Research Paper, Survey/Form, Outline, Report, Letter, Poem, Speech, Summary>",
-      "defaultRubric": {
-        "criteria": [
-          {
-            "name": "<Criterion name, e.g. Content & Ideas>",
-            "points": <percentage weight, all criteria must sum to 100>,
-            "description": "<What this criterion evaluates>",
-            "bands": [
-              { "label": "Outstanding", "range": "<point range e.g. 36-40>", "score": <the numeric top of that range, e.g. 40>, "description": "<description>" },
-              { "label": "Proficient", "range": "<point range>", "score": <numeric top of that range>, "description": "<description>" },
-              { "label": "Developing", "range": "<point range>", "score": <numeric top of that range>, "description": "<description>" },
-              { "label": "Beginning", "range": "<point range>", "score": <numeric top of that range>, "description": "<description>" }
-            ]
-          }
-        ]
-      }
+      "outputType": "<One of: Essay, Short Answer, Journal, Reflection, Creative Writing, Research Paper, Survey/Form, Outline, Report, Letter, Poem, Speech, Summary>"
     }
   ]
 }
 
 RULES:
 - Extract EVERY lesson/topic/week you can find in the document.
-- Each rubric's criteria point percentages MUST sum to exactly 100.
 - The outputType should reflect the most likely student output for that lesson.
-- Keep rubric criteria practical and aligned with DepEd standards.
-- Generate 3-4 criteria per rubric, each with 4 scoring bands.
-- Every band's "score" MUST be a plain number (e.g. 40), never a range string —
-  "range" is where the range text like "36-40" belongs. The application reads
-  "score" numerically to compute each criterion's point value.
+- Report only what the document says. Do NOT invent grading criteria, rubrics,
+  scoring bands or point weights — writing a rubric is the teacher's work, and
+  this system does not do it for them. Any rubric field you return is discarded.
 - If the document structure is unclear, organize by logical topic groupings.`;
 
     const fileParts = [{
@@ -4757,7 +4520,11 @@ RULES:
       .trim();
 
     const parsed = JSON.parse(cleaned);
-    return parsed.lessons || [];
+    // Dropped rather than trusted. The prompt tells the model not to write
+    // rubrics, but a prompt is a request, not a guarantee — and a rubric that
+    // slipped through here would be indistinguishable downstream from one a
+    // teacher wrote. The one place this is enforced is in code.
+    return (parsed.lessons || []).map(({ defaultRubric, rubric, ...lesson }) => lesson);
 }
 
 app.post('/api/teacher/classes/:id/parse-curriculum', async (req, res) => {
@@ -4808,11 +4575,11 @@ app.post('/api/teacher/classes/:id/parse-curriculum', async (req, res) => {
           description: lesson.description || null,
           weekNumber: lesson.weekNumber || null,
           outputType: lesson.outputType || 'Essay',
-          defaultRubric: lesson.defaultRubric ? JSON.stringify(lesson.defaultRubric) : null,
-          // Copied, not linked — curriculum is copy-on-apply by design
-          // (HANDOFF §4). The id still resolves to a live school template on
-          // read, which is what lets the Activity Builder name it correctly.
-          rubricTemplateId: lesson.rubricTemplateId || null
+          // A parsed document supplies no rubric — see extractLessonsFromCurriculum,
+          // which strips any the model returns anyway. The teacher picks one per
+          // activity from their school's rubrics.
+          defaultRubric: null,
+          rubricTemplateId: null
         }
       });
       createdLessons.push(created);
@@ -5012,72 +4779,6 @@ function validateRubric(rubricJson) {
 }
 
 /**
- * The rubric an activity should carry when the caller didn't supply one.
- *
- * The activity builder resolves this in the browser, but it is not the only way
- * an activity gets made — the quick-create form in ClassHub sends no rubric at
- * all, and anything created that way fell through to the generic DepEd prompt
- * in the AI grader and a hardcoded Content/Organization/Grammar 40/30/30 in the
- * review screen. Neither has anything to do with what the school teaches.
- *
- * Doing it here rather than in each form means every path gets the same answer,
- * including ones added later. Deliberately the same order the builder offers
- * and generateSubmissionFeedback falls back through: the curriculum lesson
- * first, then a school rubric for this output type, then the school's rubrics
- * generally. Returns null when the school has published nothing — the AI's own
- * ladder still applies at grading time, and inventing a rubric here would be
- * worse than leaving it open.
- */
-async function resolveActivityRubric({ classId, classLessonId, type }) {
-  const usable = (raw) => {
-    try {
-      const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
-      const criteria = Array.isArray(parsed) ? parsed : parsed?.criteria;
-      if (!criteria?.length) return null;
-      if (criteria.reduce((s, c) => s + (Number(c?.points) || 0), 0) <= 0) return null;
-      return JSON.stringify({ source: 'template', type: parsed?.type || (criteria[0]?.bands?.length ? 'range' : 'standard'), criteria });
-    } catch { return null; }
-  };
-
-  // 1) The curriculum lesson the activity is mapped to.
-  if (classLessonId) {
-    const lesson = await prisma.classLesson.findUnique({
-      where: { id: classLessonId }, select: { defaultRubric: true }
-    });
-    const fromLesson = usable(lesson?.defaultRubric);
-    if (fromLesson) return fromLesson;
-  }
-
-  if (!classId) return null;
-  const cls = await prisma.class.findUnique({
-    where: { id: classId },
-    select: { gradeLevel: true, subject: true, teacher: { select: { schoolId: true } } }
-  });
-  const schoolId = cls?.teacher?.schoolId;
-  if (!schoolId) return null;
-
-  // 2/3) School rubrics for this class, the matching output type first.
-  //      Untagged rubrics apply everywhere, so they stay in the running.
-  const candidates = await prisma.rubricTemplate.findMany({
-    where: {
-      schoolId,
-      teacherId: null,
-      AND: [
-        { OR: [{ gradeLevel: cls.gradeLevel }, { gradeLevel: null }] },
-        { OR: [{ subject: cls.subject }, { subject: null }] }
-      ]
-    },
-    orderBy: { createdAt: 'desc' }
-  });
-  const byType = type ? candidates.find(r => r.outputType === type) : null;
-  for (const candidate of [byType, ...candidates]) {
-    const resolved = usable(candidate?.criteria);
-    if (resolved) return resolved;
-  }
-  return null;
-}
-
-/**
  * A date the teacher typed, or null. Rejects anything that isn't YYYY-MM-DD so
  * a malformed value can't quietly become a deadline nobody can satisfy.
  */
@@ -5113,11 +4814,13 @@ app.post('/api/teacher/activities', (req, res, next) => {
     const rubricError = validateRubric(rubric);
     if (rubricError) return res.status(400).json({ success: false, error: rubricError });
 
-    // Forms that don't ask for a rubric (ClassHub's quick-create) get the
-    // school's own instead of falling through to a generic sample at grading.
-    const resolvedRubric = rubric || await resolveActivityRubric({
-      classId, classLessonId, type
-    });
+    // An activity may be created with no rubric, and stays that way until a
+    // person attaches one. This used to reach for the school's rubrics on the
+    // teacher's behalf when a form sent none — well meant, but it made "the
+    // rubric this work is marked against" something the system decided, and it
+    // is the teacher's decision. AI checking asks for one (409 NO_RUBRIC); a
+    // teacher marking by hand may never need one at all.
+    const resolvedRubric = rubric || null;
 
     const due = normalizeDateInput(deadline);
     const late = normalizeDateInput(lateUntil);
@@ -5366,11 +5069,18 @@ app.delete('/api/teacher/rubric-templates/:id', async (req, res) => {
 // ─────────────────────────────────────────
 // RUBRIC EXTRACTION (Gemini VLM reads uploaded rubric image/PDF)
 // ─────────────────────────────────────────
-app.post('/api/teacher/rubric/extract', upload.single('rubricFile'), async (req, res) => {
-  try {
-    const file = req.file;
-    if (!file) return res.status(400).json({ success: false, error: 'No rubric file provided' });
-
+/**
+ * Read a rubric a person already wrote out of the file they uploaded.
+ *
+ * This is transcription, not authorship — the distinction the whole
+ * teacher-authored-rubrics change turns on. The model is shown a rubric that
+ * exists on paper and asked what it says; it is never asked to decide what the
+ * criteria should be. Whatever comes back is shown to the person for review and
+ * saved only if they say so.
+ *
+ * Shared by the teacher's Activity Builder and the admin's curriculum form.
+ */
+async function extractRubricFromUpload(file) {
     // Read file and convert to base64
     const fileBuffer = fs.readFileSync(file.path);
     const base64Data = fileBuffer.toString('base64');
@@ -5422,7 +5132,9 @@ Rules:
 
     const parsed = JSON.parse(text);
     if (!parsed.criteria || !Array.isArray(parsed.criteria)) {
-      return res.status(422).json({ success: false, error: 'Could not extract rubric criteria from the uploaded file.' });
+      const err = new Error('Could not extract rubric criteria from the uploaded file.');
+      err.status = 422;
+      throw err;
     }
 
     // Clean up the response
@@ -5438,17 +5150,29 @@ Rules:
       })) : []
     }));
 
-    res.json({
-      success: true,
+    return {
       criteria,
       totalPoints: parsed.totalPoints || criteria.reduce((s, c) => s + c.points, 0),
       rubricType: parsed.rubricType || 'standard'
-    });
+    };
+}
+
+/** Both callers answer the same way, so the error shaping lives here too. */
+async function respondWithExtractedRubric(req, res) {
+  try {
+    if (!req.file) return res.status(400).json({ success: false, error: 'No rubric file provided' });
+    const extracted = await extractRubricFromUpload(req.file);
+    res.json({ success: true, ...extracted });
   } catch (e) {
     console.error('Rubric extraction error:', e);
-    res.status(500).json({ success: false, error: 'Failed to extract rubric: ' + e.message });
+    res.status(e.status || 500).json({
+      success: false,
+      error: e.status === 422 ? e.message : 'Failed to extract rubric: ' + e.message
+    });
   }
-});
+}
+
+app.post('/api/teacher/rubric/extract', upload.single('rubricFile'), respondWithExtractedRubric);
 
 /**
  * Confirms the signed-in staff member's school matches the activity's school
@@ -5725,6 +5449,61 @@ async function stitchPages(imageFiles) {
 // ─────────────────────────────────────────
 
 /**
+ * Thrown when an activity has no rubric a human wrote. Carries the code the
+ * teacher-facing routes turn into a 409 so the UI can tell this apart from a
+ * quota failure or a dead model and offer the one action that fixes it.
+ */
+class NoRubricError extends Error {
+  constructor() {
+    super('This activity has no rubric, so there is nothing to grade against.');
+    this.name = 'NoRubricError';
+    this.code = 'NO_RUBRIC';
+  }
+}
+
+/**
+ * The rubric the AI is allowed to grade this activity against.
+ *
+ * Two tiers, both written by a person:
+ *
+ *   1. The activity's own rubric — what the teacher chose for this work.
+ *   2. The curriculum lesson's rubric — kept only so activities created before
+ *      rubrics became mandatory keep grading as they always did.
+ *
+ * There is deliberately no third. This used to fall through to the DepEd
+ * topic's recommended template and then, failing that, to a generic essay
+ * rubric hardcoded into the prompt — so an activity with no rubric was never
+ * refused, it was graded against criteria nobody in the school had written,
+ * with nothing on screen to say so. `criteria: null` is now a refusal, and
+ * generateSubmissionFeedback turns it into NoRubricError before the model is
+ * ever called.
+ *
+ * `parseFailed` distinguishes "there was a rubric and it could not be read"
+ * from "there was no rubric", which are very different things to tell a teacher.
+ */
+function resolveGradingRubric(activity) {
+  let parseFailed = false;
+  const read = (raw) => {
+    if (!raw) return null;
+    try {
+      const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+      return parsed?.criteria?.length ? parsed.criteria : null;
+    } catch {
+      parseFailed = true;
+      return null;
+    }
+  };
+
+  const own = read(activity?.rubric);
+  if (own) return { criteria: own, sourceLabel: '', parseFailed };
+
+  const fromLesson = read(activity?.classLesson?.defaultRubric);
+  if (fromLesson) return { criteria: fromLesson, sourceLabel: 'from curriculum lesson plan', parseFailed };
+
+  return { criteria: null, sourceLabel: null, parseFailed };
+}
+
+/**
  * Grade one or more papers for the same activity in a single inference.
  *
  * `imagePaths` may be a single path (one paper — the original behaviour) or an
@@ -5770,19 +5549,18 @@ async function generateSubmissionFeedback(imagePaths, activityId, studentId) {
         `- Your "score" field must equal the sum, scaled to percentage.`;
     }
 
-    // 2) Fetch activity + resolve rubric context via 3-tier fallback:
-    //    Activity.rubric -> ClassLesson.defaultRubric -> topic's recommended rubric template -> generic default
-    let rubricContext = 'Use standard DepEd essay rubric: Content & Ideas (40 pts: 35-40 Outstanding, 25-34 Proficient, 15-24 Developing, 0-14 Beginning), Organization (30 pts: 27-30 Outstanding, 19-26 Proficient, 10-18 Developing, 0-9 Beginning), Language & Grammar (30 pts: 27-30 Outstanding, 19-26 Proficient, 10-18 Developing, 0-9 Beginning).';
+    // 2) Fetch activity + resolve the rubric. See resolveGradingRubric: two
+    //    tiers, both human-written, and a refusal when neither is there.
+    let rubricContext = null;
     let activityContext = '';
     let subjectForPrompt = 'English';
     let classLessonContext = '';
     let activity = null;
-    // Set in tiers 1-2 below when a real rubric existed but its JSON failed
-    // to parse, forcing a silent fall-through to a lower tier.
+    // A rubric genuinely existed but could not be read — distinct from the
+    // activity having none. Surfaced to the teacher via
+    // Submission.rubricParseFailed.
     let rubricParseFailed = false;
-    // The criteria actually in force, whichever tier supplied them. Null means
-    // the hardcoded generic essay rubric above — which is itself a writing
-    // rubric, hence the default below.
+    // The criteria actually in force, whichever tier supplied them.
     let resolvedCriteria = null;
     if (activityId && activityId !== 'mock-activity-id') {
       activity = await prisma.activity.findUnique({
@@ -5796,55 +5574,25 @@ async function generateSubmissionFeedback(imagePaths, activityId, studentId) {
         activityContext = `Activity: "${activity.title}" (${activity.type}). Instructions: "${activity.instructions || 'N/A'}".`;
         if (activity.class?.subject) subjectForPrompt = activity.class.subject;
 
-        // Tier 1: the activity's own rubric
-        if (activity.rubric) {
-          try {
-            const parsed = JSON.parse(activity.rubric);
-            if (parsed.criteria?.length) {
-              rubricContext = formatRubricCriteria(parsed.criteria, '');
-              resolvedCriteria = parsed.criteria;
-            }
-          } catch {
-            // A rubric genuinely existed here and couldn't be read — distinct
-            // from the activity simply having none, which falls through the
-            // remaining tiers by design. Surfaced to the teacher via
-            // Submission.rubricParseFailed rather than silently grading
-            // against a lower tier with no sign anything went wrong.
-            rubricParseFailed = true;
-          }
-        }
-
         if (activity.classLesson) {
           const cl = activity.classLesson;
           classLessonContext = `\nCURRICULUM LESSON CONTEXT:\nThis activity is mapped to the lesson: "${cl.title}"\nLesson Description: ${cl.description || 'N/A'}\nExpected Output Type: ${cl.outputType}\nYou MUST evaluate this submission specifically against the learning objectives of this lesson.\n`;
-
-          // Tier 2: ClassLesson's default rubric, only if tier 1 didn't already set a real rubric
-          if (cl.defaultRubric && rubricContext.startsWith('Use standard DepEd')) {
-            try {
-              const parsedLesson = JSON.parse(cl.defaultRubric);
-              if (parsedLesson.criteria?.length) {
-                rubricContext = formatRubricCriteria(parsedLesson.criteria, 'from curriculum lesson plan');
-                resolvedCriteria = parsedLesson.criteria;
-              }
-            } catch {
-              rubricParseFailed = true;
-            }
-          }
         }
 
-        // Tier 3: the activity's DepEd topic's recommended rubric template, only if tiers 1-2 didn't set a real rubric
-        if (activity.topic && rubricContext.startsWith('Use standard DepEd')) {
-          const topicInfo = getTopicById(activity.topic);
-          if (topicInfo?.recommendedRubricId) {
-            const recommended = getRubricTemplateById(topicInfo.recommendedRubricId);
-            if (recommended?.criteria?.length) {
-              rubricContext = formatRubricCriteria(recommended.criteria, `recommended for topic "${topicInfo.name}"`);
-              resolvedCriteria = recommended.criteria;
-            }
-          }
+        const resolved = resolveGradingRubric(activity);
+        rubricParseFailed = resolved.parseFailed;
+        if (resolved.criteria) {
+          resolvedCriteria = resolved.criteria;
+          rubricContext = formatRubricCriteria(resolved.criteria, resolved.sourceLabel);
         }
       }
     }
+
+    // Refused here, before a single image is read or a token is spent. Grading
+    // without a rubric a person wrote is the thing this whole change exists to
+    // prevent, so it must not be reachable by any path — including a batch job
+    // whose activity lost its rubric between queueing and running.
+    if (!rubricContext) throw new NoRubricError();
 
     // 2b) Reference materials the teacher attached to the activity (a source
     // passage, an answer key, a diagram) — these are stored on Activity.additionalFiles
@@ -5977,13 +5725,17 @@ async function generateSubmissionFeedback(imagePaths, activityId, studentId) {
     //
     // The rubric is what says what an activity assesses, so the same
     // classifier the curriculum-skill charts already trust decides this:
-    // if any criterion reads as writing or language, the four apply. A null
-    // resolvedCriteria means the generic DepEd essay rubric is in force, which
-    // is a writing rubric, so they apply then too.
+    // if any criterion reads as writing or language, the four apply.
+    //
+    // resolvedCriteria is never null by this point — grading without a rubric
+    // now throws NoRubricError well above here. It used to be nullable, and
+    // null was read as "the generic essay rubric is in force, so the writing
+    // skills apply"; with no generic rubric left to fall back on there is
+    // nothing for that branch to mean.
     //
     // Note this is deliberately NOT gated on the subject field. A Filipino or
     // Araling Panlipunan essay is still composition, and subject is free text.
-    const skillScoresApply = !resolvedCriteria || resolvedCriteria.some(c => {
+    const skillScoresApply = resolvedCriteria.some(c => {
       const skill = classifyCriterion(c?.name || '', c?.description || '');
       return skill === 'writing' || skill === 'language';
     });
@@ -6748,6 +6500,15 @@ async function runAiCheckChunks(job, chunks) {
         await applyBatchResult(job, loaded[i].sub, results[i]);
       }
     } catch (err) {
+      if (err instanceof NoRubricError) {
+        // The rubric is a property of the activity, so every remaining chunk
+        // would fail identically. Stop and say why once, rather than marking
+        // each paper failed with the same message.
+        job.stoppedReason = 'NO_RUBRIC';
+        job.stoppedMessage = err.message;
+        console.log(`⚠ AI check job ${job.id} stopped: no rubric on the activity.`);
+        break;
+      }
       if (err instanceof AiUnavailableError) {
         // Out of budget. Stop rather than grinding through the remaining
         // chunks: every one of them would fail the same way, and nothing is
@@ -6794,7 +6555,12 @@ function serialiseJob(job) {
 async function teacherOwnsActivity(activityId, teacherId) {
   const activity = await prisma.activity.findUnique({
     where: { id: activityId },
-    include: { class: { select: { teacherId: true } } }
+    // rubric and the lesson's copy ride along so callers can put the activity
+    // straight through resolveGradingRubric without a second read.
+    include: {
+      class: { select: { teacherId: true } },
+      classLesson: { select: { defaultRubric: true } }
+    }
   });
   if (!activity) return { ok: false, code: 404, error: 'Activity not found.' };
   if (activity.class?.teacherId !== teacherId) {
@@ -6827,7 +6593,11 @@ app.get('/api/teacher/activities/:activityId/ai-check', async (req, res) => {
     ready,
     batchSize: AI_BATCH_SIZE,
     requestsNeeded: Math.ceil(ready / AI_BATCH_SIZE),
-    capacity: gradingCapacitySnapshot()
+    capacity: gradingCapacitySnapshot(),
+    // So the teacher's screen can say "this needs a rubric" before they press
+    // the button, rather than the POST refusing them after. Same question, same
+    // resolver — the POST is still the thing that enforces it.
+    hasRubric: !!resolveGradingRubric(owned.activity).criteria
   });
 });
 
@@ -6840,6 +6610,19 @@ app.post('/api/teacher/activities/:activityId/ai-check', async (req, res) => {
 
     const running = [...aiJobs.values()].find(j => j.activityId === req.params.activityId && j.state === 'running');
     if (running) return res.json({ success: true, alreadyRunning: true, ...serialiseJob(running) });
+
+    // Checked before anything else about the papers. A rubric is the teacher's
+    // to write, and without one there is nothing to check against — so this
+    // refuses rather than falling back to a rubric the school never agreed to.
+    // Ahead of the "no unchecked papers" check on purpose: "add a rubric" is
+    // the message that names the actual problem and can be acted on.
+    if (!resolveGradingRubric(owned.activity).criteria) {
+      return res.status(409).json({
+        success: false,
+        code: 'NO_RUBRIC',
+        error: 'This activity has no rubric yet. Choose one of your school\'s rubrics or write one, then start the check.'
+      });
+    }
 
     const { submissionIds } = req.body || {};
     const queue = await prisma.submission.findMany({
@@ -10046,5 +9829,5 @@ function startServer() {
 
 module.exports = {
   app, startServer, cleanUpTransferRows, carriedOverForClass, carriedOverPrefetch,
-  saveCurriculumRubrics, rubricScoreNoteFor, UNGRADED_RESET,
+  resolveGradingRubric, rubricScoreNoteFor, UNGRADED_RESET,
 };

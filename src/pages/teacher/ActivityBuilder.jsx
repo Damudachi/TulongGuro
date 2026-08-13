@@ -32,16 +32,6 @@ const DEFAULT_RANGE_BANDS = [
   { label: 'Needs Improvement', score: 1, description: 'Does not meet expectations.' },
 ];
 
-/** Criteria out of a rubric that may be a JSON string, an object, or already an array. */
-function readCriteria(source) {
-  if (!source) return null;
-  try {
-    const parsed = typeof source === 'string' ? JSON.parse(source) : source;
-    const criteria = Array.isArray(parsed) ? parsed : parsed?.criteria;
-    return criteria?.length ? criteria : null;
-  } catch { return null; }
-}
-
 /** Rubrics saved before `type` existed are told apart by whether they carry bands. */
 function rubricTypeOf(rubric, criteria) {
   if (rubric?.type) return rubric.type;
@@ -90,75 +80,6 @@ function normalizeRangeCriteria(criteria, rubricType, defaultBands) {
     const top = Math.max(...scores, 0);
     return { ...c, bands, points: top };
   });
-}
-
-/**
- * Which rubric a new activity should start from, most specific source first.
- *
- * The curriculum outranks the built-ins deliberately. A rubric that came from
- * the school's own curriculum was written for this grade level, this subject
- * and this kind of output; the built-ins in rubricTemplates.js are Grade 6
- * English samples and are only ever a last resort. Before this ordering
- * existed, whichever fetch resolved first won — and the built-in list is served
- * from memory while the school's rubrics come from Postgres, so the Grade 6
- * English default beat the curriculum on essentially every activity.
- *
- * Returns null when nothing at all has loaded yet, so the caller leaves the
- * form untouched rather than blanking it.
- */
-function resolveDefaultRubric({ lesson, schoolRubrics, myRubrics, builtins, topicInfo, outputType }) {
-  const pick = (rubric, option, criteria) =>
-    ({ option, criteria, type: rubricTypeOf(rubric, criteria) });
-
-  // 1a) The school rubric this lesson's criteria were saved as.
-  //
-  //     Curriculum upload writes each lesson's rubric into "Your school
-  //     rubrics" and stamps the lesson with the template's id, so the lesson
-  //     and the tab are two views of one row rather than two copies that drift.
-  //     Selecting the template itself is what makes the picker show the rubric
-  //     under the name the tab shows it under — before this the lesson resolved
-  //     to an unnamed 'lesson-rubric' option, so a teacher saw a rubric they
-  //     could not then find anywhere in their rubric list.
-  if (lesson?.rubricTemplateId) {
-    const linked = schoolRubrics.find(r => r.id === lesson.rubricTemplateId && r.criteria?.length);
-    if (linked) return pick(linked, `saved:${linked.id}`, linked.criteria);
-  }
-
-  // 1b) The copy embedded on the lesson. Still the fallback: lessons imported
-  //     before the link existed have no rubricTemplateId, and a template an
-  //     admin has since deleted must degrade to the embedded copy rather than
-  //     leaving the activity with no rubric at all.
-  const lessonCriteria = readCriteria(lesson?.defaultRubric);
-  if (lessonCriteria) {
-    const parsed = typeof lesson.defaultRubric === 'string' ? JSON.parse(lesson.defaultRubric) : lesson.defaultRubric;
-    return pick(parsed, 'lesson-rubric', lessonCriteria);
-  }
-
-  // 2) A school rubric published for this kind of output. Curriculum uploads
-  //    save their rubrics tagged by outputType, so this is how an "Essay"
-  //    activity finds the curriculum's essay rubric without a lesson mapping.
-  const byOutput = outputType && schoolRubrics.find(r => r.outputType === outputType);
-  if (byOutput?.criteria?.length) return pick(byOutput, `saved:${byOutput.id}`, byOutput.criteria);
-
-  // 3) Any other school rubric. The API already narrowed these to this class's
-  //    grade level and subject, so anything left here applies.
-  const school = schoolRubrics.find(r => r.criteria?.length);
-  if (school) return pick(school, `saved:${school.id}`, school.criteria);
-
-  // 4) The teacher's own most recent template.
-  const mine = myRubrics.find(r => r.criteria?.length);
-  if (mine) return pick(mine, `saved:${mine.id}`, mine.criteria);
-
-  // 5) The built-in the DepEd topic recommends.
-  const recommended = topicInfo?.recommendedRubricId
-    ? builtins.find(b => b.id === topicInfo.recommendedRubricId)
-    : null;
-  if (recommended?.criteria?.length) return pick(recommended, `builtin:${recommended.id}`, recommended.criteria);
-
-  // 6) Failing everything else, the first built-in.
-  if (builtins[0]?.criteria?.length) return pick(builtins[0], `builtin:${builtins[0].id}`, builtins[0].criteria);
-
-  return null;
 }
 
 export default function ActivityBuilder() {
@@ -248,15 +169,16 @@ export default function ActivityBuilder() {
       .catch(() => {});
   }, []);
 
-  const [rubricCriteria, setRubricCriteria] = useState([{ name: '', description: '', points: 100 }]);
+  // Empty, and it stays empty until the teacher chooses. A single blank
+  // criterion used to sit here as the starting shape, which read as "a rubric
+  // that needs filling in" rather than "no rubric yet" — and saved as a
+  // nameless criterion if the teacher never opened the editor.
+  const [rubricCriteria, setRubricCriteria] = useState([]);
   const [selectedOption, setSelectedOption] = useState('');
-  // Set as soon as the teacher makes a rubric decision of their own. Until then
-  // the resolver below is free to keep improving the default as slower sources
-  // (the school's rubrics, the class lessons) arrive.
-  const [rubricTouched, setRubricTouched] = useState(false);
-  // The picker starts folded; the summary card above it says what is in force.
-  // Opened automatically below if nothing could be resolved.
-  const [showRubricEditor, setShowRubricEditor] = useState(false);
+  // Open from the start on a new activity: with nothing pre-selected, the
+  // picker is the next thing the teacher needs, and folding it away would hide
+  // the school's own rubrics behind a click.
+  const [showRubricEditor, setShowRubricEditor] = useState(!isEditMode);
 
   const selectedLesson = classLessons.find(l => l.id === selectedLessonId) || null;
   const selectedTopic = topics.find(t => t.id === form.topic) || null;
@@ -301,38 +223,25 @@ export default function ActivityBuilder() {
     }
   };
 
-  // Apply the best available default, re-running whenever a new source loads or
-  // the teacher maps the activity to a lesson or topic. Stops the moment the
-  // teacher chooses a rubric themselves.
-  useEffect(() => {
-    if (rubricTouched || isEditMode || rubricMode !== 'template') return;
-    const applied = resolveDefaultRubric({
-      lesson: selectedLesson,
-      schoolRubrics,
-      myRubrics: savedRubrics,
-      builtins: builtinRubrics,
-      topicInfo: selectedTopic,
-      outputType: form.type,
-    });
-    if (!applied) return;
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- reacting to three rubric sources that arrive asynchronously; there is no render-time equivalent
-    setRubricCriteria(applied.criteria);
-    setRubricType(applied.type);
-    setSelectedOption(applied.option);
-  }, [rubricTouched, isEditMode, rubricMode, selectedLesson, schoolRubrics, savedRubrics, builtinRubrics, selectedTopic, form.type]);
-
-  // Nothing could be resolved — no school rubrics, no curriculum, and the
-  // built-ins failed to load. Open the picker rather than leave the teacher
-  // looking at "No rubric selected" with no obvious next step.
-  useEffect(() => {
-    if (!rubricTouched && !isEditMode && rubricMode === 'template' && !selectedOption && builtinRubrics.length === 0) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- same: only knowable once the async rubric loads have all settled
-      setShowRubricEditor(true);
-    }
-  }, [rubricTouched, isEditMode, rubricMode, selectedOption, builtinRubrics]);
+  // No rubric is chosen for the teacher — not from the lesson they picked, not
+  // from the school's library, not from a DepEd sample.
+  //
+  // There used to be a resolver here that applied the best available default
+  // whenever a source loaded or the activity was mapped to a lesson. It is gone
+  // on purpose: writing the rubric is the teacher's work, and a form that
+  // arrives pre-filled invites it to be accepted unread. Everything the resolver
+  // used to rank still appears in the picker below, in the same order — offered,
+  // which is a different act from applied.
 
   /** Load a rubric the teacher picked from the dropdown. */
   const applyOption = (val) => {
+    // Back to no rubric. A real choice, and the state the form now starts in,
+    // so it has to be reachable again after picking something by mistake.
+    if (!val) {
+      setRubricCriteria([]);
+      setSelectedOption('');
+      return;
+    }
     const all = val.startsWith('saved:')
       ? [...schoolRubrics, ...savedRubrics]
       : builtinRubrics;
@@ -343,7 +252,6 @@ export default function ActivityBuilder() {
     setRubricCriteria(criteria);
     setRubricType(rubricTypeOf(found, criteria));
     setSelectedOption(val);
-    setRubricTouched(true);
   };
   const [additionalFiles, setAdditionalFiles] = useState([]); // { file, name }[]
   const [rubricFile, setRubricFile] = useState(null);
@@ -426,7 +334,6 @@ export default function ActivityBuilder() {
               setRubricType(rubricTypeOf(parsed, parsed.criteria));
               if (parsed.source) setRubricMode(parsed.source);
               setSelectedOption('custom');
-              setRubricTouched(true);
             }
           } catch { /* a rubric that will not parse leaves the editor as it is */ }
         }
@@ -542,7 +449,11 @@ export default function ActivityBuilder() {
         note: "Generic sample — your school hasn't published a rubric for this yet",
       };
     }
-    return { name: 'No rubric selected', tone: 'warn', note: '' };
+    return {
+      name: 'No rubric set',
+      tone: 'warn',
+      note: 'Pick one below, or write your own. AI checking needs a rubric before it can run.',
+    };
   })();
 
   const SUMMARY_TONES = {
@@ -656,50 +567,64 @@ export default function ActivityBuilder() {
       alert(loadError || 'This activity is still loading. Please wait before saving.');
       return;
     }
-    // Only standard rubrics are weighted in percent; a range rubric's total is
-    // whatever its bands add up to, so holding it to 100 made it unsavable —
-    // the points field it would need to fix is hidden in range mode.
-    if (rubricType === 'standard' && rubricMode !== 'upload' && totalPercentage !== 100) {
-      alert(`Rubric weight must total 100%. Currently it is ${totalPercentage}%.`);
-      return;
-    }
-    // These three mirror validateRubric() on the server, which is what actually
-    // enforces them — an uploaded rubric used to skip every check, so an
-    // extraction that came back with unnamed criteria or zero weights was
-    // saved and then scored every submission at 0%.
-    if (!activeCriteria.length) {
-      alert('This activity needs a rubric with at least one criterion.');
-      setShowRubricEditor(true);
-      return;
-    }
-    if (!activeCriteria.every(c => c.name?.trim())) {
-      alert('Every rubric criterion needs a name.');
-      setShowRubricEditor(true);
-      return;
-    }
-    // `> 0` rather than `<= 0`: NaN fails both, and the version that asked
-    // `<= 0` therefore let a broken total through instead of catching it.
-    if (!(totalPercentage > 0)) {
-      alert('The rubric criteria add up to zero, so nothing could be scored against it.');
-      setShowRubricEditor(true);
-      return;
+    // An activity may be saved with no rubric at all. The teacher may not have
+    // decided yet, or may be setting the work up now and marking it later — and
+    // refusing the save was what forced *something* to be attached, which is how
+    // an unread default became the rubric of record. AI checking is what needs a
+    // rubric, and that is where it is asked for (409 NO_RUBRIC on the server).
+    //
+    // A rubric that IS present still has to be a usable one. The three checks
+    // below mirror validateRubric() on the server, which is what actually
+    // enforces them: an uploaded rubric used to skip every check, so an
+    // extraction that came back with unnamed criteria or zero weights was saved
+    // and then scored every submission at 0%.
+    if (activeCriteria.length) {
+      // Only standard rubrics are weighted in percent; a range rubric's total is
+      // whatever its bands add up to, so holding it to 100 made it unsavable —
+      // the points field it would need to fix is hidden in range mode.
+      if (rubricType === 'standard' && rubricMode !== 'upload' && totalPercentage !== 100) {
+        alert(`Rubric weight must total 100%. Currently it is ${totalPercentage}%.`);
+        return;
+      }
+      if (!activeCriteria.every(c => c.name?.trim())) {
+        alert('Every rubric criterion needs a name.');
+        setShowRubricEditor(true);
+        return;
+      }
+      // `> 0` rather than `<= 0`: NaN fails both, and the version that asked
+      // `<= 0` therefore let a broken total through instead of catching it.
+      if (!(totalPercentage > 0)) {
+        alert('The rubric criteria add up to zero, so nothing could be scored against it.');
+        setShowRubricEditor(true);
+        return;
+      }
     }
     if (!form.points || form.points < 1) {
       alert("Total Points must be greater than 0.");
       return;
     }
     setIsSaving(true);
+    // Null, not an empty rubric object. validateRubric() on the server reads
+    // null as "no rubric, allowed" and an empty criteria list as a broken one,
+    // and the grader's own check asks the same question of the stored value.
+    const rubricForSubmit = activeCriteria.length
+      ? JSON.stringify({
+          source: rubricMode,
+          type: rubricType,
+          criteria: normalizeCriteria((rubricMode === 'upload' && extractedCriteria) ? extractedCriteria : rubricCriteria)
+        })
+      : null;
+
     try {
       if (isEditMode) {
         // UPDATE existing activity via JSON
-        const criteriaForSubmit = normalizeCriteria((rubricMode === 'upload' && extractedCriteria) ? extractedCriteria : rubricCriteria);
         const res = await apiFetch(`${API_URL}/api/teacher/activities/${editActivityId}`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             ...form,
             classLessonId: selectedLessonId || null,
-            rubric: JSON.stringify({ source: rubricMode, type: rubricType, criteria: criteriaForSubmit })
+            rubric: rubricForSubmit
           })
         });
         const data = await res.json();
@@ -712,9 +637,10 @@ export default function ActivityBuilder() {
         fd.append('classId', classId || 'mock-class-id');
         if (selectedLessonId) fd.append('classLessonId', selectedLessonId);
 
-        // Build rubric JSON — include extracted criteria for upload mode
-        const criteriaForSubmit = normalizeCriteria((rubricMode === 'upload' && extractedCriteria) ? extractedCriteria : rubricCriteria);
-        fd.append('rubric', JSON.stringify({ source: rubricMode, type: rubricType, criteria: criteriaForSubmit }));
+        // Omitted entirely when there is no rubric: FormData has no null, and
+        // appending the string "null" would reach validateRubric as a rubric
+        // that cannot be read rather than as no rubric.
+        if (rubricForSubmit) fd.append('rubric', rubricForSubmit);
 
         additionalFiles.forEach(f => fd.append('additionalFiles', f.file));
         if (rubricFile && rubricMode === 'upload') fd.append('additionalFiles', rubricFile);
@@ -1156,26 +1082,23 @@ export default function ActivityBuilder() {
               <button key={val} type="button" onClick={() => {
                 setRubricMode(val);
                 if (val === 'template') {
-                  // Re-apply whichever template the dropdown is pointing at. If
-                  // it isn't pointing at one (the teacher came from Create or
-                  // Upload), hand control back to the resolver so the best
-                  // available default is chosen instead of just the first one.
+                  // Re-apply whichever template the dropdown is pointing at.
+                  // Coming from Create or Upload it is pointing at nothing, and
+                  // that is the honest state to return to — no rubric, rather
+                  // than the first one on the list.
                   if (selectedOption.startsWith('saved:') || selectedOption.startsWith('builtin:')) {
                     applyOption(selectedOption);
                   } else {
-                    setRubricTouched(false);
+                    applyOption('');
                   }
                 } else if (val === 'manual' && rubricMode !== 'manual') {
                   // Start blank in Create mode
-                  setRubricTouched(true);
                   setSelectedOption('custom');
                   setRubricCriteria([
                     rubricType === 'range'
                       ? { name: '', description: '', points: 0, bands: DEFAULT_RANGE_BANDS.map(b => ({ ...b })) }
                       : { name: '', description: '', points: 0 }
                   ]);
-                } else if (val === 'upload') {
-                  setRubricTouched(true);
                 }
                 if (val !== 'upload') {
                   setRubricFile(null);
@@ -1214,10 +1137,13 @@ export default function ActivityBuilder() {
           {/* Template */}
           {rubricMode === 'template' && (
             <div className="space-y-3">
-              {/* Ordered to match resolveDefaultRubric: what the school
-                  published for these students first, generic samples last. */}
+              {/* What the school published for these students first, generic
+                  samples last. Nothing here is pre-selected — the teacher
+                  chooses, and the empty entry below is a real choice they can
+                  come back to, not a placeholder. */}
               <select value={selectedOption} onChange={e => applyOption(e.target.value)}
                 className="w-full border border-slate-200 p-2 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand-navy mb-2">
+                <option value="">No rubric yet — choose one</option>
                 {/* Real entries for the two states that aren't a template, so the
                     dropdown never renders blank while criteria are shown below. */}
                 {selectedOption === 'lesson-rubric' && (

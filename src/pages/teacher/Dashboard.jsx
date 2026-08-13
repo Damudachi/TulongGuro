@@ -336,7 +336,7 @@ function WizardEmptyState({ onComplete, sections = [] }) {
                 You can still add your own file to layer extra lessons on top.
               </p>
             ) : (
-              <p className="text-xs text-slate-500 mb-3">Upload your curriculum guide or lesson plan (PDF or DOCX). The AI will extract lessons and generate rubrics.</p>
+              <p className="text-xs text-slate-500 mb-3">Upload your curriculum guide or lesson plan (PDF or DOCX). Its lessons are read out for you; you choose the rubric per activity.</p>
             )}
 
             {!curriculumFile ? (
