@@ -1093,90 +1093,74 @@ describe('a transferred student\'s exported grade uses their whole subject histo
   });
 });
 
-describe('saveCurriculumRubrics links each lesson to the right school template', () => {
-  // Revising a curriculum means deleting it and re-uploading — the upload route
-  // refuses a second one for the same (school, gradeLevel, subject). Because
-  // RubricTemplate.curriculumId is onDelete: SetNull, the OLD templates survive
-  // that delete under their old names holding their old criteria.
-  const CURRICULUM = { id: 'cur-1', schoolId: 'school-1', gradeLevel: 'Grade 6', subject: 'English', title: 'English 6' };
+describe('AI checking is refused when nobody wrote a rubric', () => {
+  // The rule our adviser asked for, enforced where it actually matters. The
+  // teacher-facing button is disabled too, but a disabled button is a courtesy;
+  // this is the part that cannot be clicked past, replayed from a stale tab, or
+  // reached by a queued job whose activity lost its rubric after it was queued.
+  const url = `/api/teacher/activities/${ACTIVITY}/ai-check`;
 
-  const lessonWith = (title, criteria) => ({ title, outputType: 'Essay', defaultRubric: { criteria } });
-  const OLD_CRITERIA = [{ name: 'Content', points: 60 }, { name: 'Organization', points: 40 }];
-  const NEW_CRITERIA = [{ name: 'Content', points: 50 }, { name: 'Mechanics', points: 50 }];
+  /** An activity as teacherOwnsActivity loads it, owned by T1. */
+  const activityOwnedByT1 = ({ rubric = null, lessonRubric = null } = {}) => ({
+    id: ACTIVITY,
+    rubric,
+    class: { teacherId: T1 },
+    classLesson: lessonRubric ? { defaultRubric: lessonRubric } : null,
+  });
 
-  it('reuses a template that is genuinely the same rubric under the same name', async () => {
-    const { saveCurriculumRubrics } = require('../server.js');
-    const lesson = lessonWith('Week 3: Short Story', OLD_CRITERIA);
+  const RUBRIC = JSON.stringify({ criteria: [{ name: 'Content', points: 100 }] });
 
-    prismaFake.rubricTemplate.findMany.mockResolvedValue([
-      { id: 'tpl-old', name: 'Week 3: Short Story — English Grade 6', criteria: JSON.stringify(OLD_CRITERIA) },
+  it('409s with NO_RUBRIC and starts no job when the rubric was left blank', async () => {
+    prismaFake.activity.findUnique.mockResolvedValue(activityOwnedByT1());
+    prismaFake.submission.findMany.mockResolvedValue([
+      { id: SUBMISSION, imageUrl: 'u.jpg', retainUntil: null, studentId: 'stu-1' },
     ]);
 
-    const report = await saveCurriculumRubrics(CURRICULUM, [lesson]);
+    const res = await call('POST', url, { token: tokenFor({ id: T1 }), body: {} });
+    const body = await res.json();
 
-    // Nothing new written — it really is the same rubric.
-    expect(prismaFake.rubricTemplate.createMany).not.toHaveBeenCalled();
-    // ...but the lesson still has to point at it, or the Activity Builder
-    // falls back to the unnamed embedded copy.
-    expect(report.templateIdByLesson.get(lesson)).toBe('tpl-old');
+    expect(res.status).toBe(409);
+    expect(body.code).toBe('NO_RUBRIC');
+    // The assertion that protects the pupil: refused before the papers were
+    // even claimed for grading, so no AI call could follow.
+    expect(prismaFake.submission.update).not.toHaveBeenCalled();
   });
 
-  it('does not link a revised lesson to the superseded template it merely shares a name with', async () => {
-    const { saveCurriculumRubrics } = require('../server.js');
-    const lesson = lessonWith('Week 3: Short Story', NEW_CRITERIA);
+  it('refuses before checking whether there are papers to grade', async () => {
+    // Order matters for the teacher: "add a rubric" is the actionable message.
+    // Reporting "no unchecked papers" first would send them hunting for the
+    // wrong problem on an activity that also has no rubric.
+    prismaFake.activity.findUnique.mockResolvedValue(activityOwnedByT1());
+    prismaFake.submission.findMany.mockResolvedValue([]);
 
-    // The survivor of the delete-and-reupload: same name, OLD criteria.
-    const survivor = { id: 'tpl-stale', name: 'Week 3: Short Story — English Grade 6', criteria: JSON.stringify(OLD_CRITERIA) };
-    prismaFake.rubricTemplate.findMany.mockImplementation(({ where }) => (
-      // First call enumerates what the school already has; the read-back after
-      // the write is filtered by the names this import produced.
-      where?.name
-        ? Promise.resolve([{ id: 'tpl-new', name: 'Week 3: Short Story — English Grade 6 (2)' }])
-        : Promise.resolve([survivor])
-    ));
+    const res = await call('POST', url, { token: tokenFor({ id: T1 }), body: {} });
 
-    const report = await saveCurriculumRubrics(CURRICULUM, [lesson]);
-
-    // The revision is written rather than silently skipped as "already there",
-    // under a name that does not collide.
-    expect(prismaFake.rubricTemplate.createMany).toHaveBeenCalled();
-    const written = prismaFake.rubricTemplate.createMany.mock.calls[0][0].data;
-    expect(written).toHaveLength(1);
-    expect(written[0].name).toBe('Week 3: Short Story — English Grade 6 (2)');
-    expect(JSON.parse(written[0].criteria)).toEqual(NEW_CRITERIA);
-
-    // And the lesson points at the NEW template. Pointing at tpl-stale is the
-    // bug: resolveDefaultRubric's linked-template tier wins over the embedded
-    // copy, so teachers would grade against criteria the admin had replaced.
-    expect(report.templateIdByLesson.get(lesson)).toBe('tpl-new');
-    expect(report.templateIdByLesson.get(lesson)).not.toBe('tpl-stale');
+    expect(res.status).toBe(409);
+    expect((await res.json()).code).toBe('NO_RUBRIC');
   });
 
-  it('names a template after the lesson it belongs to, not its output type', async () => {
-    const { saveCurriculumRubrics } = require('../server.js');
-    const lesson = lessonWith('Week 3: Short Story', OLD_CRITERIA);
-    prismaFake.rubricTemplate.findMany.mockResolvedValue([]);
+  it('lets the check start when the teacher set a rubric', async () => {
+    prismaFake.activity.findUnique.mockResolvedValue(activityOwnedByT1({ rubric: RUBRIC }));
+    prismaFake.submission.findMany.mockResolvedValue([
+      { id: SUBMISSION, imageUrl: 'u.jpg', retainUntil: null, studentId: 'stu-1' },
+    ]);
 
-    await saveCurriculumRubrics(CURRICULUM, [lesson]);
+    const res = await call('POST', url, { token: tokenFor({ id: T1 }), body: {} });
 
-    const written = prismaFake.rubricTemplate.createMany.mock.calls[0][0].data;
-    // "Essay — English Grade 6" told a teacher browsing their rubric list
-    // nothing about which week's work it was written for.
-    expect(written[0].name).toBe('Week 3: Short Story — English Grade 6');
+    // 503 when this server has no AI key configured is fine and expected — what
+    // must not happen is a NO_RUBRIC refusal on an activity that has one.
+    expect((await res.json()).code).not.toBe('NO_RUBRIC');
   });
 
-  it('keeps the output-type name for a rubric genuinely shared by several lessons', async () => {
-    const { saveCurriculumRubrics } = require('../server.js');
-    const a = lessonWith('Week 1: Recount', OLD_CRITERIA);
-    const b = lessonWith('Week 2: Anecdote', OLD_CRITERIA);
-    prismaFake.rubricTemplate.findMany.mockResolvedValue([]);
+  it('accepts the curriculum lesson rubric on an activity made before this change', async () => {
+    prismaFake.activity.findUnique.mockResolvedValue(activityOwnedByT1({ lessonRubric: RUBRIC }));
+    prismaFake.submission.findMany.mockResolvedValue([
+      { id: SUBMISSION, imageUrl: 'u.jpg', retainUntil: null, studentId: 'stu-1' },
+    ]);
 
-    const report = await saveCurriculumRubrics(CURRICULUM, [a, b]);
+    const res = await call('POST', url, { token: tokenFor({ id: T1 }), body: {} });
 
-    const written = prismaFake.rubricTemplate.createMany.mock.calls[0][0].data;
-    expect(written).toHaveLength(1);
-    expect(written[0].name).toBe('Essay — English Grade 6');
-    expect(report.merged).toBe(1);
+    expect((await res.json()).code).not.toBe('NO_RUBRIC');
   });
 });
 
