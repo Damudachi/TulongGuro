@@ -4764,72 +4764,6 @@ function validateRubric(rubricJson) {
 }
 
 /**
- * The rubric an activity should carry when the caller didn't supply one.
- *
- * The activity builder resolves this in the browser, but it is not the only way
- * an activity gets made — the quick-create form in ClassHub sends no rubric at
- * all, and anything created that way fell through to the generic DepEd prompt
- * in the AI grader and a hardcoded Content/Organization/Grammar 40/30/30 in the
- * review screen. Neither has anything to do with what the school teaches.
- *
- * Doing it here rather than in each form means every path gets the same answer,
- * including ones added later. Deliberately the same order the builder offers
- * and generateSubmissionFeedback falls back through: the curriculum lesson
- * first, then a school rubric for this output type, then the school's rubrics
- * generally. Returns null when the school has published nothing — the AI's own
- * ladder still applies at grading time, and inventing a rubric here would be
- * worse than leaving it open.
- */
-async function resolveActivityRubric({ classId, classLessonId, type }) {
-  const usable = (raw) => {
-    try {
-      const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
-      const criteria = Array.isArray(parsed) ? parsed : parsed?.criteria;
-      if (!criteria?.length) return null;
-      if (criteria.reduce((s, c) => s + (Number(c?.points) || 0), 0) <= 0) return null;
-      return JSON.stringify({ source: 'template', type: parsed?.type || (criteria[0]?.bands?.length ? 'range' : 'standard'), criteria });
-    } catch { return null; }
-  };
-
-  // 1) The curriculum lesson the activity is mapped to.
-  if (classLessonId) {
-    const lesson = await prisma.classLesson.findUnique({
-      where: { id: classLessonId }, select: { defaultRubric: true }
-    });
-    const fromLesson = usable(lesson?.defaultRubric);
-    if (fromLesson) return fromLesson;
-  }
-
-  if (!classId) return null;
-  const cls = await prisma.class.findUnique({
-    where: { id: classId },
-    select: { gradeLevel: true, subject: true, teacher: { select: { schoolId: true } } }
-  });
-  const schoolId = cls?.teacher?.schoolId;
-  if (!schoolId) return null;
-
-  // 2/3) School rubrics for this class, the matching output type first.
-  //      Untagged rubrics apply everywhere, so they stay in the running.
-  const candidates = await prisma.rubricTemplate.findMany({
-    where: {
-      schoolId,
-      teacherId: null,
-      AND: [
-        { OR: [{ gradeLevel: cls.gradeLevel }, { gradeLevel: null }] },
-        { OR: [{ subject: cls.subject }, { subject: null }] }
-      ]
-    },
-    orderBy: { createdAt: 'desc' }
-  });
-  const byType = type ? candidates.find(r => r.outputType === type) : null;
-  for (const candidate of [byType, ...candidates]) {
-    const resolved = usable(candidate?.criteria);
-    if (resolved) return resolved;
-  }
-  return null;
-}
-
-/**
  * A date the teacher typed, or null. Rejects anything that isn't YYYY-MM-DD so
  * a malformed value can't quietly become a deadline nobody can satisfy.
  */
@@ -4865,11 +4799,13 @@ app.post('/api/teacher/activities', (req, res, next) => {
     const rubricError = validateRubric(rubric);
     if (rubricError) return res.status(400).json({ success: false, error: rubricError });
 
-    // Forms that don't ask for a rubric (ClassHub's quick-create) get the
-    // school's own instead of falling through to a generic sample at grading.
-    const resolvedRubric = rubric || await resolveActivityRubric({
-      classId, classLessonId, type
-    });
+    // An activity may be created with no rubric, and stays that way until a
+    // person attaches one. This used to reach for the school's rubrics on the
+    // teacher's behalf when a form sent none — well meant, but it made "the
+    // rubric this work is marked against" something the system decided, and it
+    // is the teacher's decision. AI checking asks for one (409 NO_RUBRIC); a
+    // teacher marking by hand may never need one at all.
+    const resolvedRubric = rubric || null;
 
     const due = normalizeDateInput(deadline);
     const late = normalizeDateInput(lateUntil);
