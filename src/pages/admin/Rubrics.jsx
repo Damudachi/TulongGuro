@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { ClipboardList, Plus, Loader2, Trash2, Sparkles, Pencil, Check, X } from 'lucide-react';
+import { ClipboardList, Plus, Loader2, Trash2, BookOpen, Pencil, Check, X } from 'lucide-react';
 import { API_URL, apiFetch } from '../../config';
 import { GRADE_LEVELS, SUBJECTS } from '../../constants/school';
 import { ACTIVITY_TYPES } from '../../constants/activityTypes';
@@ -160,7 +160,7 @@ export default function AdminRubrics() {
         <div className="text-center py-14 border-2 border-dashed border-slate-200 rounded-2xl text-slate-400 mb-8">
           <ClipboardList className="w-12 h-12 mx-auto mb-3 opacity-30" />
           <p className="font-medium">No school rubrics yet</p>
-          <p className="text-sm mt-1">Publish one, or upload a curriculum — its rubrics are saved here automatically.</p>
+          <p className="text-sm mt-1">Publish one here, or add your school&apos;s rubric while setting up a curriculum.</p>
         </div>
       ) : (
         <>
@@ -207,9 +207,13 @@ export default function AdminRubrics() {
                                 <span>{parsed.length} criteria</span>
                                 {r.outputType && <span className="text-slate-300">·</span>}
                                 {r.outputType && <span>{r.outputType}</span>}
+                                {/* A book, not a sparkle. This marks a rubric
+                                    attached to a curriculum by an admin — no AI
+                                    involved — and the sparkle read as though
+                                    something had generated it. */}
                                 {r.curriculum && (
                                   <span className="inline-flex items-center gap-1 text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-full font-medium">
-                                    <Sparkles className="w-3 h-3" /> from {r.curriculum.title}
+                                    <BookOpen className="w-3 h-3" /> from {r.curriculum.title}
                                   </span>
                                 )}
                               </p>

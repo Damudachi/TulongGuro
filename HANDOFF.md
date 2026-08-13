@@ -432,6 +432,15 @@ The permission blocks hit repeatedly in this session (the Claude Code auto-mode 
 
 ### 8.7 Curriculum lesson rubrics are school rubrics
 
+> **⚠ Superseded (2026-08-13, `feature/teacher-authored-rubrics`).** Our adviser's
+> position is that writing a rubric is the teacher's job, so the system no longer
+> generates one. The curriculum parser extracts lessons only,
+> `saveCurriculumRubrics`, `promote-rubrics` and `resolveDefaultRubric` are gone,
+> and grading refuses with `409 NO_RUBRIC` rather than falling back. Admins attach
+> the school's own rubric during curriculum setup instead. See
+> `docs/superpowers/specs/2026-08-13-teacher-authored-rubrics-design.md`. The rest
+> of this section is kept for the history of why the linking existed.
+
 A lesson's rubric was saved into "Your school rubrics" already, but named after
 its **output type** (`Essay — English Grade 6`), and picking that lesson in the
 Activity Builder loaded the separate copy on `ClassLesson.defaultRubric` under a
