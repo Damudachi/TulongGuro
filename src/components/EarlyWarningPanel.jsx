@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
-import { AlertTriangle, ChevronRight, Eye, LifeBuoy, X } from 'lucide-react';
+import { AlertTriangle, ChevronRight, Eye, Users, X } from 'lucide-react';
 import { API_URL, apiFetch } from '../config';
 import { pct } from '../utils/grading';
 
@@ -9,17 +9,8 @@ function cn(...cls) { return cls.filter(Boolean).join(' '); }
 /**
  * The early-warning alert, surfaced where a teacher already is.
  *
- * The detection itself has always worked — the analytics endpoint flags falling
- * averages, three-activity slides and slipping skills. But it only ever rendered
- * inside a panel partway down the Analytics page, and the sidebar badge that was
- * supposed to advertise it read a `warningCount` the server never sent, so it
- * sat at zero no matter how many students were failing. A warning nobody is
- * shown is not a warning, so this brings the same data to the dashboard.
- *
- * Two severities, kept visually distinct on purpose. "Failing" is below the
- * school's passing grade and needs action now; "watch" is a downward trend in a
- * student who is still passing, and crying wolf over those would train teachers
- * to ignore the alert entirely.
+ * Shows sections (blocks) with failing / watch-list student counts rather than
+ * individual names — the teacher clicks through to Analytics to see the detail.
  */
 export default function EarlyWarningPanel() {
   const [data, setData] = useState(null);
@@ -46,9 +37,35 @@ export default function EarlyWarningPanel() {
   const watch = needsSupport.filter(e => e.severity !== 'failing');
   const passingGrade = data.summary?.passingGrade ?? 75;
 
-  const Row = ({ entry, tone }) => (
+  // ── Group entries by section ──
+  const groupBySection = (entries) => {
+    const map = new Map();
+    for (const entry of entries) {
+      const key = entry.sectionId || '__unknown__';
+      if (!map.has(key)) {
+        map.set(key, {
+          sectionId: entry.sectionId,
+          sectionName: entry.sectionName || 'Unassigned',
+          students: [],
+          totalPercent: 0,
+        });
+      }
+      const group = map.get(key);
+      group.students.push(entry);
+      group.totalPercent += (entry.avgPercent ?? 0);
+    }
+    // Compute average per section and sort worst-first.
+    return [...map.values()]
+      .map(g => ({ ...g, avgPercent: g.students.length ? Math.round(g.totalPercent / g.students.length) : null }))
+      .sort((a, b) => (a.avgPercent ?? 100) - (b.avgPercent ?? 100));
+  };
+
+  const failingSections = groupBySection(failing);
+  const watchSections = groupBySection(watch);
+
+  const SectionRow = ({ section, tone }) => (
     <Link
-      to={entry.sectionId ? `/teacher/analytics?sectionId=${entry.sectionId}` : '/teacher/analytics'}
+      to={section.sectionId ? `/teacher/analytics?sectionId=${section.sectionId}` : '/teacher/analytics'}
       className={cn(
         'flex items-center gap-3 p-3 rounded-xl border-2 transition-all hover:-translate-y-0.5',
         tone === 'failing'
@@ -56,22 +73,21 @@ export default function EarlyWarningPanel() {
           : 'bg-white border-amber-200 hover:border-amber-400'
       )}
     >
-      <div className={cn('w-9 h-9 rounded-xl grid place-items-center font-extrabold text-sm shrink-0',
+      <div className={cn('w-9 h-9 rounded-xl grid place-items-center shrink-0',
         tone === 'failing' ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-700')}>
-        {entry.student?.name?.charAt(0) || '?'}
+        <Users className="w-4 h-4" />
       </div>
       <div className="min-w-0 flex-1">
-        <p className="font-bold text-sm text-navy-800 truncate">{entry.student?.name}</p>
-        {entry.sectionName && <p className="text-[10px] text-slate-400 truncate">{entry.sectionName}</p>}
+        <p className="font-bold text-sm text-navy-800 truncate">{section.sectionName}</p>
         <p className="text-[11px] text-slate-500 truncate">
-          {entry.reasons?.[0]?.label || 'Needs a check-in'}
-          {entry.reasons?.length > 1 && ` · +${entry.reasons.length - 1} more`}
+          {section.students.length} student{section.students.length === 1 ? '' : 's'}
+          {tone === 'failing' ? ' below the passing grade' : ' trending down'}
         </p>
       </div>
-      {entry.avgPercent !== null && entry.avgPercent !== undefined && (
+      {section.avgPercent !== null && (
         <span className={cn('text-sm font-extrabold shrink-0',
           tone === 'failing' ? 'text-red-600' : 'text-amber-600')}>
-          {pct(entry.avgPercent)}%
+          ~{pct(section.avgPercent)}%
         </span>
       )}
       <ChevronRight className="w-4 h-4 text-slate-300 shrink-0" />
@@ -105,31 +121,26 @@ export default function EarlyWarningPanel() {
       </div>
 
       <div className="space-y-2">
-        {failing.slice(0, 5).map(entry => (
-          <Row key={entry.student?.id} entry={entry} tone="failing" />
+        {failingSections.map(section => (
+          <SectionRow key={section.sectionId || section.sectionName} section={section} tone="failing" />
         ))}
-        {failing.length > 5 && (
-          <p className="text-xs font-semibold text-slate-500 pl-1">
-            +{failing.length - 5} more below the passing grade
-          </p>
-        )}
 
         {/* Watch-list stays collapsed when there are failing students, so the
             urgent list is not diluted by the merely-worth-watching. */}
-        {watch.length > 0 && failing.length > 0 && !showWatch && (
+        {watchSections.length > 0 && failingSections.length > 0 && !showWatch && (
           <button type="button" onClick={() => setShowWatch(true)}
             className="text-xs font-bold text-amber-700 hover:text-amber-900 pl-1 pt-1">
-            Also watching {watch.length} student{watch.length === 1 ? '' : 's'} with a downward trend →
+            Also watching {watch.length} student{watch.length === 1 ? '' : 's'} in {watchSections.length} section{watchSections.length === 1 ? '' : 's'} with a downward trend →
           </button>
         )}
-        {(showWatch || failing.length === 0) && watch.slice(0, 5).map(entry => (
-          <Row key={entry.student?.id} entry={entry} tone="watch" />
+        {(showWatch || failingSections.length === 0) && watchSections.map(section => (
+          <SectionRow key={section.sectionId || section.sectionName} section={section} tone="watch" />
         ))}
       </div>
 
       <Link to="/teacher/analytics"
         className="inline-flex items-center gap-1.5 mt-4 text-xs font-extrabold text-royal-600 hover:text-royal-800">
-        <LifeBuoy className="w-3.5 h-3.5" /> See the full breakdown in Analytics
+        <AlertTriangle className="w-3.5 h-3.5" /> See the full breakdown in Analytics
       </Link>
     </section>
   );
