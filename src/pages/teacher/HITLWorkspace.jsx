@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
-import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { ArrowLeft, Check, Edit2, Info, Sparkles, X, Send, Bot, Loader2, CheckCircle2, ChevronDown, Plus, Trash2, AlertTriangle, SkipForward, Send as SendIcon, RefreshCw } from 'lucide-react';
 import { API_URL, apiFetch } from '../../config';
 import SubmissionImage from '../../components/SubmissionImage';
@@ -281,11 +281,13 @@ export default function HITLWorkspace() {
       } catch { /* try the next source, then the legacy shape */ }
     }
 
-    return [
-      { key: 'content', name: 'Content & Ideas', max: 40, color: 'bg-brand-green' },
-      { key: 'organization', name: 'Organization', max: 30, color: 'bg-amber-400' },
-      { key: 'grammar', name: 'Grammar', max: 30, color: 'bg-blue-400' },
-    ];
+    // Nothing, when the activity carries no rubric. There used to be a
+    // Content/Organization/Grammar 40/30/30 here, and it was the same mistake
+    // the AI grader made from the other end: a teacher marking by hand was
+    // shown three criteria nobody at the school had chosen, and the grade saved
+    // for that pupil was computed against them. An empty list is honest, and
+    // the panel below says how to fix it.
+    return [];
   }, [dynamicRubric, submission]);
 
   // Sum of the criterion scores, in rubric points.
@@ -1132,6 +1134,22 @@ export default function HITLWorkspace() {
           {/* Rubric Breakdown — editable sliders */}
           <div>
             <h3 className="text-sm font-bold text-slate-400 uppercase tracking-wider mb-4">Rubric Breakdown <span className="text-slate-300 font-normal normal-case">{isEditingAssessment ? '(drag to adjust)' : '(read-only)'}</span></h3>
+            {rubricItems.length === 0 && (
+              <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 p-4">
+                <p className="text-sm font-bold text-amber-900">This activity has no rubric</p>
+                <p className="text-xs text-amber-800 mt-1 leading-relaxed">
+                  There are no criteria to score against, so nothing can be marked here yet.
+                  Set the rubric on the activity — one of your school&apos;s, or your own — and
+                  this breakdown fills in.
+                </p>
+                {submission?.activityId && (
+                  <Link to={`/teacher/activity/edit/${submission.activityId}`}
+                    className="inline-flex items-center gap-1.5 mt-3 text-xs font-bold text-white bg-brand-navy px-3 py-2 rounded-lg hover:bg-blue-900">
+                    Set the rubric
+                  </Link>
+                )}
+              </div>
+            )}
             <div className="space-y-4">
               {rubricItems.map(item => (
                 <div key={item.key} className="relative group">

@@ -6557,7 +6557,11 @@ app.get('/api/teacher/activities/:activityId/ai-check', async (req, res) => {
     ready,
     batchSize: AI_BATCH_SIZE,
     requestsNeeded: Math.ceil(ready / AI_BATCH_SIZE),
-    capacity: gradingCapacitySnapshot()
+    capacity: gradingCapacitySnapshot(),
+    // So the teacher's screen can say "this needs a rubric" before they press
+    // the button, rather than the POST refusing them after. Same question, same
+    // resolver — the POST is still the thing that enforces it.
+    hasRubric: !!resolveGradingRubric(owned.activity).criteria
   });
 });
 

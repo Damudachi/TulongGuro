@@ -235,6 +235,13 @@ export default function BatchUpload() {
       const res = await apiFetch(`${API_URL}/api/teacher/activities/${activityId}/ai-check`, { method: 'POST' });
       const data = await res.json();
       if (data.success) setAiJob(data);
+      else if (data.code === 'NO_RUBRIC') {
+        // The rubric was removed while this screen was open, or the page was
+        // loaded before it was. Re-read the plan so the panel switches to the
+        // "set the rubric" card instead of leaving a button that keeps failing.
+        refreshAiPlan();
+        alert(data.error);
+      }
       else alert(data.error || 'Could not start the AI check.');
     } catch {
       alert('Could not start the AI check. Please check your connection.');
@@ -880,6 +887,31 @@ export default function BatchUpload() {
                     </button>
                   )}
                 </div>
+              </div>
+            ) : aiPlan.hasRubric === false ? (
+              /* No rubric on the activity.
+
+                 A dead button with no explanation is the worst version of this,
+                 so the panel says what is missing, why it matters, and offers
+                 the two ways out — the school's own rubrics, or writing one.
+                 The server refuses this case regardless (409 NO_RUBRIC); this
+                 is so the teacher never has to find that out by pressing it. */
+              <div className="flex items-center gap-3 flex-wrap">
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-bold text-brand-slate flex items-center gap-1.5">
+                    <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
+                    No rubric set for this activity
+                  </p>
+                  <p className="text-[11px] text-slate-500 mt-0.5">
+                    AI checking needs the criteria you are marking against. Choose one of your
+                    school&apos;s rubrics or write your own, and the {aiPlan.ready} waiting
+                    paper{aiPlan.ready > 1 ? 's' : ''} can be checked.
+                  </p>
+                </div>
+                <button onClick={() => navigate(`/teacher/activity/edit/${activityId}`)}
+                  className="shrink-0 text-sm px-5 py-2.5 rounded-xl font-bold bg-brand-navy text-white hover:bg-blue-900 flex items-center gap-2">
+                  <ClipboardCheck className="w-4 h-4" /> Set the rubric
+                </button>
               </div>
             ) : (
               /* Ready to start */
