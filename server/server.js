@@ -7121,6 +7121,18 @@ app.get('/api/teacher/:teacherId/analytics', async (req, res) => {
     const uniqueStudents = [...new Map(allStudentIds.map(s => [s.id, s])).values()];
     const classIds = classes.map(c => c.id);
 
+    // Map each student to their section so the warning panel can group by
+    // block and link directly to the right section view.
+    const studentToSection = new Map();
+    for (const cls of classes) {
+      if (!cls.section) continue;
+      for (const st of cls.section.students || []) {
+        if (!studentToSection.has(st.id)) {
+          studentToSection.set(st.id, { sectionId: cls.section.id, sectionName: cls.section.name });
+        }
+      }
+    }
+
     // Every graded submission across these classes, fetched once rather than
     // per student — the old version issued one query per student.
     const graded = await prisma.submission.findMany({
@@ -7373,7 +7385,14 @@ app.get('/api/teacher/:teacherId/analytics', async (req, res) => {
           }
         }
       }
-      if (reasons.length) needsSupport.push({ student, avgPercent, reasons });
+      if (reasons.length) {
+        const sec = studentToSection.get(student.id);
+        needsSupport.push({
+          student, avgPercent, reasons,
+          sectionId: sec?.sectionId || null,
+          sectionName: sec?.sectionName || null,
+        });
+      }
     }
 
     // Lowest averages first — that's who to look at.

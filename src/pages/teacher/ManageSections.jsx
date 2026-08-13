@@ -304,7 +304,7 @@ export default function ManageSections() {
             type="text"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Search sections by name..."
+            placeholder="Search sections or students..."
             className="w-full pl-10 pr-4 py-2.5 bg-white border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-brand-navy outline-none shadow-sm"
           />
         </div>
@@ -399,9 +399,22 @@ export default function ManageSections() {
           // that has ended is still a record — its gradebook and feedback are
           // last year's marks — so "hidden" here means out of the way by
           // default, never unreachable.
+          const q = searchQuery.toLowerCase();
           const filteredSections = sections
-            .filter(s => s.name.toLowerCase().includes(searchQuery.toLowerCase()))
+            .filter(s => {
+              if (s.name.toLowerCase().includes(q)) return true;
+              // Also match if any enrolled student's name contains the query,
+              // so a teacher can find which block a learner sits in.
+              return (s.students || []).some(st => st.name.toLowerCase().includes(q));
+            })
             .filter(s => showArchived || !s.isArchived);
+          // When the query matched a student rather than the section name,
+          // auto-expand the section so the teacher sees who matched.
+          const studentMatchedIds = q
+            ? filteredSections
+                .filter(s => !s.name.toLowerCase().includes(q) && (s.students || []).some(st => st.name.toLowerCase().includes(q)))
+                .map(s => s.id)
+            : [];
           
           if (sections.length === 0) {
             return (
@@ -417,7 +430,7 @@ export default function ManageSections() {
             return (
               <div className="text-center p-12 border border-slate-200 bg-white rounded-2xl text-slate-500">
                 <Search className="w-10 h-10 mx-auto mb-3 text-slate-300" />
-                <p className="font-medium">No sections found matching "{searchQuery}"</p>
+                <p className="font-medium">No sections or students found matching "{searchQuery}"</p>
               </div>
             );
           }
@@ -442,7 +455,7 @@ export default function ManageSections() {
               </div>
               <div className="space-y-3">
           {byGrade[grade].map(section => {
-            const isOpen = expandedId === section.id;
+            const isOpen = expandedId === section.id || studentMatchedIds.includes(section.id);
             const studentCount = section._count?.students || section.students?.length || 0;
             // ── Whose roster this is ──
             // Every section in the school is listed, because colleagues teach
@@ -532,7 +545,7 @@ export default function ManageSections() {
                               {s.name.charAt(0)}
                             </div>
                             <div className="flex-1 min-w-0">
-                              <p className="text-sm font-medium text-brand-slate truncate">{s.name}</p>
+                              <p className="text-sm font-medium text-brand-slate truncate">{q && s.name.toLowerCase().includes(q) ? <span className="bg-yellow-200 rounded px-0.5">{s.name}</span> : s.name}</p>
                               <p className="text-[11px] text-slate-400 font-mono">ID: {s.username}</p>
                               {/* Shown inline and left on screen until the next
                                   reset: the teacher has to read it out to the

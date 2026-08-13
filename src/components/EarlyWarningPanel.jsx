@@ -48,7 +48,7 @@ export default function EarlyWarningPanel() {
 
   const Row = ({ entry, tone }) => (
     <Link
-      to="/teacher/analytics"
+      to={entry.sectionId ? `/teacher/analytics?sectionId=${entry.sectionId}` : '/teacher/analytics'}
       className={cn(
         'flex items-center gap-3 p-3 rounded-xl border-2 transition-all hover:-translate-y-0.5',
         tone === 'failing'
@@ -62,6 +62,7 @@ export default function EarlyWarningPanel() {
       </div>
       <div className="min-w-0 flex-1">
         <p className="font-bold text-sm text-navy-800 truncate">{entry.student?.name}</p>
+        {entry.sectionName && <p className="text-[10px] text-slate-400 truncate">{entry.sectionName}</p>}
         <p className="text-[11px] text-slate-500 truncate">
           {entry.reasons?.[0]?.label || 'Needs a check-in'}
           {entry.reasons?.length > 1 && ` · +${entry.reasons.length - 1} more`}

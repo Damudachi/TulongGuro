@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import {
   BarChart2, Users, Loader2, ArrowLeft, FileText, ChevronRight, Sparkles,
-  LifeBuoy, Trophy, Target, TrendingUp, TrendingDown, Minus, ClipboardList,
+  AlertTriangle, Trophy, Target, TrendingUp, TrendingDown, Minus, ClipboardList,
 } from 'lucide-react';
 import { API_URL, apiFetch } from '../../config';
 import { getStoredUser } from '../../utils/session';
@@ -86,6 +87,7 @@ function ClassSpread({ bands, total, passingGrade }) {
 const NO_SKILL = '__no-skill__';
 
 export default function Analytics() {
+  const [searchParams, setSearchParams] = useSearchParams();
   const [data, setData] = useState(null);
   // The teacher's own classes, which is what "my sections" has to be derived
   // from. This used to read /api/teacher/:id/sections — but that endpoint
@@ -111,6 +113,18 @@ export default function Analytics() {
   // Null means "all skills". Reset whenever the section changes, since the
   // skills available differ between classes.
   const [skillFilter, setSkillFilter] = useState(null);
+
+  // When the Dashboard warning panel links here with ?sectionId=..., skip the
+  // section chooser and jump straight into that section's insights.
+  useEffect(() => {
+    const sid = searchParams.get('sectionId');
+    if (sid) {
+      setSelectedSectionId(sid);
+      setShowSelector(false);
+      // Clean the URL so a later "Back" doesn't re-trigger this effect.
+      setSearchParams({}, { replace: true });
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     const user = getStoredUser();
@@ -474,47 +488,98 @@ export default function Analytics() {
           </div>
 
           {/* ── Who could use a hand ── */}
-          <div className="bg-white border-2 border-navy-700/10 rounded-3xl p-5 shadow-pop">
-            <h2 className="text-sm font-extrabold text-navy-700 flex items-center gap-2 mb-1">
-              <LifeBuoy className="w-4 h-4 text-aqua-600" /> Who could use a hand
-            </h2>
-            <p className="text-xs text-slate-500 mb-4">Suggestions only — you know your class best.</p>
-            {needsSupport.length === 0 ? (
-              <div className="text-center py-8">
-                <Trophy className="w-10 h-10 mx-auto mb-2 text-lime-500" />
-                <p className="font-bold text-navy-700">Everyone&apos;s tracking well 🎉</p>
-                <p className="text-sm text-slate-500 mt-0.5">No one is falling behind right now.</p>
+          {(() => {
+            const failing = needsSupport.filter(e => e.severity === 'failing');
+            const hasFailing = failing.length > 0;
+            // Group by section so the teacher sees which block each learner sits in.
+            const bySection = needsSupport.reduce((acc, entry) => {
+              const key = entry.sectionName || 'Unassigned';
+              (acc[key] = acc[key] || { sectionId: entry.sectionId, entries: [] }).entries.push(entry);
+              return acc;
+            }, {});
+            return (
+              <div className={cn(
+                'rounded-3xl border-2 p-5 shadow-pop',
+                hasFailing ? 'bg-red-50/60 border-red-200' : 'bg-amber-50/60 border-amber-200'
+              )}>
+                <h2 className="text-sm font-extrabold text-navy-700 flex items-center gap-2 mb-1">
+                  <div className={cn('p-1.5 rounded-lg', hasFailing ? 'bg-red-100 text-red-600' : 'bg-amber-100 text-amber-600')}>
+                    <AlertTriangle className="w-4 h-4" />
+                  </div>
+                  Who could use a hand
+                </h2>
+                <p className="text-xs text-slate-500 mb-4">Suggestions only — you know your class best.</p>
+                {needsSupport.length === 0 ? (
+                  <div className="text-center py-8">
+                    <Trophy className="w-10 h-10 mx-auto mb-2 text-lime-500" />
+                    <p className="font-bold text-navy-700">Everyone&apos;s tracking well 🎉</p>
+                    <p className="text-sm text-slate-500 mt-0.5">No one is falling behind right now.</p>
+                  </div>
+                ) : (
+                  <div className="space-y-4">
+                    {Object.entries(bySection).map(([sectionName, { sectionId, entries }]) => (
+                      <div key={sectionName}>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (sectionId) {
+                              setSelectedSectionId(sectionId);
+                              setSelectedSubject(null);
+                              setShowSelector(false);
+                            }
+                          }}
+                          className="text-xs font-extrabold text-navy-700 mb-2 flex items-center gap-1.5 hover:text-royal-600 transition-colors"
+                        >
+                          <Users className="w-3.5 h-3.5" /> {sectionName}
+                          <ChevronRight className="w-3 h-3 text-slate-400" />
+                        </button>
+                        <div className="space-y-2">
+                          {entries.map(({ student, reasons, severity }) => {
+                            const tone = severity === 'failing' ? 'failing' : 'watch';
+                            return (
+                              <button key={student.id} onClick={() => loadStudentDetail(student)}
+                                className={cn(
+                                  'w-full text-left flex items-start gap-3 p-3 rounded-2xl border transition-colors',
+                                  tone === 'failing'
+                                    ? 'bg-white border-red-200 hover:border-red-400'
+                                    : 'bg-white border-amber-200 hover:border-amber-400'
+                                )}>
+                                <div className={cn(
+                                  'w-9 h-9 rounded-xl grid place-items-center font-extrabold text-sm shrink-0',
+                                  tone === 'failing' ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-700'
+                                )}>
+                                  {student.name.charAt(0)}
+                                </div>
+                                <div className="flex-1 min-w-0">
+                                  <p className="font-bold text-navy-800 text-sm">{student.name}</p>
+                                  <ul className="mt-1 space-y-0.5">
+                                    {reasons.map((r, i) => (
+                                      <li key={i} className="text-xs text-slate-600 flex items-start gap-1.5">
+                                        <Target className={cn('w-3 h-3 mt-0.5 shrink-0',
+                                          tone === 'failing' ? 'text-red-500' : 'text-amber-500')} />
+                                        <span>
+                                          {r.kind === 'skill'
+                                            ? `${SKILL_LABELS[r.skill] || r.skill} has been easing down`
+                                            : r.label}
+                                          {r.detail && <span className="text-slate-400"> — {r.detail}</span>}
+                                        </span>
+                                      </li>
+                                    ))}
+                                  </ul>
+                                </div>
+                                <ChevronRight className={cn('w-4 h-4 shrink-0 mt-1',
+                                  tone === 'failing' ? 'text-red-400' : 'text-amber-400')} />
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
-            ) : (
-              <div className="space-y-2">
-                {needsSupport.map(({ student, reasons }) => (
-                  <button key={student.id} onClick={() => loadStudentDetail(student)}
-                    className="w-full text-left flex items-start gap-3 p-3 rounded-2xl bg-aqua-50/60 border border-aqua-200 hover:border-aqua-400 transition-colors">
-                    <div className="w-9 h-9 rounded-xl bg-white text-aqua-700 grid place-items-center font-extrabold text-sm shrink-0">
-                      {student.name.charAt(0)}
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <p className="font-bold text-navy-800 text-sm">{student.name}</p>
-                      <ul className="mt-1 space-y-0.5">
-                        {reasons.map((r, i) => (
-                          <li key={i} className="text-xs text-slate-600 flex items-start gap-1.5">
-                            <Target className="w-3 h-3 text-aqua-600 mt-0.5 shrink-0" />
-                            <span>
-                              {r.kind === 'skill'
-                                ? `${SKILL_LABELS[r.skill] || r.skill} has been easing down`
-                                : r.label}
-                              {r.detail && <span className="text-slate-400"> — {r.detail}</span>}
-                            </span>
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
-                    <ChevronRight className="w-4 h-4 text-aqua-400 shrink-0 mt-1" />
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
+            );
+          })()}
 
           {/* ── Per-activity, in that activity's own points ── */}
           {activityBreakdown.length > 0 && (
