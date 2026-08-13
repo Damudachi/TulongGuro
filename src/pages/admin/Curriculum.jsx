@@ -1,31 +1,12 @@
 import { useState, useEffect, useCallback } from 'react';
-import { BookOpen, Plus, Loader2, Trash2, UploadCloud, FileText, X, ChevronDown, Sparkles } from 'lucide-react';
+import { BookOpen, Plus, Loader2, Trash2, UploadCloud, FileText, X, ChevronDown, ClipboardList, PenLine } from 'lucide-react';
 import { API_URL, apiFetch } from '../../config';
 import { GRADE_LEVELS, SUBJECTS } from '../../constants/school';
 import { ACTIVITY_TYPES } from '../../constants/activityTypes';
+import RubricEditor from '../../components/RubricEditor';
+import { BLANK_CRITERION, totalWeight } from '../../utils/rubric';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
-
-/**
- * Plain-English account of what happened to a curriculum's rubrics.
- *
- * "Saved 3 rubrics" out of twenty lessons reads like a failure unless you also
- * say that most lessons shared a rubric and which ones were unusable. The
- * extractor is an AI reading a school's own document, so some lessons do come
- * back malformed — that is worth naming rather than hiding.
- */
-function describeRubricReport(report, { alreadySaved } = {}) {
-  if (!report) return '';
-  const parts = [];
-  if (report.saved) parts.push(`Saved ${report.saved} reusable rubric(s) to your School Rubrics.`);
-  else if (alreadySaved) parts.push('Every rubric from this curriculum is already saved.');
-  if (report.merged) parts.push(`${report.merged} lesson(s) shared a rubric with another, so they were saved once.`);
-  if (report.skipped?.length) {
-    const detail = report.skipped.slice(0, 3).map(s => `${s.lesson} (${s.reason})`).join('; ');
-    parts.push(`${report.skipped.length} lesson rubric(s) could not be saved — ${detail}${report.skipped.length > 3 ? '; …' : ''}. You can add these by hand.`);
-  }
-  return parts.join(' ');
-}
 
 
 /**
@@ -44,6 +25,15 @@ export default function AdminCurriculum() {
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
+  // ── The school's own rubric, optional, attached while the curriculum is set up ──
+  // 'none' until the admin chooses how to supply it. Nothing is saved unless
+  // they fill the criteria in and the weights total 100.
+  const [rubricMode, setRubricMode] = useState('none');   // 'none' | 'upload' | 'manual'
+  const [rubricName, setRubricName] = useState('');
+  const [rubricCriteria, setRubricCriteria] = useState([{ ...BLANK_CRITERION }]);
+  const [rubricFile, setRubricFile] = useState(null);
+  const [isReadingRubric, setIsReadingRubric] = useState(false);
+  const [rubricError, setRubricError] = useState('');
   const [expandedId, setExpandedId] = useState(null);
   const [lessonDraft, setLessonDraft] = useState({ title: '', outputType: 'Essay', weekNumber: '', description: '' });
   const [busy, setBusy] = useState(false);
@@ -59,9 +49,64 @@ export default function AdminCurriculum() {
 
   useEffect(() => { load(); }, [load]);
 
+  /** Transcribe an uploaded rubric into the editor for the admin to check. */
+  const readRubricFile = async (picked) => {
+    setRubricFile(picked);
+    setRubricError('');
+    setIsReadingRubric(true);
+    try {
+      const fd = new FormData();
+      fd.append('rubricFile', picked);
+      const res = await apiFetch(`${API_URL}/api/admin/${admin.id}/rubrics/extract`, { method: 'POST', body: fd });
+      const d = await res.json();
+      if (d.success && d.criteria?.length) {
+        setRubricCriteria(d.criteria.map(c => ({
+          name: c.name || '',
+          points: c.points || 0,
+          description: c.description || ''
+        })));
+        if (!rubricName.trim()) setRubricName(picked.name.replace(/\.[^.]+$/, ''));
+      } else {
+        setRubricError(d.error || 'Nothing could be read from that file. You can type the criteria in below.');
+      }
+    } catch {
+      setRubricError('Could not reach the server. You can type the criteria in below.');
+    } finally {
+      setIsReadingRubric(false);
+    }
+  };
+
+  const resetRubricDraft = () => {
+    setRubricMode('none');
+    setRubricName('');
+    setRubricCriteria([{ ...BLANK_CRITERION }]);
+    setRubricFile(null);
+    setRubricError('');
+  };
+
+  /**
+   * Whether the rubric half of the form is filled in enough to save.
+   *
+   * Deliberately all-or-nothing: an admin who opened the section and typed
+   * nothing gets a curriculum with no rubric, which is a supported outcome, not
+   * an error. A half-filled one is refused rather than saved incomplete.
+   */
+  const rubricDraftReady =
+    rubricMode !== 'none' &&
+    rubricName.trim() &&
+    rubricCriteria.some(c => c.name.trim()) &&
+    totalWeight(rubricCriteria) === 100;
+
+  const rubricDraftStarted =
+    rubricMode !== 'none' && (rubricName.trim() || rubricCriteria.some(c => c.name.trim()));
+
   const handleCreate = async (e) => {
     e.preventDefault();
     if (isSaving) return;
+    if (rubricDraftStarted && !rubricDraftReady) {
+      setError('The school rubric needs a name and criteria weights totalling 100%. Clear it if you would rather add it later.');
+      return;
+    }
     setIsSaving(true);
     setError('');
     setNotice('');
@@ -71,19 +116,41 @@ export default function AdminCurriculum() {
       if (file) fd.append('curriculumFile', file);
       const res = await apiFetch(`${API_URL}/api/admin/${admin.id}/curriculums`, { method: 'POST', body: fd });
       const d = await res.json();
-      if (d.success) {
-        setShowForm(false);
-        setForm({ gradeLevel: '', subject: '', title: '', description: '' });
-        setFile(null);
-        const lessons = d.curriculum.lessons?.length || 0;
-        setNotice(d.warning || (
-          `Published "${d.curriculum.title}" with ${lessons} lesson(s). ` +
-          describeRubricReport(d.rubricReport)
-        ).trim());
-        load();
-      } else {
+      if (!d.success) {
         setError(d.error || 'Could not publish this curriculum.');
+        return;
       }
+
+      // Saved after the curriculum, and separately: a rubric that fails to save
+      // must not take a published curriculum down with it, and the admin needs
+      // to be told which of the two happened.
+      let rubricNotice = '';
+      if (rubricDraftReady) {
+        const rubricRes = await apiFetch(`${API_URL}/api/admin/${admin.id}/rubrics`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name: rubricName.trim(),
+            criteria: rubricCriteria.filter(c => c.name.trim()),
+            gradeLevel: form.gradeLevel,
+            subject: form.subject
+          })
+        });
+        const rd = await rubricRes.json();
+        rubricNotice = rd.success
+          ? ` Saved "${rubricName.trim()}" to your School Rubrics for ${form.gradeLevel} · ${form.subject}.`
+          : ` The curriculum was published, but the rubric was not saved: ${rd.error}`;
+      }
+
+      setShowForm(false);
+      setForm({ gradeLevel: '', subject: '', title: '', description: '' });
+      setFile(null);
+      resetRubricDraft();
+      const lessons = d.curriculum.lessons?.length || 0;
+      setNotice(
+        (d.warning || `Published "${d.curriculum.title}" with ${lessons} lesson(s).`) + rubricNotice
+      );
+      load();
     } catch {
       setError('Network error. Please try again.');
     } finally {
@@ -102,25 +169,6 @@ export default function AdminCurriculum() {
       // finally alone cleared the busy flag and said nothing, so a dropped
       // connection looked identical to a completed delete.
       alert('Could not reach the server. This curriculum has not been deleted.');
-    } finally { setBusy(false); }
-  };
-
-  const handlePromoteRubrics = async (curriculum) => {
-    setBusy(true);
-    setNotice('');
-    try {
-      const res = await apiFetch(`${API_URL}/api/admin/${admin.id}/curriculums/${curriculum.id}/promote-rubrics`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}'
-      });
-      const d = await res.json();
-      if (d.success) {
-        setNotice(
-          describeRubricReport(d.rubricReport, { alreadySaved: true }) +
-          (d.savedRubrics ? ` Tagged ${curriculum.gradeLevel} · ${curriculum.subject}.` : '')
-        );
-      } else setError(d.error);
-    } catch {
-      setError('Network error. Please try again.');
     } finally { setBusy(false); }
   };
 
@@ -188,7 +236,7 @@ export default function AdminCurriculum() {
         <div className="text-center py-16 border-2 border-dashed border-slate-200 rounded-2xl text-slate-400">
           <BookOpen className="w-12 h-12 mx-auto mb-3 opacity-30" />
           <p className="font-medium">No curriculum published yet</p>
-          <p className="text-sm mt-1">Upload a curriculum guide and the AI will extract its lessons and rubrics.</p>
+          <p className="text-sm mt-1">Upload a curriculum guide and its lessons are read out for you.</p>
         </div>
       ) : (
         <div className="space-y-3">
@@ -217,23 +265,6 @@ export default function AdminCurriculum() {
                   <div className="border-t border-slate-100 p-4 space-y-3">
                     {c.description && <p className="text-sm text-slate-600">{c.description}</p>}
 
-                    {/* Curriculums uploaded before rubric-saving existed keep their
-                        rubrics inside the lessons — this lifts them out into
-                        reusable School Rubrics. */}
-                    {c.lessons.some(l => l.defaultRubric) && (
-                      <div className="flex items-center justify-between gap-3 bg-emerald-50 border border-emerald-200 rounded-xl p-3">
-                        <p className="text-xs text-emerald-800 leading-relaxed">
-                          {c.lessons.filter(l => l.defaultRubric).length} lesson(s) here carry a rubric. Save them as
-                          reusable templates under <span className="font-semibold">School Rubrics</span>, tagged{' '}
-                          {c.gradeLevel} · {c.subject}.
-                        </p>
-                        <button onClick={() => handlePromoteRubrics(c)} disabled={busy}
-                          className="shrink-0 text-xs font-bold text-white bg-brand-green px-3 py-2 rounded-lg hover:bg-emerald-600 flex items-center gap-1.5 disabled:opacity-40">
-                          <Sparkles className="w-3.5 h-3.5" /> Save Rubrics
-                        </button>
-                      </div>
-                    )}
-
                     {c.lessons.length === 0 ? (
                       <p className="text-sm text-slate-400 italic">No lessons yet — add them below.</p>
                     ) : (
@@ -247,9 +278,11 @@ export default function AdminCurriculum() {
                               {l.description && <p className="text-xs text-slate-500 mt-0.5 leading-relaxed">{l.description}</p>}
                               <div className="flex items-center gap-2 mt-1.5">
                                 <span className="text-[11px] font-bold bg-blue-50 text-brand-navy px-2 py-0.5 rounded-full">{l.outputType}</span>
+                                {/* Only lessons imported before rubric generation
+                                    was removed still carry one. */}
                                 {l.defaultRubric && (
-                                  <span className="text-[11px] font-medium text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-full flex items-center gap-1">
-                                    <Sparkles className="w-3 h-3" /> Rubric included
+                                  <span className="text-[11px] font-medium text-slate-500 bg-slate-100 px-2 py-0.5 rounded-full flex items-center gap-1">
+                                    <ClipboardList className="w-3 h-3" /> Rubric attached
                                   </span>
                                 )}
                               </div>
@@ -295,9 +328,9 @@ export default function AdminCurriculum() {
       {/* Add curriculum modal */}
       {showForm && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4 overflow-y-auto">
-          <div className="bg-white rounded-2xl p-6 w-full max-w-md shadow-xl my-8">
+          <div className="bg-white rounded-2xl p-6 w-full max-w-lg shadow-xl my-8">
             <h2 className="text-xl font-bold text-brand-slate mb-1">Add curriculum</h2>
-            <p className="text-slate-500 text-sm mb-5">Upload a guide and the AI extracts lessons and default rubrics.</p>
+            <p className="text-slate-500 text-sm mb-5">Upload a guide and its lessons are read out for you.</p>
             <form onSubmit={handleCreate} className="space-y-4">
               <div className="grid grid-cols-2 gap-3">
                 <div>
@@ -349,9 +382,85 @@ export default function AdminCurriculum() {
                   </div>
                 )}
               </div>
+              {/* ── The school's rubric for this subject ──
+                  Optional and deliberately separate from the lesson upload: a
+                  curriculum document says what is taught, and the rubric says
+                  how the school marks it. Teachers pick this up as a template;
+                  nothing is applied to their activities on their behalf. */}
+              <div className="border-t border-slate-100 pt-4">
+                <div className="flex items-start justify-between gap-3 mb-1">
+                  <label className="block text-sm font-medium text-slate-700">
+                    School rubric for this subject <span className="text-slate-400 font-normal">(optional)</span>
+                  </label>
+                  {rubricMode !== 'none' && (
+                    <button type="button" onClick={resetRubricDraft}
+                      className="text-xs font-medium text-slate-500 hover:text-slate-700 shrink-0">Clear</button>
+                  )}
+                </div>
+                <p className="text-xs text-slate-500 mb-3 leading-relaxed">
+                  Your teachers can then apply it to their activities. Skip this and they will
+                  choose or write their own.
+                </p>
+
+                {rubricMode === 'none' ? (
+                  <div className="grid grid-cols-2 gap-2">
+                    <label className="border-2 border-dashed border-slate-200 rounded-lg p-3 text-center cursor-pointer hover:border-brand-navy hover:bg-blue-50 transition-colors">
+                      <UploadCloud className="w-5 h-5 mx-auto mb-1 text-slate-400" />
+                      <span className="block text-xs font-medium text-slate-600">Upload our rubric</span>
+                      <span className="block text-[11px] text-slate-400 mt-0.5">Read out for you to check</span>
+                      <input type="file" accept=".pdf,.docx,image/*" className="hidden"
+                        onChange={e => {
+                          const picked = e.target.files?.[0];
+                          if (!picked) return;
+                          setRubricMode('upload');
+                          readRubricFile(picked);
+                        }} />
+                    </label>
+                    <button type="button" onClick={() => setRubricMode('manual')}
+                      className="border-2 border-dashed border-slate-200 rounded-lg p-3 text-center hover:border-brand-navy hover:bg-blue-50 transition-colors">
+                      <PenLine className="w-5 h-5 mx-auto mb-1 text-slate-400" />
+                      <span className="block text-xs font-medium text-slate-600">Type it in</span>
+                      <span className="block text-[11px] text-slate-400 mt-0.5">Name and criteria</span>
+                    </button>
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    {rubricFile && (
+                      <div className="flex items-center gap-2 p-2 bg-slate-50 border border-slate-200 rounded-lg">
+                        <FileText className="w-4 h-4 text-slate-400 shrink-0" />
+                        <span className="text-xs font-medium text-slate-600 truncate flex-1">{rubricFile.name}</span>
+                        {isReadingRubric && <Loader2 className="w-3.5 h-3.5 animate-spin text-slate-400" />}
+                      </div>
+                    )}
+                    {isReadingRubric ? (
+                      <p className="text-xs text-slate-500">Reading the rubric…</p>
+                    ) : (
+                      <>
+                        {rubricMode === 'upload' && !rubricError && (
+                          <p className="text-xs text-slate-500 bg-blue-50 border border-blue-100 rounded-lg p-2.5 leading-relaxed">
+                            Check these against your document before publishing — correct anything
+                            that came out wrong.
+                          </p>
+                        )}
+                        {rubricError && (
+                          <p className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg p-2.5">{rubricError}</p>
+                        )}
+                        <div>
+                          <label className="block text-xs font-medium text-slate-500 mb-1">Rubric name</label>
+                          <input type="text" value={rubricName} onChange={e => setRubricName(e.target.value)}
+                            placeholder="e.g. Grade 6 English — Written Output"
+                            className="w-full border border-slate-200 p-2 rounded-lg outline-none focus:ring-2 focus:ring-brand-navy text-sm" />
+                        </div>
+                        <RubricEditor criteria={rubricCriteria} onChange={setRubricCriteria} />
+                      </>
+                    )}
+                  </div>
+                )}
+              </div>
+
               {error && <p className="text-xs text-red-600 bg-red-50 border border-red-200 rounded-lg p-2.5">{error}</p>}
               <div className="flex gap-2 pt-1">
-                <button type="button" onClick={() => setShowForm(false)}
+                <button type="button" onClick={() => { setShowForm(false); resetRubricDraft(); }}
                   className="flex-1 py-2.5 rounded-lg border border-slate-200 text-slate-600 font-medium hover:bg-slate-50">Cancel</button>
                 <button type="submit" disabled={isSaving}
                   className={cn('flex-1 py-2.5 rounded-lg text-white font-bold flex items-center justify-center gap-2',

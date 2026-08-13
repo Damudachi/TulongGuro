@@ -3,10 +3,10 @@ import { ClipboardList, Plus, Loader2, Trash2, Sparkles, Pencil, Check, X } from
 import { API_URL, apiFetch } from '../../config';
 import { GRADE_LEVELS, SUBJECTS } from '../../constants/school';
 import { ACTIVITY_TYPES } from '../../constants/activityTypes';
+import RubricEditor from '../../components/RubricEditor';
+import { BLANK_CRITERION, totalWeight } from '../../utils/rubric';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
-
-const BLANK_CRITERION = { name: '', points: 0, description: '' };
 const UNTAGGED = 'Any grade level / subject';
 
 /** Groups rubrics into "Grade — Subject" buckets, untagged ones last. */
@@ -63,10 +63,7 @@ export default function AdminRubrics() {
 
   useEffect(() => { load(); }, [load]);
 
-  const totalPoints = criteria.reduce((sum, c) => sum + (parseInt(c.points) || 0), 0);
-
-  const updateCriterion = (idx, field, value) =>
-    setCriteria(prev => prev.map((c, i) => (i === idx ? { ...c, [field]: value } : c)));
+  const totalPoints = totalWeight(criteria);
 
   const startFromBuiltin = (template) => {
     const parsed = typeof template.criteria === 'string' ? JSON.parse(template.criteria) : template.criteria;
@@ -330,43 +327,7 @@ export default function AdminRubrics() {
               </div>
               <p className="text-xs text-slate-400 -mt-2">Leave blank to make this rubric available for every class.</p>
 
-              <div>
-                <div className="flex items-center justify-between mb-2">
-                  <label className="text-sm font-medium text-slate-700">Criteria</label>
-                  <span className={cn('text-xs font-bold px-2 py-0.5 rounded-full',
-                    totalPoints === 100 ? 'bg-green-100 text-green-700' : 'bg-amber-100 text-amber-700')}>
-                    {totalPoints}% / 100%
-                  </span>
-                </div>
-                <div className="space-y-2">
-                  {criteria.map((c, i) => (
-                    <div key={i} className="bg-slate-50 border border-slate-200 rounded-lg p-3 space-y-2">
-                      <div className="flex gap-2">
-                        <input required type="text" value={c.name} placeholder="Criterion name"
-                          onChange={e => updateCriterion(i, 'name', e.target.value)}
-                          className="flex-1 border border-slate-200 p-2 rounded text-sm outline-none focus:ring-1 focus:ring-brand-navy" />
-                        <input required type="number" min={0} max={100} value={c.points === 0 ? '' : c.points}
-                          placeholder="%"
-                          onChange={e => updateCriterion(i, 'points', e.target.value === '' ? 0 : parseInt(e.target.value))}
-                          className="w-20 border border-slate-200 p-2 rounded text-sm outline-none focus:ring-1 focus:ring-brand-navy" />
-                        {criteria.length > 1 && (
-                          <button type="button" onClick={() => setCriteria(prev => prev.filter((_, idx) => idx !== i))}
-                            className="text-slate-400 hover:text-red-500 px-1">
-                            <Trash2 className="w-4 h-4" />
-                          </button>
-                        )}
-                      </div>
-                      <input type="text" value={c.description} placeholder="What this criterion evaluates"
-                        onChange={e => updateCriterion(i, 'description', e.target.value)}
-                        className="w-full border border-slate-200 p-2 rounded text-sm outline-none focus:ring-1 focus:ring-brand-navy" />
-                    </div>
-                  ))}
-                </div>
-                <button type="button" onClick={() => setCriteria(prev => [...prev, { ...BLANK_CRITERION }])}
-                  className="mt-2 text-xs font-bold text-brand-navy bg-blue-50 px-3 py-2 rounded-lg hover:bg-blue-100 flex items-center gap-1.5">
-                  <Plus className="w-3.5 h-3.5" /> Add Criterion
-                </button>
-              </div>
+              <RubricEditor criteria={criteria} onChange={setCriteria} />
 
               {error && <p className="text-xs text-red-600 bg-red-50 border border-red-200 rounded-lg p-2.5">{error}</p>}
               <div className="flex gap-2 pt-1">

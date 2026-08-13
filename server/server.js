@@ -3068,6 +3068,21 @@ app.get('/api/admin/:adminId/rubrics', async (req, res) => {
   } catch (e) { sendAdminError(res, e); }
 });
 
+/**
+ * Read the school's rubric out of a document the admin uploaded.
+ *
+ * Same transcription the teacher's Activity Builder does, reachable by an admin
+ * — authorizePath keeps roles out of each other's areas, so this cannot simply
+ * be the teacher route. Saves nothing: the criteria come back for the admin to
+ * check and correct, and only a subsequent POST to /rubrics stores them.
+ */
+app.post('/api/admin/:adminId/rubrics/extract', upload.single('rubricFile'), async (req, res) => {
+  try {
+    await requireAdminSchool(req.params.adminId);
+  } catch (e) { return sendAdminError(res, e); }
+  return respondWithExtractedRubric(req, res);
+});
+
 app.post('/api/admin/:adminId/rubrics', async (req, res) => {
   try {
     const admin = await requireAdminSchool(req.params.adminId);
@@ -5054,11 +5069,18 @@ app.delete('/api/teacher/rubric-templates/:id', async (req, res) => {
 // ─────────────────────────────────────────
 // RUBRIC EXTRACTION (Gemini VLM reads uploaded rubric image/PDF)
 // ─────────────────────────────────────────
-app.post('/api/teacher/rubric/extract', upload.single('rubricFile'), async (req, res) => {
-  try {
-    const file = req.file;
-    if (!file) return res.status(400).json({ success: false, error: 'No rubric file provided' });
-
+/**
+ * Read a rubric a person already wrote out of the file they uploaded.
+ *
+ * This is transcription, not authorship — the distinction the whole
+ * teacher-authored-rubrics change turns on. The model is shown a rubric that
+ * exists on paper and asked what it says; it is never asked to decide what the
+ * criteria should be. Whatever comes back is shown to the person for review and
+ * saved only if they say so.
+ *
+ * Shared by the teacher's Activity Builder and the admin's curriculum form.
+ */
+async function extractRubricFromUpload(file) {
     // Read file and convert to base64
     const fileBuffer = fs.readFileSync(file.path);
     const base64Data = fileBuffer.toString('base64');
@@ -5110,7 +5132,9 @@ Rules:
 
     const parsed = JSON.parse(text);
     if (!parsed.criteria || !Array.isArray(parsed.criteria)) {
-      return res.status(422).json({ success: false, error: 'Could not extract rubric criteria from the uploaded file.' });
+      const err = new Error('Could not extract rubric criteria from the uploaded file.');
+      err.status = 422;
+      throw err;
     }
 
     // Clean up the response
@@ -5126,17 +5150,29 @@ Rules:
       })) : []
     }));
 
-    res.json({
-      success: true,
+    return {
       criteria,
       totalPoints: parsed.totalPoints || criteria.reduce((s, c) => s + c.points, 0),
       rubricType: parsed.rubricType || 'standard'
-    });
+    };
+}
+
+/** Both callers answer the same way, so the error shaping lives here too. */
+async function respondWithExtractedRubric(req, res) {
+  try {
+    if (!req.file) return res.status(400).json({ success: false, error: 'No rubric file provided' });
+    const extracted = await extractRubricFromUpload(req.file);
+    res.json({ success: true, ...extracted });
   } catch (e) {
     console.error('Rubric extraction error:', e);
-    res.status(500).json({ success: false, error: 'Failed to extract rubric: ' + e.message });
+    res.status(e.status || 500).json({
+      success: false,
+      error: e.status === 422 ? e.message : 'Failed to extract rubric: ' + e.message
+    });
   }
-});
+}
+
+app.post('/api/teacher/rubric/extract', upload.single('rubricFile'), respondWithExtractedRubric);
 
 /**
  * Confirms the signed-in staff member's school matches the activity's school
