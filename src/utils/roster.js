@@ -109,6 +109,27 @@ export function rowsFromExtraction(data) {
 export const isFilledRow = (row) => Boolean(row?.name?.trim());
 
 /**
+ * Drops a trailing middle initial from a given-name portion.
+ *
+ * School Form 1 writes learners as "SURNAME, First Name M.", so the portion
+ * after the comma routinely ends in an initial and the dashboard greeted a
+ * child as "Cedric James T." A lone letter is not a name anyone is called by.
+ *
+ * Only trailing tokens go. "Ma. Teresa" abbreviates a first name and has to
+ * survive, which it does because the initial is not last. Suffixes are safe by
+ * construction — "Jr." and "III" are more than one letter. At least one token
+ * is always kept, so a stored name that is nothing but an initial still greets
+ * somebody rather than resolving to an empty string.
+ */
+const stripMiddleInitial = (given) => {
+  const words = given.split(' ');
+  // A loop, not a single strip: "Juan D. L." carries two maternal initials, and
+  // no given name anyone answers to is a single letter.
+  while (words.length > 1 && /^[A-Za-z]\.?$/.test(words[words.length - 1])) words.pop();
+  return words.join(' ');
+};
+
+/**
  * The name to greet a learner by: everything that is not their surname.
  *
  * Rosters are entered last-name-first to match DepEd School Form 1 sorting, so
@@ -124,6 +145,9 @@ export const isFilledRow = (row) => Boolean(row?.name?.trim());
  *   "Dela Cruz, Juan Miguel" → everything after the comma  → "Juan Miguel"
  *   "Dela Cruz Juan Miguel"  → no comma, so drop one token → "Cruz Juan Miguel"
  *
+ * minus a trailing middle initial, which School Form 1 puts there and nobody
+ * is greeted by (see stripMiddleInitial).
+ *
  * The comma case is exact. The no-comma case cannot be: nothing in the string
  * says whether the surname is one word or two, and this is why
  * normalizeRosterName keeps a typed comma. Dropping exactly one leading token
@@ -138,10 +162,10 @@ export function firstNameFromRoster(fullName) {
   if (!raw) return '';
   if (raw.includes(',')) {
     const tail = raw.slice(raw.indexOf(',') + 1).trim();
-    return tail || raw;
+    return tail ? stripMiddleInitial(tail) : raw;
   }
   const words = raw.split(' ');
-  return words.length > 1 ? words.slice(1).join(' ') : raw;
+  return words.length > 1 ? stripMiddleInitial(words.slice(1).join(' ')) : raw;
 }
 
 /** A roster with nothing in it yet — one empty row to type into. */

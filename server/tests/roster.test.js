@@ -137,6 +137,34 @@ describe('firstNameFromRoster — who the dashboard says hello to', () => {
     expect(firstNameFromRoster('')).toBe('');
     expect(firstNameFromRoster(null)).toBe('');
   });
+
+  // School Form 1 carries the middle initial in the name cell, so it rides
+  // along in the stored string and the dashboard said "Hello, Cedric James T."
+  it('drops a trailing middle initial', () => {
+    expect(firstNameFromRoster('Tolentino, Cedric James T.')).toBe('Cedric James');
+    expect(firstNameFromRoster('Tolentino, Cedric James T')).toBe('Cedric James');
+    expect(firstNameFromRoster('Tolentino Cedric James T.')).toBe('Cedric James');
+  });
+
+  it('drops more than one trailing initial', () => {
+    expect(firstNameFromRoster('Santos, Juan D. L.')).toBe('Juan');
+  });
+
+  it('keeps an abbreviation that is part of the given name', () => {
+    // "Ma." is Maria, not a middle initial — it leads the name rather than
+    // trailing it, and it is two letters besides.
+    expect(firstNameFromRoster('Reyes, Ma. Teresa')).toBe('Ma. Teresa');
+    expect(firstNameFromRoster('Reyes, Ma. Teresa C.')).toBe('Ma. Teresa');
+  });
+
+  it('keeps a suffix, which is never one letter', () => {
+    expect(firstNameFromRoster('Aquino, Benigno Jr.')).toBe('Benigno Jr.');
+    expect(firstNameFromRoster('Aquino, Benigno III')).toBe('Benigno III');
+  });
+
+  it('still greets somebody when the given name is only an initial', () => {
+    expect(firstNameFromRoster('Dela Cruz, T.')).toBe('T.');
+  });
 });
 
 describe('withBlankRow', () => {
