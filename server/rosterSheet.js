@@ -185,8 +185,98 @@ const FORM_BOILERPLATE = /\b(republic|philippines|department of education|deped|
  */
 const NOT_A_PERSON = /^(name|names|student|students|learner|learners|pupil|pupils|n a|na|none|nil|no|number|sex|gender|age|lrn|remarks|blank|tba|male|males|female|females|boy|boys|girl|girls|total|totals|sub total|grand total)$/;
 
-/** Strip a roster's own numbering: "1. Dela Cruz" and "12) Dela Cruz". */
-const stripNumbering = (text) => text.replace(/^\s*\d{1,3}\s*[.)\-]\s+/, '').trim();
+/**
+ * Strip a roster's own numbering: "1. Dela Cruz", "12) Dela Cruz", "# Dela
+ * Cruz", and the bare "1 Dela Cruz" a row number becomes once its column has
+ * been folded into the name. The punctuation is optional but the space is not,
+ * so "3-15-2014" is left alone.
+ */
+const stripNumbering = (text) =>
+  text.replace(/^\s*[#№]\s*/, '').replace(/^\s*\d{1,3}\s*[.)\-]?\s+/, '').trim();
+
+const MONTH_NAMES = 'jan|january|feb|february|mar|march|apr|april|may|jun|june|jul|july|aug|august|sep|sept|september|oct|october|nov|november|dec|december';
+
+/** A date sitting anywhere inside a longer string, in any form readBirthday reads. */
+const DATE_ANYWHERE = new RegExp(
+  `((?:${MONTH_NAMES})\\.?\\s+\\d{1,2}\\s*,?\\s+\\d{4})`
+  + `|(\\d{1,2}[\\s-]+(?:${MONTH_NAMES})\\.?[\\s-]+\\d{4})`
+  + '|(\\d{4}[-/.]\\d{1,2}[-/.]\\d{1,2})'
+  + '|(\\d{1,2}[-/.]\\d{1,2}[-/.]\\d{4})',
+  'gi'
+);
+
+/**
+ * Pull a birth date back out of a name it was concatenated into.
+ *
+ * Needed because a whole table row does sometimes arrive as one string —
+ * a photographed list read line by line, a sheet with the date merged into the
+ * name column — and "Mercer Alex 03/14/2005" is a learner whose name is
+ * "Mercer Alex" and whose birthday is 03/14/2005, not a learner called
+ * "Mercer Alex 03/14/2005" with no birthday and a random password.
+ *
+ * Only a date that reads as a plausible birthday is taken, so a stray year or
+ * a room number stays part of the name rather than being quietly deleted.
+ */
+function splitDateOutOfName(text) {
+  const source = String(text ?? '');
+  DATE_ANYWHERE.lastIndex = 0;
+  let match;
+  while ((match = DATE_ANYWHERE.exec(source)) !== null) {
+    const birthday = readBirthday(match[0].trim());
+    if (!birthday) continue;
+    const name = `${source.slice(0, match.index)} ${source.slice(match.index + match[0].length)}`
+      .replace(/\s+/g, ' ')
+      .replace(/\s*,\s*$/, '')
+      .trim();
+    return { name, birthday };
+  }
+  return { name: source.trim(), birthday: '' };
+}
+
+/**
+ * The column headings, read as a row of data.
+ *
+ * A heading row reaches the learner list two ways: a photographed list where
+ * the model transcribed the header like any other line, and a printout whose
+ * headings repeat on the second page. Two heading phrases in one cell is the
+ * test — one is a name ("Delacruz, Norma" should survive), two is a table.
+ */
+const HEADER_PHRASES = /\b(surname|apelyido|pangalan|first name|last name|middle name|middle initial|given name|full name|student name|learner|pupil|date of birth|birth date|birthday|bday|dob|kaarawan|lrn|student no|sex|gender|age|remarks)\b/g;
+
+function looksLikeAHeaderRow(text) {
+  const normalized = normalizeHeader(text);
+  return new Set(normalized.match(HEADER_PHRASES) || []).size >= 2;
+}
+
+/**
+ * Assemble the name from whichever fields arrived, in the last-name-first form
+ * the rest of the app sorts and greets on.
+ *
+ * A comma is written only when the surname is known as its own field. Guessing
+ * one into "Mercer Alex" would be inventing information: nothing in that string
+ * says whether the surname is one word or two, and a comma in the wrong place
+ * is worse than none — see firstNameFromRoster, which already handles the
+ * comma-less case conservatively.
+ */
+function composeName(entry) {
+  const clean = (v) => String(v ?? '').replace(/\s+/g, ' ').trim();
+  const last = clean(entry?.lastName);
+  const given = [clean(entry?.firstName), clean(entry?.middleName)].filter(Boolean).join(' ');
+  if (last && given) return `${last}, ${given}`;
+  return last || given || clean(entry?.name);
+}
+
+/**
+ * One learner, tidied: numbering off the front, any embedded birth date moved
+ * to where it belongs. A birthday that came from its own column wins over one
+ * found inside the name, because a labelled column is evidence and a substring
+ * is an inference.
+ */
+function tidyRosterEntry(rawName, rawBirthday = '') {
+  const stripped = stripNumbering(String(rawName ?? '').replace(/\s+/g, ' ').trim());
+  const { name, birthday } = splitDateOutOfName(stripped);
+  return { name: stripNumbering(name), birthday: rawBirthday || birthday };
+}
 
 const cleanName = (raw) => stripNumbering(String(raw ?? '').replace(/\s+/g, ' ').trim());
 
@@ -326,14 +416,17 @@ function extractRoster(grid) {
   for (let r = firstDataRow; r < rows.length; r++) {
     const row = rows[r];
     const parts = nameColumns.map(({ column, role }) => ({ role, text: cleanName(row[column]) }));
-    const name = joinName(parts);
-    if (!name || !looksLikeAName(name)) continue;
-
-    const birthday = birthdayColumn === -1
+    const fromColumn = birthdayColumn === -1
       ? ''
       : readBirthday(String(row[birthdayColumn] ?? '').trim(), { allowSerial: true });
 
-    students.push({ name, birthday });
+    // tidyRosterEntry runs even on a clean sheet: it costs nothing there, and
+    // it is what rescues the case where a date or a row number ended up inside
+    // the name column itself rather than in one of its own.
+    const entry = tidyRosterEntry(joinName(parts), fromColumn);
+    if (!entry.name || !looksLikeAName(entry.name) || looksLikeAHeaderRow(entry.name)) continue;
+
+    students.push(entry);
   }
 
   return { students, source, headings: headingsSeen(rows) };
@@ -354,6 +447,10 @@ module.exports = {
   readBirthday,
   headerRole,
   looksLikeAName,
+  looksLikeAHeaderRow,
+  splitDateOutOfName,
+  composeName,
+  tidyRosterEntry,
   extractRoster,
   HEADER_SCAN_ROWS,
 };

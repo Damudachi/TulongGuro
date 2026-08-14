@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { cellToText, readBirthday, headerRole, extractRoster } from '../rosterSheet.js';
+import {
+  cellToText, readBirthday, headerRole, extractRoster,
+  looksLikeAHeaderRow, splitDateOutOfName, composeName, tidyRosterEntry,
+} from '../rosterSheet.js';
 
 /**
  * Reading a class list out of a spreadsheet.
@@ -180,6 +183,66 @@ describe('readBirthday', () => {
     // 41713 is 2014-03-15. Elsewhere it is far more likely an LRN or a score.
     expect(readBirthday('41713', { allowSerial: true })).toBe('03/15/2014');
     expect(readBirthday('41713')).toBe('');
+  });
+});
+
+describe('a whole table row arriving as one string', () => {
+  // What a photographed list produced when the model transcribed rows rather
+  // than columns: the row number and the birth date both ended up inside the
+  // name, and every learner got a random password despite the list having a
+  // Date of Birth column.
+  it('takes the row number off the front and the birthday out of the middle', () => {
+    expect(tidyRosterEntry('1 Mercer Alex 03/14/2005')).toEqual({ name: 'Mercer Alex', birthday: '03/14/2005' });
+    expect(tidyRosterEntry('7 Santos Gabriel August 27, 2003')).toEqual({ name: 'Santos Gabriel', birthday: '08/27/2003' });
+  });
+
+  it('leaves a name already carrying its comma intact', () => {
+    expect(tidyRosterEntry('Dela Cruz, Juan Miguel, March 15, 2014'))
+      .toEqual({ name: 'Dela Cruz, Juan Miguel', birthday: '03/15/2014' });
+  });
+
+  it('keeps a birthday from its own column over one found inside the name', () => {
+    expect(tidyRosterEntry('Mercer Alex 03/14/2005', '03/15/2014').birthday).toBe('03/15/2014');
+  });
+
+  it('leaves a name alone when the digits in it are not a date', () => {
+    expect(tidyRosterEntry('Mercer Alex III')).toEqual({ name: 'Mercer Alex III', birthday: '' });
+    expect(splitDateOutOfName('Room 214 Mercer').birthday).toBe('');
+  });
+
+  it('drops the heading row instead of enrolling it as a learner', () => {
+    expect(looksLikeAHeaderRow('# Surname First Name Date of Birth')).toBe(true);
+    expect(looksLikeAHeaderRow('Last Name, First Name')).toBe(true);
+    expect(looksLikeAHeaderRow('Dela Cruz, Juan Miguel')).toBe(false);
+    expect(looksLikeAHeaderRow('Delacruz, Norma')).toBe(false);
+  });
+
+  it('reads the reported sheet end to end, learners only', () => {
+    const { students } = extractRoster([
+      ['#', 'Surname', 'First Name', 'Date of Birth'],
+      ['1', 'Mercer', 'Alex', 'March 14, 2005'],
+      ['2', 'Ramos', 'Beatrice', 'July 22, 2004'],
+      ['6', 'Al-Mansoor', 'Fatima', 'April 12, 2004'],
+    ]);
+    expect(students).toEqual([
+      { name: 'Mercer, Alex', birthday: '03/14/2005' },
+      { name: 'Ramos, Beatrice', birthday: '07/22/2004' },
+      { name: 'Al-Mansoor, Fatima', birthday: '04/12/2004' },
+    ]);
+  });
+});
+
+describe('composeName — the shape the app sorts and greets on', () => {
+  it('writes "Surname, Given" when the surname arrived as its own field', () => {
+    expect(composeName({ lastName: 'Mercer', firstName: 'Alex' })).toBe('Mercer, Alex');
+    expect(composeName({ lastName: 'Dela Cruz', firstName: 'Juan', middleName: 'Santos' })).toBe('Dela Cruz, Juan Santos');
+  });
+
+  it('does not invent a comma it has no basis for', () => {
+    // Nothing in "Mercer Alex" says whether the surname is one word or two, and
+    // a comma in the wrong place misnames the child on their own dashboard.
+    expect(composeName({ name: 'Mercer Alex' })).toBe('Mercer Alex');
+    expect(composeName({ lastName: 'Mercer' })).toBe('Mercer');
   });
 });
 

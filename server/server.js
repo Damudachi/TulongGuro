@@ -32,7 +32,10 @@ const {
 } = require('./auth');
 const { classSchoolId, staffMayAccess, staffMayReadStudent, REAL_WORK } = require('./access');
 const { currentSchoolYear, isCurrentSchoolYear, compareSchoolYearsDesc } = require('./schoolYear');
-const { cellToText, extractRoster, readBirthday, looksLikeAName } = require('./rosterSheet');
+const {
+  cellToText, extractRoster, readBirthday,
+  looksLikeAName, looksLikeAHeaderRow, composeName, tidyRosterEntry,
+} = require('./rosterSheet');
 const { getAllTopics, getTopicById, getTopicAIGuidance } = require('./depedTopics');
 // getRubricTemplateById is gone with the grader's topic-recommended rubric
 // tier: a built-in sample is something a teacher may choose, never something
@@ -3414,21 +3417,34 @@ function sheetToGrid(sheet) {
 /**
  * What the model is asked for when the class list arrives as a photo.
  *
- * Last-name-first is not a formatting preference: the whole app sorts and
+ * The surname, given names and birth date are asked for as SEPARATE fields
+ * rather than as one formatted name, and this is the whole design of the
+ * prompt. Asked for a single "name" string, a model reading a numbered table
+ * transcribes the row it sees — "1 Mercer Alex 03/14/2005" — and the result is
+ * a learner whose name contains their own birthday and who gets a random
+ * password anyway. Separate fields make that failure impossible to express:
+ * the table columns map onto the JSON keys one to one, and composeName puts
+ * the name in last-name-first order here, deterministically.
+ *
+ * Last-name-first is not a formatting preference. The whole app sorts and
  * greets on it (see firstNameFromRoster), and a roster half in one order and
  * half in the other cannot be repaired afterwards.
  */
-const ROSTER_OCR_PROMPT = `You are reading a photographed or scanned class list from a Philippine primary school.
+const ROSTER_OCR_PROMPT = `You are reading a photographed or scanned class list from a Philippine school.
 
 Return ONLY this JSON, with no commentary:
-{"students":[{"name":"Dela Cruz, Juan Miguel","birthday":"03/15/2014"}]}
+{"students":[{"lastName":"Dela Cruz","firstName":"Juan Miguel","middleName":"Santos","birthday":"03/15/2014"}]}
 
 Rules:
 - One entry per learner, in the order they are printed.
-- "name": the learner's own name, LAST NAME first, then a comma, then the given names — "Dela Cruz, Juan Miguel". If the list has separate surname / first name / middle name columns, join them in that form.
-- Copy the spelling exactly as printed. Do not correct, translate or expand a name.
-- "birthday": that learner's date of birth as MM/DD/YYYY if one is printed for them, otherwise null. Never use any other date on the page — not an enrolment date, not today's date.
-- Skip everything that is not a learner: titles, school and division headings, column headings, MALE/FEMALE dividers, totals, signatures.
+- Put each column of the list in its own field. Never join them into one string.
+- "lastName": the surname / family name / apelyido only.
+- "firstName": the given name(s) only. "middleName": the middle name or initial, or null.
+- If the list prints one combined name per learner instead of separate columns, work out which part is the surname and put it in "lastName" and the rest in "firstName".
+- Copy the spelling exactly as printed. Do not correct, translate, reorder or expand a name.
+- NEVER put a row number, a date, an LRN, an age or a sex into any name field. Those are separate columns; leave them out entirely.
+- "birthday": that learner's date of birth as MM/DD/YYYY, or null if none is printed for them. Never use any other date on the page — not an enrolment date, not today's date.
+- Skip everything that is not a learner: the column headings themselves, page titles, school and division headings, MALE/FEMALE dividers, totals, signatures.
 - Do not invent learners and do not fill gaps. If a line is genuinely unreadable, leave it out.
 - If the image is not a class list at all, return {"students":[]}.`;
 
@@ -3490,14 +3506,19 @@ async function extractRosterFromImage(localPath, mime) {
     const raw = Array.isArray(parsed?.students) ? parsed.students : [];
     return raw
       .slice(0, MAX_EXTRACTED_STUDENTS)
-      .map(entry => ({
-        name: normalizeExtractedName(entry?.name),
-        // Run the model's date through the same reader the spreadsheet path
-        // uses, so a hallucinated or out-of-range birthday is dropped rather
-        // than becoming a password the learner cannot sign in with.
-        birthday: readBirthday(entry?.birthday),
-      }))
-      .filter(s => s.name && looksLikeAName(s.name));
+      // composeName assembles "Surname, Given" from the separate fields; the
+      // model's own "name", if it sent one anyway, is the fallback.
+      // tidyRosterEntry is the safety net for when it ignores the schema and
+      // transcribes a whole table row: the row number comes off the front and
+      // an embedded date moves to the birthday rather than staying in the name.
+      // readBirthday re-reads the date either way, so a hallucinated or
+      // out-of-range one is dropped instead of becoming a password the learner
+      // cannot sign in with.
+      .map(entry => tidyRosterEntry(
+        normalizeExtractedName(composeName(entry)),
+        readBirthday(entry?.birthday),
+      ))
+      .filter(s => s.name && looksLikeAName(s.name) && !looksLikeAHeaderRow(s.name));
   } finally {
     if (prepared !== localPath) { try { fs.unlinkSync(prepared); } catch { /* best effort */ } }
   }
