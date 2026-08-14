@@ -14,7 +14,12 @@ import ExampleFeedback from '../../components/ExampleFeedback';
 import { buildSteps } from '../../utils/setupSteps';
 import { tintFor } from '../../constants/folderTints';
 
-const WIZARD_STEPS = ['Class', 'Section', 'Curriculum', 'Confirm'];
+// No curriculum step: the admin publishes the school's curriculum, and the
+// matching one is applied for the teacher in step 1 (see CurriculumSuggestion).
+// Asking a teacher to upload their own guide on their very first screen invited
+// a second, divergent source of lessons for a class the school had already
+// defined.
+const WIZARD_STEPS = ['Class', 'Section', 'Confirm'];
 
 /**
  * Looks up the school curriculum the admin published for this grade + subject.
@@ -83,9 +88,6 @@ function WizardEmptyState({ onComplete, sections = [] }) {
   const [sectionId, setSectionId] = useState('');
   const [isCreatingNew, setIsCreatingNew] = useState(sections.length === 0);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [curriculumFile, setCurriculumFile] = useState(null);
-  const [isParsing, setIsParsing] = useState(false);
-  const [parseStatus, setParseStatus] = useState('');
   const [error, setError] = useState('');
 
   const [useCurriculum, setUseCurriculum] = useState(true);
@@ -97,7 +99,7 @@ function WizardEmptyState({ onComplete, sections = [] }) {
   const canLeaveStep1 = !!resolvedName && !!subject && !!gradeLevel;
 
   const handleCreate = async () => {
-    if (isSubmitting || isParsing) return;   // guard against a double click
+    if (isSubmitting) return;   // guard against a double click
     setError('');
     setIsSubmitting(true);
     try {
@@ -119,7 +121,8 @@ function WizardEmptyState({ onComplete, sections = [] }) {
         finalSectionId = secData.section?.id || secData.id;
       }
 
-      // Use FormData to support curriculum file upload
+      // Still FormData: the endpoint is shared with the Add Class modal, which
+      // does carry a file.
       const fd = new FormData();
       fd.append('name', resolvedName);
       fd.append('teacherId', user.id);
@@ -128,36 +131,14 @@ function WizardEmptyState({ onComplete, sections = [] }) {
       fd.append('gradeLevel', gradeLevel);
       fd.append('schoolYear', schoolYear);
       if (suggestion && useCurriculum) fd.append('curriculumId', suggestion.id);
-      if (curriculumFile) fd.append('curriculumFile', curriculumFile);
 
       const clsRes = await apiFetch(`${API_URL}/api/teacher/classes`, {
         method: 'POST',
         body: fd
       });
       const clsData = await clsRes.json();
-      
+
       if (clsData.success) {
-        // If curriculum file was uploaded, trigger parsing
-        if (curriculumFile && clsData.class?.id) {
-          setIsParsing(true);
-          setParseStatus('Scanning curriculum & generating rubrics...');
-          try {
-            const parseRes = await apiFetch(`${API_URL}/api/teacher/classes/${clsData.class.id}/parse-curriculum`, {
-              method: 'POST'
-            });
-            const parseData = await parseRes.json();
-            if (parseData.success) {
-              setParseStatus(`Done! Extracted ${parseData.lessons?.length || 0} lessons.`);
-            } else {
-              setParseStatus('Could not parse curriculum. You can add lessons manually.');
-            }
-          } catch {
-            setParseStatus('Parsing failed. You can add lessons manually.');
-          }
-          // Brief delay to show status
-          await new Promise(r => setTimeout(r, 1500));
-          setIsParsing(false);
-        }
         onComplete();
       } else {
         setError(clsData.error || 'Something went wrong.');
@@ -329,53 +310,7 @@ function WizardEmptyState({ onComplete, sections = [] }) {
 
         {step === 3 && (
           <div className="animate-fade-in">
-            <label className="block text-sm font-bold text-brand-slate mb-1">Step 3 of {WIZARD_STEPS.length}: Upload curriculum / lesson plan</label>
-            {suggestion && useCurriculum ? (
-              <p className="text-xs text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg p-3 mb-3 leading-relaxed">
-                You're applying your school's <strong>{suggestion.title}</strong>, so there's nothing to upload here.
-                You can still add your own file to layer extra lessons on top.
-              </p>
-            ) : (
-              <p className="text-xs text-slate-500 mb-3">Upload your curriculum guide or lesson plan (PDF or DOCX). Its lessons are read out for you; you choose the rubric per activity.</p>
-            )}
-
-            {!curriculumFile ? (
-              <label className="block border-2 border-dashed border-slate-300 rounded-xl p-8 text-center cursor-pointer hover:border-brand-navy hover:bg-blue-50 transition-colors">
-                <UploadCloud className="w-10 h-10 mx-auto mb-2 text-slate-400" />
-                <p className="text-sm font-medium text-slate-600">Click to upload PDF or DOCX</p>
-                <p className="text-xs text-slate-400 mt-1">Max 20MB</p>
-                <input type="file" accept=".pdf,.docx" className="hidden" onChange={e => {
-                  if (e.target.files?.[0]) setCurriculumFile(e.target.files[0]);
-                }} />
-              </label>
-            ) : (
-              <div className="flex items-center gap-3 p-3 bg-green-50 border border-green-200 rounded-xl">
-                <FileText className="w-5 h-5 text-green-600 shrink-0" />
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm font-medium text-green-800 truncate">{curriculumFile.name}</p>
-                  <p className="text-xs text-green-600">{(curriculumFile.size / 1024 / 1024).toFixed(2)} MB</p>
-                </div>
-                <button type="button" onClick={() => setCurriculumFile(null)} className="text-red-400 hover:text-red-600">
-                  <X className="w-4 h-4" />
-                </button>
-              </div>
-            )}
-            
-            <div className="flex gap-2 mt-4">
-              <button onClick={() => setStep(2)} className="flex-1 py-3 rounded-xl border-2 border-slate-200 text-slate-600 font-medium hover:bg-slate-50 transition-colors">Back</button>
-              <button
-                onClick={() => setStep(4)}
-                className="flex-1 bg-brand-navy text-white py-3 rounded-xl font-bold hover:bg-blue-900 transition-all flex items-center justify-center gap-2"
-              >
-                {curriculumFile ? 'Next' : 'Skip for Now'} <ChevronRight className="w-4 h-4" />
-              </button>
-            </div>
-          </div>
-        )}
-
-        {step === 4 && (
-          <div className="animate-fade-in">
-            <label className="block text-sm font-bold text-brand-slate mb-1">Step 4 of {WIZARD_STEPS.length}: Confirm &amp; create</label>
+            <label className="block text-sm font-bold text-brand-slate mb-1">Step 3 of {WIZARD_STEPS.length}: Confirm &amp; create</label>
             <p className="text-xs text-slate-500 mb-4">Your class will be created with these settings:</p>
             <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 mb-4 space-y-2">
               <div className="flex justify-between items-center">
@@ -402,23 +337,17 @@ function WizardEmptyState({ onComplete, sections = [] }) {
                   </span>
                 </div>
               )}
-              {curriculumFile && (
-                <div className="flex justify-between items-center">
-                  <span className="text-xs font-medium text-slate-500">Curriculum File</span>
-                  <span className="text-sm font-bold text-brand-slate truncate max-w-[200px]">{curriculumFile.name}</span>
-                </div>
-              )}
             </div>
             {error && <p className="text-xs text-red-500 mb-3">{error}</p>}
             <div className="flex gap-2">
-              <button onClick={() => setStep(3)} className="flex-1 py-3 rounded-xl border-2 border-slate-200 text-slate-600 font-medium hover:bg-slate-50 transition-colors">Back</button>
+              <button onClick={() => setStep(2)} className="flex-1 py-3 rounded-xl border-2 border-slate-200 text-slate-600 font-medium hover:bg-slate-50 transition-colors">Back</button>
               <button
                 onClick={handleCreate}
-                disabled={isSubmitting || isParsing}
+                disabled={isSubmitting}
                 className="flex-1 bg-brand-navy text-white py-3 rounded-xl font-bold hover:bg-blue-900 disabled:opacity-40 disabled:cursor-not-allowed transition-all flex items-center justify-center gap-2"
               >
-                {isSubmitting || isParsing ? (
-                  <><Loader2 className="w-4 h-4 animate-spin" /> {isParsing ? parseStatus : 'Creating...'}</>
+                {isSubmitting ? (
+                  <><Loader2 className="w-4 h-4 animate-spin" /> Creating...</>
                 ) : (
                   <><Plus className="w-4 h-4" /> Create My First Class</>
                 )}
