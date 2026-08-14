@@ -741,46 +741,58 @@ export default function ActivityBuilder() {
         <div className="bg-white p-6 rounded-xl border-2 border-brand-navy/10 shadow-sm">
           <h2 className="text-base font-bold text-brand-slate mb-1">How will students submit?</h2>
           <p className="text-xs text-slate-500 mb-4">Choose who uploads the photo of the student output — or skip photos entirely and just record scores.</p>
+          {/* Every card renders the "Selected" badge and hides it with
+              `invisible` rather than dropping it from the DOM. A grid row sizes
+              itself to its tallest card, so a badge that only existed while
+              selected made the whole block grow the moment the card with the
+              longest blurb — Scores Only — was picked, and shrink again on the
+              way out. Reserving the line keeps the height fixed whatever is
+              chosen. `mt-auto` then pins all three badges to a shared baseline
+              instead of letting each float under its own blurb. */}
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-            <button type="button" onClick={() => setForm({ ...form, submissionMode: 'TEACHER_UPLOAD' })}
-              className={cn('p-4 rounded-xl border-2 text-left flex flex-col gap-2 transition-all',
-                form.submissionMode === 'TEACHER_UPLOAD' ? 'border-brand-navy bg-blue-50 shadow' : 'border-slate-200 hover:border-brand-navy/40')}>
-              <div className={cn('p-2 rounded-lg w-fit', form.submissionMode === 'TEACHER_UPLOAD' ? 'bg-brand-navy text-white' : 'bg-slate-100 text-slate-500')}>
-                <Camera className="w-5 h-5" />
-              </div>
-              <div>
-                <p className="font-bold text-brand-slate text-sm">📷 Teacher Uploads</p>
-                <p className="text-xs text-slate-500 mt-0.5">Teacher scans student papers via Scan & Grade Papers and triggers AI grading.</p>
-              </div>
-              {form.submissionMode === 'TEACHER_UPLOAD' && <span className="text-xs font-bold text-brand-navy flex items-center gap-1"><CheckCircle2 className="w-3.5 h-3.5" /> Selected</span>}
-            </button>
-            <button type="button" onClick={() => setForm({ ...form, submissionMode: 'STUDENT_SUBMIT' })}
-              className={cn('p-4 rounded-xl border-2 text-left flex flex-col gap-2 transition-all',
-                form.submissionMode === 'STUDENT_SUBMIT' ? 'border-brand-green bg-green-50 shadow' : 'border-slate-200 hover:border-brand-green/40')}>
-              <div className={cn('p-2 rounded-lg w-fit', form.submissionMode === 'STUDENT_SUBMIT' ? 'bg-brand-green text-white' : 'bg-slate-100 text-slate-500')}>
-                <Users className="w-5 h-5" />
-              </div>
-              <div>
-                <p className="font-bold text-brand-slate text-sm">👤 Student Submits</p>
-                <p className="text-xs text-slate-500 mt-0.5">Activity appears on student dashboards. Students upload from the app before the deadline.</p>
-              </div>
-              {form.submissionMode === 'STUDENT_SUBMIT' && <span className="text-xs font-bold text-brand-green flex items-center gap-1"><CheckCircle2 className="w-3.5 h-3.5" /> Selected</span>}
-            </button>
-            {/* No photo, no AI — for work that was marked in the room: recitation,
-                an oral quiz, a board exercise. The score still counts toward the
-                student's average like any other activity. */}
-            <button type="button" onClick={() => setForm({ ...form, submissionMode: 'MANUAL_SCORE' })}
-              className={cn('p-4 rounded-xl border-2 text-left flex flex-col gap-2 transition-all',
-                form.submissionMode === 'MANUAL_SCORE' ? 'border-lilac-500 bg-lilac-50 shadow' : 'border-slate-200 hover:border-lilac-400')}>
-              <div className={cn('p-2 rounded-lg w-fit', form.submissionMode === 'MANUAL_SCORE' ? 'bg-lilac-500 text-white' : 'bg-slate-100 text-slate-500')}>
-                <PenLine className="w-5 h-5" />
-              </div>
-              <div>
-                <p className="font-bold text-brand-slate text-sm">✍️ Scores Only</p>
-                <p className="text-xs text-slate-500 mt-0.5">No photo or AI. Type each student's points straight into the class list — for recitation, oral quizzes, or seatwork marked on the spot.</p>
-              </div>
-              {form.submissionMode === 'MANUAL_SCORE' && <span className="text-xs font-bold text-lilac-700 flex items-center gap-1"><CheckCircle2 className="w-3.5 h-3.5" /> Selected</span>}
-            </button>
+            {[
+              {
+                mode: 'TEACHER_UPLOAD', icon: Camera, label: '📷 Teacher Uploads',
+                hint: 'Teacher scans student papers via Scan & Grade Papers and triggers AI grading.',
+                on: 'border-brand-navy bg-blue-50 shadow', off: 'hover:border-brand-navy/40',
+                chip: 'bg-brand-navy text-white', badge: 'text-brand-navy',
+              },
+              {
+                mode: 'STUDENT_SUBMIT', icon: Users, label: '👤 Student Submits',
+                hint: 'Activity appears on student dashboards. Students upload from the app before the deadline.',
+                on: 'border-brand-green bg-green-50 shadow', off: 'hover:border-brand-green/40',
+                chip: 'bg-brand-green text-white', badge: 'text-brand-green',
+              },
+              // No photo, no AI — for work that was marked in the room: recitation,
+              // an oral quiz, a board exercise. The score still counts toward the
+              // student's average like any other activity.
+              {
+                mode: 'MANUAL_SCORE', icon: PenLine, label: '✍️ Scores Only',
+                hint: "No photo or AI. Type each student's points straight into the class list — for recitation, oral quizzes, or seatwork marked on the spot.",
+                on: 'border-lilac-500 bg-lilac-50 shadow', off: 'hover:border-lilac-400',
+                chip: 'bg-lilac-500 text-white', badge: 'text-lilac-700',
+              },
+            ].map(o => {
+              const active = form.submissionMode === o.mode;
+              return (
+                <button key={o.mode} type="button" aria-pressed={active}
+                  onClick={() => setForm({ ...form, submissionMode: o.mode })}
+                  className={cn('p-4 rounded-xl border-2 text-left flex flex-col gap-2 transition-all',
+                    active ? o.on : cn('border-slate-200', o.off))}>
+                  <div className={cn('p-2 rounded-lg w-fit', active ? o.chip : 'bg-slate-100 text-slate-500')}>
+                    <o.icon className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <p className="font-bold text-brand-slate text-sm">{o.label}</p>
+                    <p className="text-xs text-slate-500 mt-0.5">{o.hint}</p>
+                  </div>
+                  <span className={cn('mt-auto text-xs font-bold flex items-center gap-1',
+                    active ? o.badge : 'invisible')}>
+                    <CheckCircle2 className="w-3.5 h-3.5" /> Selected
+                  </span>
+                </button>
+              );
+            })}
           </div>
         </div>
 
