@@ -35,7 +35,9 @@ export default function AdminLayout() {
       {/* ── Desktop sidebar ──
           Admin takes gold accents on the shared navy panel, so the console is
           distinguishable at a glance from the teacher and student apps. */}
-      <nav className="hidden md:flex flex-col w-64 bg-royal-900 shrink-0 rounded-r-[2rem] overflow-hidden">
+      {/* Pinned to the viewport, not stretched to the content — see the note in
+          TeacherLayout for why this is sticky rather than fixed. */}
+      <nav className="hidden md:flex flex-col w-64 bg-royal-900 shrink-0 rounded-r-[2rem] overflow-hidden sticky top-0 h-screen">
         <Link to="/admin/teachers" className="flex items-center gap-3 px-5 py-6">
           <Logo size="lg" />
           <span className="flex flex-col leading-none min-w-0">

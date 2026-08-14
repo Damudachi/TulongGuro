@@ -68,8 +68,19 @@ export default function TeacherLayout() {
 
   return (
     <div className="min-h-screen bg-cream-100 flex flex-col pb-24 md:pb-0 md:flex-row">
-      {/* ── Desktop sidebar ── */}
-      <nav className="hidden md:flex flex-col w-64 bg-royal-900 shrink-0 order-first rounded-r-[2rem] overflow-hidden">
+      {/* ── Desktop sidebar ──
+          `sticky top-0 h-screen` rather than a plain flex item: as a flex item
+          it stretched to whatever the tallest column was, so a long gradebook
+          dragged the whole rail down the page and scrolled the account block
+          out of reach. Pinned to the viewport instead, the nav list below is
+          the only thing that scrolls, and it only does so when the links
+          genuinely do not fit.
+
+          Sticky, not fixed, so the rail keeps its width in the flex row —
+          fixed would take it out of flow and leave `main` to slide underneath.
+          It relies on no ancestor having `overflow` set; the wrapper above is
+          plain, so do not add one there without re-checking this. */}
+      <nav className="hidden md:flex flex-col w-64 bg-royal-900 shrink-0 order-first rounded-r-[2rem] overflow-hidden sticky top-0 h-screen">
         <Link to="/teacher/dashboard" className="flex items-center gap-3 px-5 py-6">
           <Logo size="lg" />
           <span className="flex flex-col leading-none min-w-0">
