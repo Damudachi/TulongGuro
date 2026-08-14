@@ -170,27 +170,46 @@ export const withBlankRow = (rows) => {
 export const unreadableRows = (rows) =>
   rows.filter(r => isFilledRow(r) && r.birthday?.trim() && !isReadableDate(r.birthday.trim()));
 
+/** Named learners still waiting on a birthday. */
+export const rowsMissingBirthday = (rows) =>
+  rows.filter(r => isFilledRow(r) && !r.birthday?.trim());
+
 /**
  * The rows to send, or `null` when something needs fixing first.
  *
- * A birthday that cannot be parsed is refused rather than dropped: silently
- * ignoring it hands the learner a random password nobody wrote down, and the
- * teacher believes they set one they can work out again.
+ * A birthday is required, not optional. Leaving it blank used to mean "give
+ * this learner a random six-digit password" — which reads as a convenience and
+ * lands as a Grade 3 pupil holding a string nobody can reconstruct, shown once
+ * at enrolment and re-issued by the teacher for the rest of the year. The
+ * birthday is on the School Form the roster is copied from, and it gives a
+ * password the child can be reminded of and the teacher can work out again.
+ *
+ * An unreadable birthday is refused for the same reason rather than dropped:
+ * silently ignoring it hands out that random password while the teacher
+ * believes they set a memorable one.
+ *
+ * The server enforces this too — this only saves the round trip and keeps the
+ * teacher's place in the roster they are typing.
  */
 export function rosterPayload(rows, onProblem) {
   const filled = rows.filter(isFilledRow);
+  const missing = rowsMissingBirthday(rows);
   const bad = unreadableRows(rows);
-  if (bad.length) {
+
+  if (missing.length || bad.length) {
+    const sections = [];
+    if (missing.length) {
+      sections.push(`These learners still need a birthday:\n\n${missing.map(r => `• ${r.name.trim()}`).join('\n')}`);
+    }
+    if (bad.length) {
+      sections.push(`These birthdays could not be read:\n\n${bad.map(r => `• ${r.name.trim()} — "${r.birthday.trim()}"`).join('\n')}`);
+    }
     onProblem?.(
-      `These birthdays could not be read:\n\n${bad.map(r => `• ${r.name.trim()} — "${r.birthday.trim()}"`).join('\n')}\n\n`
-      + 'Use MM/DD/YYYY, for example 03/15/2014 — or leave it blank for a random password.'
+      `${sections.join('\n\n')}\n\n`
+      + 'The birthday becomes the password the learner signs in with. Use MM/DD/YYYY, for example 03/15/2014.'
     );
     return null;
   }
-  return filled.map(r => ({
-    name: r.name.trim(),
-    // Blank is a real choice, not a mistake: it means "give them a random
-    // password". The server takes null for that.
-    birthday: r.birthday?.trim() ? r.birthday.trim() : null,
-  }));
+
+  return filled.map(r => ({ name: r.name.trim(), birthday: r.birthday.trim() }));
 }

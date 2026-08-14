@@ -1,5 +1,5 @@
 import { Upload, Plus, X } from 'lucide-react';
-import { isReadableDate, previewPassword, parseRosterLines, isFilledRow, withBlankRow, emptyRoster, normalizeRosterName } from '../utils/roster';
+import { isReadableDate, previewPassword, parseRosterLines, isFilledRow, rowsMissingBirthday, withBlankRow, emptyRoster, normalizeRosterName } from '../utils/roster';
 
 /**
  * The class list, as a name column and a birthday column.
@@ -8,8 +8,13 @@ import { isReadableDate, previewPassword, parseRosterLines, isFilledRow, withBla
  * format was doing too much work: the same comma separated a surname from a
  * first name and a name from a date, and a teacher typing forty learners had
  * to hold that in their head with no feedback until they submitted. Two
- * labelled columns say what goes where, and the birthday column is marked
- * optional so leaving it blank reads as a choice rather than an omission.
+ * labelled columns say what goes where.
+ *
+ * The birthday was optional and is now required. Blank used to mean "issue a
+ * random six-digit password", which reads as a convenience and lands as a
+ * Grade 3 pupil holding a string nobody can reconstruct — shown once, then
+ * re-issued by the teacher all year. Every row therefore shows what is still
+ * missing as it is typed, rather than only at submit.
  *
  * Pasting is preserved deliberately — it is how a forty-name roster actually
  * gets entered. Paste a block of lines into any name box and it expands into
@@ -22,7 +27,7 @@ function BirthdayStatus({ row }) {
   if (!isFilledRow(row)) return null;
 
   if (!raw) {
-    return <span className="text-[11px] text-amber-600 whitespace-nowrap">random password</span>;
+    return <span className="text-[11px] text-red-600 font-medium whitespace-nowrap">birthday needed</span>;
   }
   if (!isReadableDate(raw)) {
     return <span className="text-[11px] text-red-600 font-medium whitespace-nowrap">can&apos;t read this date</span>;
@@ -78,7 +83,7 @@ export default function RosterEditor({
   };
 
   const filled = rows.filter(isFilledRow);
-  const randomCount = filled.filter(r => !r.birthday?.trim()).length;
+  const missingCount = rowsMissingBirthday(rows).length;
 
   return (
     <div>
@@ -118,7 +123,7 @@ export default function RosterEditor({
             Learner&apos;s name <span className="text-red-500">*</span>
           </span>
           <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500">
-            Birthday <span className="font-normal normal-case tracking-normal text-slate-400">(optional)</span>
+            Birthday <span className="text-red-500">*</span>
           </span>
           <span className="w-7" aria-hidden="true" />
         </div>
@@ -142,9 +147,13 @@ export default function RosterEditor({
                   onChange={(e) => setRow(i, { birthday: e.target.value })}
                   placeholder={i === 0 ? 'MM/DD/YYYY' : ''}
                   inputMode="numeric"
-                  aria-label={`Learner ${i + 1} birthday, optional`}
+                  aria-label={`Learner ${i + 1} birthday, required`}
+                  aria-required="true"
                   className={`w-full px-2 py-1.5 text-sm border rounded-md focus:ring-2 focus:ring-brand-navy outline-none ${
-                    row.birthday?.trim() && !isReadableDate(row.birthday.trim())
+                    // A named learner with the box still empty is flagged the
+                    // same as an unreadable date: both stop the roster, so
+                    // both should look like something to fix.
+                    isFilledRow(row) && !isReadableDate(row.birthday?.trim() || '')
                       ? 'border-red-300 bg-red-50'
                       : 'border-slate-200'
                   }`}
@@ -173,15 +182,14 @@ export default function RosterEditor({
         <Plus className="w-3.5 h-3.5" /> Add another learner
       </button>
 
-      {/* The count is the decision, and a forty-name list scrolls past the
-          per-row notes. A random six-digit password for a Grade 3 pupil is a
-          reset waiting to happen, and the birthday is usually already on the
-          School Form the roster came from. */}
-      {randomCount > 0 && (
-        <div className="mt-2 text-xs font-medium text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
-          <span className="font-bold">{randomCount} of {filled.length}</span> {randomCount === 1 ? 'learner has' : 'learners have'} no
-          birthday, so {randomCount === 1 ? 'their password' : 'their passwords'} will be random digits shown only once.
-          Adding birthdays gives them a password they can remember — and one you can work out again later.
+      {/* The count is what the teacher needs, and a forty-name list scrolls
+          past the per-row notes. Stated as work still to do rather than as an
+          error: nothing is wrong with the roster yet, it is only unfinished. */}
+      {missingCount > 0 && (
+        <div className="mt-2 text-xs font-medium text-red-800 bg-red-50 border border-red-200 rounded-lg px-3 py-2">
+          <span className="font-bold">{missingCount} of {filled.length}</span> {missingCount === 1 ? 'learner still needs' : 'learners still need'} a
+          birthday. It is on the School Form the class list comes from, and it becomes the password they sign in with —
+          one they can be reminded of, and one you can work out again later.
         </div>
       )}
 

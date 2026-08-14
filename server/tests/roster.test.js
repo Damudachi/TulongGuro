@@ -179,9 +179,29 @@ describe('rosterPayload — what gets sent', () => {
     expect(payload).toEqual([{ name: 'Dela Cruz, Juan', birthday: '03/15/2014' }]);
   });
 
-  it('sends null for a learner with no birthday — a real choice, not a mistake', () => {
-    const payload = rosterPayload([{ name: 'Rizal, Jose', birthday: '' }], onProblem);
-    expect(payload).toEqual([{ name: 'Rizal, Jose', birthday: null }]);
+  it('refuses a learner with no birthday — it is required, not a choice', () => {
+    // It was optional, and blank meant "issue a random six-digit password":
+    // shown once at enrolment, unreconstructable afterwards, and re-issued by
+    // the teacher for the rest of the year.
+    const problem = vi.fn();
+    const payload = rosterPayload([{ name: 'Rizal, Jose', birthday: '' }], problem);
+
+    expect(payload).toBeNull();
+    expect(problem).toHaveBeenCalledOnce();
+    expect(problem.mock.calls[0][0]).toContain('Rizal, Jose');
+  });
+
+  it('names every learner still missing one, not just the first', () => {
+    const problem = vi.fn();
+    rosterPayload([
+      { name: 'Rizal, Jose', birthday: '' },
+      { name: 'Dela Cruz, Juan', birthday: '03/15/2014' },
+      { name: 'Bonifacio, Andres', birthday: '' },
+    ], problem);
+
+    expect(problem.mock.calls[0][0]).toContain('Rizal, Jose');
+    expect(problem.mock.calls[0][0]).toContain('Bonifacio, Andres');
+    expect(problem.mock.calls[0][0]).not.toContain('Dela Cruz, Juan');
   });
 
   it('refuses the whole roster when a birthday cannot be read', () => {
@@ -202,11 +222,11 @@ describe('rosterPayload — what gets sent', () => {
     // An abandoned half-row must not block the submit.
     const problem = vi.fn();
     const payload = rosterPayload([
-      { name: 'Rizal, Jose', birthday: '' },
+      { name: 'Rizal, Jose', birthday: '03/15/2014' },
       { name: '', birthday: 'nonsense' },
     ], problem);
 
-    expect(payload).toEqual([{ name: 'Rizal, Jose', birthday: null }]);
+    expect(payload).toEqual([{ name: 'Rizal, Jose', birthday: '03/15/2014' }]);
     expect(problem).not.toHaveBeenCalled();
   });
 

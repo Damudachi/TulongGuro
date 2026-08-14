@@ -2773,6 +2773,8 @@ app.post('/api/admin/:adminId/sections/:sectionId/students', async (req, res) =>
     if (!Array.isArray(studentsList) || studentsList.length === 0) {
       return res.status(400).json({ success: false, error: 'Provide at least one student name.' });
     }
+    const birthdayProblem = rosterBirthdayProblem(studentsList);
+    if (birthdayProblem) return res.status(422).json({ success: false, error: birthdayProblem });
 
     const result = await enrolStudents(section, studentsList, {
       schoolId: admin.schoolId,
@@ -3633,8 +3635,61 @@ app.post('/api/admin/:adminId/extract-students', upload.single('file'), extractS
  * Shared by the teacher roster flow and the admin console.
  */
 /**
- * Password given to a learner enrolled (or reset) without a birthday on
- * file, generated fresh per student rather than a single shared literal.
+ * A roster payload as the rest of the code wants to see it: one
+ * { name, birthday } per learner, blanks dropped.
+ *
+ * An entry may still arrive as a bare name string — that is how rosters were
+ * posted before birthdays existed — so both shapes are accepted here rather
+ * than at each place that reads one.
+ */
+function rosterEntries(studentsList) {
+  return (studentsList || [])
+    .map(entry => (typeof entry === 'string' ? { name: entry, birthday: null } : entry))
+    .filter(e => e && typeof e.name === 'string' && e.name.trim());
+}
+
+/**
+ * Why a roster cannot be enrolled, or null when every learner on it is fine.
+ *
+ * A birthday is required to enrol. It used to be optional, and the learner got
+ * a random six-digit password instead — which meant a Grade 3 pupil holding a
+ * string nobody could reconstruct, and a teacher re-issuing it all year. The
+ * birthday is on the School Form the roster is copied from anyway, and it
+ * gives a password the child can be reminded of and the teacher can work out
+ * again.
+ *
+ * Enforced at the route rather than inside enrolStudents: a client-side check
+ * is a suggestion, and this is the boundary every roster crosses. It is
+ * deliberately not enforced inside enrolStudents itself, so a future internal
+ * caller (a seeded sandbox, a migration) is not forced to invent birth dates
+ * for learners who are not real.
+ */
+function rosterBirthdayProblem(studentsList) {
+  const missing = [];
+  const unreadable = [];
+
+  for (const entry of rosterEntries(studentsList)) {
+    const name = entry.name.trim();
+    const raw = entry.birthday == null ? '' : String(entry.birthday).trim();
+    if (!raw) missing.push(name);
+    else if (!parseBirthday(raw)) unreadable.push(`${name} ("${raw}")`);
+  }
+
+  if (!missing.length && !unreadable.length) return null;
+
+  const parts = [];
+  if (missing.length) parts.push(`No birthday was given for: ${missing.join(', ')}.`);
+  if (unreadable.length) parts.push(`These birthdays could not be read: ${unreadable.join(', ')}.`);
+  parts.push('Every learner needs a birthday — it becomes the password they sign in with. Use MM/DD/YYYY, for example 03/15/2014.');
+  return parts.join(' ');
+}
+
+/**
+ * Password given to a learner reset without a birthday on file, generated
+ * fresh per student rather than a single shared literal.
+ *
+ * Enrolment now requires a birthday, so this is reached by the password-reset
+ * routes for accounts created before that — not by new enrolments.
  *
  * This used to be one hardcoded string ('password123') issued to every such
  * student across every school on the platform, forever — guessable on sight
@@ -4001,12 +4056,10 @@ async function enrolStudents(section, studentsList, { schoolId, teacherId, actor
   const linkedStudents = [];
   /** Names that resolve to an account currently in another section. */
   const pendingMoves = [];
-  // A roster entry is either a bare name (how it has always arrived, and how
-  // file extraction still produces them) or { name, birthday }. Both are
-  // accepted so nothing that previously worked has to change.
-  const entries = (studentsList || [])
-    .map(entry => (typeof entry === 'string' ? { name: entry, birthday: null } : entry))
-    .filter(e => e && typeof e.name === 'string' && e.name.trim());
+  // Both roster shapes are accepted here — see rosterEntries. Whether a
+  // birthday is required is the caller's rule, not this function's:
+  // rosterBirthdayProblem enforces it on the two HTTP routes.
+  const entries = rosterEntries(studentsList);
   if (entries.length === 0) return { createdStudents, skippedStudents, linkedStudents, pendingMoves };
 
   const sectionStudents = await prisma.user.findMany({ where: { sectionId: section.id, role: 'STUDENT' } });
@@ -4384,6 +4437,12 @@ app.post('/api/teacher/sections', async (req, res) => {
         error: 'Please give this section a name — for example "Grade 6 - Sampaguita".',
       });
     }
+
+    // Checked before the section is created, not after: a roster refused
+    // halfway would otherwise leave an empty section behind that the teacher
+    // did not ask for and now has to notice and delete.
+    const birthdayProblem = rosterBirthdayProblem(studentsList);
+    if (birthdayProblem) return res.status(422).json({ success: false, error: birthdayProblem });
 
     const creator = await prisma.user.findUnique({ where: { id: teacherId } });
     const schoolId = creator?.schoolId || null;
