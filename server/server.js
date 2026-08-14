@@ -3,6 +3,14 @@
 // must NEVER be sent to external AI APIs (Gemini). Use anonymous
 // identifiers (Student 1, Student 2, or truncated UUIDs) instead.
 // This policy applies to: grading prompts, CoV prompts, chatbot prompts.
+//
+// One documented exception: /api/*/extract-students may send a PHOTO or PDF of
+// a class list to the vision model, because reading a photographed roster is
+// not possible without one and a printed School Form is how most teachers hold
+// their class list. It is deliberately narrow — the image is sent, names come
+// back, the file is deleted, nothing is stored or logged, and an .xlsx roster
+// still never leaves this server because for structured data the model buys
+// nothing. Every other path stays anonymous. See extractRosterFromImage.
 // ─────────────────────────────────────────
 
 const express = require('express');
@@ -24,6 +32,7 @@ const {
 } = require('./auth');
 const { classSchoolId, staffMayAccess, staffMayReadStudent, REAL_WORK } = require('./access');
 const { currentSchoolYear, isCurrentSchoolYear, compareSchoolYearsDesc } = require('./schoolYear');
+const { cellToText, extractRoster, readBirthday, looksLikeAName } = require('./rosterSheet');
 const { getAllTopics, getTopicById, getTopicAIGuidance } = require('./depedTopics');
 // getRubricTemplateById is gone with the grader's topic-recommended rubric
 // tier: a built-in sample is something a teacher may choose, never something
@@ -3373,35 +3382,158 @@ app.get('/api/teacher/:teacherId/sections', async (req, res) => {
 });
 
 /**
- * Reads a roster spreadsheet into names. Pure file parsing — it touches no
- * database and nothing on req.auth, which is why the same handler serves both
- * staff areas below rather than being copied into a second one.
+ * Reads an uploaded class list — a spreadsheet, or a photo of one — into
+ * learners. Pure file parsing: it touches no database and nothing on req.auth,
+ * which is why the same handler serves both staff areas below rather than
+ * being copied into a second one.
  */
+
+/** The shape the roster editor on the client reads back. */
+const rosterLine = ({ name, birthday }) => (birthday ? `${name}, ${birthday}` : name);
+
+/**
+ * Read a spreadsheet's first sheet into a dense grid of strings.
+ *
+ * eachRow/eachCell skip empty rows and cells and are 1-indexed, so the grid is
+ * addressed by dimensions instead: extractRoster reasons about columns lining
+ * up across rows, and a sparse row would shift every column after a blank cell.
+ */
+function sheetToGrid(sheet) {
+  const height = sheet.rowCount || 0;
+  const width = sheet.columnCount || 0;
+  const grid = [];
+  for (let r = 1; r <= height; r++) {
+    const row = sheet.getRow(r);
+    const cells = [];
+    for (let c = 1; c <= width; c++) cells.push(cellToText(row.getCell(c).value));
+    grid.push(cells);
+  }
+  return grid;
+}
+
+/**
+ * What the model is asked for when the class list arrives as a photo.
+ *
+ * Last-name-first is not a formatting preference: the whole app sorts and
+ * greets on it (see firstNameFromRoster), and a roster half in one order and
+ * half in the other cannot be repaired afterwards.
+ */
+const ROSTER_OCR_PROMPT = `You are reading a photographed or scanned class list from a Philippine primary school.
+
+Return ONLY this JSON, with no commentary:
+{"students":[{"name":"Dela Cruz, Juan Miguel","birthday":"03/15/2014"}]}
+
+Rules:
+- One entry per learner, in the order they are printed.
+- "name": the learner's own name, LAST NAME first, then a comma, then the given names — "Dela Cruz, Juan Miguel". If the list has separate surname / first name / middle name columns, join them in that form.
+- Copy the spelling exactly as printed. Do not correct, translate or expand a name.
+- "birthday": that learner's date of birth as MM/DD/YYYY if one is printed for them, otherwise null. Never use any other date on the page — not an enrolment date, not today's date.
+- Skip everything that is not a learner: titles, school and division headings, column headings, MALE/FEMALE dividers, totals, signatures.
+- Do not invent learners and do not fill gaps. If a line is genuinely unreadable, leave it out.
+- If the image is not a class list at all, return {"students":[]}.`;
+
+/** How many learners one upload may add. A class is forty; this is the ceiling
+ *  on a model that has started repeating itself, not a limit on real rosters. */
+const MAX_EXTRACTED_STUDENTS = 300;
+
+/**
+ * Read a photographed or scanned class list with the vision model.
+ *
+ * This is a deliberate, narrow exception to the PII policy at the top of this
+ * file, which otherwise keeps student names off third-party APIs: a photo of a
+ * roster cannot be read without a vision model, and teachers hold their class
+ * lists as printed School Forms far more often than as .xlsx. The exception is
+ * kept as small as it can be — the image is sent, the names come back, and the
+ * file is deleted from disk in the handler's `finally`; nothing about the
+ * upload is stored or logged. The spreadsheet path above still never leaves
+ * this server, because for a spreadsheet the model buys nothing.
+ */
+async function extractRosterFromImage(localPath, mime) {
+  if (!model) {
+    const err = new Error('Reading class lists from photos needs the AI service, which is not configured on this server. Upload an Excel file instead, or type the names in.');
+    err.status = 503;
+    throw err;
+  }
+
+  // Phone photos of a roster arrive at 12 MP and rotated; the same
+  // downscale-and-straighten the submission pipeline uses makes them readable
+  // and keeps them under the model's image ceiling.
+  const prepared = isImageMime(mime) ? await preprocessImage(localPath) : localPath;
+  const sentMime = prepared === localPath ? mime : 'image/jpeg';
+
+  // preprocessImage swallows its own failures and hands back the original, so
+  // an iPhone HEIC on a host without libheif reaches here unconverted — and the
+  // model rejects HEIC outright. Say so, rather than letting it surface as an
+  // unexplained failure the teacher can do nothing about.
+  if (prepared === localPath && /heic|heif/.test(mime)) {
+    const err = new Error('That photo is in Apple\'s HEIC format, which cannot be read here. In Settings → Camera → Formats choose "Most Compatible", or share the photo as a JPEG, and try again.');
+    err.status = 422;
+    throw err;
+  }
+
+  try {
+    const result = await generateContentWithFallback(model, [
+      ROSTER_OCR_PROMPT,
+      { inlineData: { data: fs.readFileSync(prepared).toString('base64'), mimeType: sentMime } }
+    ]);
+    const text = (await result.response).text().replace(/```json\n?|\n?```/gi, '').trim();
+
+    let parsed;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      const err = new Error('The class list in that photo could not be read. Try a straighter, better-lit shot of the page — or upload the Excel file instead.');
+      err.status = 422;
+      throw err;
+    }
+
+    const raw = Array.isArray(parsed?.students) ? parsed.students : [];
+    return raw
+      .slice(0, MAX_EXTRACTED_STUDENTS)
+      .map(entry => ({
+        name: normalizeExtractedName(entry?.name),
+        // Run the model's date through the same reader the spreadsheet path
+        // uses, so a hallucinated or out-of-range birthday is dropped rather
+        // than becoming a password the learner cannot sign in with.
+        birthday: readBirthday(entry?.birthday),
+      }))
+      .filter(s => s.name && looksLikeAName(s.name));
+  } finally {
+    if (prepared !== localPath) { try { fs.unlinkSync(prepared); } catch { /* best effort */ } }
+  }
+}
+
+/** Collapse whitespace and keep at most one comma — the surname boundary. */
+function normalizeExtractedName(raw) {
+  const text = String(raw ?? '').replace(/\s+/g, ' ').trim();
+  const first = text.indexOf(',');
+  if (first === -1) return text;
+  return `${text.slice(0, first + 1)}${text.slice(first + 1).replace(/,/g, ' ')}`.replace(/\s+/g, ' ').trim();
+}
+
 const extractStudentsHandler = async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ success: false, error: 'No file uploaded.' });
 
-    const mime = req.file.mimetype;
-    let names = [];
-    const fs = require('fs');
+    const mime = (req.file.mimetype || '').toLowerCase();
+    const ext = path.extname(req.file.originalname || '').toLowerCase();
+    let students = [];
 
-    // Excel processing — parsed locally, not via Gemini.
-    //
-    // A roster spreadsheet's entire content is student names, i.e. PII by
-    // definition — sending the whole file to an external AI API to have
-    // names extracted from it cut directly against this file's own stated
-    // PII policy (see the header comment). exceljs can already read the
-    // cells directly, so routing it through the model was solving a
-    // structured-data problem with a network call to a third party for no
-    // benefit.
-    //
-    // A photographed-roster path used to exist here too (Gemini OCR on an
-    // uploaded image). It was removed rather than kept as an accepted
-    // exception: reading a photo genuinely needs a vision model, and there
-    // was no way to do that without the same PII exposure this endpoint
-    // exists to avoid for the Excel case. Teachers add students by
-    // spreadsheet or by typing names in.
-    if (mime.includes('spreadsheetml.sheet') || mime.includes('ms-excel') || mime.includes('excel')) {
+    // A spreadsheet is parsed here and goes nowhere near the AI: its content is
+    // already structured, so routing a file that is nothing but student names
+    // through a third-party API would be paying PII exposure for no benefit.
+    // A photo is different — see extractRosterFromImage.
+    if (mime.includes('spreadsheetml.sheet') || mime.includes('ms-excel') || mime.includes('excel') || ext === '.xlsx' || ext === '.xls') {
+      // exceljs reads the modern zip-based .xlsx only. A legacy .xls throws a
+      // zip error deep inside the library, which used to reach the teacher as
+      // a 500 and an unreadable message.
+      if (ext === '.xls') {
+        return res.status(422).json({
+          success: false,
+          error: 'That is an older .xls file, which cannot be read here. Open it in Excel and use File → Save As → Excel Workbook (.xlsx), then upload it again.'
+        });
+      }
+
       const ExcelJS = require('exceljs');
       const workbook = new ExcelJS.Workbook();
       await workbook.xlsx.readFile(req.file.path);
@@ -3410,66 +3542,52 @@ const extractStudentsHandler = async (req, res) => {
         return res.status(422).json({ success: false, error: 'That spreadsheet has no readable sheet.' });
       }
 
-      const cellText = (cell) => (cell?.value == null ? '' : String(cell.value).trim());
-      // A header names the student, not a relative or the school — "Name",
-      // "Student Name", "Full Name", "Pangalan" all match; "Parent's Name" /
-      // "Guardian Name" are excluded explicitly so those columns aren't
-      // mistaken for the student's own name.
-      const isStudentNameHeader = (h) => {
-        const t = h.toLowerCase();
-        if (!t.includes('name') && !t.includes('pangalan')) return false;
-        return !/(parent|guardian|father|mother|teacher|school|emergency)/.test(t);
-      };
-      const looksLikeDate = (s) => /^\d{1,4}[-/]\d{1,2}[-/]\d{1,4}$/.test(s);
-      const looksNumeric = (s) => /^\d+$/.test(s);
-
-      // The header row is the first row with any non-empty text cell; the
-      // name column(s) are whichever of its cells look like a name header.
-      // Split Last/First/Middle Name columns (a common roster layout) are
-      // supported: every matching column is joined left to right into one name.
-      let headerRowNumber = null;
-      let nameColumns = [];
-      sheet.eachRow((row, rowNumber) => {
-        if (headerRowNumber !== null) return;
-        const texts = [];
-        row.eachCell((cell, colNumber) => texts.push({ colNumber, text: cellText(cell) }));
-        if (texts.some(t => t.text)) {
-          headerRowNumber = rowNumber;
-          nameColumns = texts.filter(t => isStudentNameHeader(t.text)).map(t => t.colNumber);
-        }
-      });
-
-      if (!headerRowNumber || nameColumns.length === 0) {
+      const { students: found, headings } = extractRoster(sheetToGrid(sheet));
+      if (!found.length) {
+        // Say what the sheet appeared to contain. The old message named the
+        // one heading the parser wanted and left the teacher guessing why the
+        // heading they had did not count.
+        const seen = headings.length ? ` The first row I could read was: ${headings.join(' | ')}.` : '';
         return res.status(422).json({
           success: false,
-          error: 'Could not find a "Name" column in that spreadsheet. Add a header like "Name" or "Student Name" to the column with student names.'
+          error: `No learners could be read from that spreadsheet.${seen} Make sure one column holds the learners' names — a heading like "Name", "Student Name" or separate "Last Name" and "First Name" columns all work — and that the names are in rows below it.`
         });
       }
-
-      const extracted = [];
-      sheet.eachRow((row, rowNumber) => {
-        if (rowNumber <= headerRowNumber) return;
-        const parts = nameColumns.map(c => cellText(row.getCell(c))).filter(Boolean);
-        if (parts.length === 0) return;
-        const full = parts.join(' ').replace(/\s+/g, ' ').trim();
-        if (full.length > 3 && !looksLikeDate(full) && !looksNumeric(full)) extracted.push(full);
-      });
-      names = extracted;
+      students = found.slice(0, MAX_EXTRACTED_STUDENTS);
+    } else if (isImageMime(mime) || mime === 'application/pdf') {
+      students = await extractRosterFromImage(req.file.path, mime);
+      if (!students.length) {
+        return res.status(422).json({
+          success: false,
+          error: 'No learners could be read from that page. Make sure the whole class list is in frame and in focus, then try again — or upload the Excel file instead.'
+        });
+      }
     } else {
       return res.status(400).json({
         success: false,
-        error: 'Unsupported file type. Please upload an Excel (.xlsx) roster with a "Name" column.'
+        error: 'Unsupported file type. Upload an Excel (.xlsx) class list, or a photo or PDF of one.'
       });
     }
 
-    // Clean up uploaded file
-    try { fs.unlinkSync(req.file.path); } catch (err) {}
-
-    res.json({ success: true, names });
+    res.json({
+      success: true,
+      students,
+      // `names` is the older shape, still read by any client that has not
+      // picked up `students` yet: the birthday rides along after the last
+      // comma, which is exactly what parseRosterLines splits on.
+      names: students.map(rosterLine),
+    });
   } catch (error) {
     console.error('Extract Students Error:', error);
-    try { if (req.file && req.file.path) require('fs').unlinkSync(req.file.path); } catch (e) {}
-    res.status(500).json({ success: false, error: error.message });
+    const status = error.status || 500;
+    res.status(status).json({
+      success: false,
+      error: status === 500 ? 'That file could not be read. Please check it opens normally and try again.' : error.message
+    });
+  } finally {
+    // The upload is PII whichever path read it, and nothing downstream needs
+    // the file once the names are out of it.
+    try { if (req.file?.path) fs.unlinkSync(req.file.path); } catch { /* best effort */ }
   }
 };
 

@@ -84,6 +84,27 @@ export function parseRosterLines(text) {
     .filter(r => r.name);
 }
 
+/**
+ * Editor rows from an /extract-students response.
+ *
+ * The server sends `students` as name-and-birthday pairs. `names` is the older
+ * shape it also still sends — one line per learner with the birthday after the
+ * last comma — and is read here as a fallback so a client and server that are
+ * briefly out of step with each other still fill the roster rather than
+ * silently dropping every birthday.
+ */
+export function rowsFromExtraction(data) {
+  if (Array.isArray(data?.students)) {
+    return data.students
+      .map(s => ({
+        name: normalizeRosterName(String(s?.name ?? '')).trim(),
+        birthday: String(s?.birthday ?? '').trim(),
+      }))
+      .filter(r => r.name);
+  }
+  return parseRosterLines((data?.names || []).join('\n'));
+}
+
 /** A row the teacher has actually put something in. */
 export const isFilledRow = (row) => Boolean(row?.name?.trim());
 

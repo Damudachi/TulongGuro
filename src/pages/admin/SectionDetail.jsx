@@ -9,7 +9,7 @@ import { GRADE_LEVELS } from '../../constants/school';
 import StudentCredentials from '../../components/StudentCredentials';
 import SectionMoveConfirm from '../../components/SectionMoveConfirm';
 import RosterEditor from '../../components/RosterEditor';
-import { parseRosterLines, isFilledRow, rosterPayload, emptyRoster, withBlankRow, normalizeRosterName } from '../../utils/roster';
+import { rowsFromExtraction, isFilledRow, rosterPayload, emptyRoster, withBlankRow, normalizeRosterName } from '../../utils/roster';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
 
@@ -115,7 +115,7 @@ export default function AdminSectionDetail() {
     }
   };
 
-  /** Auto-fill from a roster spreadsheet, same as the teacher's editor. */
+  /** Auto-fill from a roster spreadsheet or a photo of one, same as the teacher's editor. */
   const handleRosterFile = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -128,10 +128,10 @@ export default function AdminSectionDetail() {
         body: formData,
       });
       const d = await res.json().catch(() => null);
-      if (d?.success && d.names) {
-        // Appended to whatever is already typed, and re-parsed so an extracted
-        // "Name, 03/15/2014" still lands in two columns.
-        const extracted = parseRosterLines(d.names.join('\n'));
+      // Appended to whatever is already typed, so an upload adds to the class
+      // list rather than replacing work already done.
+      const extracted = d?.success ? rowsFromExtraction(d) : [];
+      if (extracted.length) {
         setStudentRows(prev => withBlankRow([...prev.filter(isFilledRow), ...extracted]));
       } else {
         setError(d?.error || 'Could not read that file.');

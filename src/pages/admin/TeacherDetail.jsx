@@ -9,7 +9,7 @@ import { GRADE_LEVELS } from '../../constants/school';
 import StudentCredentials from '../../components/StudentCredentials';
 import SectionMoveConfirm from '../../components/SectionMoveConfirm';
 import RosterEditor from '../../components/RosterEditor';
-import { parseRosterLines, isFilledRow, rosterPayload, emptyRoster, withBlankRow } from '../../utils/roster';
+import { rowsFromExtraction, isFilledRow, rosterPayload, emptyRoster, withBlankRow } from '../../utils/roster';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
 
@@ -220,7 +220,7 @@ export default function AdminTeacherDetail() {
     }
   };
 
-  /** Auto-fill from a roster spreadsheet, same as the teacher's editor. */
+  /** Auto-fill from a roster spreadsheet or a photo of one, same as the teacher's editor. */
   const handleRosterFile = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -233,8 +233,8 @@ export default function AdminTeacherDetail() {
         body: formData,
       });
       const d = await res.json().catch(() => null);
-      if (d?.success && d.names) {
-        const extracted = parseRosterLines(d.names.join('\n'));
+      const extracted = d?.success ? rowsFromExtraction(d) : [];
+      if (extracted.length) {
         setStudentRows(prev => withBlankRow([...prev.filter(isFilledRow), ...extracted]));
       } else {
         setError(d?.error || 'Could not read that file.');

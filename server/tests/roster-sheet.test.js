@@ -1,0 +1,207 @@
+import { describe, it, expect } from 'vitest';
+import { cellToText, readBirthday, headerRole, extractRoster } from '../rosterSheet.js';
+
+/**
+ * Reading a class list out of a spreadsheet.
+ *
+ * Pinned because every failure here lands on a teacher at enrolment time and
+ * two of them are silent. A refused file is at least visible — the parser used
+ * to reject a DepEd School Form outright because it read "Republic of the
+ * Philippines" as the column headings. A dropped learner and a misread
+ * birthday are not: one child is missing from the class list, and one child
+ * has a password built from the wrong day.
+ */
+
+/** A School Form 1 as exported: title rows, then headings, then the class. */
+const SCHOOL_FORM = [
+  ['Republic of the Philippines'],
+  ['Department of Education'],
+  ['Region III — Central Luzon'],
+  ['School ID: 102938', '', 'School Year: 2026-2027'],
+  ['Grade & Section: VI - Rizal'],
+  [],
+  ['No.', 'Last Name', 'First Name', 'Middle Name', 'Date of Birth', "Parent's Name"],
+  ['MALE'],
+  ['1', 'Dela Cruz', 'Juan Miguel', 'Santos', '03/15/2014', 'Dela Cruz, Pedro'],
+  ['2', 'Reyes', 'Mark', 'Lopez', '07/02/2014', 'Reyes, Ana'],
+  ['FEMALE'],
+  ['3', 'Bautista', 'Maria Clara', 'Cruz', '11/30/2013', 'Bautista, Rosa'],
+  [],
+  ['TOTAL', '3'],
+];
+
+describe('the reported failure — a roster whose headings are not on row 1', () => {
+  it('finds the headings under the form title rows instead of refusing the file', () => {
+    const { students, source } = extractRoster(SCHOOL_FORM);
+    expect(source).toBe('headings');
+    expect(students).toHaveLength(3);
+  });
+
+  it('rejoins split name columns with the surname comma the app greets on', () => {
+    const { students } = extractRoster(SCHOOL_FORM);
+    expect(students[0].name).toBe('Dela Cruz, Juan Miguel Santos');
+    expect(students[2].name).toBe('Bautista, Maria Clara Cruz');
+  });
+
+  it('reads the birthday column, which used to be dropped entirely', () => {
+    const { students } = extractRoster(SCHOOL_FORM);
+    expect(students.map(s => s.birthday)).toEqual(['03/15/2014', '07/02/2014', '11/30/2013']);
+  });
+
+  it('does not enrol the MALE/FEMALE dividers or the totals line as learners', () => {
+    const { students } = extractRoster(SCHOOL_FORM);
+    expect(students.map(s => s.name)).not.toContain('MALE');
+    expect(students.map(s => s.name)).not.toContain('FEMALE');
+    expect(students.map(s => s.name)).not.toContain('TOTAL');
+  });
+
+  it("takes the learner's name, not the parent's, from a form carrying both", () => {
+    const { students } = extractRoster(SCHOOL_FORM);
+    expect(students[0].name).not.toContain('Pedro');
+  });
+});
+
+describe('headings', () => {
+  it('recognises the ways a roster labels the learner', () => {
+    expect(headerRole('Name')).toBe('full');
+    expect(headerRole("LEARNER'S NAME")).toBe('full');
+    expect(headerRole('Pangalan ng Mag-aaral')).toBe('full');
+    expect(headerRole('Last Name')).toBe('last');
+    expect(headerRole('Apelyido')).toBe('last');
+    expect(headerRole('First Name')).toBe('first');
+    expect(headerRole('Given Name')).toBe('first');
+    expect(headerRole('Middle Name')).toBe('middle');
+    expect(headerRole('M.I.')).toBe('middle');
+  });
+
+  it('recognises a birth date without mistaking other dates for one', () => {
+    expect(headerRole('Date of Birth')).toBe('birthday');
+    expect(headerRole('Birthday')).toBe('birthday');
+    expect(headerRole('DOB')).toBe('birthday');
+    expect(headerRole('Kaarawan')).toBe('birthday');
+    expect(headerRole('Date Enrolled')).toBeNull();
+    expect(headerRole('Place of Birth')).toBeNull();
+  });
+
+  it('ignores columns naming someone other than the learner, or nobody at all', () => {
+    expect(headerRole("Parent's Name")).toBeNull();
+    expect(headerRole('Guardian Name')).toBeNull();
+    expect(headerRole("Mother's Name")).toBeNull();
+    expect(headerRole('Name of School')).toBeNull();
+    expect(headerRole('Student No.')).toBeNull();
+    expect(headerRole('LRN')).toBeNull();
+    expect(headerRole('Age')).toBeNull();
+  });
+});
+
+describe('a list with no headings at all', () => {
+  it('finds the names by their shape', () => {
+    const { students, source } = extractRoster([
+      ['Dela Cruz, Juan Miguel'],
+      ['Reyes, Mark'],
+      ['Bautista, Maria Clara'],
+    ]);
+    expect(source).toBe('values');
+    expect(students.map(s => s.name)).toEqual(['Dela Cruz, Juan Miguel', 'Reyes, Mark', 'Bautista, Maria Clara']);
+  });
+
+  it('picks up a birthday column alongside them when there is exactly one', () => {
+    const { students } = extractRoster([
+      ['Dela Cruz, Juan', '03/15/2014'],
+      ['Reyes, Mark', '07/02/2014'],
+    ]);
+    expect(students[0].birthday).toBe('03/15/2014');
+  });
+
+  it('drops the roster numbering rather than making it part of the name', () => {
+    const { students } = extractRoster([['1. Dela Cruz, Juan'], ['2) Reyes, Mark']]);
+    expect(students.map(s => s.name)).toEqual(['Dela Cruz, Juan', 'Reyes, Mark']);
+  });
+
+  it('leaves the form boilerplate out of the class list', () => {
+    const { students } = extractRoster([
+      ['Republic of the Philippines'],
+      ['Department of Education'],
+      ['Dela Cruz, Juan'],
+      ['Reyes, Mark'],
+    ]);
+    expect(students.map(s => s.name)).toEqual(['Dela Cruz, Juan', 'Reyes, Mark']);
+  });
+
+  it('keeps surnames that merely contain a boilerplate word', () => {
+    // "Malen" is a surname; a substring match on /male/ deleted the learner.
+    const { students } = extractRoster([['Malen, Josefa'], ['Regino, Tomas'], ['Totaan, Luis']]);
+    expect(students.map(s => s.name)).toEqual(['Malen, Josefa', 'Regino, Tomas', 'Totaan, Luis']);
+  });
+
+  it('claims nothing from a sheet with only one name-shaped cell in it', () => {
+    const { students, source } = extractRoster([['Attendance'], ['', 'x']]);
+    expect(source).toBe('none');
+    expect(students).toEqual([]);
+  });
+});
+
+describe('two date columns and no heading to tell them apart', () => {
+  it('reads neither, rather than guessing which one is the birthday', () => {
+    const { students } = extractRoster([
+      ['Dela Cruz, Juan', '03/15/2014', '06/03/2026'],
+      ['Reyes, Mark', '07/02/2014', '06/03/2026'],
+    ]);
+    expect(students.every(s => s.birthday === '')).toBe(true);
+  });
+
+  it('but uses the one a heading names, ignoring the other', () => {
+    const { students } = extractRoster([
+      ['Name', 'Date Enrolled', 'Date of Birth'],
+      ['Dela Cruz, Juan', '06/03/2026', '03/15/2014'],
+    ]);
+    expect(students[0].birthday).toBe('03/15/2014');
+  });
+});
+
+describe('readBirthday', () => {
+  it('reads the formats a school form actually carries', () => {
+    expect(readBirthday('03/15/2014')).toBe('03/15/2014');
+    expect(readBirthday('3/5/2014')).toBe('03/05/2014');
+    expect(readBirthday('2014-03-15')).toBe('03/15/2014');
+    expect(readBirthday('March 15, 2014')).toBe('03/15/2014');
+    expect(readBirthday('15-Mar-2014')).toBe('03/15/2014');
+  });
+
+  it('drops a date it cannot read, instead of passing a guess through as a password', () => {
+    expect(readBirthday('02/30/2014')).toBe('');
+    expect(readBirthday('n/a')).toBe('');
+    expect(readBirthday('')).toBe('');
+    expect(readBirthday('03/15/1899')).toBe('');   // before any learner
+    expect(readBirthday('03/15/2099')).toBe('');   // not yet born
+  });
+
+  it('reads an Excel day serial only where a heading has called the column a birthday', () => {
+    // 41713 is 2014-03-15. Elsewhere it is far more likely an LRN or a score.
+    expect(readBirthday('41713', { allowSerial: true })).toBe('03/15/2014');
+    expect(readBirthday('41713')).toBe('');
+  });
+});
+
+describe('cellToText — what exceljs actually hands back', () => {
+  it('reads a date cell as the day the teacher typed, not a timezone away from it', () => {
+    expect(cellToText(new Date(Date.UTC(2014, 2, 15)))).toBe('03/15/2014');
+  });
+
+  it('reads formatted, linked and calculated cells instead of "[object Object]"', () => {
+    expect(cellToText({ richText: [{ text: 'Dela Cruz, ' }, { text: 'Juan' }] })).toBe('Dela Cruz, Juan');
+    expect(cellToText({ text: 'Reyes, Mark', hyperlink: 'mailto:x@y.z' })).toBe('Reyes, Mark');
+    expect(cellToText({ formula: 'A1&B1', result: 'Bautista, Maria' })).toBe('Bautista, Maria');
+    expect(cellToText({ error: '#REF!' })).toBe('');
+    expect(cellToText(null)).toBe('');
+  });
+
+  it('carries a formatted name through the whole extraction', () => {
+    const { students } = extractRoster([
+      ['Name'],
+      [cellToText({ richText: [{ text: 'Dela Cruz, ' }, { text: 'Juan' }] })],
+      [cellToText({ richText: [{ text: 'Reyes, Mark' }] })],
+    ]);
+    expect(students.map(s => s.name)).toEqual(['Dela Cruz, Juan', 'Reyes, Mark']);
+  });
+});

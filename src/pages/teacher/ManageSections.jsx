@@ -5,7 +5,7 @@ import { GRADE_LEVELS } from '../../constants/school';
 import StudentCredentials from '../../components/StudentCredentials';
 import SectionMoveConfirm from '../../components/SectionMoveConfirm';
 import RosterEditor from '../../components/RosterEditor';
-import { parseRosterLines, isFilledRow, rosterPayload, emptyRoster, withBlankRow, normalizeRosterName } from '../../utils/roster';
+import { rowsFromExtraction, isFilledRow, rosterPayload, emptyRoster, withBlankRow, normalizeRosterName } from '../../utils/roster';
 
 export default function ManageSections() {
   const [sections, setSections] = useState([]);
@@ -212,13 +212,13 @@ export default function ManageSections() {
         body: formData
       });
       const data = await res.json();
-      if (data.success && data.names) {
-        // Appended to whatever is already typed, and re-parsed so an extracted
-        // "Name, 03/15/2014" still lands in two columns.
-        const extracted = parseRosterLines(data.names.join('\n'));
+      const extracted = data.success ? rowsFromExtraction(data) : [];
+      if (extracted.length) {
+        // Appended to whatever is already typed, so an upload adds to the class
+        // list rather than replacing work the teacher has already done.
         setStudentRows(prev => withBlankRow([...prev.filter(isFilledRow), ...extracted]));
       } else {
-        alert("Extraction failed: " + data.error);
+        alert("Extraction failed: " + (data.error || 'No learners were found in that file.'));
       }
     } catch {
       alert("Network error during extraction.");
@@ -254,10 +254,10 @@ export default function ManageSections() {
     try {
       const res = await apiFetch(`${API_URL}/api/teacher/extract-students`, { method: 'POST', body: formData });
       const data = await res.json();
-      if (data.success && data.names) {
-        const extracted = parseRosterLines(data.names.join('\n'));
+      const extracted = data.success ? rowsFromExtraction(data) : [];
+      if (extracted.length) {
         setAddStudentRows(prev => withBlankRow([...prev.filter(isFilledRow), ...extracted]));
-      } else { alert('Extraction failed: ' + data.error); }
+      } else { alert('Extraction failed: ' + (data.error || 'No learners were found in that file.')); }
     } catch { alert('Network error during extraction.'); }
     finally {
       setIsExtractingEdit(false);

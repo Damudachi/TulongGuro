@@ -87,10 +87,15 @@ export default function RosterEditor({
           Class list <span className="font-normal text-slate-500">({filled.length} {filled.length === 1 ? 'learner' : 'learners'})</span>
         </p>
         <button type="button" onClick={onPickFile} disabled={isExtracting}
+          title="Upload an Excel class list, or a photo of a printed one"
           className="text-xs font-bold text-brand-navy bg-blue-50 hover:bg-blue-100 px-3 py-1.5 rounded-lg flex items-center gap-1 transition-colors disabled:opacity-50 shrink-0">
-          {isExtracting ? 'Extracting...' : <><Upload className="w-3.5 h-3.5" /> Auto-fill from Excel</>}
+          {isExtracting ? 'Reading the list...' : <><Upload className="w-3.5 h-3.5" /> Auto-fill from Excel or photo</>}
         </button>
-        <input type="file" accept=".xlsx,.xls" className="hidden" ref={fileRef} onChange={onFileChange} />
+        {/* A printed School Form photographed on a phone is how most class
+            lists actually exist, so images and PDF are accepted alongside the
+            spreadsheet. `capture` is deliberately not set: it would force the
+            camera on mobile and hide the photos already in the gallery. */}
+        <input type="file" accept=".xlsx,.xls,image/*,.pdf" className="hidden" ref={fileRef} onChange={onFileChange} />
       </div>
 
       {/* Surname first, matching the DepEd School Form 1 the roster is copied
