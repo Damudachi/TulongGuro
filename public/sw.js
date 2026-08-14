@@ -19,10 +19,11 @@
  * hard and replaced wholesale when the hash changes.
  */
 
-// v5: the brand mark replaced the placeholder book icon. The icon URLs are
-// unhashed and served cache-first, so without this bump an already-installed
-// phone keeps painting the old icon on its home screen indefinitely.
-const VERSION = 'v5';
+// v6: the brand mark replaced the placeholder book icon, and the tab icon moved
+// from favicon.svg to favicon.ico. The icon URLs are unhashed and served
+// cache-first, so without this bump an already-installed phone keeps painting
+// the old icon on its home screen indefinitely.
+const VERSION = 'v6';
 const SHELL = `tg-shell-${VERSION}`;    // index.html + icons + manifest
 const ASSETS = `tg-assets-${VERSION}`;  // /assets/* — content-hashed, immutable
 const FONTS = `tg-fonts-${VERSION}`;    // Google Fonts, cross-origin
@@ -30,7 +31,8 @@ const FONTS = `tg-fonts-${VERSION}`;    // Google Fonts, cross-origin
 const SHELL_URLS = [
   '/',
   '/manifest.webmanifest',
-  '/favicon.svg',
+  '/favicon.ico',
+  '/favicon-96.png',
   '/icon-192.png',
   '/icon-512.png',
   '/apple-touch-icon.png',

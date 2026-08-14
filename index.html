@@ -2,7 +2,13 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <!-- The full mark rather than a legible-at-16px reduction of it, by choice.
+         .ico carries 16/24/32/48 so the browser picks per display density
+         instead of downsampling one bitmap badly; it is also what Windows reads
+         for the taskbar and pinned-site entries. The 96px PNG covers bookmark
+         and new-tab tiles, which render far larger than the tab strip. -->
+    <link rel="icon" href="/favicon.ico" sizes="16x16 24x24 32x32 48x48" />
+    <link rel="icon" type="image/png" href="/favicon-96.png" sizes="96x96" />
     <!-- viewport-fit=cover is what makes env(safe-area-inset-*) report real
          numbers on a notched phone; without it the bottom dock's existing
          safe-area padding (index.css) silently evaluates to zero and the dock
