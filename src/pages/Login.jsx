@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
-import { BookOpen, UserCircle, GraduationCap, Eye, EyeOff, Building2, ArrowLeft, ArrowRight } from 'lucide-react';
+import { UserCircle, GraduationCap, Eye, EyeOff, Building2, ArrowLeft, ArrowRight } from 'lucide-react';
+import Logo from '../components/Logo';
 import { API_URL, apiFetch, setSession } from '../config';
 
 const ROLES = {
@@ -112,9 +113,7 @@ export default function Login() {
 
           <div className="relative">
             <Link to="/" className="inline-flex items-center gap-2.5 font-display text-2xl font-extrabold">
-              <span className="w-11 h-11 rounded-2xl bg-white/15 grid place-items-center">
-                <BookOpen className="w-5 h-5" />
-              </span>
+              <Logo size="lg" />
               TulongGuro
             </Link>
           </div>

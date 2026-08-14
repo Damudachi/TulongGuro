@@ -1,6 +1,7 @@
 import { Link, Outlet, useLocation } from 'react-router-dom';
 import { useSchoolTheme } from '../utils/useSchool';
-import { Home, Star, User, LogOut, Settings, Book, ChevronDown, BookOpen } from 'lucide-react';
+import { Home, Star, User, LogOut, Settings, Book, ChevronDown } from 'lucide-react';
+import Logo from '../components/Logo';
 import { clsx } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 import { useState, useEffect } from 'react';
@@ -112,9 +113,7 @@ export default function StudentLayout() {
       {/* ── Desktop sidebar ── */}
       <nav className="hidden md:flex flex-col w-64 bg-royal-900 shrink-0 rounded-r-[2rem] overflow-hidden">
         <Link to="/student/dashboard" className="flex items-center gap-3 px-5 py-6">
-          <span className="w-11 h-11 rounded-2xl bg-royal-500 tg-on-brand grid place-items-center shadow-pop shrink-0">
-            <BookOpen className="w-5 h-5" />
-          </span>
+          <Logo size="lg" />
           <span className="flex flex-col leading-none min-w-0">
             <span className="font-display text-lg font-extrabold text-white truncate">TulongGuro</span>
             <span className="text-[10px] font-extrabold uppercase tracking-wider text-royal-200 mt-1">Student</span>

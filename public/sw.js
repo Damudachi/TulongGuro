@@ -19,7 +19,10 @@
  * hard and replaced wholesale when the hash changes.
  */
 
-const VERSION = 'v4';
+// v5: the brand mark replaced the placeholder book icon. The icon URLs are
+// unhashed and served cache-first, so without this bump an already-installed
+// phone keeps painting the old icon on its home screen indefinitely.
+const VERSION = 'v5';
 const SHELL = `tg-shell-${VERSION}`;    // index.html + icons + manifest
 const ASSETS = `tg-assets-${VERSION}`;  // /assets/* — content-hashed, immutable
 const FONTS = `tg-fonts-${VERSION}`;    // Google Fonts, cross-origin

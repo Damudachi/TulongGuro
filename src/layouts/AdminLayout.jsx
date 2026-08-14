@@ -2,6 +2,7 @@ import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { Users, BookOpen, ClipboardList, Scale, TrendingUp, LogOut } from 'lucide-react';
 import { useEffect } from 'react';
 import SchoolBadge from '../components/SchoolBadge';
+import Logo from '../components/Logo';
 import { useSchoolTheme } from '../utils/useSchool';
 import { logout } from '../config';
 
@@ -36,9 +37,7 @@ export default function AdminLayout() {
           distinguishable at a glance from the teacher and student apps. */}
       <nav className="hidden md:flex flex-col w-64 bg-royal-900 shrink-0 rounded-r-[2rem] overflow-hidden">
         <Link to="/admin/teachers" className="flex items-center gap-3 px-5 py-6">
-          <span className="w-11 h-11 rounded-2xl bg-sun-400 text-navy-800 grid place-items-center shadow-pop shrink-0">
-            <BookOpen className="w-5 h-5" />
-          </span>
+          <Logo size="lg" />
           <span className="flex flex-col leading-none min-w-0">
             <span className="font-display text-lg font-extrabold text-white truncate">TulongGuro</span>
             <span className="text-[10px] font-extrabold uppercase tracking-wider text-sun-300 mt-1">School Admin</span>

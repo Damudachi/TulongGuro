@@ -2,9 +2,10 @@ import { useState } from 'react';
 import { Link, Navigate } from 'react-router-dom';
 import { resumeTo } from '../utils/session';
 import {
-  BookOpen, Sparkles, ScanLine, ClipboardCheck, BarChart3, WifiOff,
+  Sparkles, ScanLine, ClipboardCheck, BarChart3, WifiOff,
   ShieldCheck, ArrowRight, GraduationCap, Users, Building2, Check, Menu, X,
 } from 'lucide-react';
+import Logo from '../components/Logo';
 
 // The blob cast from the reference art: capsule bodies, dot eyes, no outlines
 // beyond their own fill. Purely decorative, so it is hidden from screen readers.
@@ -133,9 +134,7 @@ export default function Landing() {
       <header className="sticky top-0 z-50 bg-cream-100/90 backdrop-blur-md border-b border-navy-700/10">
         <nav className="max-w-6xl mx-auto px-5 sm:px-8 h-18 py-4 flex items-center justify-between">
           <Link to="/" className="flex items-center gap-2.5 font-display text-xl font-extrabold text-navy-700">
-            <span className="w-10 h-10 rounded-2xl bg-royal-500 text-white grid place-items-center shadow-pop">
-              <BookOpen className="w-5 h-5" />
-            </span>
+            <Logo size="md" />
             TulongGuro
           </Link>
 
@@ -321,9 +320,7 @@ export default function Landing() {
       <footer className="bg-white border-t border-slate-200 py-10">
         <div className="max-w-6xl mx-auto px-5 sm:px-8 flex flex-col sm:flex-row items-center justify-between gap-4">
           <div className="flex items-center gap-2.5 font-display font-extrabold text-navy-700">
-            <span className="w-8 h-8 rounded-xl bg-royal-500 text-white grid place-items-center">
-              <BookOpen className="w-4 h-4" />
-            </span>
+            <Logo size="sm" />
             TulongGuro
           </div>
           <p className="text-xs text-navy-400 font-semibold">
