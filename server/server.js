@@ -34,7 +34,7 @@ const { classSchoolId, staffMayAccess, staffMayReadStudent, REAL_WORK } = requir
 const { currentSchoolYear, isCurrentSchoolYear, compareSchoolYearsDesc } = require('./schoolYear');
 const {
   cellToText, extractRoster, readBirthday,
-  looksLikeAName, looksLikeAHeaderRow, composeName, tidyRosterEntry,
+  looksLikeAName, looksLikeAHeaderRow, composeName, withSurnameComma, tidyRosterEntry,
 } = require('./rosterSheet');
 const { getAllTopics, getTopicById, getTopicAIGuidance } = require('./depedTopics');
 // getRubricTemplateById is gone with the grader's topic-recommended rubric
@@ -3506,18 +3506,22 @@ async function extractRosterFromImage(localPath, mime) {
     const raw = Array.isArray(parsed?.students) ? parsed.students : [];
     return raw
       .slice(0, MAX_EXTRACTED_STUDENTS)
-      // composeName assembles "Surname, Given" from the separate fields; the
-      // model's own "name", if it sent one anyway, is the fallback.
-      // tidyRosterEntry is the safety net for when it ignores the schema and
-      // transcribes a whole table row: the row number comes off the front and
-      // an embedded date moves to the birthday rather than staying in the name.
-      // readBirthday re-reads the date either way, so a hallucinated or
-      // out-of-range one is dropped instead of becoming a password the learner
-      // cannot sign in with.
-      .map(entry => tidyRosterEntry(
-        normalizeExtractedName(composeName(entry)),
-        readBirthday(entry?.birthday),
-      ))
+      .map(entry => {
+        // composeName assembles "Surname, Given" from the separate fields the
+        // prompt asks for. tidyRosterEntry is the safety net for when the model
+        // ignores that schema and transcribes a whole table row instead: the
+        // row number comes off the front and an embedded date moves to the
+        // birthday rather than staying in the name. readBirthday re-reads the
+        // date either way, so a hallucinated or out-of-range one is dropped
+        // instead of becoming a password the learner cannot sign in with.
+        const tidied = tidyRosterEntry(
+          normalizeExtractedName(composeName(entry)),
+          readBirthday(entry?.birthday),
+        );
+        // Only infer the surname boundary when the model did not report one.
+        const surnameIsKnown = Boolean(String(entry?.lastName ?? '').trim());
+        return surnameIsKnown ? tidied : { ...tidied, name: withSurnameComma(tidied.name) };
+      })
       .filter(s => s.name && looksLikeAName(s.name) && !looksLikeAHeaderRow(s.name));
   } finally {
     if (prepared !== localPath) { try { fs.unlinkSync(prepared); } catch { /* best effort */ } }

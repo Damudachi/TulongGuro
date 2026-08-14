@@ -252,11 +252,10 @@ function looksLikeAHeaderRow(text) {
  * Assemble the name from whichever fields arrived, in the last-name-first form
  * the rest of the app sorts and greets on.
  *
- * A comma is written only when the surname is known as its own field. Guessing
- * one into "Mercer Alex" would be inventing information: nothing in that string
- * says whether the surname is one word or two, and a comma in the wrong place
- * is worse than none — see firstNameFromRoster, which already handles the
- * comma-less case conservatively.
+ * The comma is written here only when the surname arrived as its own field, so
+ * it is a fact rather than a reading. A combined name is handled separately by
+ * withSurnameComma, which has to infer the boundary — and must run after the
+ * row number and birth date have been stripped off, not here.
  */
 function composeName(entry) {
   const clean = (v) => String(v ?? '').replace(/\s+/g, ' ').trim();
@@ -264,6 +263,54 @@ function composeName(entry) {
   const given = [clean(entry?.firstName), clean(entry?.middleName)].filter(Boolean).join(' ');
   if (last && given) return `${last}, ${given}`;
   return last || given || clean(entry?.name);
+}
+
+/**
+ * Words that carry a family name across more than one word.
+ *
+ * "Dela Cruz", "De Guzman", "Del Rosario", "Delos Santos", "San Juan" are one
+ * surname each, and treating the second word as a given name is how a child
+ * called Juan Dela Cruz ends up greeted as "Cruz Juan".
+ */
+const SURNAME_PARTICLES = new Set([
+  'de', 'del', 'dela', 'delas', 'delos', 'dels', 'di', 'da', 'das', 'dos', 'du',
+  'la', 'las', 'los', 'le', 'san', 'santa', 'santo', 'sta', 'sto', 'st',
+  'van', 'von', 'der', 'den', 'bin', 'binti', 'al', 'el', 'mac', 'mc', 'ng',
+]);
+
+/**
+ * Put the surname comma into a name that arrived as one string.
+ *
+ * This is an inference, and it is made on purpose. A roster is entered surname
+ * first — the editor says so, DepEd's School Form 1 is sorted that way, and
+ * every export and gradebook in the app follows it — so in "Mercer Alex" the
+ * first word is the family name. Writing the comma makes that explicit, which
+ * is what firstNameFromRoster needs to greet the child as "Alex" rather than
+ * having to guess from word count.
+ *
+ * The guess it replaces was not free either: without a comma the greeting code
+ * drops exactly one leading word, which is the same call made silently and
+ * with no way for the teacher to see or correct it. Here it is visible in the
+ * roster editor before anything is saved.
+ *
+ * Multi-word surnames are handled by particle, so "Dela Cruz Juan Miguel"
+ * becomes "Dela Cruz, Juan Miguel" and not "Dela, Cruz Juan Miguel". A name
+ * that already carries a comma is left exactly as it is.
+ */
+function withSurnameComma(name) {
+  const text = String(name ?? '').replace(/\s+/g, ' ').trim();
+  if (!text || text.includes(',')) return text;
+
+  const words = text.split(' ');
+  if (words.length < 2) return text;
+
+  const key = (word) => word.toLowerCase().replace(/\./g, '');
+  let surnameWords = 1;
+  // Extend across particles, but never so far that no given name is left.
+  while (surnameWords < words.length - 1 && SURNAME_PARTICLES.has(key(words[surnameWords - 1]))) {
+    surnameWords++;
+  }
+  return `${words.slice(0, surnameWords).join(' ')}, ${words.slice(surnameWords).join(' ')}`;
 }
 
 /**
@@ -412,6 +459,11 @@ function extractRoster(grid) {
     birthdayColumn = findBirthdayColumnByValues(rows, firstDataRow, used);
   }
 
+  // With a surname column of its own, joinName has already written the comma
+  // in the right place and nothing may second-guess it — a sheet holding only
+  // surnames must not have "Dela Cruz" split into "Dela, Cruz".
+  const surnameIsKnown = nameColumns.some(c => c.role === 'last');
+
   const students = [];
   for (let r = firstDataRow; r < rows.length; r++) {
     const row = rows[r];
@@ -422,11 +474,13 @@ function extractRoster(grid) {
 
     // tidyRosterEntry runs even on a clean sheet: it costs nothing there, and
     // it is what rescues the case where a date or a row number ended up inside
-    // the name column itself rather than in one of its own.
+    // the name column itself rather than in one of its own. The surname comma
+    // goes in after it, once the number and the date are gone.
     const entry = tidyRosterEntry(joinName(parts), fromColumn);
-    if (!entry.name || !looksLikeAName(entry.name) || looksLikeAHeaderRow(entry.name)) continue;
+    const name = surnameIsKnown ? entry.name : withSurnameComma(entry.name);
+    if (!name || !looksLikeAName(name) || looksLikeAHeaderRow(name)) continue;
 
-    students.push(entry);
+    students.push({ name, birthday: entry.birthday });
   }
 
   return { students, source, headings: headingsSeen(rows) };
@@ -450,6 +504,7 @@ module.exports = {
   looksLikeAHeaderRow,
   splitDateOutOfName,
   composeName,
+  withSurnameComma,
   tidyRosterEntry,
   extractRoster,
   HEADER_SCAN_ROWS,

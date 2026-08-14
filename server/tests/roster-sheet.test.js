@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   cellToText, readBirthday, headerRole, extractRoster,
-  looksLikeAHeaderRow, splitDateOutOfName, composeName, tidyRosterEntry,
+  looksLikeAHeaderRow, splitDateOutOfName, composeName, withSurnameComma, tidyRosterEntry,
 } from '../rosterSheet.js';
 
 /**
@@ -238,11 +238,56 @@ describe('composeName — the shape the app sorts and greets on', () => {
     expect(composeName({ lastName: 'Dela Cruz', firstName: 'Juan', middleName: 'Santos' })).toBe('Dela Cruz, Juan Santos');
   });
 
-  it('does not invent a comma it has no basis for', () => {
-    // Nothing in "Mercer Alex" says whether the surname is one word or two, and
-    // a comma in the wrong place misnames the child on their own dashboard.
+  it('leaves a combined name for withSurnameComma to handle after tidying', () => {
+    // composeName runs before the row number and the date come off, so it must
+    // not write a comma into "1 Mercer Alex 03/14/2005".
     expect(composeName({ name: 'Mercer Alex' })).toBe('Mercer Alex');
     expect(composeName({ lastName: 'Mercer' })).toBe('Mercer');
+  });
+});
+
+describe('withSurnameComma — the surname boundary in a combined name', () => {
+  it('marks the surname in a roster entered last name first', () => {
+    expect(withSurnameComma('Mercer Alex')).toBe('Mercer, Alex');
+    expect(withSurnameComma('Villanueva Ian')).toBe('Villanueva, Ian');
+    expect(withSurnameComma('Al-Mansoor Fatima')).toBe('Al-Mansoor, Fatima');
+  });
+
+  it('keeps a multi-word surname whole', () => {
+    expect(withSurnameComma('Dela Cruz Juan Miguel')).toBe('Dela Cruz, Juan Miguel');
+    expect(withSurnameComma('De Guzman Maria')).toBe('De Guzman, Maria');
+    expect(withSurnameComma('Delos Santos Ana Marie')).toBe('Delos Santos, Ana Marie');
+    expect(withSurnameComma('De La Cruz Juan')).toBe('De La Cruz, Juan');
+    expect(withSurnameComma('San Juan Pedro')).toBe('San Juan, Pedro');
+  });
+
+  it('changes nothing that is already settled or has nothing to split', () => {
+    expect(withSurnameComma('Dela Cruz, Juan Miguel')).toBe('Dela Cruz, Juan Miguel');
+    expect(withSurnameComma('Mercer')).toBe('Mercer');
+    expect(withSurnameComma('')).toBe('');
+    // A name that is nothing but particles keeps a given name rather than
+    // swallowing the last word into the surname.
+    expect(withSurnameComma('Dela Cruz')).toBe('Dela, Cruz');
+  });
+});
+
+describe('a single combined name column', () => {
+  it('gets the surname comma, since a roster is entered last name first', () => {
+    const { students } = extractRoster([
+      ['Name', 'Date of Birth'],
+      ['Mercer Alex', 'March 14, 2005'],
+      ['Dela Cruz Juan Miguel', '03/15/2014'],
+    ]);
+    expect(students).toEqual([
+      { name: 'Mercer, Alex', birthday: '03/14/2005' },
+      { name: 'Dela Cruz, Juan Miguel', birthday: '03/15/2014' },
+    ]);
+  });
+
+  it('leaves a surname-only column alone rather than splitting the surname', () => {
+    // "Dela Cruz" here is one family name, not a surname and a given name.
+    const { students } = extractRoster([['Last Name'], ['Dela Cruz'], ['De Guzman']]);
+    expect(students.map(s => s.name)).toEqual(['Dela Cruz', 'De Guzman']);
   });
 });
 
