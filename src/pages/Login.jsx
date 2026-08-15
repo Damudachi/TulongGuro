@@ -162,8 +162,8 @@ export default function Login() {
                 type="button"
                 onClick={() => { setRole(key); setErrorMsg(''); }}
                 className={`flex-1 flex items-center justify-center gap-1.5 py-2.5 px-2 rounded-xl text-sm font-bold transition-all ${role === key
-                    ? `bg-white shadow-pop ${r.accent}`
-                    : 'text-navy-400 hover:text-navy-600'
+                  ? `bg-white shadow-pop ${r.accent}`
+                  : 'text-navy-400 hover:text-navy-600'
                   }`}
               >
                 <r.icon className="w-4 h-4" />

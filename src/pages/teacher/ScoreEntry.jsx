@@ -179,6 +179,14 @@ export default function ScoreEntry() {
         a zero, and an empty box won't drag their average down.
       </p>
 
+      <div className="mt-3 flex items-start gap-2 p-3 bg-green-50 border border-green-200 rounded-xl text-xs text-green-800">
+        <Check className="w-4 h-4 shrink-0 mt-px text-green-600" />
+        <span>
+          <span className="font-bold">Scores are released immediately.</span>{' '}
+          When you save, students can see their grades right away — no separate release step is needed.
+        </span>
+      </div>
+
       {/* Sticky so the save button is reachable partway down a long class list. */}
       <div className="fixed bottom-0 left-0 right-0 md:left-64 bg-white/95 backdrop-blur border-t-2 border-slate-200 p-4 z-30">
         <div className="max-w-3xl mx-auto flex items-center gap-3">

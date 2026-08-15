@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
-import { ArrowLeft, UploadCloud, X, Loader2, Wifi, WifiOff, ShieldCheck, Info, FileText, Camera, Sparkles, Plus, CheckCircle2, AlertTriangle, ClipboardCheck, RefreshCw } from 'lucide-react';
+import { ArrowLeft, UploadCloud, X, Loader2, Wifi, WifiOff, ShieldCheck, Info, FileText, Camera, Sparkles, Plus, CheckCircle2, AlertTriangle, ClipboardCheck, RefreshCw, Send } from 'lucide-react';
 import { getQueue, buildJob, enqueue, flushQueue, QUEUE_CHANGED } from '../../utils/offlineQueue';
 import { API_URL, apiFetch, MAX_SUBMISSION_PAGES } from '../../config';
 import { getStoredUser } from '../../utils/session';
@@ -28,9 +28,10 @@ const queuedStudentsFor = (activityId) => new Set(
 );
 
 const SUBMISSION_STATUS = {
-  PENDING: { label: 'Needs Review', color: 'bg-amber-100 text-amber-700' },
-  GRADED: { label: 'Graded', color: 'bg-green-100 text-green-700' },
-  NONE: { label: 'No Upload Yet', color: 'bg-slate-100 text-slate-600' },
+  PENDING:   { label: 'Needs Review', color: 'bg-amber-100 text-amber-700' },
+  VALIDATED: { label: 'Validated',    color: 'bg-blue-100 text-blue-700' },
+  RELEASED:  { label: 'Released',     color: 'bg-green-100 text-green-700' },
+  NONE:      { label: 'No Upload Yet', color: 'bg-slate-100 text-slate-600' },
 };
 
 export default function BatchUpload() {
@@ -55,6 +56,10 @@ export default function BatchUpload() {
   const [queuedStudentIds, setQueuedStudentIds] = useState(() => queuedStudentsFor(activityId));
   const [isFlushing, setIsFlushing] = useState(false);
   const [piiConfirmed, setPiiConfirmed] = useState(false);
+
+  // ── Grade release ──
+  const [releaseState, setReleaseState] = useState(null);  // { total, reviewed, released, readyToRelease }
+  const [isReleasing, setIsReleasing] = useState(false);
 
   // ── Class-wide AI check ──
   // What one "AI-check all" press would cost, and how the run is going. The
@@ -150,6 +155,44 @@ export default function BatchUpload() {
       .catch(() => {}) /* a failed read leaves the empty state, which is what renders */
       .finally(() => setIsLoadingSubmissions(false));
   }, [activityId]);
+
+  // ── Release state ──
+  const loadReleaseState = useCallback(() => {
+    if (!activityId) return;
+    apiFetch(`${API_URL}/api/teacher/activities/${activityId}/release`)
+      .then(r => r.json())
+      .then(d => { if (d.success) setReleaseState(d); })
+      .catch(() => {});
+  }, [activityId]);
+
+  useEffect(() => { loadReleaseState(); }, [loadReleaseState]);
+  // Refresh release counts whenever the submission list changes.
+  useEffect(() => { if (activitySubmissions.length > 0) loadReleaseState(); }, [activitySubmissions.length, loadReleaseState]);
+
+  const releaseAll = async () => {
+    if (!activityId) return;
+    const count = releaseState?.readyToRelease || 0;
+    if (count === 0) return;
+    if (!window.confirm(`Release ${count} validated grade${count > 1 ? 's' : ''} to students? They will be able to see their scores and feedback.`)) return;
+    setIsReleasing(true);
+    try {
+      const res = await apiFetch(`${API_URL}/api/teacher/activities/${activityId}/release`, { method: 'POST' });
+      const data = await res.json();
+      if (data.success) {
+        // Refresh submissions so badges update to Released.
+        const subsRes = await apiFetch(`${API_URL}/api/activities/${activityId}/submissions`);
+        const subsData = await subsRes.json();
+        if (subsData.success) setActivitySubmissions(subsData.submissions || []);
+        loadReleaseState();
+      } else {
+        alert(data.error || 'Could not release the results.');
+      }
+    } catch {
+      alert('Could not release the results. Please check your connection.');
+    } finally {
+      setIsReleasing(false);
+    }
+  };
 
   // Memoised on activityId so the effects below can depend on it honestly
   // without re-firing on every render.
@@ -577,6 +620,35 @@ export default function BatchUpload() {
         </div>
       )}
 
+      {/* ── Return All Grades button ── */}
+      {releaseState && releaseState.readyToRelease > 0 && (
+        <div className="flex items-center justify-between gap-3 p-4 bg-blue-50 border border-blue-200 rounded-2xl">
+          <div className="min-w-0">
+            <p className="text-sm font-bold text-blue-900">
+              {releaseState.readyToRelease} validated grade{releaseState.readyToRelease > 1 ? 's' : ''} ready to return
+            </p>
+            <p className="text-xs text-blue-600 mt-0.5">
+              {releaseState.released > 0 && <>{releaseState.released} already released · </>}
+              {releaseState.total - releaseState.reviewed > 0 && <>{releaseState.total - releaseState.reviewed} still unreviewed</>}
+            </p>
+          </div>
+          <button
+            onClick={releaseAll}
+            disabled={isReleasing}
+            className="shrink-0 flex items-center gap-2 px-5 py-2.5 rounded-xl font-bold text-sm bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-60 transition-colors shadow-sm"
+          >
+            {isReleasing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+            {isReleasing ? 'Releasing…' : `Return All Grades`}
+          </button>
+        </div>
+      )}
+      {releaseState && releaseState.readyToRelease === 0 && releaseState.released > 0 && (
+        <div className="flex items-center gap-2 p-3 bg-green-50 border border-green-200 rounded-xl text-sm text-green-800">
+          <CheckCircle2 className="w-4 h-4 shrink-0 text-green-600" />
+          <span>All {releaseState.released} validated grade{releaseState.released > 1 ? 's have' : ' has'} been released to students.</span>
+        </div>
+      )}
+
       {/* Student List */}
       <div className="bg-white border border-slate-200 rounded-2xl p-4">
         {isLoadingSubmissions ? (
@@ -594,7 +666,10 @@ export default function BatchUpload() {
               const sub = submissionsByStudentId[student.id] || null;
               const stagedPages = stagedByStudentId[student.id]?.pages || [];
               const staged = stagedPages.length > 0;
-              const statusKey = sub?.status || 'NONE';
+              // Three-way status: Validated (graded, not yet released), Released, or the original status.
+              const statusKey = sub?.status === 'GRADED'
+                ? (sub.releasedAt ? 'RELEASED' : 'VALIDATED')
+                : (sub?.status || 'NONE');
               const statusCfg = SUBMISSION_STATUS[statusKey] || SUBMISSION_STATUS.NONE;
               const scorePercent = sub?.hitlScore ?? sub?.aiScore ?? null;
               const grade = scorePercent !== null ? Math.round((scorePercent / 100) * maxPoints) : null;
@@ -730,7 +805,8 @@ export default function BatchUpload() {
                             Submitted {new Date(sub.createdAt).toLocaleDateString('en-PH', { month: 'short', day: 'numeric' })}
                           </p>
                         )}
-                        <span className={`inline-flex mt-2 text-[11px] font-bold px-2 py-0.5 rounded-full ${statusCfg.color}`}>
+                        <span className={`inline-flex items-center gap-1 mt-2 text-[11px] font-bold px-2 py-0.5 rounded-full ${statusCfg.color}`}>
+                          {statusKey === 'RELEASED' && <CheckCircle2 className="w-3 h-3" />}
                           {statusCfg.label}
                         </span>
                       </>
