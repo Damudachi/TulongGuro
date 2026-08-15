@@ -4823,7 +4823,7 @@ app.get('/api/classes/:classId', async (req, res) => {
       activities: {
         include: {
           _count: { select: { submissions: true } },
-          submissions: { select: { id: true, status: true, studentId: true } }
+          submissions: { select: { id: true, status: true, studentId: true, aiScore: true, releasedAt: true } }
         },
         orderBy: { createdAt: 'desc' }
       }

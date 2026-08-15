@@ -28,10 +28,11 @@ const queuedStudentsFor = (activityId) => new Set(
 );
 
 const SUBMISSION_STATUS = {
-  PENDING:   { label: 'Needs Review', color: 'bg-amber-100 text-amber-700' },
-  VALIDATED: { label: 'Validated',    color: 'bg-blue-100 text-blue-700' },
-  RELEASED:  { label: 'Released',     color: 'bg-green-100 text-green-700' },
-  NONE:      { label: 'No Upload Yet', color: 'bg-slate-100 text-slate-600' },
+  NEEDS_GRADING:    { label: 'Needs Grading',    color: 'bg-amber-100 text-amber-700' },
+  NEEDS_VALIDATION: { label: 'Needs Validation', color: 'bg-orange-100 text-orange-700' },
+  VALIDATED:        { label: 'Validated',         color: 'bg-blue-100 text-blue-700' },
+  RELEASED:         { label: 'Released',          color: 'bg-green-100 text-green-700' },
+  NONE:             { label: 'No Upload Yet',     color: 'bg-slate-100 text-slate-600' },
 };
 
 export default function BatchUpload() {
@@ -666,10 +667,13 @@ export default function BatchUpload() {
               const sub = submissionsByStudentId[student.id] || null;
               const stagedPages = stagedByStudentId[student.id]?.pages || [];
               const staged = stagedPages.length > 0;
-              // Three-way status: Validated (graded, not yet released), Released, or the original status.
+              // Four-way status: Needs Grading (no score), Needs Validation (AI scored, not validated),
+              // Validated (teacher approved, not released), Released (visible to student).
               const statusKey = sub?.status === 'GRADED'
                 ? (sub.releasedAt ? 'RELEASED' : 'VALIDATED')
-                : (sub?.status || 'NONE');
+                : sub?.status === 'PENDING'
+                  ? ((sub.aiScore !== null && sub.aiScore !== undefined) ? 'NEEDS_VALIDATION' : 'NEEDS_GRADING')
+                  : 'NONE';
               const statusCfg = SUBMISSION_STATUS[statusKey] || SUBMISSION_STATUS.NONE;
               const scorePercent = sub?.hitlScore ?? sub?.aiScore ?? null;
               const grade = scorePercent !== null ? Math.round((scorePercent / 100) * maxPoints) : null;

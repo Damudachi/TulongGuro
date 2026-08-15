@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
-import { Plus, Search, FileText, ArrowLeft, Clock, CheckCircle2, AlertCircle, UploadCloud, Trash2, PenLine, CloudOff } from 'lucide-react';
+import { Plus, Search, FileText, ArrowLeft, Clock, CheckCircle2, AlertCircle, UploadCloud, Trash2, PenLine, CloudOff, Eye, ShieldCheck } from 'lucide-react';
 import { API_URL, apiFetch } from '../../config';
 import { ACTIVITY_TYPES } from '../../constants/activityTypes';
 import { isPastDeadline, formatDeadline } from '../../utils/deadlines';
@@ -10,9 +10,10 @@ import { saveClassSnapshot, readClassSnapshot } from '../../utils/offlineSnapsho
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
 
 const STATUS_CONFIG = {
-  PENDING: { label: 'Needs Grading', color: 'bg-amber-100 text-amber-700', icon: Clock },
-  GRADED: { label: 'Graded', color: 'bg-green-100 text-green-700', icon: CheckCircle2 },
-  NONE: { label: 'No Submissions', color: 'bg-slate-100 text-slate-500', icon: AlertCircle },
+  NEEDS_GRADING:    { label: 'Needs Grading',    color: 'bg-amber-100 text-amber-700',  icon: Clock },
+  NEEDS_VALIDATION: { label: 'Needs Validation', color: 'bg-orange-100 text-orange-700', icon: ShieldCheck },
+  RELEASED:         { label: 'Graded & Released', color: 'bg-green-100 text-green-700',   icon: CheckCircle2 },
+  NONE:             { label: 'No Submissions',    color: 'bg-slate-100 text-slate-500',   icon: AlertCircle },
 };
 
 export default function ClassHub() {
@@ -272,9 +273,11 @@ export default function ClassHub() {
           {filteredActivities.map(activity => {
             const subCount = activity.submissions?.length ?? activity._count?.submissions ?? 0;
             const isStudentSubmit = activity.submissionMode === 'STUDENT_SUBMIT';
-            // Show proper status: check if submissions exist and their status
-            const pendingCount = activity.submissions?.filter(s => s.status === 'PENDING').length || 0;
-            const gradedCount = activity.submissions?.filter(s => s.status === 'GRADED').length || 0;
+            // Four-way breakdown of submission states.
+            const needsGradingCount = activity.submissions?.filter(s => s.status === 'PENDING' && (s.aiScore === null || s.aiScore === undefined)).length || 0;
+            const needsValidationCount = activity.submissions?.filter(s => s.status === 'PENDING' && s.aiScore !== null && s.aiScore !== undefined).length || 0;
+            const releasedCount = activity.submissions?.filter(s => s.status === 'GRADED' && s.releasedAt).length || 0;
+            const validatedCount = activity.submissions?.filter(s => s.status === 'GRADED' && !s.releasedAt).length || 0;
             const pastDeadline = isPastDeadline(activity.deadline);
             return (
               <div
@@ -308,14 +311,24 @@ export default function ClassHub() {
                         </span>
                       ) : (
                         <>
-                          {pendingCount > 0 && (
-                            <span className={`text-xs font-semibold px-2 py-0.5 rounded-full flex items-center w-fit gap-1 ${STATUS_CONFIG.PENDING.color}`}>
-                              <Clock className="w-3 h-3" />Needs Grading ({pendingCount})
+                          {needsGradingCount > 0 && (
+                            <span className={`text-xs font-semibold px-2 py-0.5 rounded-full flex items-center w-fit gap-1 ${STATUS_CONFIG.NEEDS_GRADING.color}`}>
+                              <Clock className="w-3 h-3" />Needs Grading ({needsGradingCount})
                             </span>
                           )}
-                          {gradedCount > 0 && (
-                            <span className={`text-xs font-semibold px-2 py-0.5 rounded-full flex items-center w-fit gap-1 ${STATUS_CONFIG.GRADED.color}`}>
-                              <CheckCircle2 className="w-3 h-3" />Graded ({gradedCount})
+                          {needsValidationCount > 0 && (
+                            <span className={`text-xs font-semibold px-2 py-0.5 rounded-full flex items-center w-fit gap-1 ${STATUS_CONFIG.NEEDS_VALIDATION.color}`}>
+                              <ShieldCheck className="w-3 h-3" />Needs Validation ({needsValidationCount})
+                            </span>
+                          )}
+                          {validatedCount > 0 && (
+                            <span className="text-xs font-semibold px-2 py-0.5 rounded-full flex items-center w-fit gap-1 bg-blue-100 text-blue-700">
+                              <Eye className="w-3 h-3" />Validated ({validatedCount})
+                            </span>
+                          )}
+                          {releasedCount > 0 && (
+                            <span className={`text-xs font-semibold px-2 py-0.5 rounded-full flex items-center w-fit gap-1 ${STATUS_CONFIG.RELEASED.color}`}>
+                              <CheckCircle2 className="w-3 h-3" />Graded & Released ({releasedCount})
                             </span>
                           )}
                         </>
