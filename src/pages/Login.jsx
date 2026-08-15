@@ -9,7 +9,7 @@ const ROLES = {
     label: 'Teacher', icon: UserCircle,
     accent: 'text-royal-600', chip: 'bg-royal-500', panel: 'bg-royal-500',
     button: 'bg-royal-500 hover:bg-royal-600 text-white',
-    idLabel: 'Email Address', idPlaceholder: 'teacher@deped.gov.ph', idType: 'email',
+    idLabel: 'Email Address', idPlaceholder: 'name@teacher.edu.ph', idType: 'email',
     home: '/teacher/dashboard',
     blurb: 'Your review queue, sections, and rubrics are waiting.',
   },
@@ -30,7 +30,7 @@ const ROLES = {
     label: 'Admin', icon: Building2,
     accent: 'text-navy-700', chip: 'bg-navy-700', panel: 'bg-navy-700',
     button: 'bg-navy-700 hover:bg-navy-800 text-white',
-    idLabel: 'Email Address', idPlaceholder: 'admin@school.edu.ph', idType: 'email',
+    idLabel: 'Email Address', idPlaceholder: 'name@admin.com', idType: 'email',
     home: '/admin/teachers',
     blurb: 'Manage teachers, sections, curricula, and rubrics.',
   },
@@ -161,11 +161,10 @@ export default function Login() {
                 key={key}
                 type="button"
                 onClick={() => { setRole(key); setErrorMsg(''); }}
-                className={`flex-1 flex items-center justify-center gap-1.5 py-2.5 px-2 rounded-xl text-sm font-bold transition-all ${
-                  role === key
+                className={`flex-1 flex items-center justify-center gap-1.5 py-2.5 px-2 rounded-xl text-sm font-bold transition-all ${role === key
                     ? `bg-white shadow-pop ${r.accent}`
                     : 'text-navy-400 hover:text-navy-600'
-                }`}
+                  }`}
               >
                 <r.icon className="w-4 h-4" />
                 {r.label}
