@@ -1149,8 +1149,14 @@ export default function HITLWorkspace() {
               <h2 className="text-xl font-bold text-brand-slate">{submission?.student?.name || 'Student Review'}</h2>
               <p className="text-slate-500 text-sm">{submission?.activity?.title || 'Essay Submission'}</p>
               {/* A record, not a penalty — nothing deducts marks for this, so
-                  the teacher decides what a late piece is worth. */}
-              {submission?.isLate && (
+                  the teacher decides what a late piece is worth.
+
+                  Only ever shown for work a student handed in themselves. On a
+                  teacher-upload activity the flag describes when the teacher
+                  scanned the stack, not when the child submitted, and it is
+                  checked here as well as at the point it is written so that
+                  rows stamped before that rule existed stop accusing anyone. */}
+              {submission?.isLate && submission?.activity?.submissionMode === 'STUDENT_SUBMIT' && (
                 <span className="mt-1 inline-flex items-center gap-1 text-xs font-bold text-amber-700 bg-amber-50 border border-amber-200 px-2 py-1 rounded-full">
                   ⏰ Submitted late
                 </span>

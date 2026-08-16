@@ -41,7 +41,9 @@ export default function ClassHub() {
   const [isEditOpen, setIsEditOpen] = useState(false);
   const [editActivity, setEditActivity] = useState(null);
   // No `points` — see the read-only field in the edit modal below.
-  const [editForm, setEditForm] = useState({ title: '', type: 'Essay', topic: '', deadline: '', instructions: '' });
+  // No `topic`: the quick edit does not ask for one, and sending it would post
+  // whatever was loaded back over a value Advanced Edit may have since set.
+  const [editForm, setEditForm] = useState({ title: '', type: 'Essay', deadline: '', instructions: '' });
   const [deleteConfirmText, setDeleteConfirmText] = useState('');
   const [isDeleting, setIsDeleting] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
@@ -73,7 +75,6 @@ export default function ClassHub() {
     setEditForm({
       title: activity.title || '',
       type: activity.type || 'Essay',
-      topic: activity.topic || '',
       deadline: activity.deadline ? String(activity.deadline).split('T')[0] : '',
       instructions: activity.instructions || ''
     });
@@ -450,26 +451,20 @@ export default function ClassHub() {
                   <p className="text-xs text-slate-400 mt-1">Changed in Advanced Edit, with the rubric</p>
                 </div>
               </div>
-              <div className="flex gap-4">
-                <div className="flex-1">
-                  <label className="block text-sm font-medium text-slate-700 mb-1">Topic (Optional)</label>
-                  <input
-                    type="text"
-                    value={editForm.topic}
-                    onChange={(e) => setEditForm((prev) => ({ ...prev, topic: e.target.value }))}
-                    className="w-full border border-slate-200 p-2 rounded-lg outline-none focus:ring-2 focus:ring-brand-navy"
-                    placeholder="e.g. Noli Me Tangere"
-                  />
-                </div>
-                <div className="flex-1">
-                  <label className="block text-sm font-medium text-slate-700 mb-1">Deadline</label>
-                  <input
-                    type="date"
-                    value={editForm.deadline}
-                    onChange={(e) => setEditForm((prev) => ({ ...prev, deadline: e.target.value }))}
-                    className="w-full border border-slate-200 p-2 rounded-lg outline-none focus:ring-2 focus:ring-brand-navy"
-                  />
-                </div>
+              {/* No topic field. A free-typed topic here competed with the
+                  Lesson / Topic picker in Advanced Edit, which maps the
+                  activity to a curriculum lesson or a DepEd competency and is
+                  what the rubric and the analytics breakdown actually read.
+                  Two ways to answer the same question, one of which fed
+                  nothing, is worse than one. */}
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">Deadline</label>
+                <input
+                  type="date"
+                  value={editForm.deadline}
+                  onChange={(e) => setEditForm((prev) => ({ ...prev, deadline: e.target.value }))}
+                  className="w-full border border-slate-200 p-2 rounded-lg outline-none focus:ring-2 focus:ring-brand-navy"
+                />
               </div>
               <div>
                 <label className="block text-sm font-medium text-slate-700 mb-1">Details</label>

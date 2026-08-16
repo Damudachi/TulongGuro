@@ -1,5 +1,5 @@
-import { useState, useRef, useEffect, useLayoutEffect, useCallback } from 'react';
-import { ShieldCheck, Eraser, Check, X, RotateCcw, ZoomIn, ZoomOut, Maximize2, Hand, Pencil } from 'lucide-react';
+import { useState, useRef, useEffect, useLayoutEffect, useMemo, useCallback } from 'react';
+import { ShieldCheck, Eraser, Check, X, Undo2, RotateCw, ZoomIn, ZoomOut, Maximize2, Hand, Pencil } from 'lucide-react';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
 
@@ -22,7 +22,11 @@ export default function ImageRedactor({ imageSrc, onConfirm, onCancel, perspecti
     : { title: 'Redact Student Name', subtitle: 'Draw a box over the name to block it out', tip: "Draw a rectangle over the student's name to redact it" };
   const canvasRef = useRef(null);
   const viewportRef = useRef(null);
-  const [img, setImg] = useState(null);
+  // The file exactly as it was picked, never redrawn. Every rotation is derived
+  // from this rather than from the last rotated copy, so turning a page four
+  // times gets the original back instead of four rounds of resampling.
+  const [baseImg, setBaseImg] = useState(null);
+  const [rotation, setRotation] = useState(0);   // 0 | 90 | 180 | 270, clockwise
   const [isDrawing, setIsDrawing] = useState(false);
   const [startPos, setStartPos] = useState(null);
   const [rects, setRects] = useState([]);       // { x, y, w, h }[]
@@ -42,6 +46,30 @@ export default function ImageRedactor({ imageSrc, onConfirm, onCancel, perspecti
   // events to draw at all. On a zoomed-in page that left no way to reach the
   // rest of the paper, so panning is a mode you can switch to.
   const [mode, setMode] = useState('draw');   // 'draw' | 'pan'
+
+  /**
+   * The page as it is currently turned.
+   *
+   * Rotation is baked into a bitmap rather than applied as a canvas transform
+   * at paint time, so everything downstream — the fit calculation, the pointer
+   * coordinates, the redaction rectangles, the full-resolution export — keeps
+   * working in one upright coordinate space and needs no rotation-awareness of
+   * its own. `drawImage` takes a canvas as happily as an image, so the rest of
+   * the component cannot tell the difference.
+   */
+  const img = useMemo(() => {
+    if (!baseImg) return null;
+    if (rotation % 360 === 0) return baseImg;
+    const quarterTurned = rotation % 180 !== 0;
+    const out = document.createElement('canvas');
+    out.width = quarterTurned ? baseImg.height : baseImg.width;
+    out.height = quarterTurned ? baseImg.width : baseImg.height;
+    const ctx = out.getContext('2d');
+    ctx.translate(out.width / 2, out.height / 2);
+    ctx.rotate((rotation * Math.PI) / 180);
+    ctx.drawImage(baseImg, -baseImg.width / 2, -baseImg.height / 2);
+    return out;
+  }, [baseImg, rotation]);
 
   /** How much room the canvas actually has, measured rather than assumed. */
   const viewportSize = () => {
@@ -73,7 +101,8 @@ export default function ImageRedactor({ imageSrc, onConfirm, onCancel, perspecti
     setCurrentRect(null);
     setIsDrawing(false);
     setStartPos(null);
-    setImg(null);
+    setBaseImg(null);
+    setRotation(0);
     setIsFitted(true);
     setMode('draw');
   }
@@ -85,7 +114,7 @@ export default function ImageRedactor({ imageSrc, onConfirm, onCancel, perspecti
     image.onload = () => {
       // A page that was swapped out mid-load must not overwrite the new one.
       if (cancelled) return;
-      setImg(image);
+      setBaseImg(image);
       const { w, h } = viewportSize();
       // Fit both ways. Fitting on width alone left a tall page running off the
       // bottom with the confirm button below the fold.
@@ -124,6 +153,36 @@ export default function ImageRedactor({ imageSrc, onConfirm, onCancel, perspecti
     setScale(s => clampScale(s * factor));
   };
   const zoomToFit = () => { setIsFitted(true); setScale(fitScale); };
+
+  /**
+   * Turn the page a quarter clockwise.
+   *
+   * A phone photographed sideways arrives sideways, and until now the only way
+   * through was to redact a page you were reading with your head tilted — and
+   * the AI then read it in that orientation too. The rotation is applied to the
+   * image itself, so what the model receives is what the teacher saw.
+   *
+   * Boxes already drawn are turned with the page rather than discarded. A
+   * rectangle at (x, y) on a page H tall lands at (H - y - h, x) once the page
+   * is turned clockwise, with its width and height swapped — so a name covered
+   * before the rotation stays covered after it.
+   */
+  const rotateQuarterTurn = () => {
+    if (!img) return;
+    const { width: w0, height: h0 } = img;
+    setRects(prev => prev.map(r => ({ x: h0 - r.y - r.h, y: r.x, w: r.h, h: r.w })));
+    setCurrentRect(null);
+    setIsDrawing(false);
+    setStartPos(null);
+    setRotation(prev => (prev + 90) % 360);
+    // Re-fit against the new shape here rather than in an effect: a portrait
+    // page turned landscape needs a different scale, and the dimensions after
+    // the turn are known right now — they are this image's, swapped.
+    const { w, h } = viewportSize();
+    const fit = Math.min(w / h0, h / w0, 1);
+    setFitScale(fit);
+    if (isFitted) setScale(fit);
+  };
 
   // Draw canvas
   const draw = useCallback(() => {
@@ -354,9 +413,15 @@ export default function ImageRedactor({ imageSrc, onConfirm, onCancel, perspecti
             className="p-2.5 bg-slate-100 rounded-lg hover:bg-slate-200 disabled:opacity-30" title="Zoom in">
             <ZoomIn className="w-4 h-4 text-slate-600" />
           </button>
+          {/* A page photographed sideways is turned here, and stays turned —
+              the upload, and the AI reading it, get the page this way up. */}
+          <button type="button" onClick={rotateQuarterTurn}
+            className="p-2.5 bg-slate-100 rounded-lg hover:bg-slate-200" title="Rotate the page a quarter turn">
+            <RotateCw className="w-4 h-4 text-slate-600" />
+          </button>
           <button type="button" onClick={undoLast} disabled={rects.length === 0}
             className="p-2.5 bg-slate-100 rounded-lg hover:bg-slate-200 disabled:opacity-30" title="Undo the last box">
-            <RotateCcw className="w-4 h-4 text-slate-600" />
+            <Undo2 className="w-4 h-4 text-slate-600" />
           </button>
         </div>
       </div>

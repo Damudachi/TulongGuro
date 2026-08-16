@@ -178,3 +178,47 @@ describe('the teacher activity list tells the same story as the student one', ()
     }
   });
 });
+
+describe('work the teacher uploads has no submission window', () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  /**
+   * A deadline on a teacher-upload activity is a due date for the paper, not a
+   * gate on the scanner.
+   *
+   * The papers were handed in on paper, on time; the teacher scans the stack
+   * whenever they get to it, which is routinely days later. Reading that date
+   * as a submission window meant the activity was labelled "(Closed)" to the
+   * teacher who was still entering marks for it, and every scan made afterwards
+   * was stamped "Submitted late" — a permanent flag on a child's record for
+   * their teacher's scheduling. Scores-only activities are the same case: there
+   * is no upload at all, so there is nothing to be late.
+   */
+  const PAST_DUE = { deadline: '2025-03-15', lateUntil: null };
+
+  it('is never late and never closed, however long after the due date', () => {
+    vi.setSystemTime(new Date(Date.UTC(2026, 0, 1)));   // ten months late
+    for (const mode of ['TEACHER_UPLOAD', 'MANUAL_SCORE']) {
+      const w = submissionWindow({ ...PAST_DUE, submissionMode: mode });
+      expect(w, mode).toMatchObject({ isLate: false, isClosed: false, acceptsLate: false });
+    }
+  });
+
+  it('still closes student-submit work on the same date', () => {
+    // The rule narrows to one mode; it does not soften the deadline that
+    // actually governs a learner pressing Submit.
+    vi.setSystemTime(new Date(MAR_15_CLOSE_UTC + 1000));
+    const w = submissionWindow({ ...PAST_DUE, submissionMode: 'STUDENT_SUBMIT' });
+    expect(w).toMatchObject({ isLate: true, isClosed: true });
+  });
+
+  it('treats an activity with no mode as student-submit', () => {
+    // Callers that select only the dates — and older rows — must keep the
+    // stricter reading. Guessing "teacher upload" here would quietly reopen a
+    // closed deadline for a learner.
+    vi.setSystemTime(new Date(MAR_15_CLOSE_UTC + 1000));
+    expect(submissionWindow(PAST_DUE)).toMatchObject({ isLate: true, isClosed: true });
+    expect(submissionWindow({ ...PAST_DUE, submissionMode: null })).toMatchObject({ isClosed: true });
+  });
+});

@@ -56,6 +56,19 @@ export function isPastDeadline(deadline) {
  * rule itself.
  */
 export function submissionWindow(activity) {
+  // Only a student-submit activity has a submission window at all.
+  //
+  // On teacher-upload and scores-only work there is nobody to be late: the
+  // teacher scans a stack of papers whenever they get to it, and the papers
+  // themselves were handed in on paper, on time, days earlier. Treating the due
+  // date as a gate meant an activity the teacher was still entering marks for
+  // was labelled "(Closed)" to them, and every scan they made afterwards was
+  // stamped "Submitted late" against a child who had done nothing of the sort.
+  // The date is still shown — it is a real due date — it just does not close
+  // anything.
+  if (activity && activity.submissionMode && activity.submissionMode !== 'STUDENT_SUBMIT') {
+    return { acceptsLate: false, isLate: false, isClosed: false, closesOn: null };
+  }
   const acceptsLate = !!activity?.lateUntil;
   return {
     acceptsLate,

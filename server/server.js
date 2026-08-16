@@ -3980,6 +3980,10 @@ const CARRIED_OVER_SELECT = {
   activity: {
     select: {
       id: true, title: true, points: true, component: true, deadline: true, classId: true,
+      // Whether a stored isLate flag describes the learner at all: on anything
+      // but a student-submit activity it records when the teacher scanned the
+      // paper, not when the child handed it in.
+      submissionMode: true,
       // subject + gradeLevel are what workingAverageAcrossSubjects keys its
       // per-subject grouping on. Without them every carried submission keys
       // as '|' — a phantom extra "subject" holding all of a student's carried
@@ -8599,7 +8603,11 @@ app.get('/api/teacher/:teacherId/student/:studentId/gradebook', async (req, res)
         // already decided does not count.
         status = 'EXCUSED';
       } else if (sub) {
-        status = sub.isLate ? 'LATE' : 'DONE';
+        // The stored flag, but only where it describes the learner. On a
+        // teacher-upload activity isLate records when the teacher scanned the
+        // stack, so a row stamped before that distinction existed would put
+        // LATE on a child's gradebook for their teacher's scanning backlog.
+        status = (sub.isLate && a.submissionMode === 'STUDENT_SUBMIT') ? 'LATE' : 'DONE';
       } else if (isPastDeadline(a.deadline)) {
         status = 'MISSING';
       } else {
@@ -8689,7 +8697,9 @@ app.get('/api/teacher/:teacherId/student/:studentId/gradebook', async (req, res)
           activityTitle: sub.activity.title,
           className: sub.activity.class?.name || '',
           deadline: sub.activity.deadline,
-          status: grading.isExcused(sub) ? 'EXCUSED' : (sub.isLate ? 'LATE' : 'DONE'),
+          status: grading.isExcused(sub)
+            ? 'EXCUSED'
+            : ((sub.isLate && sub.activity?.submissionMode === 'STUDENT_SUBMIT') ? 'LATE' : 'DONE'),
           grade: grading.gradePercentOf(sub) === null
             ? null
             : Math.round((grading.gradePercentOf(sub) / 100) * (sub.activity.points || 100)),
@@ -8993,6 +9003,19 @@ function isPastDeadline(deadline) {
  * screen has to describe the same rule the server enforces.
  */
 function submissionWindow(activity) {
+  // Only a student-submit activity has a submission window. Nobody can be late
+  // to work the teacher uploads themselves: the papers were handed in on paper,
+  // and the scanning happens whenever the teacher gets to the stack — often
+  // days after the due date, which is normal and not a fact about the child.
+  // Stamping isLate on those scans put a "Submitted late" flag on the learner's
+  // record for the teacher's own scheduling. See the matching rule in
+  // src/utils/deadlines.js.
+  //
+  // /api/student/submit refuses a non-STUDENT_SUBMIT activity before it gets
+  // here, so this cannot be used to slip a student past a closed deadline.
+  if (activity && activity.submissionMode && activity.submissionMode !== 'STUDENT_SUBMIT') {
+    return { isLate: false, isClosed: false, acceptsLate: false };
+  }
   const late = isPastDeadline(activity?.deadline);
   const closesAt = activity?.lateUntil || activity?.deadline;
   return { isLate: late, isClosed: isPastDeadline(closesAt), acceptsLate: !!activity?.lateUntil };
@@ -9154,15 +9177,23 @@ app.post('/api/teacher/upload', submissionUpload.fields([{ name: 'image', maxCou
       }
     }
 
-    // Whether this scan is a late one. Student self-submissions have always
-    // computed this via submissionWindow(); this teacher batch-upload path never
-    // did, so every submission scanned in through it read as on-time regardless
-    // of when the physical paper actually came in. Unlike the student endpoint,
-    // this does NOT block a late upload — a teacher entering a stack of papers
-    // handed in on time must still be able to scan them whenever they get to it —
-    // it only records the fact.
+    // Whether this scan is a late one — which, on a teacher-upload activity, it
+    // never is. submissionWindow() returns isLate: false for any mode but
+    // STUDENT_SUBMIT, because the date the teacher got round to scanning a
+    // stack of paper says nothing about when the child handed it in. This route
+    // is also reached for a learner without a device on a student-submit
+    // activity, and there the deadline does still describe the work, so the
+    // question is asked of the activity rather than assumed either way.
+    //
+    // submissionMode is in the select for exactly that reason: without it every
+    // scan looked like a student self-submission to the window check, and any
+    // stack entered after the due date was stamped "Submitted late" against the
+    // learner.
     const activityForWindow = activityId
-      ? await prisma.activity.findUnique({ where: { id: activityId }, select: { deadline: true, lateUntil: true } })
+      ? await prisma.activity.findUnique({
+          where: { id: activityId },
+          select: { deadline: true, lateUntil: true, submissionMode: true },
+        })
       : null;
     const isLate = activityForWindow ? submissionWindow(activityForWindow).isLate : false;
 
