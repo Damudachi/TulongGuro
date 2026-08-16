@@ -11,6 +11,7 @@
     "verify:routes": "node scripts/verify-route-authorization.js",
     "verify": "npm run verify:grading && npm run verify:dashboard && npm run verify:routes && npm test",
     "report:grades": "node scripts/grade-migration-report.js",
+    "export:observations": "node scripts/export-grading-observations.js",
     "test": "vitest run",
     "test:watch": "vitest"
   },

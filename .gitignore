@@ -21,6 +21,11 @@ server/uploads/
 # a record of one run against one model on one day, not a fixture.
 server/test-samples/generated/
 
+# CSVs from scripts/export-grading-observations.js. Regenerated on demand, and
+# they carry a run's worth of real grade data — pseudonymised, but still not
+# something to commit to a repository.
+server/observations/
+
 # IDE
 .vscode/
 .idea/
@@ -36,3 +41,7 @@ npm-debug.log*
 August 14 MightTeam_TulongGuro - Latest.docx
 /bugs screenshots
 *.docx
+
+# Output of research/analyze_observations.py — derived from a run's worth of
+# real grade data. Regenerated on demand from the exported CSVs.
+research/out/

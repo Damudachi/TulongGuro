@@ -550,3 +550,43 @@ model RubricTemplate {
   school       School?     @relation(fields: [schoolId], references: [id], onDelete: Cascade)
   teacher      User?       @relation("TeacherRubricTemplates", fields: [teacherId], references: [id], onDelete: Cascade)
 }
+
+/// One row per request actually sent to the model provider.
+///
+/// Exists for the Alpha-stage technical observation: latency per request, and
+/// how many requests a day's checking really consumed. Neither was recoverable
+/// before — timing was never measured, and the quota tally lives in
+/// `gradingPool[].used`, an in-memory counter that resets on every restart and
+/// rolls at midnight. A study that has to report those two numbers cannot read
+/// them from a counter that forgets.
+///
+/// One row per *attempt*, not per paper: a retry is a second request against
+/// the provider's allowance, so counting papers would under-report the spend.
+/// Writes are fire-and-forget and failures are swallowed — observation must
+/// never be able to fail a teacher's grading run.
+///
+/// Deliberately carries nothing about the paper: no submission link, no student,
+/// no prompt or response text. It answers "how did the service behave", and the
+/// pairing of AI draft to teacher decision is GradingAuditLog's job.
+model AiRequestLog {
+  id        String   @id @default(uuid())
+  /// GRADING | ASSIST | EXTRACT | PARSE | SELFCHECK | OTHER — which call site.
+  purpose   String
+  /// The model label the request was actually sent to, e.g. "gemini-3.6-flash#1".
+  model     String?
+  /// 0 for the first try; 1+ means this row is a retry of the same logical call.
+  attempt   Int      @default(0)
+  /// Wall-clock milliseconds from dispatch to response or error, including any
+  /// wait for a concurrency slot — which is what a teacher actually experiences.
+  latencyMs Int
+  ok        Boolean
+  /// OK | QUOTA | DAILY_QUOTA | TRANSIENT | BAD_IMAGE | ERROR
+  outcome   String
+  /// Truncated provider message on failure. Provider errors describe the
+  /// request, not the paper, so nothing about a learner reaches this column.
+  detail    String?
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([purpose, createdAt])
+}

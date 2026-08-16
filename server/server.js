@@ -1252,17 +1252,65 @@ class AiUnavailableError extends Error {
   }
 }
 
+/**
+ * Record one request to the model provider.
+ *
+ * Fire-and-forget by design: observation must never be able to fail, delay or
+ * roll back a teacher's grading run, so nothing awaits this and every error is
+ * swallowed — including the table not existing yet on a server whose migration
+ * has not been applied.
+ *
+ * @see AiRequestLog in schema.prisma for what this is for and what it must not carry.
+ */
+function logAiRequest(row) {
+  try {
+    prisma.aiRequestLog.create({
+      data: {
+        purpose: row.purpose || 'OTHER',
+        model: row.model || null,
+        attempt: row.attempt || 0,
+        latencyMs: Math.max(0, Math.round(row.latencyMs || 0)),
+        ok: !!row.ok,
+        outcome: row.outcome || (row.ok ? 'OK' : 'ERROR'),
+        detail: row.detail ? String(row.detail).slice(0, 300) : null,
+      },
+    }).catch(() => {});
+  } catch { /* never let observation break grading */ }
+}
+
+/** Which bucket a failed call belongs in, for the observation log. */
+function outcomeOf(cls) {
+  if (cls.dailyQuota) return 'DAILY_QUOTA';
+  if (cls.quota) return 'QUOTA';
+  if (cls.badImage) return 'BAD_IMAGE';
+  if (cls.transient) return 'TRANSIENT';
+  return 'ERROR';
+}
+
 // Wraps a Gemini generateContent() call with retry + backoff for transient
 // upstream failures (503 "high demand", per-minute 429s) so a momentary blip on
 // Google's side doesn't surface as a hard failure to the user.
-async function generateContentWithRetry(genModel, parts, { retries = 2, baseDelayMs = 800, poolEntry = null } = {}) {
+//
+// Also the one seam every model call in the app passes through — the grading
+// rotation, the lite fallback and the assist callers all funnel here — which is
+// why the per-request observation is taken at this level rather than at each
+// call site. `purpose` and `model` are passed in by callers that know them.
+async function generateContentWithRetry(genModel, parts, { retries = 2, baseDelayMs = 800, poolEntry = null, purpose = 'OTHER', modelLabel = null } = {}) {
   let lastErr;
   for (let attempt = 0; attempt <= retries; attempt++) {
+    // Started before the concurrency slot is acquired: queueing behind other
+    // papers is part of the wait a teacher actually sits through, and a figure
+    // that measured only Google's own turnaround would understate it.
+    const startedAt = Date.now();
     try {
       await acquireGeminiSlot();
       try {
         const result = await genModel.generateContent(parts);
         if (poolEntry) poolEntry.used++;
+        logAiRequest({
+          purpose, model: poolEntry?.label || modelLabel, attempt,
+          latencyMs: Date.now() - startedAt, ok: true, outcome: 'OK',
+        });
         return result;
       } finally {
         releaseGeminiSlot();
@@ -1270,6 +1318,11 @@ async function generateContentWithRetry(genModel, parts, { retries = 2, baseDela
     } catch (err) {
       lastErr = err;
       const cls = classifyAiError(err);
+      logAiRequest({
+        purpose, model: poolEntry?.label || modelLabel, attempt,
+        latencyMs: Date.now() - startedAt, ok: false,
+        outcome: outcomeOf(cls), detail: cls.message,
+      });
       if (poolEntry) {
         poolEntry.failed++;
         if (cls.dailyQuota) {
@@ -1321,7 +1374,7 @@ async function generateGradingContent(parts, opts = {}) {
   let last = null;
   for (const entry of rotation) {
     try {
-      const result = await generateContentWithRetry(entry.model, parts, { retries: 1, ...opts, poolEntry: entry });
+      const result = await generateContentWithRetry(entry.model, parts, { purpose: 'GRADING', retries: 1, ...opts, poolEntry: entry });
       return { result, modelId: entry.label };
     } catch (err) {
       last = classifyAiError(err);
@@ -1348,7 +1401,12 @@ async function generateContentWithFallback(primaryModel, parts, opts = {}) {
     const cls = classifyAiError(err);
     if ((cls.quota || cls.transient) && modelLite && primaryModel !== modelLite) {
       console.log(`⚠ Primary model still failing after retries, falling back to modelLite: ${cls.message.slice(0, 120)}`);
-      return await generateContentWithRetry(modelLite, parts, { retries: 1, baseDelayMs: opts.baseDelayMs || 800 });
+      return await generateContentWithRetry(modelLite, parts, {
+        purpose: opts.purpose || 'OTHER',
+        modelLabel: LITE_MODEL_ID,
+        retries: 1,
+        baseDelayMs: opts.baseDelayMs || 800,
+      });
     }
     throw err;
   }
@@ -1399,15 +1457,24 @@ async function runDailyQuotaSelfCheck() {
   lastQuotaSelfCheckDay = today;
 
   const entry = gradingPool[0];
+  // Logged like any other request: it goes to the provider and it is counted
+  // against the same daily allowance, so leaving it out would make the day's
+  // request total off by one against Google's own tally.
+  const startedAt = Date.now();
   try {
     await entry.model.generateContent('Reply with exactly one word: OK');
     // Counted against the tracked budget so gradingCapacitySnapshot's
     // teacher-facing "checks left today" stays honest about the one unit
     // this just spent.
     entry.used++;
+    logAiRequest({ purpose: 'SELFCHECK', model: entry.label, latencyMs: Date.now() - startedAt, ok: true, outcome: 'OK' });
     console.log(`✅ Quota self-check (${entry.label}): responded normally today.`);
   } catch (err) {
     const cls = classifyAiError(err);
+    logAiRequest({
+      purpose: 'SELFCHECK', model: entry.label, latencyMs: Date.now() - startedAt,
+      ok: false, outcome: outcomeOf(cls), detail: cls.message,
+    });
     if (cls.quota) {
       console.error(`🚨 Quota self-check (${entry.label}) hit a quota error before any real grading ran today — the configured daily budget (AI_DAILY_BUDGET_PER_MODEL=${AI_DAILY_BUDGET_PER_MODEL}) may no longer match what Google actually grants this project/tier. Full error: ${cls.message}`);
     } else {
@@ -3525,7 +3592,7 @@ async function extractRosterFromImage(localPath, mime) {
     const result = await generateContentWithFallback(model, [
       ROSTER_OCR_PROMPT,
       { inlineData: { data: fs.readFileSync(prepared).toString('base64'), mimeType: sentMime } }
-    ]);
+    ], { purpose: 'EXTRACT', modelLabel: PRIMARY_MODEL_ID });
     const text = (await result.response).text().replace(/```json\n?|\n?```/gi, '').trim();
 
     let parsed;
@@ -4748,7 +4815,7 @@ RULES:
       }
     }];
 
-    const result = await generateContentWithFallback(model, [parsePrompt, ...fileParts]);
+    const result = await generateContentWithFallback(model, [parsePrompt, ...fileParts], { purpose: 'PARSE', modelLabel: PRIMARY_MODEL_ID });
     const text = result.response.text();
     let cleaned = text
       .replace(/```json\s*/gi, '')
@@ -5460,7 +5527,7 @@ Rules:
     const result = await generateContentWithFallback(model, [
       prompt,
       { inlineData: { data: base64Data, mimeType } }
-    ]);
+    ], { purpose: 'EXTRACT', modelLabel: PRIMARY_MODEL_ID });
     const response = await result.response;
     let text = response.text();
     // Clean markdown code blocks if present
@@ -7302,7 +7369,7 @@ Teacher's Instruction: ${teacherPrompt}`;
         const result = await generateContentWithRetry(assistModel, {
           contents: [{ role: 'user', parts: [{ text: sys }] }],
           generationConfig: isStructured ? { responseMimeType: "application/json" } : undefined
-        });
+        }, { purpose: 'ASSIST', modelLabel: ASSIST_MODEL_ID });
         let text = result.response.text().trim();
         // Clean markdown code blocks just in case
         text = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
@@ -10240,4 +10307,5 @@ module.exports = {
   app, startServer, cleanUpTransferRows, carriedOverForClass, carriedOverPrefetch,
   resolveGradingRubric, rubricScoreNoteFor, UNGRADED_RESET,
   rubricIsPresent, isManualScoreMode,
+  logAiRequest, outcomeOf,
 };
