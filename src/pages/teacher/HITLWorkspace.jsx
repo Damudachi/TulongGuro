@@ -179,6 +179,28 @@ export default function HITLWorkspace() {
     // learner in a queue run would accuse a save that never ran.
     // eslint-disable-next-line react-hooks/set-state-in-effect -- flipping the loading flag ahead of an async read; the rule's alternative is a data-fetching library this app doesn't use
     setSaveError('');
+    // Everything below describes ONE paper, and this screen is reused for the
+    // next one in a run rather than remounted — so anything not cleared here
+    // becomes a statement about the previous learner. `isApproved` was the
+    // dangerous one: it was only ever set to true, so after the first validated
+    // paper every subsequent paper in the run arrived already "approved". The
+    // baseline is cleared alongside it so nothing reads as edited (or as
+    // unedited) until this paper's own values have actually loaded.
+    setIsApproved(false);
+    setBaseline(null);
+    setIsEditingAssessment(false);
+    // The rest of one paper's working state. These feed the body of the save
+    // request, so a value left over from the previous learner is not a display
+    // glitch — it is another child's rubric scores being written to this
+    // submission. Each is only assigned by the loader on the branches where the
+    // paper actually carries one, so without clearing them here they persist.
+    setScores({});
+    setDynamicRubric(null);
+    setCovData(null);
+    setStructuredFeedback({ ...EMPTY_STRUCTURED });
+    setLegacyFeedbackText('');
+    setReadingStrategy('');
+    setIsLongScan(false);
     if (!submissionId || submissionId === 'test123') {
       setLegacyFeedbackText("Your reflection on Crisostomo Ibarra's motivations was deep and insightful. However, the essay lacked clear paragraph transitions.");
       setReadingStrategy("Focus on 'Signpost Words' (however, therefore, consequently) in your next reading assignment.");
@@ -261,7 +283,7 @@ export default function HITLWorkspace() {
           if (sub.covData) {
             try { setCovData(JSON.parse(sub.covData)); } catch { /* no COV data to show */ }
           }
-          if (sub.status === 'GRADED') setIsApproved(true);
+          setIsApproved(sub.status === 'GRADED');
           setBaseline(editSnapshot({
             scores: nextScores || {},
             readingStrategy: sub.readingStrategy || '',
@@ -580,17 +602,20 @@ export default function HITLWorkspace() {
    * paper offered "Done" with four papers still ahead of it. The strip above
    * says "Paper 1 of 5"; the button has to mean the same set.
    *
+   * Strictly forwards, and that is the point. An earlier version fell back to
+   * an unreviewed paper *behind* this one when nothing followed, so that
+   * entering a run from the middle still covered the top — but a run that can
+   * go backwards can cycle, and it did: the last paper sent the teacher to an
+   * earlier one, whose own "next" was the last paper again, round and round
+   * with no way to reach the end. Papers left behind are reported by the
+   * summary and are one click away in the strip above; a run that never ends is
+   * not worth that convenience.
+   *
    * Papers skipped in this session are passed over — that is what Skip is for,
-   * and the summary at the end offers them back. If nothing follows this paper,
-   * an earlier unreviewed one is taken next, so entering a run from the middle
-   * still reaches the papers above before finishing.
+   * and the summary at the end offers them back.
    */
   const queueKnown = queue.length > 0;
-  const nextInQueue =
-    queue.slice(queueIndex + 1).find(q => !skipped.includes(q.id))
-    || (queueIndex > 0
-      ? queue.slice(0, queueIndex).find(q => !q.reviewed && !skipped.includes(q.id))
-      : undefined);
+  const nextInQueue = queue.slice(queueIndex + 1).find(q => !skipped.includes(q.id));
   // Only the genuine end of the run: the queue has loaded, and nothing follows.
   // Without the loaded check, the moment before the fetch returns has an empty
   // queue and therefore no next paper — which is indistinguishable from "you
