@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from 'react';
+import { useState, useRef, useEffect, useLayoutEffect, useCallback } from 'react';
 import { ShieldCheck, Eraser, Check, X, RotateCcw, ZoomIn, ZoomOut, Maximize2, Hand, Pencil } from 'lucide-react';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
@@ -118,9 +118,10 @@ export default function ImageRedactor({ imageSrc, onConfirm, onCancel, perspecti
   // phone and on a laptop: half the fitted size out, four times it in.
   const minScale = fitScale * 0.5;
   const maxScale = Math.max(fitScale * 4, 1);
+  const clampScale = (s) => Math.min(Math.max(s, minScale), maxScale);
   const zoomBy = (factor) => {
     setIsFitted(false);
-    setScale(s => Math.min(Math.max(s * factor, minScale), maxScale));
+    setScale(s => clampScale(s * factor));
   };
   const zoomToFit = () => { setIsFitted(true); setScale(fitScale); };
 
@@ -147,7 +148,28 @@ export default function ImageRedactor({ imageSrc, onConfirm, onCancel, perspecti
     }
   }, [img, rects, currentRect, scale]);
 
-  useEffect(() => { draw(); }, [draw]);
+  // Painted before the browser paints, so the scroll adjustment below measures
+  // a canvas that is already its new size.
+  useLayoutEffect(() => { draw(); }, [draw]);
+
+  /**
+   * Keep the middle of the view still while zooming.
+   *
+   * Without it, growing the canvas pushes the page down and to the right and
+   * the part being worked on slides off screen — on a phone, straight out of
+   * view. Runs as a layout effect so the scroll lands in the same frame as the
+   * resize rather than a visible jump after it.
+   */
+  const prevScaleRef = useRef(scale);
+  useLayoutEffect(() => {
+    const vp = viewportRef.current;
+    const prev = prevScaleRef.current;
+    prevScaleRef.current = scale;
+    if (!vp || !prev || prev === scale) return;
+    const ratio = scale / prev;
+    vp.scrollLeft = (vp.scrollLeft + vp.clientWidth / 2) * ratio - vp.clientWidth / 2;
+    vp.scrollTop = (vp.scrollTop + vp.clientHeight / 2) * ratio - vp.clientHeight / 2;
+  }, [scale]);
 
   const getCanvasCoords = (e) => {
     const canvas = canvasRef.current;
@@ -160,18 +182,81 @@ export default function ImageRedactor({ imageSrc, onConfirm, onCancel, perspecti
     };
   };
 
+  /** Where a mouse or the first finger is, in screen coordinates. */
+  const clientPoint = (e) => (e.touches?.[0]
+    ? { x: e.touches[0].clientX, y: e.touches[0].clientY }
+    : { x: e.clientX, y: e.clientY });
+  /**
+   * Stop the browser's own handling of a drag — but only for the mouse.
+   *
+   * React registers touchstart/touchmove passively at the root, so
+   * preventDefault() there does nothing except log a warning; what actually
+   * holds the touch gestures back is `touch-action: none` on the canvas and its
+   * scroll container. For the mouse it still matters: without it a drag across
+   * the canvas starts a native image/text drag instead of a redaction box.
+   */
+  const suppressNativeDrag = (e) => { if (!e.touches) e.preventDefault(); };
+  const pinchDistance = (touches) => Math.hypot(
+    touches[0].clientX - touches[1].clientX,
+    touches[0].clientY - touches[1].clientY,
+  );
+
+  // Panning and pinching are done here rather than handed to the browser.
+  //
+  // Letting the browser have the gesture (touch-action: auto) is what made a
+  // pinch zoom the entire app — header, buttons, the review panel behind it —
+  // instead of the scan. The canvas now swallows every touch in both modes and
+  // moves the scan itself: one finger drags it, two fingers scale it. Nothing
+  // outside this overlay ever changes size.
+  const panRef = useRef(null);      // { x, y, scrollLeft, scrollTop }
+  const pinchRef = useRef(null);    // { distance, scale }
+  const [isPanning, setIsPanning] = useState(false);
+
   const handleStart = (e) => {
-    // In pan mode the browser keeps the gesture and scrolls the page instead.
-    if (mode === 'pan') return;
-    e.preventDefault();
+    suppressNativeDrag(e);
+    // Two fingers means zoom, in either mode — a teacher shouldn't have to
+    // switch tools to look closer at what they are about to black out.
+    if (e.touches?.length === 2) {
+      pinchRef.current = { distance: pinchDistance(e.touches), scale };
+      panRef.current = null;
+      setIsDrawing(false);
+      setCurrentRect(null);
+      setStartPos(null);
+      return;
+    }
+    if (mode === 'pan') {
+      const p = clientPoint(e);
+      const vp = viewportRef.current;
+      panRef.current = { x: p.x, y: p.y, scrollLeft: vp?.scrollLeft || 0, scrollTop: vp?.scrollTop || 0 };
+      setIsPanning(true);
+      return;
+    }
     const coords = getCanvasCoords(e);
     setIsDrawing(true);
     setStartPos(coords);
   };
 
   const handleMove = (e) => {
-    if (mode === 'pan' || !isDrawing || !startPos) return;
-    e.preventDefault();
+    if (pinchRef.current && e.touches?.length === 2) {
+      const distance = pinchDistance(e.touches);
+      if (pinchRef.current.distance > 0) {
+        setIsFitted(false);
+        setScale(clampScale(pinchRef.current.scale * (distance / pinchRef.current.distance)));
+      }
+      return;
+    }
+    if (mode === 'pan') {
+      if (!panRef.current) return;
+      suppressNativeDrag(e);
+      const vp = viewportRef.current;
+      if (!vp) return;
+      const p = clientPoint(e);
+      vp.scrollLeft = panRef.current.scrollLeft - (p.x - panRef.current.x);
+      vp.scrollTop = panRef.current.scrollTop - (p.y - panRef.current.y);
+      return;
+    }
+    if (!isDrawing || !startPos) return;
+    suppressNativeDrag(e);
     const coords = getCanvasCoords(e);
     setCurrentRect({
       x: Math.min(startPos.x, coords.x),
@@ -182,13 +267,18 @@ export default function ImageRedactor({ imageSrc, onConfirm, onCancel, perspecti
   };
 
   const handleEnd = (e) => {
-    if (mode === 'pan') return;
+    pinchRef.current = null;
+    if (mode === 'pan') {
+      panRef.current = null;
+      setIsPanning(false);
+      return;
+    }
     if (!isDrawing || !currentRect) {
       setIsDrawing(false);
       setStartPos(null);
       return;
     }
-    e.preventDefault();
+    suppressNativeDrag(e);
     // Only save rectangles that are reasonably sized (not accidental clicks)
     if (currentRect.w > 5 && currentRect.h > 5) {
       setRects(prev => [...prev, currentRect]);
@@ -274,12 +364,16 @@ export default function ImageRedactor({ imageSrc, onConfirm, onCancel, perspecti
       {/* Canvas area. The canvas is centred with `mx-auto` rather than by
           flex-centring the scroll container: a flex-centred child that
           overflows both sides cannot be scrolled back to its left edge, which
-          is exactly the half of a zoomed-in page a name usually sits on. */}
-      <div ref={viewportRef} className="flex-1 overflow-auto p-4 min-h-0">
+          is exactly the half of a zoomed-in page a name usually sits on.
+
+          `touch-none` on the container as well as the canvas: a pinch that
+          starts on the padding beside the page would otherwise be the
+          browser's, and the browser zooms the whole app rather than the scan. */}
+      <div ref={viewportRef} className="flex-1 overflow-auto p-4 min-h-0 touch-none overscroll-contain">
         <canvas
           ref={canvasRef}
-          className={cn('rounded-lg shadow-lg block mx-auto',
-            mode === 'pan' ? 'cursor-grab touch-auto' : 'cursor-crosshair touch-none')}
+          className={cn('rounded-lg shadow-lg block mx-auto touch-none select-none',
+            mode === 'pan' ? (isPanning ? 'cursor-grabbing' : 'cursor-grab') : 'cursor-crosshair')}
           onMouseDown={handleStart}
           onMouseMove={handleMove}
           onMouseUp={handleEnd}
@@ -287,6 +381,7 @@ export default function ImageRedactor({ imageSrc, onConfirm, onCancel, perspecti
           onTouchStart={handleStart}
           onTouchMove={handleMove}
           onTouchEnd={handleEnd}
+          onTouchCancel={handleEnd}
         />
       </div>
 
@@ -295,7 +390,7 @@ export default function ImageRedactor({ imageSrc, onConfirm, onCancel, perspecti
         <p className="text-xs text-red-700 font-medium">
           <Eraser className="w-3 h-3 inline mr-1" />
           {mode === 'pan'
-            ? 'Move mode — drag or scroll to see the rest of the page, then switch back to draw.'
+            ? 'Move mode — drag the page around, or pinch to zoom it. Switch back to draw to cover a name.'
             : rects.length === 0
               ? copy.tip
               : `${rects.length} area(s) redacted. Add more or confirm below.`
