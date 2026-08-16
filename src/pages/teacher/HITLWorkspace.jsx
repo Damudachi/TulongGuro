@@ -575,16 +575,50 @@ export default function HITLWorkspace() {
   };
 
   // ── Queue navigation ──
+  //
+  // Which papers this run is about, fixed when the run starts.
+  //
+  // The list used to be every AI-checked paper on the activity, re-derived on
+  // each navigation. Two things were wrong with that. Papers validated and
+  // released weeks ago were still in it, so checking two new submissions on a
+  // five-pupil activity opened a run reading "Paper 2 of 5" and drew a progress
+  // bar three-fifths full of work that was already finished and published. And
+  // because it was re-derived, narrowing it to unreviewed papers would have
+  // shrunk the bar on every step — "Paper 2 of 5" becoming "Paper 1 of 3" as
+  // you worked, which is a progress bar that cannot be read.
+  //
+  // So membership is decided once, from what needed validating at the moment
+  // the run opened, and held for the rest of it. Only the reviewed/released
+  // flags are refreshed after that.
+  const runMembership = useRef({ activityId: null, ids: null });
+
   useEffect(() => {
     if (!queueActivityId) return;
     apiFetch(`${API_URL}/api/activities/${queueActivityId}/submissions`)
       .then(r => r.json())
       .then(d => {
         if (!d.success) return;
-        setQueue((d.submissions || [])
-          // Only papers that have something to review. An un-checked paper has
-          // no draft to approve, so it does not belong in a review run.
-          .filter(s => s.aiScore !== null || s.status === 'GRADED')
+        // Only papers that have something to review. An un-checked paper has
+        // no draft to approve, so it does not belong in a review run.
+        const reviewable = (d.submissions || []).filter(s => s.aiScore !== null || s.status === 'GRADED');
+
+        if (runMembership.current.activityId !== queueActivityId || !runMembership.current.ids) {
+          // The papers waiting on a decision, plus whichever one the teacher
+          // opened — they may well have arrived on an already-validated paper
+          // from the roster, and a run that excluded the paper on screen would
+          // be describing a set the teacher is not in.
+          const inRun = reviewable.filter(s => s.id === submissionId || s.status !== 'GRADED');
+          runMembership.current = {
+            activityId: queueActivityId,
+            // Nothing pending anywhere: fall back to the whole checked set
+            // rather than an empty strip that says "Paper 0 of 0".
+            ids: (inRun.length > 0 ? inRun : reviewable).map(s => s.id),
+          };
+        }
+
+        const inThisRun = new Set(runMembership.current.ids);
+        setQueue(reviewable
+          .filter(s => inThisRun.has(s.id))
           .map(s => ({
             id: s.id,
             studentName: s.student?.name || 'Student',
