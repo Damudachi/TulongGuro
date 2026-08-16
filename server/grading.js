@@ -84,6 +84,25 @@ const COMPONENTS = ['WW', 'PT', 'QA'];
 const PASSING_GRADE = 75;
 
 /**
+ * How many graded activities a learner needs before a low average is treated as
+ * a warning about the learner.
+ *
+ * One mark is not an average, it is a mark — and the first activity of a
+ * quarter is exactly where a hard rubric, an unfamiliar format or a bad day
+ * produces a number that says nothing about how the child is doing. Flagging on
+ * it told a teacher who had graded a single essay that a third of their class
+ * was failing, in a panel whose whole claim is "averaging below the passing
+ * grade". Three is the same evidence bar the trend rules already use (they need
+ * three scores before calling a slide), so the two agree on what counts as
+ * enough to say something.
+ *
+ * Deliberately about the count of graded work, not the calendar: a class that
+ * has genuinely only done one piece of work by December still has one data
+ * point, and waiting for the third is the honest reading either way.
+ */
+const MIN_GRADED_FOR_RISK = 3;
+
+/**
  * Scores are stored as a percentage of the rubric, so 0-100 is the only
  * meaningful range — there is no extra-credit concept anywhere in the model.
  */
@@ -430,6 +449,7 @@ function legacyAverage(graded) {
 module.exports = {
   COMPONENTS,
   PASSING_GRADE,
+  MIN_GRADED_FOR_RISK,
   DEPED_DEFAULT_WEIGHTS,
   MIN_SCORE,
   MAX_SCORE,

@@ -1954,6 +1954,14 @@ app.get('/api/admin/:adminId/analytics', async (req, res) => {
         const mine = byStudentInClass.get(st.id) || [];
         const avg = workingAverage(mine, policy);
         const band = bandOf(avg);
+        // The same evidence bar the teacher's own early-warning panel uses. A
+        // coordinator chasing a child their teacher's dashboard does not flag —
+        // because the whole class has done one activity — is a conversation
+        // that starts from a number nobody should be acting on yet. The band
+        // and the average themselves are still reported: this governs only
+        // whether the row is called out as needing support.
+        const countedForRisk = mine.filter(s => grading.countsAsGrade(s)).length;
+        const enoughToJudge = countedForRisk >= grading.MIN_GRADED_FOR_RISK;
         // NB: schoolBands is deliberately NOT incremented here. This loop runs
         // once per student per class, so a learner taking five subjects would
         // contribute five entries to a distribution shown directly beneath a
@@ -1979,12 +1987,12 @@ app.get('/api/admin/:adminId/analytics', async (req, res) => {
           average: avg,
           band,
           trend: trendOf(mine),
-          needsSupport: avg !== null && avg < passingGrade,
+          needsSupport: avg !== null && avg < passingGrade && enoughToJudge,
         });
 
         if (avg !== null) {
           averages.push(avg);
-          if (avg < passingGrade) {
+          if (avg < passingGrade && enoughToJudge) {
             atRisk.push({
               studentId: st.id, name: st.name, average: avg,
               className: cls.name, sectionName: cls.section?.name || '',
@@ -7658,8 +7666,21 @@ app.get('/api/teacher/:teacherId/analytics', async (req, res) => {
 
       // ── Who could use a hand? Stated as encouragement, not alarm. ──
       const reasons = [];
-      if (avgPercent !== null && avgPercent < passingGrade) {
-        reasons.push({ kind: 'average', label: `Averaging ${avgPercent}% so far`, detail: 'A short check-in could help.' });
+      // A low average is only a warning once there is an average to speak of.
+      // One graded activity below the line is a mark, not a trend — see
+      // MIN_GRADED_FOR_RISK — and flagging it made the dashboard announce a
+      // failing class on the strength of a single first essay.
+      //
+      // Counted over work that actually enters the average: an excused activity
+      // contributes nothing to avgPercent, so it is not evidence about the
+      // learner either.
+      const countedForRisk = subs.filter(s => grading.countsAsGrade(s)).length;
+      if (avgPercent !== null && avgPercent < passingGrade && countedForRisk >= grading.MIN_GRADED_FOR_RISK) {
+        reasons.push({
+          kind: 'average',
+          label: `Averaging ${avgPercent}% across ${countedForRisk} activities`,
+          detail: 'A short check-in could help.',
+        });
       }
       if (percents.length >= 3) {
         const recent = percents.slice(-3);
@@ -7684,6 +7705,10 @@ app.get('/api/teacher/:teacherId/analytics', async (req, res) => {
         const sec = studentToSection.get(student.id);
         needsSupport.push({
           student, avgPercent, reasons,
+          // How much work the judgement rests on, so a surface that shows it can
+          // say so rather than leaving "below the passing grade" to be read as
+          // a settled fact about the child.
+          gradedCount: countedForRisk,
           sectionId: sec?.sectionId || null,
           sectionName: sec?.sectionName || null,
         });
@@ -7745,7 +7770,11 @@ app.get('/api/teacher/:teacherId/analytics', async (req, res) => {
         bandDefs,
         // So the UI labels bands and at-risk copy with the school's own
         // threshold instead of a hard-coded 75.
-        passingGrade
+        passingGrade,
+        // How much graded work a learner needs before a low average counts as a
+        // warning, so the alert can say what it is waiting for instead of just
+        // showing nothing early in the quarter.
+        minGradedForRisk: grading.MIN_GRADED_FOR_RISK
         // gradingWeights was dropped here: it used to report one policy
         // (classes[0]'s) for the whole view, which stopped meaning anything
         // once each student's average is computed per-subject below — and the

@@ -36,6 +36,10 @@ export default function EarlyWarningPanel() {
   const failing = needsSupport.filter(e => e.severity === 'failing');
   const watch = needsSupport.filter(e => e.severity !== 'failing');
   const passingGrade = data.summary?.passingGrade ?? 75;
+  // The server only raises a low average once a learner has this much graded
+  // work behind it — said out loud so the count reads as a considered call
+  // rather than a verdict off one essay.
+  const minGradedForRisk = data.summary?.minGradedForRisk ?? 3;
 
   // ── Group entries by section ──
   const groupBySection = (entries) => {
@@ -110,7 +114,7 @@ export default function EarlyWarningPanel() {
           </h2>
           <p className="text-xs text-slate-600 mt-0.5">
             {failing.length > 0
-              ? 'Averaging below the passing grade. A check-in now is easier than a remedial later.'
+              ? `Averaging below the passing grade over ${minGradedForRisk} or more graded activities. A check-in now is easier than a remedial later.`
               : 'Still passing, but their recent scores have been sliding.'}
           </p>
         </div>

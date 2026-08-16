@@ -178,6 +178,9 @@ export default function Analytics() {
   // The school's threshold drives every band, colour and label below. Falls
   // back to DepEd's 75 only until the analytics payload lands.
   const passingGrade = summary.passingGrade ?? DEFAULT_PASSING_GRADE;
+  // How much graded work stands behind a "needs support" call. Reported by the
+  // server so this copy can never claim a bar the rule isn't actually applying.
+  const minGradedForRisk = summary.minGradedForRisk ?? 3;
 
   const curriculumSkills = data?.curriculumSkills || [];
   const skillById = Object.fromEntries(curriculumSkills.map(s => [s.id, s]));
@@ -508,12 +511,20 @@ export default function Analytics() {
                   </div>
                   Who could use a hand
                 </h2>
-                <p className="text-xs text-slate-500 mb-4">Suggestions only — you know your class best.</p>
+                <p className="text-xs text-slate-500 mb-4">
+                  Suggestions only — you know your class best. A low average is
+                  only raised here once a learner has {minGradedForRisk} graded
+                  activities behind it.
+                </p>
                 {needsSupport.length === 0 ? (
                   <div className="text-center py-8">
                     <Trophy className="w-10 h-10 mx-auto mb-2 text-lime-500" />
                     <p className="font-bold text-navy-700">Everyone&apos;s tracking well 🎉</p>
-                    <p className="text-sm text-slate-500 mt-0.5">No one is falling behind right now.</p>
+                    <p className="text-sm text-slate-500 mt-0.5">
+                      {summary.gradedCount > 0 && summary.gradedCount < minGradedForRisk * 2
+                        ? `Too early to say much — averages are raised here after ${minGradedForRisk} graded activities per learner.`
+                        : 'No one is falling behind right now.'}
+                    </p>
                   </div>
                 ) : (
                   <div className="space-y-4">
