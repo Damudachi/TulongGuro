@@ -570,8 +570,32 @@ export default function HITLWorkspace() {
       .catch(() => {});
   };
 
-  /** The next paper this run would go to, or undefined at the end of it. */
-  const nextInQueue = queue.find(q => q.id !== submissionId && !q.reviewed && !skipped.includes(q.id));
+  /**
+   * The next paper in the run — the one after this in the queue's own order.
+   *
+   * Positional, not "the first one still unreviewed". Asking for the first
+   * unreviewed paper made the run end wherever the unreviewed ones happened to
+   * run out, which is not the end of the set: re-opening a run whose papers had
+   * already been validated found nothing unreviewed anywhere, so the very first
+   * paper offered "Done" with four papers still ahead of it. The strip above
+   * says "Paper 1 of 5"; the button has to mean the same set.
+   *
+   * Papers skipped in this session are passed over — that is what Skip is for,
+   * and the summary at the end offers them back. If nothing follows this paper,
+   * an earlier unreviewed one is taken next, so entering a run from the middle
+   * still reaches the papers above before finishing.
+   */
+  const queueKnown = queue.length > 0;
+  const nextInQueue =
+    queue.slice(queueIndex + 1).find(q => !skipped.includes(q.id))
+    || (queueIndex > 0
+      ? queue.slice(0, queueIndex).find(q => !q.reviewed && !skipped.includes(q.id))
+      : undefined);
+  // Only the genuine end of the run: the queue has loaded, and nothing follows.
+  // Without the loaded check, the moment before the fetch returns has an empty
+  // queue and therefore no next paper — which is indistinguishable from "you
+  // have finished" unless it is asked separately.
+  const isLastInRun = !!queueActivityId && queueKnown && !nextInQueue;
 
   /**
    * What the primary button will actually do, decided once.
@@ -579,17 +603,27 @@ export default function HITLWorkspace() {
    * The label, the icon and the handler all read this, because a button that
    * says one thing and does another is worse than a vague one — and this button
    * carries three different jobs depending on where the teacher is in a run.
+   *
+   * Note there is no "Done" during a run: finishing IS validating the last
+   * paper, and the summary that follows is the done state. A button that said
+   * Done before the last paper had been through was offering to end a run the
+   * teacher had not finished.
    */
   const validateAction =
     (isApproved && isDirty) ? { label: 'Save Changes', finishes: false }
-      : (queueActivityId && nextInQueue) ? { label: 'Validate & next', finishes: false }
-        : isApproved ? { label: 'Done', finishes: true }
-          : { label: queueActivityId ? 'Validate & done' : 'Validate', finishes: false };
+      : isLastInRun ? { label: 'Validate & done', finishes: true }
+        : queueActivityId ? { label: 'Validate & next', finishes: false }
+          // Outside a run this only renders while an already-validated paper is
+          // being edited, so with nothing changed the press just closes the
+          // editor — which is "done", not another validation.
+          : isApproved ? { label: 'Done', finishes: true }
+            : { label: 'Validate', finishes: false };
 
   const goToNext = () => {
-    const next = queue.find(q => q.id !== submissionId && !q.reviewed && !skipped.includes(q.id));
-    if (next) {
-      navigate(`/teacher/review/${next.id}?queue=${queueActivityId}`);
+    // The same paper the button named. Resolved from one place so the label can
+    // never promise a next paper the navigation then declines to open.
+    if (nextInQueue) {
+      navigate(`/teacher/review/${nextInQueue.id}?queue=${queueActivityId}`);
     } else {
       loadReleaseState();
       setShowSummary(true);
