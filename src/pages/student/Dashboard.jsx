@@ -12,6 +12,7 @@ import { firstNameFromRoster } from '../../utils/roster';
 import { getStoredUser } from '../../utils/session';
 import { mergeActivitySnapshot, readActivitySnapshot } from '../../utils/offlineSnapshot';
 import { isPastDeadline } from '../../utils/deadlines';
+import BadgeCelebration from '../../components/BadgeCelebration';
 
 /**
  * Shown once, the first time a learner has a grade to actually look at.
@@ -136,6 +137,12 @@ export default function StudentDashboard() {
   return (
     <div className="tg-page pt-4 md:pt-8 max-w-4xl mx-auto">
       {/* ── Onboarding welcome — one screen, once, after the first grade ── */}
+      {/* Held back while the welcome modal is up. A learner's very first
+          released grade can earn several badges on the same load that first
+          opens that modal, and confetti stacked on top of "here is how this app
+          works" is two things competing for the same nine-year-old. */}
+      <BadgeCelebration badges={data?.justEarnedBadges} paused={showWelcome} />
+
       {showWelcome && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-navy-900/50 backdrop-blur-sm">
           <div className="bg-white rounded-[2rem] w-full max-w-md overflow-hidden shadow-card-lg animate-pop-in">

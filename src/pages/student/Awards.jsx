@@ -5,6 +5,7 @@ import {
 } from 'lucide-react';
 import { API_URL, apiFetch } from '../../config';
 import { badgeLook } from '../../constants/badgeLook';
+import BadgeCelebration from '../../components/BadgeCelebration';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
 
@@ -74,6 +75,12 @@ const styleFor = (badge) => {
 export default function Awards() {
   const [stars, setStars] = useState(0);
   const [badges, setBadges] = useState([]);
+  // A learner who opens the trophy room before their dashboard is the one most
+  // likely to be looking for a badge they have just been told about, so the
+  // celebration is mounted here too. Both screens read the same endpoint, and
+  // the acknowledgement it sends on dismissal is what stops them showing the
+  // same badge twice.
+  const [justEarned, setJustEarned] = useState(null);
 
   useEffect(() => {
     const user = JSON.parse(localStorage.getItem('user') || '{}');
@@ -84,6 +91,7 @@ export default function Awards() {
         if (!d.success) return;
         setStars(d.stars || 0);
         setBadges(d.badges || []);
+        setJustEarned(d.justEarnedBadges || null);
       })
       .catch(() => {});
   }, []);
@@ -94,6 +102,8 @@ export default function Awards() {
 
   return (
     <div className="p-4 md:p-8 max-w-3xl mx-auto pb-24">
+      <BadgeCelebration badges={justEarned} />
+
       <div className="mb-7">
         <h1 className="font-display text-3xl font-extrabold text-navy-700">Trophy Room 🏆</h1>
         <p className="text-navy-500 text-sm font-semibold mt-1">Your earned achievements and badges</p>

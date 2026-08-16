@@ -191,6 +191,20 @@ model StudentBadge {
   /// was created to prevent.
   label     String?
   earnedAt  DateTime @default(now())
+  /// When the learner was actually shown the "you earned this" moment.
+  ///
+  /// Separate from earnedAt because the two genuinely differ: a badge is
+  /// awarded by whichever dashboard load first computes it, and the child may
+  /// well have closed the tab, been called to line up, or opened the app only
+  /// long enough for it to load. Firing the celebration off "was this row
+  /// inserted on this request" would then spend the moment on a screen nobody
+  /// was looking at, and it could never come back.
+  ///
+  /// Null means "owed a celebration", so it survives any number of missed
+  /// loads and fires exactly once, on any device. Backfilled to earnedAt for
+  /// every row that predates this column — otherwise every learner already
+  /// holding badges would meet a queue of confetti for wins from weeks ago.
+  celebratedAt DateTime?
   student   User     @relation(fields: [studentId], references: [id], onDelete: Cascade)
 
   @@unique([studentId, badgeId])

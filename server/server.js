@@ -8419,7 +8419,9 @@ async function badgesForStudent({ studentId, submissions, passingGrade, sectionI
       where: { studentId },
       // `label` is the name a teacher badge had when it was earned, kept only
       // so a badge whose author's account is gone still has something to say.
-      select: { badgeId: true, label: true },
+      // `celebratedAt` is what decides whether the learner is still owed the
+      // moment — see the note on the column.
+      select: { badgeId: true, label: true, celebratedAt: true },
     });
     already = new Set(storedRows.map(b => b.badgeId));
   } catch {
@@ -8475,6 +8477,13 @@ async function badgesForStudent({ studentId, submissions, passingGrade, sectionI
    */
   const readingOwnRecord = auth?.sub === studentId;
 
+  // Badges the learner has never actually been shown winning. Seeded from the
+  // rows already on record, because a badge awarded on a load the child never
+  // looked at is still owed its moment; the inserts below add to it.
+  const owedCelebration = new Set(
+    storedRows.filter(r => !r.celebratedAt).map(r => r.badgeId)
+  );
+
   const newlyEarned = all.filter(b => b.earned && !already.has(b.id));
   if (storeAvailable && readingOwnRecord && newlyEarned.length > 0) {
     // One insert per badge rather than a createMany with skipDuplicates,
@@ -8492,6 +8501,11 @@ async function badgesForStudent({ studentId, submissions, passingGrade, sectionI
             label: badge.custom ? badge.title : null,
           },
         });
+        // Reached only when the insert above actually happened, so the two
+        // things that should happen once each — the notification, and the
+        // celebration this badge is now owed — happen once each. The tab that
+        // loses the race throws on the unique pair and skips both.
+        owedCelebration.add(badge.id);
         if (badge.custom) {
           await createNotification(studentId, {
             type: 'BADGE_EARNED',
@@ -8532,7 +8546,19 @@ async function badgesForStudent({ studentId, submissions, passingGrade, sectionI
     });
   }
 
-  return shown;
+  /**
+   * The badges to celebrate on screen, in the order they were earned.
+   *
+   * Only ever for the learner themselves. A teacher previewing the dashboard
+   * must not be handed a celebration payload — nothing renders it there, but a
+   * staff read is also the one case where these are computed from marks the
+   * child has not been shown, and the two must never be confused.
+   */
+  const justEarned = readingOwnRecord
+    ? shown.filter(b => b.earned && owedCelebration.has(b.id))
+    : [];
+
+  return { badges: shown, justEarned };
 }
 
 // ─────────────────────────────────────────
@@ -8613,7 +8639,7 @@ app.get('/api/student/:studentId/dashboard', async (req, res) => {
     ]).size;
     const { passingGrade } = await gradingSettingsFor(schoolIdForStudent);
     const stars = grading.starsFor(submissions, passingGrade);
-    const badges = await badgesForStudent({
+    const { badges, justEarned: justEarnedBadges } = await badgesForStudent({
       studentId: req.params.studentId,
       submissions,
       passingGrade,
@@ -8684,8 +8710,42 @@ app.get('/api/student/:studentId/dashboard', async (req, res) => {
       success: true, student, submissions, pendingSubmissions, avgGrade,
       avgGradeSubjectsIncluded, avgGradeSubjectsTotal,
       avgGradePartial: avgGradeSubjectsTotal > 0 && avgGradeSubjectsIncluded < avgGradeSubjectsTotal,
-      stars, badges, passingGrade, avgSkills, latestStrategy, upcomingDeadlines
+      stars, badges, justEarnedBadges, passingGrade, avgSkills, latestStrategy, upcomingDeadlines
     });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+/**
+ * "I have shown the learner these badges" — sent by the celebration once the
+ * child has actually dismissed it.
+ *
+ * Scoped to `req.auth.sub`, never to the id in the path. authorizePath already
+ * refuses a student reaching for another student's segment, and staff are let
+ * through this area on purpose (the teacher analytics screen reads a learner's
+ * dashboard) — so keying the write to the caller means a teacher hitting this
+ * marks nothing at all, rather than spending a child's moment for them.
+ *
+ * Idempotent by construction: `celebratedAt: null` in the where clause means a
+ * repeat call, a double-tap or a retry after a dropped connection all match
+ * zero rows the second time instead of moving the timestamp.
+ */
+app.post('/api/student/:studentId/badges/celebrated', async (req, res) => {
+  try {
+    const badgeIds = Array.isArray(req.body?.badgeIds)
+      // Capped and type-filtered: this is a client-supplied list going into an
+      // IN clause, and neither a 10,000-element array nor a nested object
+      // should reach the query planner.
+      ? req.body.badgeIds.filter(id => typeof id === 'string' && id).slice(0, 50)
+      : [];
+    if (badgeIds.length === 0) return res.json({ success: true, marked: 0 });
+
+    const result = await prisma.studentBadge.updateMany({
+      where: { studentId: req.auth.sub, badgeId: { in: badgeIds }, celebratedAt: null },
+      data: { celebratedAt: new Date() },
+    });
+    res.json({ success: true, marked: result.count });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
   }

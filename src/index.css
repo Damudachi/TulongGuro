@@ -203,4 +203,22 @@
       opacity: 1;
     }
   }
+  /* ── Confetti ──
+     Purely decorative, and the one piece of motion in this app big enough to
+     be a problem for somebody: a full-screen shower of moving objects is
+     exactly what vestibular disorders and motion sensitivity react to. Removed
+     entirely under a reduced-motion preference rather than slowed down — the
+     celebration it decorates still shows the badge, the name and the score, so
+     nothing that carries meaning is lost with it. */
+  .tg-confetti-piece {
+    position: absolute;
+    top: 0;
+    will-change: transform, opacity;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .tg-confetti-piece {
+      display: none;
+    }
+  }
 }

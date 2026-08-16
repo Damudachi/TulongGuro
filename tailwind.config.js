@@ -138,10 +138,30 @@ export default {
           '0%, 100%': { transform: 'translateY(0)' },
           '50%': { transform: 'translateY(-8px)' },
         },
+        // One piece of confetti falling the height of the viewport. Every value
+        // that should differ between pieces — where it starts, how far it
+        // drifts sideways, how long it takes, its colour — is set inline on the
+        // element, so the shared keyframe stays one rule rather than fifty.
+        // `--tg-drift` defaults to 0 so a piece with no drift set still falls
+        // straight down instead of resolving to an invalid transform.
+        'confetti-fall': {
+          '0%':   { opacity: '0', transform: 'translate3d(0, -12vh, 0) rotate(0deg)' },
+          '8%':   { opacity: '1' },
+          '85%':  { opacity: '1' },
+          '100%': { opacity: '0', transform: 'translate3d(var(--tg-drift, 0px), 104vh, 0) rotate(var(--tg-spin, 720deg))' },
+        },
+        // The badge's own arrival: overshoots, then settles.
+        'badge-land': {
+          '0%':   { opacity: '0', transform: 'scale(0.3) rotate(-18deg)' },
+          '60%':  { opacity: '1', transform: 'scale(1.12) rotate(6deg)' },
+          '100%': { opacity: '1', transform: 'scale(1) rotate(0deg)' },
+        },
       },
       animation: {
         'pop-in': 'pop-in 0.35s cubic-bezier(0.34, 1.56, 0.64, 1) both',
         'float': 'float 6s ease-in-out infinite',
+        'confetti-fall': 'confetti-fall 3s linear forwards',
+        'badge-land': 'badge-land 0.6s cubic-bezier(0.34, 1.56, 0.64, 1) both',
       },
     },
   },

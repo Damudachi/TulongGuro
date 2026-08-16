@@ -2343,6 +2343,142 @@ describe('a badge a teacher wrote', () => {
   });
 });
 
+describe('the moment a learner is told they won something', () => {
+  const STUDENT = 'student-party';
+
+  const arm = ({ own = [], storedBadges = [] } = {}) => {
+    prismaFake.user.findUnique.mockImplementation(({ where }) => {
+      if (where.id === STUDENT) {
+        return Promise.resolve({
+          id: STUDENT, sectionId: null, schoolId: null, sessionsValidFrom: null, section: null,
+        });
+      }
+      return Promise.resolve({ schoolId: null, sessionsValidFrom: null });
+    });
+    prismaFake.submission.findMany.mockResolvedValue(own);
+    prismaFake.studentBadge.findMany.mockResolvedValue(storedBadges);
+    prismaFake.activity.findMany.mockResolvedValue([]);
+  };
+
+  const graded = (percent) => ({
+    id: 'sub-1', studentId: STUDENT, activityId: 'a1',
+    hitlScore: percent, aiScore: null, status: 'GRADED', isLate: false,
+    readingStrategy: null, skillScores: null,
+    gradedAt: '2026-03-01T00:00:00Z', createdAt: '2026-03-01T00:00:00Z',
+    updatedAt: '2026-03-01T00:00:00Z', releasedAt: new Date(),
+    activity: { type: 'Essay', points: 100, class: { subject: 'English', gradeLevel: 'Grade 6' } },
+  });
+
+  const celebrations = async (token) => {
+    const res = await call('GET', `/api/student/${STUDENT}/dashboard`, { token });
+    expect(res.status).toBe(200);
+    return (await res.json()).justEarnedBadges;
+  };
+
+  it('hands back a badge the learner has just earned', async () => {
+    arm({ own: [graded(95)] });
+
+    const owed = await celebrations(tokenFor({ id: STUDENT, role: 'STUDENT' }));
+    expect(owed.map(b => b.id)).toContain('first-star');
+    // Enough to draw the badge itself, not just name it.
+    expect(owed.find(b => b.id === 'first-star')).toMatchObject({ earned: true, title: 'First Star' });
+  });
+
+  it('still owes one that was awarded on a load nobody looked at', async () => {
+    // The whole reason this is a stored timestamp rather than "was this row
+    // inserted on this request": the badge waits for the child instead of
+    // being spent on a screen they had already closed.
+    arm({ own: [graded(95)], storedBadges: [{ badgeId: 'first-star', label: null, celebratedAt: null }] });
+
+    expect((await celebrations(tokenFor({ id: STUDENT, role: 'STUDENT' }))).map(b => b.id))
+      .toContain('first-star');
+  });
+
+  it('does not celebrate one the learner has already been shown', async () => {
+    arm({
+      own: [graded(95)],
+      storedBadges: [
+        { badgeId: 'first-star', label: null, celebratedAt: new Date() },
+        { badgeId: 'first-steps', label: null, celebratedAt: new Date() },
+      ],
+    });
+
+    expect(await celebrations(tokenFor({ id: STUDENT, role: 'STUDENT' }))).toEqual([]);
+  });
+
+  it('never hands a celebration to a teacher previewing the dashboard', async () => {
+    // Staff see validated-but-unreleased marks here on purpose. A celebration
+    // computed from those would be spent on a grade the child has not been
+    // shown — and the teacher has nothing to celebrate on their behalf.
+    arm({ own: [graded(95)] });
+    prismaFake.user.findUnique.mockImplementation(({ where }) => {
+      if (where.id === STUDENT) {
+        return Promise.resolve({
+          id: STUDENT, sectionId: 'sec-1', schoolId: null, sessionsValidFrom: null,
+          section: { id: 'sec-1', schoolId: null, teacherId: T1, classes: [] },
+        });
+      }
+      return Promise.resolve({ schoolId: null, sessionsValidFrom: null });
+    });
+
+    expect(await celebrations(tokenFor({ id: T1, role: 'TEACHER' }))).toEqual([]);
+  });
+});
+
+describe('marking a celebration as seen', () => {
+  const STUDENT = 'student-ack';
+  const url = `/api/student/${STUDENT}/badges/celebrated`;
+
+  it('marks only the caller\'s own rows, and only uncelebrated ones', async () => {
+    prismaFake.studentBadge.updateMany.mockResolvedValue({ count: 1 });
+
+    const res = await call('POST', url, {
+      token: tokenFor({ id: STUDENT, role: 'STUDENT' }),
+      body: { badgeIds: ['first-star'] },
+    });
+
+    expect(res.status).toBe(200);
+    const { where } = prismaFake.studentBadge.updateMany.mock.calls[0][0];
+    // Keyed to the session, not to the id in the path.
+    expect(where.studentId).toBe(STUDENT);
+    // Idempotent by construction: a repeat call matches nothing the second time
+    // rather than moving the timestamp.
+    expect(where.celebratedAt).toBe(null);
+  });
+
+  it('refuses one student marking another\'s badges seen', async () => {
+    const res = await call('POST', `/api/student/someone-else/badges/celebrated`, {
+      token: tokenFor({ id: STUDENT, role: 'STUDENT' }),
+      body: { badgeIds: ['first-star'] },
+    });
+
+    expect(res.status).toBe(403);
+    expect(prismaFake.studentBadge.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('writes nothing for an empty or junk list', async () => {
+    for (const badgeIds of [[], undefined, 'first-star', [1, null, {}]]) {
+      prismaFake.studentBadge.updateMany.mockClear();
+      const res = await call('POST', url, {
+        token: tokenFor({ id: STUDENT, role: 'STUDENT' }), body: { badgeIds },
+      });
+      expect(res.status).toBe(200);
+      expect(prismaFake.studentBadge.updateMany).not.toHaveBeenCalled();
+    }
+  });
+
+  it('caps how many ids one call can carry into the IN clause', async () => {
+    prismaFake.studentBadge.updateMany.mockResolvedValue({ count: 0 });
+
+    await call('POST', url, {
+      token: tokenFor({ id: STUDENT, role: 'STUDENT' }),
+      body: { badgeIds: Array.from({ length: 500 }, (_, i) => `b${i}`) },
+    });
+
+    expect(prismaFake.studentBadge.updateMany.mock.calls[0][0].where.badgeId.in).toHaveLength(50);
+  });
+});
+
 describe('a teacher\'s badge library belongs to that teacher', () => {
   const BADGE = 'badge-1';
   const OTHER_TEACHER = 'teacher-2';
