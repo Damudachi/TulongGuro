@@ -100,6 +100,11 @@ export default function HITLWorkspace() {
   const queueActivityId = searchParams.get('queue');
   const [queue, setQueue] = useState([]);          // [{ id, studentName, reviewed }]
   const [skipped, setSkipped] = useState([]);      // submission ids passed over this run
+  // Submission ids validated during this run. The queue's own `reviewed` flags
+  // come from the server on each navigation; this is what the screen knows
+  // first-hand, so the run can never be sent back to a paper it just finished
+  // because a re-read had not caught up yet.
+  const [reviewedNow, setReviewedNow] = useState([]);
   const [showSummary, setShowSummary] = useState(false);
   const [releaseState, setReleaseState] = useState(null);  // { total, reviewed, released, readyToRelease }
   const [isReleasing, setIsReleasing] = useState(false);
@@ -477,6 +482,10 @@ export default function HITLWorkspace() {
   };
 
   // ── Save / Validate ──
+  /** This paper is done as far as this run is concerned. */
+  const markReviewedNow = () =>
+    setReviewedNow(prev => (prev.includes(submissionId) ? prev : [...prev, submissionId]));
+
   /**
    * Records the mark.
    *
@@ -494,7 +503,10 @@ export default function HITLWorkspace() {
     // would write another entry to the paper's grade history and make the
     // record claim the teacher changed a mark they only looked at.
     if (isApproved && !isDirty) {
-      if (queueActivityId) goToNext();
+      if (queueActivityId) {
+        markReviewedNow();
+        goToNext();
+      }
       // Outside a run, closing the editor puts the release/done view back —
       // there is nothing else this press could honestly mean.
       else setIsEditingAssessment(false);
@@ -539,6 +551,7 @@ export default function HITLWorkspace() {
       // What was just written is the new "unchanged" state, so the button drops
       // back to offering the next paper rather than another save.
       setBaseline(currentSnapshot);
+      markReviewedNow();
 
       // "Time-Saved" Celebration — first validation only
       const user = JSON.parse(localStorage.getItem('user') || '{}');
@@ -593,33 +606,38 @@ export default function HITLWorkspace() {
   };
 
   /**
-   * The next paper in the run — the one after this in the queue's own order.
+   * The next paper in the run: the next one that still needs validating.
    *
-   * Positional, not "the first one still unreviewed". Asking for the first
-   * unreviewed paper made the run end wherever the unreviewed ones happened to
-   * run out, which is not the end of the set: re-opening a run whose papers had
-   * already been validated found nothing unreviewed anywhere, so the very first
-   * paper offered "Done" with four papers still ahead of it. The strip above
-   * says "Paper 1 of 5"; the button has to mean the same set.
+   * Reading order first — the paper after this one in the queue's own order —
+   * then wrapping to the top for anything left above. Both halves are needed,
+   * and each was a bug on its own:
    *
-   * Strictly forwards, and that is the point. An earlier version fell back to
-   * an unreviewed paper *behind* this one when nothing followed, so that
-   * entering a run from the middle still covered the top — but a run that can
-   * go backwards can cycle, and it did: the last paper sent the teacher to an
-   * earlier one, whose own "next" was the last paper again, round and round
-   * with no way to reach the end. Papers left behind are reported by the
-   * summary and are one click away in the strip above; a run that never ends is
-   * not worth that convenience.
+   *   • "The first unreviewed paper anywhere" ended the run wherever the
+   *     unreviewed ones ran out rather than at the end of the set, so
+   *     re-opening a finished run offered "Done" on paper 1 of 5.
+   *   • Strictly forwards ended the run at whichever paper happened to be last
+   *     in the list — enter the queue on that one, validate it, and the summary
+   *     appeared with two papers still waiting.
    *
-   * Papers skipped in this session are passed over — that is what Skip is for,
-   * and the summary at the end offers them back.
+   * The run is over when no paper in this batch still needs validating. Papers
+   * skipped in this session are passed over (that is what Skip is for, and the
+   * summary offers them back); papers already validated are passed over because
+   * there is nothing to do to them.
+   *
+   * `reviewedNow` is what makes the wrap safe. A run that can go backwards can
+   * cycle if a paper never stops being unreviewed, so validation is remembered
+   * here as well as read from the server — the local answer cannot lag behind
+   * what this screen has just done.
    */
   const queueKnown = queue.length > 0;
-  const nextInQueue = queue.slice(queueIndex + 1).find(q => !skipped.includes(q.id));
-  // Only the genuine end of the run: the queue has loaded, and nothing follows.
-  // Without the loaded check, the moment before the fetch returns has an empty
-  // queue and therefore no next paper — which is indistinguishable from "you
-  // have finished" unless it is asked separately.
+  const stillNeedsReview = (q) =>
+    q.id !== submissionId && !q.reviewed && !reviewedNow.includes(q.id) && !skipped.includes(q.id);
+  const nextInQueue = queue.slice(queueIndex + 1).find(stillNeedsReview)
+    || queue.find(stillNeedsReview);
+  // Only the genuine end of the run: the queue has loaded, and nothing is left
+  // to validate. Without the loaded check, the moment before the fetch returns
+  // has an empty queue and therefore no next paper — which is
+  // indistinguishable from "you have finished" unless it is asked separately.
   const isLastInRun = !!queueActivityId && queueKnown && !nextInQueue;
 
   /**
@@ -1542,13 +1560,28 @@ export default function HITLWorkspace() {
               <div className="w-14 h-14 bg-green-50 text-brand-green rounded-full flex items-center justify-center mx-auto mb-4">
                 <CheckCircle2 className="w-7 h-7" />
               </div>
-              <h3 className="text-lg font-bold text-brand-slate mb-1">Review complete</h3>
+              {/* "Review complete" over "1 of 3 papers reviewed" is the run
+                  contradicting itself. The count is the whole activity's — a
+                  paper that was never AI-checked is not in this run and cannot
+                  be reviewed from it — so the two numbers are about different
+                  sets, and the heading has to say which one it is claiming. */}
+              <h3 className="text-lg font-bold text-brand-slate mb-1">
+                {skipped.length > 0 ? 'Run finished' : 'Checked papers reviewed'}
+              </h3>
               <p className="text-sm text-slate-500">
                 {releaseState
-                  ? `${releaseState.reviewed} of ${releaseState.total} papers reviewed.`
+                  ? `${releaseState.reviewed} of ${releaseState.total} papers in this activity reviewed.`
                   : `${queue.filter(q => q.reviewed).length} of ${queue.length} papers reviewed.`}
                 {skipped.length > 0 && ` ${skipped.length} skipped.`}
               </p>
+              {/* Where the rest went. Without this the teacher is left to
+                  wonder whether the run lost them. */}
+              {releaseState && releaseState.total > releaseState.reviewed && (
+                <p className="text-xs text-slate-400 mt-1.5 leading-relaxed">
+                  The other {releaseState.total - releaseState.reviewed} haven&apos;t been AI-checked yet,
+                  so there was nothing to review — run the check on them from the upload screen.
+                </p>
+              )}
             </div>
 
             <div className="p-6 flex flex-col gap-2">
