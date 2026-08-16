@@ -236,4 +236,184 @@ function isTop3(averages, studentId) {
 /** Every badge id this module can award — used to prune stored rows. */
 const BADGE_IDS = computeBadges([], 100).map(b => b.id);
 
-module.exports = { computeBadges, isTop3, BADGE_IDS };
+/* ────────────────────────────────────────────────────────────────────────────
+ * TEACHER-AUTHORED BADGES
+ *
+ * The fifteen above describe patterns across a whole term, and none of them can
+ * say "you passed the multiplication drill your teacher set on Tuesday". A
+ * teacher writes one of these, attaches it to an activity, and sets the bar in
+ * percent; a learner who reaches that mark on that activity earns it.
+ *
+ * Still pure. Everything the condition needs — the learner's marks, and which
+ * activity awards what — arrives as arguments, so the rule that decides a
+ * child has earned something is testable without a database, exactly like the
+ * built-in set above.
+ * ──────────────────────────────────────────────────────────────────────────── */
+
+/**
+ * Custom badges share StudentBadge with the built-in ones and are told apart by
+ * this prefix alone. One column for both because everything downstream — the
+ * unique (student, badge) pair, the union at read time, "earned means earned" —
+ * treats them identically. The prefix lives here, next to BADGE_IDS, so the two
+ * namespaces cannot drift into each other.
+ */
+const CUSTOM_BADGE_PREFIX = 'custom:';
+
+const customBadgeKey = (teacherBadgeId) => `${CUSTOM_BADGE_PREFIX}${teacherBadgeId}`;
+const isCustomBadgeId = (badgeId) => String(badgeId || '').startsWith(CUSTOM_BADGE_PREFIX);
+/** The TeacherBadge id inside a stored key, or null if this is a built-in one. */
+const teacherBadgeIdFrom = (badgeId) =>
+  isCustomBadgeId(badgeId) ? String(badgeId).slice(CUSTOM_BADGE_PREFIX.length) || null : null;
+
+/**
+ * The icons and palettes a teacher may pick from.
+ *
+ * Keys, not markup and not colour values: the student's trophy room, the
+ * teacher's library and anything added later each draw the same key their own
+ * way, and none of them has to agree with the others about how. Held here
+ * because the server is what stores the choice — but neither list is enforced
+ * with a 400. An unrecognised value falls back (see normaliseIcon/Color), so a
+ * front end that adds an icon before this list does renders a plain award badge
+ * instead of refusing to save the teacher's work.
+ */
+const BADGE_ICONS = [
+  'award', 'trophy', 'medal', 'star', 'crown', 'rocket', 'flame', 'heart',
+  'sparkles', 'target', 'zap', 'book', 'graduation-cap', 'thumbs-up', 'smile',
+];
+const BADGE_COLORS = ['royal', 'sun', 'magenta', 'aqua', 'lilac'];
+const DEFAULT_BADGE_ICON = 'award';
+const DEFAULT_BADGE_COLOR = 'royal';
+
+const normaliseIcon = (icon) => {
+  const key = String(icon || '').trim().toLowerCase();
+  return BADGE_ICONS.includes(key) ? key : DEFAULT_BADGE_ICON;
+};
+const normaliseColor = (color) => {
+  const key = String(color || '').trim().toLowerCase();
+  return BADGE_COLORS.includes(key) ? key : DEFAULT_BADGE_COLOR;
+};
+
+/**
+ * A teacher's passing bar as a whole percentage, or null if it is not one.
+ *
+ * Null rather than a default, and the caller refuses the save on it. A bar the
+ * teacher did not actually set is the one thing that must not be guessed: too
+ * low hands out a badge nobody earned, too high withholds one that was.
+ *
+ * Rejects anything outside 1–100. 0 is excluded on purpose — a badge every
+ * learner earns for handing in a blank page is not a reward, and every real
+ * "just for taking part" case is expressible as 1.
+ */
+function parsePassingScore(value) {
+  if (value === null || value === undefined || value === '') return null;
+  // A number or the text of one, and nothing else. Without this, `Number(true)`
+  // is 1 — a whole number inside the range — so a boolean sent by a caller that
+  // mixed up its fields would set a real bar of 1% that every learner clears.
+  if (typeof value !== 'number' && typeof value !== 'string') return null;
+  const n = Number(value);
+  if (!Number.isFinite(n)) return null;
+  if (!Number.isInteger(n)) return null;
+  if (n < 1 || n > 100) return null;
+  return n;
+}
+
+/**
+ * The mark of record on a submission, or null if it has none.
+ *
+ * `??` and not `||`, for the reason starsFor states: a teacher-assigned 0 is
+ * falsy but real, and must never fall through to the AI's original score.
+ */
+function markOf(submission) {
+  return submission?.hitlScore ?? submission?.aiScore ?? null;
+}
+
+/**
+ * A teacher's badges, with progress toward each.
+ *
+ * @param submissions the learner's submissions, any order. Each carries the
+ *   activity it belongs to, which is where the badge and its bar are read from.
+ * @param catalogue   the teacher badges in play for this learner, each as
+ *   `{ id, name, description, icon, color, activities: [{ id, title,
+ *   passingScore }] }`. Empty in, empty out.
+ *
+ * A badge may sit on more than one activity — a teacher who sets the same
+ * reward on a two-part project means either part earns it — so clearing the bar
+ * on *any* of them is enough.
+ */
+function computeCustomBadges(submissions, catalogue = []) {
+  // Best mark per activity. A learner who resubmits keeps their best attempt,
+  // which is the only reading that does not take a badge away for trying again.
+  const bestByActivity = new Map();
+  for (const s of submissions || []) {
+    // An excused activity is one the learner was told not to do. It drops out
+    // of their average (see Submission.excusedAt), so it cannot be the thing
+    // that earns them a reward either — in both directions: an excused row
+    // never awards, and never counts against anyone.
+    if (s?.excusedAt) continue;
+    const percent = markOf(s);
+    if (percent === null || !Number.isFinite(percent)) continue;
+    const activityId = s.activityId ?? s.activity?.id ?? null;
+    if (!activityId) continue;
+    const previous = bestByActivity.get(activityId);
+    if (previous === undefined || percent > previous) bestByActivity.set(activityId, percent);
+  }
+
+  return (catalogue || []).map(badge => {
+    const activities = (badge.activities || []).filter(a => a && a.id);
+
+    let earned = false;
+    let bestPercent = null;
+    let closestBar = null;
+
+    for (const activity of activities) {
+      const bar = parsePassingScore(activity.passingScore);
+      // An activity whose bar never made it onto the row cannot award anything.
+      // Skipped rather than defaulted, for the reason parsePassingScore gives.
+      if (bar === null) continue;
+      const best = bestByActivity.get(activity.id);
+      if (best === undefined) continue;
+      if (bestPercent === null || best > bestPercent) {
+        bestPercent = best;
+        closestBar = bar;
+      }
+      if (best >= bar) earned = true;
+    }
+
+    // What the learner is being asked to do, in one line, for a badge whose
+    // author left the description blank.
+    const bars = activities.map(a => parsePassingScore(a.passingScore)).filter(n => n !== null);
+    const lowestBar = bars.length ? Math.min(...bars) : null;
+    const fallbackDesc = lowestBar === null
+      ? 'A badge from your teacher'
+      : activities.length === 1
+        ? `Score at least ${lowestBar}% on "${activities[0].title || 'an activity'}"`
+        : `Score at least ${lowestBar}% on one of ${activities.length} activities`;
+
+    return {
+      id: customBadgeKey(badge.id),
+      title: badge.name,
+      desc: (badge.description || '').trim() || fallbackDesc,
+      icon: normaliseIcon(badge.icon),
+      color: normaliseColor(badge.color),
+      // What tells the trophy room to style this one from `color`/`icon`
+      // instead of looking it up in its own table of the built-in fifteen.
+      custom: true,
+      progress: earned ? 1 : 0,
+      target: 1,
+      earned,
+      // Enough for the locked card to say "your best so far is 68%, you need
+      // 75%" rather than an empty bar that explains nothing.
+      bestPercent: bestPercent === null ? null : Math.round(bestPercent),
+      passingScore: earned ? (lowestBar ?? closestBar) : (closestBar ?? lowestBar),
+      activities: activities.map(a => ({ id: a.id, title: a.title || '' })),
+    };
+  });
+}
+
+module.exports = {
+  computeBadges, isTop3, BADGE_IDS,
+  computeCustomBadges,
+  CUSTOM_BADGE_PREFIX, customBadgeKey, isCustomBadgeId, teacherBadgeIdFrom,
+  BADGE_ICONS, BADGE_COLORS, DEFAULT_BADGE_ICON, DEFAULT_BADGE_COLOR,
+  normaliseIcon, normaliseColor, parsePassingScore,
+};

@@ -31,6 +31,7 @@ import GradebookClass from './pages/teacher/GradebookClass';
 import GradebookStudent from './pages/teacher/GradebookStudent';
 import Analytics from './pages/teacher/Analytics';
 import RubricManager from './pages/teacher/RubricManager';
+import BadgeManager from './pages/teacher/BadgeManager';
 import ScoreEntry from './pages/teacher/ScoreEntry';
 
 // Student Pages
@@ -88,6 +89,7 @@ function App() {
           </Route>
           <Route path="analytics" element={<Analytics />} />
           <Route path="rubrics" element={<RubricManager />} />
+          <Route path="badges" element={<BadgeManager />} />
           <Route path="settings" element={<Settings />} />
         </Route>
 

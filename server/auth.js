@@ -325,6 +325,10 @@ const TEACHER_ROUTE_SEGMENTS = new Set([
   // id at all, so neither is a teacher id. Ownership of the underlying activity
   // and job is checked in the handlers.
   'ai-jobs', 'ai-capacity',
+  // Teacher-authored badges. The list takes no id (it is always the caller's
+  // own), and the update/delete shapes address a *badge* id, so ownership is
+  // checked in those handlers against teacherId.
+  'badges',
 ]);
 const STUDENT_ROUTE_SEGMENTS = new Set(['submit']);
 

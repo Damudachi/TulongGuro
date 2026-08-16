@@ -1,8 +1,12 @@
 import { useState, useRef, useEffect } from 'react';
-import { useNavigate, useSearchParams, useParams } from 'react-router-dom';
-import { ArrowLeft, CheckCircle2, Plus, Camera, Users, Upload, FileText, X, Trash2, Loader2, Save, PenLine } from 'lucide-react';
+import { useNavigate, useSearchParams, useParams, Link } from 'react-router-dom';
+import { ArrowLeft, CheckCircle2, Plus, Camera, Users, Upload, FileText, X, Trash2, Loader2, Save, PenLine, Medal } from 'lucide-react';
 import { API_URL, apiFetch } from '../../config';
 import { ACTIVITY_TYPES } from '../../constants/activityTypes';
+import {
+  badgeLook, BADGE_ICON_KEYS, BADGE_COLOR_KEYS,
+  DEFAULT_BADGE_ICON, DEFAULT_BADGE_COLOR,
+} from '../../constants/badgeLook';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
 
@@ -121,6 +125,14 @@ export default function ActivityBuilder() {
     submissionMode: 'TEACHER_UPLOAD',
     maxAttempts: 1,
     component: 'WW',
+    // The badge this activity awards, and the mark that earns it. Empty string
+    // rather than null: this whole object is fed through FormData on create,
+    // which has no null, and the server reads '' as "no badge".
+    badgeId: '',
+    // 75 is DepEd's passing grade and the app's own default (School.passingGrade),
+    // so it is the number a teacher is least surprised to find already there.
+    // It is only ever *sent* when a badge is actually picked.
+    badgePassingScore: 75,
   });
   const [rubricMode, setRubricMode] = useState('template'); // 'template' | 'manual' | 'upload'
   const [rubricType, setRubricType] = useState('standard'); // 'standard' | 'range'
@@ -203,6 +215,63 @@ export default function ActivityBuilder() {
       .then(data => { if (data.success && data.templates) setBuiltinRubrics(data.templates); })
       .catch(() => {});
   }, []);
+
+  // ── The teacher's badge library ──
+  // Loaded whether or not they end up using one: the picker below is the only
+  // place a badge gets attached, and an empty list is what tells them the
+  // feature exists at all.
+  const [teacherBadges, setTeacherBadges] = useState([]);
+  const [isLoadingBadges, setIsLoadingBadges] = useState(true);
+  const [badgesUnavailable, setBadgesUnavailable] = useState(false);
+  // The inline "new badge" form. Null when closed — a teacher deciding on the
+  // reward mid-activity should not have to leave the form they are filling in
+  // and lose it.
+  const [newBadge, setNewBadge] = useState(null);
+  const [isCreatingBadge, setIsCreatingBadge] = useState(false);
+  const [badgeFormError, setBadgeFormError] = useState('');
+
+  useEffect(() => {
+    apiFetch(`${API_URL}/api/teacher/badges`)
+      .then(r => r.json())
+      .then(d => {
+        if (!d.success) return setBadgesUnavailable(true);
+        setTeacherBadges(d.badges || []);
+      })
+      .catch(() => setBadgesUnavailable(true))
+      .finally(() => setIsLoadingBadges(false));
+  }, []);
+
+  const selectedBadge = teacherBadges.find(b => b.id === form.badgeId) || null;
+
+  /**
+   * Create a badge without leaving this form, and select it.
+   *
+   * Deliberately does not touch `form` except to point badgeId at the new
+   * badge: a failed create must leave the activity exactly as the teacher left
+   * it, including whichever badge was already picked.
+   */
+  const createBadgeInline = async () => {
+    const name = (newBadge?.name || '').trim();
+    if (!name) return setBadgeFormError('Give the badge a name — it is what the learner sees on it.');
+    setIsCreatingBadge(true);
+    setBadgeFormError('');
+    try {
+      const res = await apiFetch(`${API_URL}/api/teacher/badges`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...newBadge, name }),
+      });
+      const data = await res.json();
+      if (!data.success) return setBadgeFormError(data.error || 'That badge could not be created.');
+      setTeacherBadges(prev => [data.badge, ...prev]);
+      setForm(f => ({ ...f, badgeId: data.badge.id }));
+      setNewBadge(null);
+    } catch {
+      setBadgeFormError('Network error while creating the badge.');
+    } finally {
+      setIsCreatingBadge(false);
+    }
+  };
 
   // Empty, and it stays empty until the teacher chooses. A single blank
   // criterion used to sit here as the starting shape, which read as "a rubric
@@ -412,6 +481,11 @@ export default function ActivityBuilder() {
           submissionMode: activity.submissionMode || 'TEACHER_UPLOAD',
           maxAttempts: activity.maxAttempts || 1,
           component: activity.component || 'WW',
+          badgeId: activity.badgeId || '',
+          // The stored bar, or the default for an activity that awards nothing
+          // yet — so picking a badge lands on a sensible number rather than a
+          // blank field the save would then refuse.
+          badgePassingScore: activity.badgePassingScore ?? 75,
         });
         // Pre-fill rubric if it exists. This is the activity's rubric of
         // record, so nothing may overwrite it.
@@ -711,6 +785,16 @@ export default function ActivityBuilder() {
     if (!form.points || form.points < 1) {
       alert("Total Points must be greater than 0.");
       return;
+    }
+    // A badge with no usable bar would be saved as unreachable, which looks
+    // exactly like a badge that works right up until nobody ever earns it.
+    // Mirrored by parsePassingScore on the server, which is what enforces it.
+    if (form.badgeId) {
+      const bar = Number(form.badgePassingScore);
+      if (!Number.isInteger(bar) || bar < 1 || bar > 100) {
+        alert('Set the score that earns the badge — a whole number from 1 to 100.');
+        return;
+      }
     }
     // An activity has to belong to a real class. This used to fall back to the
     // string 'mock-class-id', which the database rejected on the foreign key
@@ -1182,6 +1266,178 @@ export default function ActivityBuilder() {
               className="w-full px-4 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-brand-navy outline-none resize-none"
               placeholder="Write your instructions here..." />
           </div>
+        </div>
+
+        {/* ── BADGE REWARD ──
+            Optional, and the only place a badge is attached to an activity. The
+            reward itself lives in the teacher's badge library; what is decided
+            here is the condition — which badge, and the mark that earns it.
+            Available in every submission mode, "Scores only" included: a
+            recitation mark is a mark, and a teacher who wants to celebrate one
+            should not have to switch the activity to a photo upload to do it. */}
+        <div className="bg-white p-6 rounded-xl border border-slate-200">
+          <div className="flex items-start justify-between gap-3 mb-1">
+            <h2 className="text-base font-bold text-brand-slate">Badge Reward</h2>
+            <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mt-1">Optional</span>
+          </div>
+          <p className="text-xs text-slate-500 mb-4">
+            Award one of your badges to every student who reaches a score you set on this activity.
+            Once earned, a badge is theirs for good — it appears in their Trophy Room and is never taken back.
+          </p>
+
+          {badgesUnavailable ? (
+            <p className="text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-4 py-3">
+              Your badges could not be loaded, so none can be attached right now. Everything else on this
+              activity still saves normally.
+            </p>
+          ) : isLoadingBadges ? (
+            <div className="flex items-center gap-2 text-sm text-slate-500">
+              <Loader2 className="w-4 h-4 animate-spin" /> Loading your badges…
+            </div>
+          ) : (
+            <div className="space-y-4">
+              <div>
+                <label htmlFor="activity-badge" className="block text-sm font-medium text-slate-700 mb-1">
+                  Badge to award
+                </label>
+                <select id="activity-badge" value={form.badgeId}
+                  onChange={e => setForm({ ...form, badgeId: e.target.value })}
+                  className="w-full px-4 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-brand-navy outline-none">
+                  <option value="">— No badge for this activity —</option>
+                  {teacherBadges.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
+                </select>
+                {teacherBadges.length === 0 && (
+                  <p className="text-xs text-slate-400 mt-1">
+                    You have no badges yet. Create one below, or manage them all on the{' '}
+                    <Link to="/teacher/badges" className="font-bold text-brand-navy hover:underline">Badges</Link> page.
+                  </p>
+                )}
+              </div>
+
+              {/* ── The condition, shown only once there is something to condition ── */}
+              {selectedBadge && (
+                <>
+                  <div>
+                    <label htmlFor="badge-bar" className="block text-sm font-medium text-slate-700 mb-1">
+                      Score that earns it *
+                    </label>
+                    <div className="flex items-center gap-2">
+                      <input id="badge-bar" type="number" min={1} max={100} step={1}
+                        value={form.badgePassingScore}
+                        onChange={e => setForm({ ...form, badgePassingScore: e.target.value })}
+                        onBlur={e => {
+                          // Snapped back into range on blur rather than on every
+                          // keystroke: clamping as they type makes "8" become 8
+                          // before they can finish typing "85".
+                          const n = parseInt(e.target.value, 10);
+                          setForm(f => ({ ...f, badgePassingScore: Number.isNaN(n) ? 75 : Math.min(100, Math.max(1, n)) }));
+                        }}
+                        className="w-28 px-4 py-2 border border-slate-200 rounded-lg text-center focus:ring-2 focus:ring-brand-navy outline-none" />
+                      <span className="text-slate-500 font-medium">%</span>
+                      <span className="text-sm text-slate-500">
+                        = {Math.round((Number(form.badgePassingScore) || 0) / 100 * (form.points || 0) * 10) / 10} of {form.points || 0} pts
+                      </span>
+                    </div>
+                    <p className="text-xs text-slate-400 mt-1">
+                      A percentage, so it keeps its meaning if the activity&apos;s total points ever change.
+                      Separate from your school&apos;s passing grade — set it wherever this reward belongs.
+                    </p>
+                  </div>
+
+                  {/* Exactly what will happen, in one sentence, drawn with the
+                      badge the learner will actually see. */}
+                  {(() => {
+                    const style = badgeLook(selectedBadge);
+                    const Icon = style.icon;
+                    return (
+                      <div className={cn('rounded-xl border-2 p-4 flex items-center gap-4', style.shell)}>
+                        <div className={cn('p-3 rounded-2xl text-white shrink-0 shadow-pop', style.tile)}>
+                          <Icon className="w-6 h-6" />
+                        </div>
+                        <div className="min-w-0">
+                          <p className="font-bold text-brand-slate">{selectedBadge.name}</p>
+                          <p className="text-xs text-slate-600 mt-0.5">
+                            Students who score {form.badgePassingScore || '—'}% or higher on{' '}
+                            <span className="font-bold">{form.title.trim() || 'this activity'}</span> earn this badge.
+                          </p>
+                        </div>
+                      </div>
+                    );
+                  })()}
+                </>
+              )}
+
+              {/* ── Create one without leaving the form ── */}
+              {newBadge === null ? (
+                <button type="button"
+                  onClick={() => { setNewBadge({ name: '', description: '', icon: DEFAULT_BADGE_ICON, color: DEFAULT_BADGE_COLOR }); setBadgeFormError(''); }}
+                  className="text-sm text-brand-navy font-medium flex items-center hover:underline">
+                  <Plus className="w-4 h-4 mr-1" /> Create a new badge
+                </button>
+              ) : (
+                <div className="rounded-xl border-2 border-slate-200 bg-slate-50 p-4 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <p className="text-sm font-bold text-brand-slate flex items-center gap-1.5">
+                      <Medal className="w-4 h-4 text-brand-navy" /> New badge
+                    </p>
+                    <button type="button" onClick={() => { setNewBadge(null); setBadgeFormError(''); }}
+                      className="text-slate-400 hover:text-slate-600"><X className="w-4 h-4" /></button>
+                  </div>
+
+                  <input type="text" value={newBadge.name} maxLength={60}
+                    onChange={e => setNewBadge({ ...newBadge, name: e.target.value })}
+                    className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm bg-white focus:ring-2 focus:ring-brand-navy outline-none"
+                    placeholder="Badge name, e.g. Times Table Champion" />
+                  <input type="text" value={newBadge.description} maxLength={200}
+                    onChange={e => setNewBadge({ ...newBadge, description: e.target.value })}
+                    className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs bg-white focus:ring-2 focus:ring-brand-navy outline-none"
+                    placeholder="Description (optional)" />
+
+                  <div className="flex flex-wrap gap-1.5">
+                    {BADGE_ICON_KEYS.map(key => {
+                      const Icon = badgeLook({ icon: key }).icon;
+                      const active = newBadge.icon === key;
+                      return (
+                        <button key={key} type="button" aria-pressed={active} aria-label={key}
+                          onClick={() => setNewBadge({ ...newBadge, icon: key })}
+                          className={cn('w-9 h-9 rounded-lg grid place-items-center border-2 transition-all',
+                            active ? cn(badgeLook(newBadge).tile, 'text-white border-transparent')
+                                   : 'bg-white border-slate-200 text-slate-500 hover:border-brand-navy/40')}>
+                          <Icon className="w-4 h-4" />
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {BADGE_COLOR_KEYS.map(key => (
+                      <button key={key} type="button" aria-pressed={newBadge.color === key} aria-label={key}
+                        onClick={() => setNewBadge({ ...newBadge, color: key })}
+                        className={cn('w-9 h-9 rounded-lg grid place-items-center border-2 transition-all',
+                          badgeLook({ color: key }).dot,
+                          newBadge.color === key ? 'border-brand-slate' : 'border-transparent opacity-70 hover:opacity-100')}>
+                        {newBadge.color === key && <CheckCircle2 className="w-4 h-4 text-white" />}
+                      </button>
+                    ))}
+                  </div>
+
+                  {badgeFormError && (
+                    <p role="alert" className="text-xs font-bold text-red-700 bg-red-50 border border-red-200 rounded-lg px-3 py-2">
+                      {badgeFormError}
+                    </p>
+                  )}
+
+                  {/* type="button" throughout: this sits inside the activity's
+                      own <form>, and a submit button here would publish the
+                      activity instead of creating the badge. */}
+                  <button type="button" onClick={createBadgeInline} disabled={isCreatingBadge}
+                    className="flex items-center gap-1.5 bg-brand-navy text-white px-3 py-1.5 rounded-lg text-sm font-bold hover:bg-blue-900 disabled:opacity-60 transition-colors">
+                    {isCreatingBadge && <Loader2 className="w-4 h-4 animate-spin" />}
+                    Create &amp; use it
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
         {/* ── ADDITIONAL FILES ── */}

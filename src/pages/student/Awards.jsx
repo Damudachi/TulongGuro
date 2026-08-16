@@ -4,6 +4,7 @@ import {
   BarChart3, Target, Clock, Compass, Flame, GraduationCap,
 } from 'lucide-react';
 import { API_URL, apiFetch } from '../../config';
+import { badgeLook } from '../../constants/badgeLook';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
 
@@ -51,7 +52,24 @@ const BADGE_STYLES = {
 };
 
 const FALLBACK_STYLE = { icon: Award, tile: 'bg-royal-500', shell: 'bg-royal-100 border-royal-200', ink: 'text-royal-700' };
-const styleFor = (id) => BADGE_STYLES[id] || FALLBACK_STYLE;
+
+/**
+ * How to draw one badge.
+ *
+ * The fifteen built-in badges are looked up above — their appearance is a
+ * property of *which* badge it is, and always has been. A badge written by a
+ * teacher has no entry here and never will: its icon and colour were chosen by
+ * the teacher and travel on the badge itself, so they are read off the row and
+ * turned into an icon and classes by badgeLook — the same table the teacher
+ * previewed the badge through. That shared step is what stops the badge a
+ * teacher designed and the badge a child is shown from drifting apart.
+ */
+const styleFor = (badge) => {
+  if (badge?.custom) {
+    return badgeLook(badge);
+  }
+  return BADGE_STYLES[badge?.id] || FALLBACK_STYLE;
+};
 
 export default function Awards() {
   const [stars, setStars] = useState(0);
@@ -110,7 +128,7 @@ export default function Awards() {
           <h2 className="text-xs font-extrabold text-navy-400 uppercase tracking-wider mb-4">Earned Badges</h2>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             {unlocked.map(badge => {
-              const style = styleFor(badge.id);
+              const style = styleFor(badge);
               const Icon = style.icon;
               return (
                 <div key={badge.id} className={cn('p-5 rounded-3xl border-2 flex items-center gap-4', style.shell)}>
@@ -122,6 +140,9 @@ export default function Awards() {
                     <p className="text-xs text-navy-600 mt-0.5">{badge.desc}</p>
                     <p className={cn('text-xs font-extrabold mt-1.5 flex items-center gap-1', style.ink)}>
                       <Star className="w-3 h-3 fill-current" /> Earned
+                      {/* Said out loud, because a badge somebody chose to give
+                          you means something a rule you cleared does not. */}
+                      {badge.custom && <span className="font-bold text-navy-500">· from your teacher</span>}
                     </p>
                   </div>
                 </div>
@@ -137,9 +158,18 @@ export default function Awards() {
           <h2 className="text-xs font-extrabold text-navy-400 uppercase tracking-wider mb-4">Locked — Keep going!</h2>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             {locked.map(badge => {
-              const style = styleFor(badge.id);
+              const style = styleFor(badge);
               const Icon = style.icon;
               const remaining = Math.max(0, (badge.target ?? 1) - (badge.progress ?? 0));
+              // A teacher's badge is one activity at one mark, so "0 of 1" says
+              // nothing a learner can act on. Their best attempt against the bar
+              // does — and a bar with no attempt behind it yet is honestly
+              // reported as not started rather than as a zero score.
+              const barLine = badge.custom && badge.passingScore
+                ? (badge.bestPercent === null
+                    ? `Score ${badge.passingScore}% or higher to earn this`
+                    : `Your best so far is ${badge.bestPercent}% — you need ${badge.passingScore}%`)
+                : null;
               return (
                 <div key={badge.id} className="p-5 rounded-3xl border-2 border-cream-200 bg-cream-50 flex items-center gap-4">
                   <div className="p-3.5 bg-white rounded-2xl relative shrink-0 border-2 border-cream-200">
@@ -152,14 +182,25 @@ export default function Awards() {
                     <p className="font-display font-extrabold text-navy-400">{badge.title}</p>
                     <p className="text-xs text-navy-400 mt-0.5">{badge.desc}</p>
                     {/* Progress in the badge's own unit — activities, strategies,
-                        essays — not a star count it has nothing to do with. */}
+                        essays — not a star count it has nothing to do with. For
+                        a teacher's badge the unit is the mark itself, so the bar
+                        below fills toward the score rather than toward a count
+                        of one. */}
                     <div className="mt-2 h-1.5 bg-cream-200 rounded-full overflow-hidden">
                       <div className="h-full bg-navy-300 rounded-full transition-all"
-                        style={{ width: `${Math.round(((badge.progress ?? 0) / (badge.target || 1)) * 100)}%` }} />
+                        style={{
+                          width: barLine
+                            ? `${Math.min(100, Math.round(((badge.bestPercent ?? 0) / badge.passingScore) * 100))}%`
+                            : `${Math.round(((badge.progress ?? 0) / (badge.target || 1)) * 100)}%`,
+                        }} />
                     </div>
                     <p className="text-xs font-extrabold text-navy-500 mt-1.5">
-                      {badge.progress ?? 0} of {badge.target ?? 1}
-                      {remaining > 0 && <span className="font-semibold text-navy-400"> — {remaining} to go</span>}
+                      {barLine || (
+                        <>
+                          {badge.progress ?? 0} of {badge.target ?? 1}
+                          {remaining > 0 && <span className="font-semibold text-navy-400"> — {remaining} to go</span>}
+                        </>
+                      )}
                     </p>
                   </div>
                 </div>

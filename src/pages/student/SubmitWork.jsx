@@ -9,6 +9,7 @@ import { deadlineInstant, formatDeadline, submissionWindow } from '../../utils/d
 import { isRasterizable, rasterizeToPageImages } from '../../utils/fileRasterize';
 import { enqueue, buildJob } from '../../utils/offlineQueue';
 import { saveActivitySnapshot, readActivitySnapshot } from '../../utils/offlineSnapshot';
+import { badgeLook } from '../../constants/badgeLook';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
 
@@ -749,6 +750,8 @@ export default function SubmitWork() {
             const sub = activity.mySubmission;
             const StatusIcon = sub ? (STATUS_LABEL[sub.status]?.icon || Clock) : null;
             const subWindow = submissionWindow(activity);
+            const badge = activity.badge ? badgeLook(activity.badge) : null;
+            const BadgeGlyph = badge?.icon || null;
 
             return (
               <button key={activity.id} onClick={() => handleSelectActivity(activity)}
@@ -777,6 +780,16 @@ export default function SubmitWork() {
                           {activity.maxAttempts === 0
                             ? (sub ? `Attempt ${sub.attemptCount || 1} · Unlimited re-submits` : 'Unlimited re-submits')
                             : (sub ? `Attempt ${sub.attemptCount || 1}/${activity.maxAttempts}` : `${activity.maxAttempts} attempts allowed`)}
+                        </p>
+                      )}
+                      {/* The badge on offer, before the work rather than after
+                          it — a reward nobody knows about encourages nothing. */}
+                      {badge && activity.badgePassingScore != null && (
+                        <p className={cn('text-xs mt-1 font-extrabold flex items-center gap-1', badge.ink)}>
+                          <BadgeGlyph className="w-3.5 h-3.5 shrink-0" />
+                          <span className="truncate">
+                            {activity.badge.name} at {activity.badgePassingScore}%
+                          </span>
                         </p>
                       )}
                     </div>

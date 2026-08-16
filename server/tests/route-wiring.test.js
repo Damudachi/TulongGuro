@@ -2130,16 +2130,46 @@ describe('GET /api/student/:id/dashboard badges', () => {
     expect(firstStar.progress).toBe(firstStar.target);
   });
 
-  it('writes newly earned badges exactly once, skipping duplicates', async () => {
+  it('writes each newly earned badge once, and never one already on record', async () => {
     armStudent({ own: [graded(95, 1)], storedBadges: ['first-steps'] });
 
     await fetchBadges();
-    expect(prismaFake.studentBadge.createMany).toHaveBeenCalledTimes(1);
-    const arg = prismaFake.studentBadge.createMany.mock.calls[0][0];
-    expect(arg.skipDuplicates).toBe(true);
-    // first-steps was already on record, so it is not written again.
-    expect(arg.data.map(d => d.badgeId)).not.toContain('first-steps');
-    expect(arg.data.map(d => d.badgeId)).toContain('first-star');
+    // One insert per badge rather than a createMany with skipDuplicates: the
+    // unique (studentId, badgeId) pair still arbitrates a race between two
+    // tabs, and "did this row actually go in" is what decides whether a
+    // teacher's badge notifies. What must hold either way is that a badge
+    // already on record is not written a second time.
+    const written = prismaFake.studentBadge.create.mock.calls.map(c => c[0].data.badgeId);
+    expect(written).not.toContain('first-steps');
+    expect(written).toContain('first-star');
+    expect(new Set(written).size).toBe(written.length);
+  });
+
+  it('does not write a badge when a teacher is the one looking', async () => {
+    // Staff read this endpoint too, and releaseFilterFor hands them
+    // validated-but-unreleased marks on purpose. Making a badge permanent off
+    // one of those would fix it from a grade the child has not been shown yet.
+    armStudent({ own: [graded(95, 1)] });
+    // Neither the learner nor the caller has a school, so staffMayReadStudent
+    // falls to its narrow rung: the section's own adviser, and nobody else.
+    prismaFake.user.findUnique.mockImplementation(({ where }) => {
+      if (where.id === STUDENT) {
+        return Promise.resolve({
+          id: STUDENT, sectionId: SECTION, schoolId: null, sessionsValidFrom: null,
+          section: { id: SECTION, schoolId: null, teacherId: T1, classes: [] },
+        });
+      }
+      return Promise.resolve({ schoolId: null, sessionsValidFrom: null });
+    });
+
+    const res = await call('GET', `/api/student/${STUDENT}/dashboard`, {
+      token: tokenFor({ id: T1, role: 'TEACHER', schoolId: null }),
+    });
+
+    expect(res.status).toBe(200);
+    // Still computed and shown to the teacher — only the writing waits.
+    expect((await res.json()).badges.find(b => b.id === 'first-star').earned).toBe(true);
+    expect(prismaFake.studentBadge.create).not.toHaveBeenCalled();
   });
 
   it('still returns badges when the rank query fails', async () => {
@@ -2150,6 +2180,377 @@ describe('GET /api/student/:id/dashboard badges', () => {
     expect(badges).toHaveLength(15);
     expect(badges.find(b => b.id === 'class-champion').earned).toBe(false);
     expect(badges.find(b => b.id === 'honor-student').earned).toBe(true);
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────
+// Teacher-authored badges, end to end over HTTP
+// ───────────────────────────────────────────────────────────────────
+//
+// badges.js proves computeCustomBadges awards on the right mark and refuses on
+// the wrong one, without a database. None of that says whether the dashboard
+// route actually *asks* it, records the result under a key that cannot collide
+// with a built-in badge, or tells the learner. That gap is what these cover —
+// the same reasoning the file's own header gives for existing at all.
+
+describe('a badge a teacher wrote', () => {
+  const STUDENT = 'student-custom';
+  const SECTION = 'sec-custom';
+  const ACTIVITY_ID = 'act-drill';
+  const BADGE_ID = 'badge-times-table';
+
+  const submissionOn = (percent, over = {}) => ({
+    id: 'sub-drill',
+    studentId: STUDENT,
+    activityId: ACTIVITY_ID,
+    hitlScore: percent,
+    aiScore: null,
+    status: 'GRADED',
+    isLate: false,
+    readingStrategy: null,
+    skillScores: null,
+    gradedAt: '2026-03-01T00:00:00Z',
+    createdAt: '2026-03-01T00:00:00Z',
+    updatedAt: '2026-03-01T00:00:00Z',
+    releasedAt: new Date(),
+    activity: {
+      id: ACTIVITY_ID, title: 'Times Table Drill', type: 'Quiz', points: 100,
+      badgeId: BADGE_ID, badgePassingScore: 80,
+      class: { subject: 'Math', gradeLevel: 'Grade 6' },
+    },
+    ...over,
+  });
+
+  const arm = ({ own = [], storedBadges = [], badgeRows = undefined } = {}) => {
+    prismaFake.user.findUnique.mockImplementation(({ where }) => {
+      if (where.id === STUDENT) {
+        return Promise.resolve({
+          id: STUDENT, name: 'Custom Learner', username: 'custom-1',
+          sectionId: SECTION, schoolId: null, sessionsValidFrom: null,
+          section: { id: SECTION, schoolId: null, classes: [] },
+        });
+      }
+      return Promise.resolve({ sessionsValidFrom: null });
+    });
+    prismaFake.submission.findMany.mockResolvedValue(own);
+    prismaFake.studentBadge.findMany.mockResolvedValue(storedBadges);
+    // Two different reads hit activity.findMany on this route: the badge
+    // catalogue for the learner's section, and the upcoming-deadlines list.
+    // Told apart by their where clause so neither answers the other's question.
+    prismaFake.activity.findMany.mockImplementation(({ where }) => Promise.resolve(
+      where?.badgeId
+        ? [{ id: ACTIVITY_ID, title: 'Times Table Drill', badgeId: BADGE_ID, badgePassingScore: 80 }]
+        : []
+    ));
+    prismaFake.teacherBadge.findMany.mockResolvedValue(badgeRows ?? [{
+      id: BADGE_ID, name: 'Times Table Champion',
+      description: null, icon: 'trophy', color: 'sun',
+    }]);
+  };
+
+  const fetchBadges = async () => {
+    const res = await call('GET', `/api/student/${STUDENT}/dashboard`, {
+      token: tokenFor({ id: STUDENT, role: 'STUDENT' }),
+    });
+    expect(res.status).toBe(200);
+    return (await res.json()).badges;
+  };
+
+  it('is offered alongside the built-in fifteen before it is earned', async () => {
+    arm({ own: [] });
+
+    const badges = await fetchBadges();
+    expect(badges).toHaveLength(16);
+    const mine = badges.find(b => b.id === `custom:${BADGE_ID}`);
+    // A reward nobody can see until they already hold it encourages nothing.
+    expect(mine.earned).toBe(false);
+    expect(mine.title).toBe('Times Table Champion');
+    expect(mine.passingScore).toBe(80);
+  });
+
+  it('is earned by clearing the bar the teacher set, and recorded', async () => {
+    arm({ own: [submissionOn(85)] });
+
+    const badges = await fetchBadges();
+    expect(badges.find(b => b.id === `custom:${BADGE_ID}`).earned).toBe(true);
+
+    const written = prismaFake.studentBadge.create.mock.calls.map(c => c[0].data);
+    const row = written.find(d => d.badgeId === `custom:${BADGE_ID}`);
+    expect(row).toBeTruthy();
+    // The name is snapshotted so a deleted teacher account cannot blank a
+    // trophy already won.
+    expect(row.label).toBe('Times Table Champion');
+  });
+
+  it('is not earned by a mark below the bar', async () => {
+    arm({ own: [submissionOn(79)] });
+
+    expect((await fetchBadges()).find(b => b.id === `custom:${BADGE_ID}`).earned).toBe(false);
+    const written = prismaFake.studentBadge.create.mock.calls.map(c => c[0].data.badgeId);
+    expect(written).not.toContain(`custom:${BADGE_ID}`);
+  });
+
+  it('tells the learner, once, when they earn one', async () => {
+    arm({ own: [submissionOn(85)] });
+
+    await fetchBadges();
+    const notices = prismaFake.notification.create.mock.calls
+      .map(c => c[0].data)
+      .filter(d => d.type === 'BADGE_EARNED');
+    expect(notices).toHaveLength(1);
+    expect(notices[0].userId).toBe(STUDENT);
+    expect(notices[0].title).toContain('Times Table Champion');
+    expect(notices[0].link).toBe('/student/awards');
+  });
+
+  it('says nothing about a badge already on record', async () => {
+    // The second dashboard load of the day must not re-announce yesterday's win.
+    arm({
+      own: [submissionOn(85)],
+      storedBadges: [{ badgeId: `custom:${BADGE_ID}`, label: 'Times Table Champion' }],
+    });
+
+    await fetchBadges();
+    expect(prismaFake.studentBadge.create.mock.calls
+      .map(c => c[0].data.badgeId)).not.toContain(`custom:${BADGE_ID}`);
+    expect(prismaFake.notification.create.mock.calls
+      .map(c => c[0].data.type)).not.toContain('BADGE_EARNED');
+  });
+
+  it('keeps showing a badge whose definition is gone', async () => {
+    // The teacher's account was deleted, taking their badge with it. The child
+    // still earned it, so it is shown from the name captured at the time.
+    arm({
+      own: [],
+      storedBadges: [{ badgeId: `custom:${BADGE_ID}`, label: 'Times Table Champion' }],
+      badgeRows: [],
+    });
+
+    const mine = (await fetchBadges()).find(b => b.id === `custom:${BADGE_ID}`);
+    expect(mine).toBeTruthy();
+    expect(mine.earned).toBe(true);
+    expect(mine.title).toBe('Times Table Champion');
+  });
+
+  it('still serves the built-in fifteen when the badge tables cannot be read', async () => {
+    // The shape of a deploy where the app is live before its migration is.
+    arm({ own: [submissionOn(95)] });
+    prismaFake.teacherBadge.findMany.mockRejectedValue(new Error('relation "TeacherBadge" does not exist'));
+
+    const badges = await fetchBadges();
+    expect(badges).toHaveLength(15);
+    expect(badges.find(b => b.id === 'first-star').earned).toBe(true);
+  });
+});
+
+describe('a teacher\'s badge library belongs to that teacher', () => {
+  const BADGE = 'badge-1';
+  const OTHER_TEACHER = 'teacher-2';
+
+  it('creates a badge under the caller, never under an id in the body', () => {
+    return call('POST', '/api/teacher/badges', {
+      token: tokenFor({ id: T1 }),
+      // The body tries to attribute the badge elsewhere. The session decides.
+      body: { name: 'Great Effort', teacherId: OTHER_TEACHER, icon: 'star', color: 'sun' },
+    }).then(async (res) => {
+      expect(res.status).toBe(200);
+      expect(prismaFake.teacherBadge.create.mock.calls[0][0].data.teacherId).toBe(T1);
+    });
+  });
+
+  it('refuses a badge with no name', async () => {
+    const res = await call('POST', '/api/teacher/badges', {
+      token: tokenFor({ id: T1 }), body: { name: '   ' },
+    });
+    expect(res.status).toBe(400);
+    expect(prismaFake.teacherBadge.create).not.toHaveBeenCalled();
+  });
+
+  it('will not rename another teacher\'s badge', async () => {
+    // updateMany matching zero rows is the whole ownership check — the where
+    // clause carries it, so a 404 here means nothing was touched.
+    prismaFake.teacherBadge.updateMany.mockResolvedValue({ count: 0 });
+
+    const res = await call('PUT', `/api/teacher/badges/${BADGE}`, {
+      token: tokenFor({ id: T1 }), body: { name: 'Hijacked' },
+    });
+
+    expect(res.status).toBe(404);
+    expect(prismaFake.teacherBadge.updateMany.mock.calls[0][0].where.teacherId).toBe(T1);
+  });
+
+  it('will not delete another teacher\'s badge', async () => {
+    prismaFake.teacherBadge.findFirst.mockResolvedValue(null);
+
+    const res = await call('DELETE', `/api/teacher/badges/${BADGE}`, { token: tokenFor({ id: T1 }) });
+
+    expect(res.status).toBe(404);
+    expect(prismaFake.teacherBadge.delete).not.toHaveBeenCalled();
+  });
+
+  it('refuses to delete a badge a learner has already earned', async () => {
+    // StudentBadge exists so an earned badge can never be taken away. Deleting
+    // the definition out from under it would leave a child holding a trophy
+    // nothing can name.
+    prismaFake.teacherBadge.findFirst.mockResolvedValue({ id: BADGE, name: 'Great Effort' });
+    prismaFake.studentBadge.count.mockResolvedValue(3);
+
+    const res = await call('DELETE', `/api/teacher/badges/${BADGE}`, { token: tokenFor({ id: T1 }) });
+
+    expect(res.status).toBe(409);
+    expect((await res.json()).code).toBe('BADGE_AWARDED');
+    expect(prismaFake.teacherBadge.delete).not.toHaveBeenCalled();
+    // Counted under the prefixed key, or it would always find zero.
+    expect(prismaFake.studentBadge.count.mock.calls[0][0].where.badgeId).toBe(`custom:${BADGE}`);
+  });
+
+  it('deletes one nobody has earned', async () => {
+    prismaFake.teacherBadge.findFirst.mockResolvedValue({ id: BADGE, name: 'Unused' });
+    prismaFake.studentBadge.count.mockResolvedValue(0);
+
+    const res = await call('DELETE', `/api/teacher/badges/${BADGE}`, { token: tokenFor({ id: T1 }) });
+
+    expect(res.status).toBe(200);
+    expect(prismaFake.teacherBadge.delete).toHaveBeenCalled();
+  });
+});
+
+describe('attaching a badge to an activity', () => {
+  const RUBRIC = JSON.stringify({ criteria: [{ name: 'Content', points: 100, description: 'x' }] });
+  const body = (over = {}) => ({
+    title: 'Times Table Drill', type: 'Quiz', points: 100, classId: 'class-1',
+    submissionMode: 'MANUAL_SCORE', rubric: RUBRIC, ...over,
+  });
+
+  beforeEach(() => {
+    prismaFake.class.findUnique.mockResolvedValue({ id: 'class-1', teacherId: T1 });
+    prismaFake.activity.create.mockResolvedValue({ id: 'act-1' });
+  });
+
+  it('refuses a badge that is not the caller\'s, and writes nothing', async () => {
+    prismaFake.teacherBadge.findUnique.mockResolvedValue({
+      id: 'badge-x', name: 'Someone Else\'s', teacherId: 'teacher-2',
+    });
+
+    const res = await call('POST', '/api/teacher/activities', {
+      token: tokenFor({ id: T1 }),
+      body: body({ badgeId: 'badge-x', badgePassingScore: 80 }),
+    });
+
+    expect(res.status).toBe(400);
+    expect((await res.json()).code).toBe('BADGE_INVALID');
+    expect(prismaFake.activity.create).not.toHaveBeenCalled();
+  });
+
+  it('refuses a badge with no usable passing score', async () => {
+    // A bar the teacher did not set is the one number that must not be
+    // invented: too low awards a badge nobody earned, too high withholds one.
+    prismaFake.teacherBadge.findUnique.mockResolvedValue({ id: 'badge-1', name: 'Effort', teacherId: T1 });
+
+    for (const bad of [undefined, '', 0, 101, 'abc', 75.5]) {
+      prismaFake.activity.create.mockClear();
+      const res = await call('POST', '/api/teacher/activities', {
+        token: tokenFor({ id: T1 }),
+        body: body({ badgeId: 'badge-1', badgePassingScore: bad }),
+      });
+      expect(res.status, `passing score ${JSON.stringify(bad)}`).toBe(400);
+      expect(prismaFake.activity.create).not.toHaveBeenCalled();
+    }
+  });
+
+  it('writes the badge and its bar together when both are good', async () => {
+    prismaFake.teacherBadge.findUnique.mockResolvedValue({ id: 'badge-1', name: 'Effort', teacherId: T1 });
+
+    const res = await call('POST', '/api/teacher/activities', {
+      token: tokenFor({ id: T1 }),
+      body: body({ badgeId: 'badge-1', badgePassingScore: '80' }),
+    });
+
+    expect(res.status).toBe(200);
+    const written = prismaFake.activity.create.mock.calls[0][0].data;
+    expect(written.badgeId).toBe('badge-1');
+    // Stored as a number, however the form sent it.
+    expect(written.badgePassingScore).toBe(80);
+  });
+
+  it('creates an activity with no badge at all, the way the form sends it', async () => {
+    // FormData has no null: an untouched picker arrives as an empty string, and
+    // must not be read as a badge id that cannot be found.
+    const res = await call('POST', '/api/teacher/activities', {
+      token: tokenFor({ id: T1 }),
+      body: body({ badgeId: '', badgePassingScore: '75' }),
+    });
+
+    expect(res.status).toBe(200);
+    const written = prismaFake.activity.create.mock.calls[0][0].data;
+    expect(written.badgeId).toBe(null);
+    // The bar goes with it — a threshold with nothing to award is dead data.
+    expect(written.badgePassingScore).toBe(null);
+    expect(prismaFake.teacherBadge.findUnique).not.toHaveBeenCalled();
+  });
+
+  it('lets a teacher who inherited a class keep the badge already on it', async () => {
+    // An admin reassigned the class. The Activity Builder posts the whole form,
+    // so the inherited badge id comes back on an edit that only moved the
+    // title — and refusing it would lock the new teacher out of the activity
+    // entirely. They may keep it or clear it, never swap in someone else's.
+    prismaFake.activity.findUnique.mockResolvedValue({
+      id: ACTIVITY, points: 100, rubric: RUBRIC, submissionMode: 'MANUAL_SCORE',
+      badgeId: 'badge-inherited', badgePassingScore: 80,
+      class: { teacherId: T1 }, classLesson: null,
+    });
+    prismaFake.teacherBadge.findUnique.mockResolvedValue({
+      id: 'badge-inherited', name: 'Previous Teacher\'s', teacherId: 'teacher-2',
+    });
+    prismaFake.activity.update.mockResolvedValue({ id: ACTIVITY });
+
+    const res = await call('PUT', `/api/teacher/activities/${ACTIVITY}`, {
+      token: tokenFor({ id: T1 }),
+      body: { title: 'Renamed', badgeId: 'badge-inherited', badgePassingScore: 80 },
+    });
+
+    expect(res.status).toBe(200);
+    expect(prismaFake.activity.update.mock.calls[0][0].data.badgeId).toBe('badge-inherited');
+  });
+
+  it('still refuses a different teacher\'s badge on that same activity', async () => {
+    // Keeping what was there is not permission to reach for anything else.
+    prismaFake.activity.findUnique.mockResolvedValue({
+      id: ACTIVITY, points: 100, rubric: RUBRIC, submissionMode: 'MANUAL_SCORE',
+      badgeId: 'badge-inherited', badgePassingScore: 80,
+      class: { teacherId: T1 }, classLesson: null,
+    });
+    prismaFake.teacherBadge.findUnique.mockResolvedValue({
+      id: 'badge-other', name: 'Not Yours', teacherId: 'teacher-2',
+    });
+
+    const res = await call('PUT', `/api/teacher/activities/${ACTIVITY}`, {
+      token: tokenFor({ id: T1 }),
+      body: { title: 'Renamed', badgeId: 'badge-other', badgePassingScore: 80 },
+    });
+
+    expect(res.status).toBe(400);
+    expect(prismaFake.activity.update).not.toHaveBeenCalled();
+  });
+
+  it('leaves the badge alone on an edit that never mentions it', async () => {
+    // Activity Builder posts the whole form, but Class Hub's quick edit sends
+    // four fields. That must not silently strip the badge off the activity.
+    prismaFake.activity.findUnique.mockResolvedValue({
+      id: ACTIVITY, points: 100, rubric: RUBRIC, submissionMode: 'TEACHER_UPLOAD',
+      badgeId: 'badge-1', badgePassingScore: 80,
+      class: { teacherId: T1 }, classLesson: null,
+    });
+    prismaFake.activity.update.mockResolvedValue({ id: ACTIVITY });
+
+    const res = await call('PUT', `/api/teacher/activities/${ACTIVITY}`, {
+      token: tokenFor({ id: T1 }), body: { title: 'Renamed' },
+    });
+
+    expect(res.status).toBe(200);
+    const written = prismaFake.activity.update.mock.calls[0][0].data;
+    expect(written).not.toHaveProperty('badgeId');
+    expect(written).not.toHaveProperty('badgePassingScore');
   });
 });
 

@@ -122,8 +122,47 @@ model User {
   submissions       Submission[]
   notifications     Notification[]
   badges            StudentBadge[]
+  createdBadges     TeacherBadge[]   @relation("TeacherBadges")
   school            School?          @relation(fields: [schoolId], references: [id])
   section           Section?         @relation("StudentSection", fields: [sectionId], references: [id])
+}
+
+/// A badge a teacher wrote themselves, to hang off an activity of their own.
+///
+/// The fifteen built-in badges in badges.js describe patterns across a whole
+/// term — an average sustained over five activities, a comeback in one subject
+/// — and none of them can say "you passed the multiplication drill I set on
+/// Tuesday". That is the gap this closes: a teacher names the reward, sets the
+/// bar in percent on one activity, and the learner earns it by clearing it.
+///
+/// Owned by one teacher rather than the school. A school-wide badge would be
+/// an admin's decision about what the whole school celebrates, and nothing
+/// here proposes that; `schoolId` is carried only so the row stays attributable
+/// after a teacher account is gone, never as a permission.
+model TeacherBadge {
+  id          String     @id @default(uuid())
+  /// What the learner sees on the badge, e.g. "Times Table Champion".
+  name        String
+  /// The one line under the name. Optional: a well-named badge often needs no
+  /// gloss, and an empty description falls back to the condition itself
+  /// ("Score at least 80% on Times Table Drill").
+  description String?
+  /// A key from BADGE_ICONS in badges.js, e.g. "trophy". Stored as the key and
+  /// not as markup or a class name, so the same badge can be drawn by the
+  /// student page, the teacher's library and anything added later without the
+  /// three of them having to agree on a rendering.
+  icon        String     @default("award")
+  /// A key from BADGE_COLORS in badges.js — a palette name, not a hex value,
+  /// for the same reason. Unknown values fall back rather than failing.
+  color       String     @default("royal")
+  teacherId   String
+  schoolId    String?
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+  teacher     User       @relation("TeacherBadges", fields: [teacherId], references: [id], onDelete: Cascade)
+  activities  Activity[]
+
+  @@index([teacherId])
 }
 
 /// A badge a learner has earned, kept so it can never be taken away again.
@@ -137,9 +176,20 @@ model User {
 /// un-earns a badge.
 model StudentBadge {
   id        String   @id @default(uuid())
+  /// The badge's stable id, e.g. "comeback-kid" — one of BADGE_IDS in
+  /// badges.js — or "custom:<TeacherBadge id>" for a badge a teacher wrote.
+  /// One column for both because everything downstream (the unique pair, the
+  /// union at read time, "earned means earned") treats them identically; the
+  /// prefix is the only thing that tells them apart, and badges.js owns it.
   studentId String
-  /// The badge's stable id, e.g. "comeback-kid". Matches BADGE_IDS in badges.js.
   badgeId   String
+  /// The teacher badge's name as it stood when this was earned. Only set on a
+  /// custom row, and only ever read as a fallback: the live TeacherBadge is
+  /// preferred, so a rename shows through. It exists because a teacher's
+  /// account being deleted takes their badges with it, and a learner's trophy
+  /// room going blank where a badge used to be is the one outcome this table
+  /// was created to prevent.
+  label     String?
   earnedAt  DateTime @default(now())
   student   User     @relation(fields: [studentId], references: [id], onDelete: Cascade)
 
@@ -301,34 +351,53 @@ model ClassLesson {
 }
 
 model Activity {
-  id              String       @id @default(uuid())
-  title           String
-  type            String
-  topic           String?
-  points          Int
-  classId         String
-  instructions    String?
+  id                String        @id @default(uuid())
+  title             String
+  type              String
+  topic             String?
+  points            Int
+  classId           String
+  instructions      String?
   /// The due date, as "YYYY-MM-DD". Work submitted after it is marked late.
   /// Resolved to 23:59:59 Philippine time — see isPastDeadline in server.js.
-  deadline        String?
+  deadline          String?
   /// Last date late work is still accepted, as "YYYY-MM-DD". Null means the
   /// activity closes at the deadline, which is how every activity behaved
   /// before this existed, so old rows keep their current behaviour.
-  lateUntil       String?
-  submissionMode  String       @default("TEACHER_UPLOAD")
-  additionalFiles String?
-  rubric          String?
-  classLessonId   String?
-  maxAttempts     Int          @default(1)
+  lateUntil         String?
+  submissionMode    String        @default("TEACHER_UPLOAD")
+  additionalFiles   String?
+  rubric            String?
+  classLessonId     String?
+  maxAttempts       Int           @default(1)
   /// Which grading component this counts toward: WW, PT or QA. Null means the
   /// activity predates components and is treated as Written Work, so existing
   /// grades keep working untouched. Distinct from `type`, which is the
   /// pedagogical kind ("Essay") — a school needs both.
-  component       String?
-  createdAt       DateTime     @default(now())
-  class           Class        @relation(fields: [classId], references: [id])
-  classLesson     ClassLesson? @relation(fields: [classLessonId], references: [id])
-  submissions     Submission[]
+  component         String?
+  /// The teacher badge a learner earns by passing this activity, if any.
+  ///
+  /// SetNull rather than Cascade, and deliberately so: deleting a badge must
+  /// never delete the activity it was attached to, along with every mark
+  /// recorded against it. The activity simply stops awarding anything.
+  badgeId           String?
+  /// The mark, as a whole percentage 1–100, at or above which the badge is
+  /// earned. Percent rather than raw points because it is the unit already
+  /// stored on Submission — a bar set in points would silently change meaning
+  /// the moment `points` did.
+  ///
+  /// Separate from School.passingGrade, which decides who is failing the
+  /// subject. A teacher setting a reward is answering a different question
+  /// ("what is worth celebrating here"), and may well pitch it above the pass
+  /// mark. Null exactly when badgeId is null; the two are written together.
+  badgePassingScore Int?
+  createdAt         DateTime      @default(now())
+  class             Class         @relation(fields: [classId], references: [id])
+  classLesson       ClassLesson?  @relation(fields: [classLessonId], references: [id])
+  badge             TeacherBadge? @relation(fields: [badgeId], references: [id], onDelete: SetNull)
+  submissions       Submission[]
+
+  @@index([badgeId])
 }
 
 model Submission {

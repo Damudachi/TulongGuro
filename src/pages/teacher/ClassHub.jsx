@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
-import { Plus, Search, FileText, ArrowLeft, Clock, CheckCircle2, AlertCircle, UploadCloud, Trash2, PenLine, CloudOff, Eye, ShieldCheck } from 'lucide-react';
+import { Plus, Search, FileText, ArrowLeft, Clock, CheckCircle2, AlertCircle, UploadCloud, Trash2, PenLine, CloudOff, Eye, ShieldCheck, Medal } from 'lucide-react';
 import { API_URL, apiFetch } from '../../config';
 import { submissionWindow, formatDeadline } from '../../utils/deadlines';
 import { getStoredUser } from '../../utils/session';
@@ -274,6 +274,18 @@ export default function ClassHub() {
                       <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${isStudentSubmit ? 'bg-green-100 text-green-700' : 'bg-blue-100 text-blue-700'}`}>
                         {isStudentSubmit ? '👤 Student Submits' : '📷 Teacher Uploads'}
                       </span>
+                      {/* Which badge this activity awards, and at what mark.
+                          Shown on the list rather than only inside the editor,
+                          because "does this one give a badge" is a question a
+                          teacher asks while scanning the class, not while
+                          editing one activity. */}
+                      {activity.badge && (
+                        <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-lilac-100 text-lilac-700 flex items-center gap-1">
+                          <Medal className="w-3 h-3" />
+                          {activity.badge.name}
+                          {activity.badgePassingScore != null && ` · ${activity.badgePassingScore}%`}
+                        </span>
+                      )}
                     </div>
                     <p className="text-xs text-slate-500 mb-1">
                       {activity.type} • {activity.points} pts

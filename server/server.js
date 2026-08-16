@@ -4926,7 +4926,11 @@ app.get('/api/classes/:classId', async (req, res) => {
       activities: {
         include: {
           _count: { select: { submissions: true } },
-          submissions: { select: { id: true, status: true, studentId: true, aiScore: true, releasedAt: true } }
+          submissions: { select: { id: true, status: true, studentId: true, aiScore: true, releasedAt: true } },
+          // So Class Hub can show which activities award a badge without a
+          // second round trip per activity. `badgePassingScore` is already a
+          // scalar on the row beside it.
+          badge: { select: { id: true, name: true, icon: true, color: true } }
         },
         orderBy: { createdAt: 'desc' }
       }
@@ -5131,6 +5135,84 @@ function normalizeMaxAttempts(value) {
   return n;   // 0 === unlimited
 }
 
+/**
+ * Which badge this activity awards, and at what mark — resolved from whatever
+ * the form sent, and refused rather than guessed when it does not add up.
+ *
+ * Three things have to be true before a badge is written onto an activity, and
+ * each of them was a way to hand a child a reward nobody meant to give:
+ *
+ *   1. The badge exists and belongs to the caller. Without this, a teacher who
+ *      pasted another teacher's badge id would be awarding somebody else's
+ *      badge from their own class — and TeacherBadge carries no school scope
+ *      precisely because it was never meant to be shared.
+ *   2. The bar is a whole 1–100. parsePassingScore refuses everything else and
+ *      returns null; the save fails on that null instead of substituting a
+ *      default, because a bar the teacher did not set is exactly the number
+ *      that must not be invented.
+ *   3. The two are written together or not at all. A badge with no bar awards
+ *      nothing and shows as unreachable; a bar with no badge is dead data.
+ *
+ * `changed: false` means the request said nothing about badges, which is the
+ * common case for an edit that only moves a deadline — the stored values are
+ * then left exactly as they are.
+ *
+ * @param existing the activity as it stands, for an update. Lets a request that
+ *   carries only a new bar retune the badge already attached.
+ */
+async function resolveActivityBadge(body, teacherId, existing = null) {
+  const raw = body?.badgeId;
+  const scoreGiven = body?.badgePassingScore !== undefined;
+
+  // FormData has no null, so "no badge" arrives from the create form as an
+  // empty string — and from a caller that stringified its state, as "null".
+  const clearing = raw === null || raw === '' || raw === 'null' || raw === 'undefined';
+
+  if (raw === undefined) {
+    // Only the bar moved. Meaningful when a badge is already attached, and
+    // meaningless otherwise — a threshold with nothing to award is dead data.
+    if (!scoreGiven || !existing?.badgeId) return { ok: true, changed: false };
+    const retuned = badgeRules.parsePassingScore(body.badgePassingScore);
+    if (retuned === null) {
+      return { ok: false, code: 400, error: 'The score that earns the badge must be a whole number from 1 to 100.' };
+    }
+    return { ok: true, changed: true, data: { badgePassingScore: retuned } };
+  }
+
+  if (clearing) return { ok: true, changed: true, data: { badgeId: null, badgePassingScore: null } };
+
+  const badge = await prisma.teacherBadge.findUnique({
+    where: { id: String(raw) },
+    select: { id: true, name: true, teacherId: true },
+  });
+  /**
+   * A badge already on this activity may be kept by whoever holds the class
+   * now, even though only its author may *attach* one.
+   *
+   * Without this, an admin reassigning a class would leave the new teacher
+   * unable to save any edit at all: the Activity Builder posts the whole form,
+   * so the inherited badge id comes back on a request that only moved the
+   * deadline, and an ownership check with no exception would refuse it. They
+   * still cannot swap in a badge that is not theirs — only leave the one that
+   * was already there, or clear it.
+   */
+  const keepingInherited = !!badge && existing?.badgeId === badge.id;
+  if (!badge || (badge.teacherId !== teacherId && !keepingInherited)) {
+    return {
+      ok: false, code: 400,
+      error: 'That badge is not in your badge library, so it could not be attached. Pick one of your own badges, or create a new one.',
+    };
+  }
+  const passingScore = badgeRules.parsePassingScore(body.badgePassingScore);
+  if (passingScore === null) {
+    return {
+      ok: false, code: 400,
+      error: `Set the score that earns the "${badge.name}" badge — a whole number from 1 to 100.`,
+    };
+  }
+  return { ok: true, changed: true, data: { badgeId: badge.id, badgePassingScore: passingScore } };
+}
+
 app.post('/api/teacher/activities', (req, res, next) => {
   const ct = req.headers['content-type'] || '';
   if (ct.includes('multipart/form-data')) {
@@ -5180,6 +5262,13 @@ app.post('/api/teacher/activities', (req, res, next) => {
     }
     const resolvedRubric = rubric || null;
 
+    // Refused before anything is written, so a badge that could not be attached
+    // never leaves a half-created activity behind.
+    const badgeChoice = await resolveActivityBadge(req.body, req.auth.sub);
+    if (!badgeChoice.ok) {
+      return res.status(badgeChoice.code).json({ success: false, code: 'BADGE_INVALID', error: badgeChoice.error });
+    }
+
     const due = normalizeDateInput(deadline);
     const late = normalizeDateInput(lateUntil);
     // A late window that closes before the due date would refuse work that was
@@ -5202,7 +5291,8 @@ app.post('/api/teacher/activities', (req, res, next) => {
         maxAttempts: normalizeMaxAttempts(maxAttempts),
         additionalFiles: filePaths.length ? JSON.stringify(filePaths) : null,
         rubric: resolvedRubric || null,
-        classLessonId: classLessonId || null
+        classLessonId: classLessonId || null,
+        ...(badgeChoice.data || {})
       }
     });
     res.json({ success: true, activity });
@@ -5269,7 +5359,25 @@ app.put('/api/teacher/activities/:activityId', async (req, res) => {
       }
     }
 
+    /**
+     * The badge is deliberately NOT frozen once marks exist, unlike the rubric
+     * and the points total above.
+     *
+     * Those two are frozen because a recorded percentage is meaningless without
+     * them — changing either silently re-values work already marked. A badge is
+     * the opposite: it is a reward layered on top of a mark that stays exactly
+     * what it was. And a badge already earned is on record in StudentBadge, so
+     * raising the bar afterwards never takes one back — it only changes who
+     * clears it from here on. A teacher who typed 8 instead of 80 has to be
+     * able to fix that.
+     */
+    const badgeChoice = await resolveActivityBadge(req.body, req.auth.sub, owned.activity);
+    if (!badgeChoice.ok) {
+      return res.status(badgeChoice.code).json({ success: false, code: 'BADGE_INVALID', error: badgeChoice.error });
+    }
+
     const updateData = {};
+    if (badgeChoice.changed) Object.assign(updateData, badgeChoice.data);
     if (title !== undefined) updateData.title = String(title);
     if (type !== undefined) updateData.type = String(type);
     if (points !== undefined) updateData.points = parseInt(points);
@@ -5318,6 +5426,180 @@ app.delete('/api/teacher/activities/:activityId', async (req, res) => {
 
     await prisma.activity.delete({ where: { id: activityId } });
     res.json({ success: true, message: 'Activity deleted safely' });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// ─────────────────────────────────────────
+// TEACHER-AUTHORED BADGES
+// ─────────────────────────────────────────
+// A teacher's own library of rewards. Each one is attached to an activity by
+// the Activity Builder, with a passing mark in percent; badges.js decides who
+// has earned it, and StudentBadge records it permanently.
+//
+// Every route here is scoped by `teacherId: req.auth.sub` — never by an id in
+// the URL — so one teacher can neither read, rename nor delete another's
+// badges. authorizePath has already proved the caller is *a* teacher; the
+// where clauses below are what make it their own library.
+
+/** How a badge is handed back to the screens that draw it. */
+const TEACHER_BADGE_SELECT = {
+  id: true, name: true, description: true, icon: true, color: true, createdAt: true,
+};
+
+/** Name, description, icon and colour, cleaned up — or an error to refuse with. */
+function readBadgeFields(body, { partial = false } = {}) {
+  const data = {};
+
+  if (body?.name !== undefined || !partial) {
+    const name = String(body?.name ?? '').trim();
+    if (!name) return { error: 'Give the badge a name — it is what the learner sees on it.' };
+    // Long enough for a real title, short enough to fit the badge card on a
+    // phone without the layout deciding where to cut it.
+    if (name.length > 60) return { error: 'Badge names are limited to 60 characters.' };
+    data.name = name;
+  }
+
+  if (body?.description !== undefined || !partial) {
+    const description = String(body?.description ?? '').trim();
+    if (description.length > 200) return { error: 'Badge descriptions are limited to 200 characters.' };
+    data.description = description || null;
+  }
+
+  // Never a 400: an icon or colour this server does not recognise falls back to
+  // the default rather than refusing a teacher's badge over decoration.
+  if (body?.icon !== undefined || !partial) data.icon = badgeRules.normaliseIcon(body?.icon);
+  if (body?.color !== undefined || !partial) data.color = badgeRules.normaliseColor(body?.color);
+
+  return { data };
+}
+
+/** The caller's own badges, with what each one is attached to and who holds it. */
+app.get('/api/teacher/badges', async (req, res) => {
+  try {
+    const badges = await prisma.teacherBadge.findMany({
+      where: { teacherId: req.auth.sub },
+      select: {
+        ...TEACHER_BADGE_SELECT,
+        activities: {
+          select: { id: true, title: true, badgePassingScore: true, class: { select: { id: true, name: true } } },
+          orderBy: { createdAt: 'desc' },
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    // How many learners hold each one. Counted in a single query rather than
+    // per badge, and tolerated as zero if it fails — a count is decoration, and
+    // must not be what takes the library screen down.
+    let heldBy = new Map();
+    try {
+      const grouped = await prisma.studentBadge.groupBy({
+        by: ['badgeId'],
+        where: { badgeId: { in: badges.map(b => badgeRules.customBadgeKey(b.id)) } },
+        _count: { _all: true },
+      });
+      heldBy = new Map(grouped.map(g => [g.badgeId, g._count?._all ?? 0]));
+    } catch { /* leaves every count at 0 */ }
+
+    res.json({
+      success: true,
+      badges: badges.map(b => ({
+        ...b,
+        awardedCount: heldBy.get(badgeRules.customBadgeKey(b.id)) || 0,
+      })),
+      icons: badgeRules.BADGE_ICONS,
+      colors: badgeRules.BADGE_COLORS,
+    });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+app.post('/api/teacher/badges', async (req, res) => {
+  try {
+    const fields = readBadgeFields(req.body);
+    if (fields.error) return res.status(400).json({ success: false, error: fields.error });
+
+    // The acting teacher comes from the session, never from the body — the
+    // same rule every other create route here follows.
+    const teacher = await prisma.user.findUnique({
+      where: { id: req.auth.sub }, select: { schoolId: true },
+    });
+
+    const badge = await prisma.teacherBadge.create({
+      data: { ...fields.data, teacherId: req.auth.sub, schoolId: teacher?.schoolId ?? null },
+      select: TEACHER_BADGE_SELECT,
+    });
+    res.json({ success: true, badge: { ...badge, awardedCount: 0, activities: [] } });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+app.put('/api/teacher/badges/:badgeId', async (req, res) => {
+  try {
+    const fields = readBadgeFields(req.body, { partial: true });
+    if (fields.error) return res.status(400).json({ success: false, error: fields.error });
+    if (Object.keys(fields.data).length === 0) {
+      return res.status(400).json({ success: false, error: 'Nothing to change.' });
+    }
+
+    // updateMany, not update: a badge id belonging to another teacher matches
+    // zero rows instead of leaking a 404-vs-403 distinction — or worse, being
+    // updated. The where clause is the whole ownership check.
+    const result = await prisma.teacherBadge.updateMany({
+      where: { id: req.params.badgeId, teacherId: req.auth.sub },
+      data: fields.data,
+    });
+    if (result.count === 0) {
+      return res.status(404).json({ success: false, error: 'That badge is not in your badge library.' });
+    }
+    const badge = await prisma.teacherBadge.findUnique({
+      where: { id: req.params.badgeId }, select: TEACHER_BADGE_SELECT,
+    });
+    res.json({ success: true, badge });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+/**
+ * Delete a badge nobody has earned yet.
+ *
+ * Refused once any learner holds it, and that is the whole point of the route
+ * rather than an inconvenience: StudentBadge exists so an earned badge can
+ * never be taken away, and a badge deleted out from under it leaves a child
+ * with a trophy nothing can name. Renaming stays open — a teacher fixing a
+ * typo is not revoking anything — and detaching it from an activity stops it
+ * being awarded again, which is what "I don't want to use this any more"
+ * actually needs.
+ *
+ * Activities keep working either way: the foreign key is ON DELETE SET NULL, so
+ * a deleted badge leaves the activity and every mark on it untouched.
+ */
+app.delete('/api/teacher/badges/:badgeId', async (req, res) => {
+  try {
+    const badge = await prisma.teacherBadge.findFirst({
+      where: { id: req.params.badgeId, teacherId: req.auth.sub },
+      select: { id: true, name: true },
+    });
+    if (!badge) return res.status(404).json({ success: false, error: 'That badge is not in your badge library.' });
+
+    const awarded = await prisma.studentBadge.count({
+      where: { badgeId: badgeRules.customBadgeKey(badge.id) },
+    });
+    if (awarded > 0) {
+      return res.status(409).json({
+        success: false,
+        code: 'BADGE_AWARDED',
+        error: `${awarded} learner${awarded === 1 ? ' has' : 's have'} already earned "${badge.name}", so it can no longer be deleted — that would take a trophy off their shelf. Remove it from your activities instead, and nobody new will earn it.`,
+      });
+    }
+
+    await prisma.teacherBadge.delete({ where: { id: badge.id } });
+    res.json({ success: true });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
   }
@@ -8054,6 +8336,67 @@ async function sectionRankTop3({ studentId, sectionId, schoolId, auth }) {
 }
 
 /**
+ * The teacher-authored badges in play for one learner, with progress toward
+ * each. Empty list rather than a throw if anything here fails — see the note in
+ * badgesForStudent on why a trophy cabinet must never take a dashboard down.
+ *
+ * Three sources are unioned, and each is there for a case the others miss:
+ *
+ *   1. Badge activities in the learner's current section, so a badge shows as
+ *      *locked with its condition* before it is earned — a reward nobody can
+ *      see until they have already got it is not a reward.
+ *   2. Badge activities the learner has actually submitted to, which is what
+ *      keeps the badge visible after a section transfer moves them away from
+ *      the class the work was set in.
+ *   3. Badges already on record, so one whose activity has since been deleted,
+ *      or detached, is still shown as earned.
+ *
+ * @param alreadyEarned the stored StudentBadge ids, custom and built-in alike.
+ */
+async function customBadgesForStudent({ submissions, sectionId, alreadyEarned }) {
+  const ACTIVITY_BADGE_SELECT = {
+    id: true, title: true, badgeId: true, badgePassingScore: true,
+  };
+
+  const sectionActivities = sectionId
+    ? await prisma.activity.findMany({
+        where: { badgeId: { not: null }, class: { sectionId } },
+        select: ACTIVITY_BADGE_SELECT,
+      })
+    : [];
+
+  // Already loaded — the dashboard's submissions carry their activity — so this
+  // arm costs no query at all.
+  const submittedActivities = (submissions || [])
+    .map(s => s.activity)
+    .filter(a => a?.id && a.badgeId);
+
+  const byActivity = new Map();
+  for (const a of [...sectionActivities, ...submittedActivities]) {
+    byActivity.set(a.id, { id: a.id, title: a.title, badgeId: a.badgeId, passingScore: a.badgePassingScore });
+  }
+
+  const teacherBadgeIds = new Set([...byActivity.values()].map(a => a.badgeId));
+  for (const key of alreadyEarned) {
+    const id = badgeRules.teacherBadgeIdFrom(key);
+    if (id) teacherBadgeIds.add(id);
+  }
+  if (teacherBadgeIds.size === 0) return [];
+
+  const teacherBadges = await prisma.teacherBadge.findMany({
+    where: { id: { in: [...teacherBadgeIds] } },
+    select: { id: true, name: true, description: true, icon: true, color: true },
+  });
+
+  const catalogue = teacherBadges.map(b => ({
+    ...b,
+    activities: [...byActivity.values()].filter(a => a.badgeId === b.id),
+  }));
+
+  return badgeRules.computeCustomBadges(submissions, catalogue);
+}
+
+/**
  * The learner's badges: conditions evaluated now, unioned with everything they
  * have ever earned, and anything newly reached written down.
  *
@@ -8069,13 +8412,16 @@ async function badgesForStudent({ studentId, submissions, passingGrade, sectionI
   // fifteen badges are still perfectly computable from the learner's own work,
   // and a child's dashboard must not 500 over a trophy cabinet.
   let already = new Set();
+  let storedRows = [];
   let storeAvailable = true;
   try {
-    const stored = await prisma.studentBadge.findMany({
+    storedRows = await prisma.studentBadge.findMany({
       where: { studentId },
-      select: { badgeId: true },
+      // `label` is the name a teacher badge had when it was earned, kept only
+      // so a badge whose author's account is gone still has something to say.
+      select: { badgeId: true, label: true },
     });
-    already = new Set(stored.map(b => b.badgeId));
+    already = new Set(storedRows.map(b => b.badgeId));
   } catch {
     storeAvailable = false;
   }
@@ -8100,24 +8446,93 @@ async function badgesForStudent({ studentId, submissions, passingGrade, sectionI
 
   const computed = badgeRules.computeBadges(submissions, passingGrade, { rankTop3 });
 
-  const newlyEarned = computed.filter(b => b.earned && !already.has(b.id)).map(b => b.id);
-  if (storeAvailable && newlyEarned.length > 0) {
-    try {
-      // skipDuplicates because two tabs loading the dashboard at once would
-      // otherwise race on the unique pair.
-      await prisma.studentBadge.createMany({
-        data: newlyEarned.map(badgeId => ({ studentId, badgeId })),
-        skipDuplicates: true,
-      });
-    } catch {
-      // Failing to record it costs permanence, not the badge itself — the
-      // learner still sees everything they have earned on this load.
+  // Teacher-authored badges sit alongside the built-in fifteen and are earned,
+  // recorded and displayed by exactly the same machinery below. A failure here
+  // costs those badges and nothing else: the same reasoning as the store guard
+  // above, one rung further out.
+  let custom = [];
+  try {
+    custom = await customBadgesForStudent({ submissions, sectionId, alreadyEarned: already });
+  } catch {
+    custom = [];
+  }
+
+  const all = [...computed, ...custom];
+
+  /**
+   * Only the learner's own visit writes a badge down.
+   *
+   * This endpoint is read by the learner *and* by their teacher and admin, and
+   * releaseFilterFor hands staff the validated-but-unreleased marks on purpose
+   * — that is what the gradebook is for. Persisting from a staff read would
+   * therefore make a badge permanent off a mark the child has not been shown
+   * yet, and, now that a teacher's badge notifies, would announce a grade the
+   * teacher was still deciding whether to publish. The badge is not lost: the
+   * learner's own next dashboard load records it, from released work.
+   *
+   * Staff still *see* the badge as earned on their preview, computed from the
+   * marks they are entitled to see. Only the writing waits.
+   */
+  const readingOwnRecord = auth?.sub === studentId;
+
+  const newlyEarned = all.filter(b => b.earned && !already.has(b.id));
+  if (storeAvailable && readingOwnRecord && newlyEarned.length > 0) {
+    // One insert per badge rather than a createMany with skipDuplicates,
+    // because a badge from a teacher is worth telling the learner about — and
+    // "did this row actually go in" is what decides whether to. The unique
+    // (studentId, badgeId) pair is the arbiter, so two tabs loading the
+    // dashboard at once produce one notification, not two: the loser's insert
+    // throws and is swallowed here.
+    for (const badge of newlyEarned) {
+      try {
+        await prisma.studentBadge.create({
+          data: {
+            studentId,
+            badgeId: badge.id,
+            label: badge.custom ? badge.title : null,
+          },
+        });
+        if (badge.custom) {
+          await createNotification(studentId, {
+            type: 'BADGE_EARNED',
+            title: `You earned the "${badge.title}" badge!`,
+            body: badge.desc,
+            link: '/student/awards',
+          });
+        }
+      } catch {
+        // Already recorded by another request, or the store is unavailable.
+        // Either way the learner still sees the badge on this load — failing
+        // to write it costs permanence, not the badge itself.
+      }
     }
   }
 
   // Anything on record counts as earned even if today's data no longer says so
   // — that is the whole point of having recorded it.
-  return computed.map(b => (already.has(b.id) ? { ...b, earned: true, progress: b.target } : b));
+  const shown = all.map(b => (already.has(b.id) ? { ...b, earned: true, progress: b.target } : b));
+
+  // A recorded badge whose definition can no longer be found — the teacher's
+  // account, and with it their badge, is gone. It was genuinely earned, so it
+  // is shown from the name captured at the time rather than quietly dropped,
+  // which would blank a child's trophy room for someone else's account change.
+  const known = new Set(shown.map(b => b.id));
+  for (const row of storedRows) {
+    if (known.has(row.badgeId) || !badgeRules.isCustomBadgeId(row.badgeId)) continue;
+    shown.push({
+      id: row.badgeId,
+      title: row.label || 'Badge from your teacher',
+      desc: 'Awarded by your teacher',
+      icon: badgeRules.DEFAULT_BADGE_ICON,
+      color: badgeRules.DEFAULT_BADGE_COLOR,
+      custom: true,
+      progress: 1, target: 1, earned: true,
+      bestPercent: null, passingScore: null, activities: [],
+      passingGrade,
+    });
+  }
+
+  return shown;
 }
 
 // ─────────────────────────────────────────
@@ -8807,7 +9222,10 @@ app.get('/api/student/:studentId/activities', async (req, res) => {
               include: {
                 activities: {
                   where: { submissionMode: 'STUDENT_SUBMIT' }, // Only show student-submit activities
-                  orderBy: { createdAt: 'desc' }
+                  orderBy: { createdAt: 'desc' },
+                  // The badge this activity awards, so the submit screen can
+                  // say what is on offer *before* the work is handed in.
+                  include: { badge: { select: { id: true, name: true, description: true, icon: true, color: true } } }
                 }
               }
             }
@@ -9014,7 +9432,12 @@ app.get('/api/student/:studentId/activities/:activityId', async (req, res) => {
     const { studentId, activityId } = req.params;
     const activity = await prisma.activity.findUnique({
       where: { id: activityId },
-      include: { class: { select: { id: true, name: true, subject: true } } }
+      include: {
+        class: { select: { id: true, name: true, subject: true } },
+        // A reward the learner cannot see until after they have earned it is
+        // not a reward, so the badge and its bar travel with the activity.
+        badge: { select: { id: true, name: true, description: true, icon: true, color: true } }
+      }
     });
     if (!activity) return res.status(404).json({ success: false, error: 'Activity not found' });
 

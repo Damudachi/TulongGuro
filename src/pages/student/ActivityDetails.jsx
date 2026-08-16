@@ -4,6 +4,7 @@ import { ArrowLeft, BookOpen, Award, Calendar, FileText, Loader2, Clock, CheckCi
 import { API_URL, apiFetch } from '../../config';
 import { submissionWindow, formatDeadline } from '../../utils/deadlines';
 import { getStoredUser } from '../../utils/session';
+import { badgeLook } from '../../constants/badgeLook';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
 
@@ -115,6 +116,30 @@ export default function ActivityDetails() {
           </p>
         </div>
       </div>
+
+      {/* ── The badge on offer ──
+          Before the work, not after it. A reward a learner only finds out about
+          once they have already earned it cannot encourage anything. */}
+      {activity.badge && activity.badgePassingScore != null && (() => {
+        const style = badgeLook(activity.badge);
+        const Icon = style.icon;
+        return (
+          <div className={cn('rounded-2xl border-2 p-5 mb-6 flex items-center gap-4', style.shell)}>
+            <div className={cn('p-3 rounded-2xl text-white shrink-0 shadow-pop', style.tile)}>
+              <Icon className="w-6 h-6" />
+            </div>
+            <div className="min-w-0">
+              <p className="text-[10px] font-extrabold uppercase tracking-wider text-navy-500">Badge you can earn</p>
+              <p className="font-bold text-brand-slate mt-0.5">{activity.badge.name}</p>
+              <p className="text-xs text-navy-600 mt-0.5">
+                {activity.badge.description
+                  ? `${activity.badge.description} — score ${activity.badgePassingScore}% or higher to earn it.`
+                  : `Score ${activity.badgePassingScore}% or higher on this activity to earn it.`}
+              </p>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Instructions */}
       {activity.instructions && (

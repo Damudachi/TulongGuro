@@ -68,6 +68,13 @@ const ROUTE_MANIFEST = {
   'POST /api/teacher/activities': { needsCheck: true },
   'PUT /api/teacher/activities/:activityId': { needsCheck: true },
   'DELETE /api/teacher/activities/:activityId': { needsCheck: true },
+  // Teacher-authored badges. The list and the create take no resource id — both
+  // are scoped to req.auth.sub — while update and delete address a badge id and
+  // prove ownership with `teacherId: req.auth.sub` in the where clause.
+  'GET /api/teacher/badges': { needsCheck: false, note: 'lists the caller\'s own badges; scoped to req.auth.sub' },
+  'POST /api/teacher/badges': { needsCheck: false, note: 'creates a new badge for the caller' },
+  'PUT /api/teacher/badges/:badgeId': { needsCheck: true },
+  'DELETE /api/teacher/badges/:badgeId': { needsCheck: true },
   'GET /api/teacher/rubric-templates/:teacherId': { needsCheck: false, note: 'authorizePath special-cases this exact GET shape directly' },
   'POST /api/teacher/rubric-templates': { needsCheck: false, note: 'creates a new template for the caller' },
   'PUT /api/teacher/rubric-templates/:id': { needsCheck: true },
