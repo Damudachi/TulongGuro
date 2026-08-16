@@ -2191,3 +2191,131 @@ describe('the badge store is an enhancement, not a dependency', () => {
     expect(prismaFake.studentBadge.createMany).not.toHaveBeenCalled();
   });
 });
+
+// ───────────────────────────────────────────────────────────────────
+// Rubric and points freeze once a mark has been recorded against them
+// ───────────────────────────────────────────────────────────────────
+
+describe('an activity with graded work will not let its rubric or points move', () => {
+  const url = `/api/teacher/activities/${ACTIVITY}`;
+  const STORED_RUBRIC = JSON.stringify({ criteria: [{ name: 'Content', points: 100, description: 'x' }] });
+
+  /** The activity as teacherOwnsActivity loads it, owned by T1. */
+  const storedActivity = (over = {}) => ({
+    id: ACTIVITY,
+    title: 'Narrative Essay',
+    points: 25,
+    rubric: STORED_RUBRIC,
+    submissionMode: 'TEACHER_UPLOAD',
+    class: { teacherId: T1 },
+    classLesson: null,
+    ...over,
+  });
+
+  const arm = ({ gradedCount }) => {
+    prismaFake.activity.findUnique.mockResolvedValue(storedActivity());
+    prismaFake.submission.count.mockResolvedValue(gradedCount);
+    prismaFake.activity.update.mockResolvedValue(storedActivity());
+  };
+
+  it('409s when the rubric is changed and a submission is already GRADED', async () => {
+    arm({ gradedCount: 3 });
+
+    const res = await call('PUT', url, {
+      token: tokenFor({ id: T1 }),
+      body: { rubric: JSON.stringify({ criteria: [{ name: 'Rewritten', points: 100, description: 'y' }] }) },
+    });
+
+    expect(res.status).toBe(409);
+    expect((await res.json()).code).toBe('GRADES_RECORDED');
+    // The assertion that protects the marks: nothing was written.
+    expect(prismaFake.activity.update).not.toHaveBeenCalled();
+  });
+
+  it('409s when the points total is changed and a submission is already GRADED', async () => {
+    arm({ gradedCount: 1 });
+
+    const res = await call('PUT', url, {
+      token: tokenFor({ id: T1 }),
+      body: { points: 50 },
+    });
+
+    expect(res.status).toBe(409);
+    expect(prismaFake.activity.update).not.toHaveBeenCalled();
+  });
+
+  it('accepts an identical rubric re-sent by a form that always posts every field', async () => {
+    // The regression this guards: Activity Builder submits the whole form on
+    // every save. A presence check instead of a value check would refuse a
+    // deadline edit and make the screen unusable on any graded activity.
+    arm({ gradedCount: 3 });
+
+    const res = await call('PUT', url, {
+      token: tokenFor({ id: T1 }),
+      body: { rubric: STORED_RUBRIC, points: 25, deadline: '2026-09-01' },
+    });
+
+    expect(res.status).toBe(200);
+    expect(prismaFake.activity.update).toHaveBeenCalledTimes(1);
+    expect(prismaFake.activity.update.mock.calls[0][0].data.deadline).toBeTruthy();
+  });
+
+  it('lets title, deadline and instructions through on a graded activity', async () => {
+    arm({ gradedCount: 3 });
+
+    const res = await call('PUT', url, {
+      token: tokenFor({ id: T1 }),
+      body: { title: 'Renamed', instructions: 'Read chapter 4 first.', deadline: '2026-09-01' },
+    });
+
+    expect(res.status).toBe(200);
+    const { data } = prismaFake.activity.update.mock.calls[0][0];
+    expect(data.title).toBe('Renamed');
+    // Untouched fields must not be written as undefined over real values.
+    expect(data).not.toHaveProperty('rubric');
+    expect(data).not.toHaveProperty('points');
+  });
+
+  it('still allows a rubric rewrite while nothing has been graded', async () => {
+    arm({ gradedCount: 0 });
+
+    const res = await call('PUT', url, {
+      token: tokenFor({ id: T1 }),
+      body: { rubric: JSON.stringify({ criteria: [{ name: 'Rewritten', points: 100, description: 'y' }] }) },
+    });
+
+    expect(res.status).toBe(200);
+    expect(prismaFake.activity.update).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not even count graded work when nothing risky is being changed', async () => {
+    arm({ gradedCount: 3 });
+
+    await call('PUT', url, { token: tokenFor({ id: T1 }), body: { title: 'Renamed' } });
+
+    expect(prismaFake.submission.count).not.toHaveBeenCalled();
+  });
+});
+
+describe('GET /api/activities/:id reports how much marking depends on the rubric', () => {
+  it('returns gradedCount alongside the activity', async () => {
+    prismaFake.activity.findUnique.mockResolvedValue({
+      id: ACTIVITY,
+      title: 'Narrative Essay',
+      points: 25,
+      // No school anywhere, so staffMayAccess falls to its sandbox rung and T1
+      // qualifies by owning the class.
+      class: { id: 'class-1', name: 'Class', teacherId: T1, section: { schoolId: null }, teacher: { schoolId: null } },
+    });
+    prismaFake.submission.count.mockResolvedValue(4);
+
+    const res = await call('GET', `/api/activities/${ACTIVITY}`, { token: tokenFor({ id: T1 }) });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.gradedCount).toBe(4);
+    expect(prismaFake.submission.count).toHaveBeenCalledWith({
+      where: { activityId: ACTIVITY, status: 'GRADED' },
+    });
+  });
+});

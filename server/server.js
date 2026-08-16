@@ -5169,6 +5169,35 @@ app.put('/api/teacher/activities/:activityId', async (req, res) => {
       }
     }
 
+    /**
+     * Rubric and points are what a recorded mark *means*. hitlScore is stored as
+     * a percentage of the activity total, so moving `points` after grading
+     * silently re-values every mark already taken — a paper marked 20 out of 25
+     * becomes 20 out of 50 with nobody told. Changing the rubric orphans the
+     * per-criterion breakdown the gradebook and the student's feedback screen
+     * read. Once anything is GRADED, both are frozen.
+     *
+     * Compared against the stored value rather than merely being present:
+     * Activity Builder posts the whole form on every save, so a presence check
+     * would refuse an unrelated deadline edit and make the screen unusable. The
+     * same reasoning as the RUBRIC_REQUIRED guard above, which is likewise
+     * scoped to requests that actually carry the field.
+     */
+    const changesRubric = rubric !== undefined && (rubric || null) !== (owned.activity.rubric || null);
+    const changesPoints = points !== undefined && parseInt(points) !== owned.activity.points;
+    if (changesRubric || changesPoints) {
+      const gradedCount = await prisma.submission.count({
+        where: { activityId: req.params.activityId, status: 'GRADED' }
+      });
+      if (gradedCount > 0) {
+        return res.status(409).json({
+          success: false,
+          code: 'GRADES_RECORDED',
+          error: `${gradedCount} submission${gradedCount === 1 ? ' has' : 's have'} already been graded against this rubric, so the rubric and the points total can no longer be changed. Everything else on this activity can still be edited.`,
+        });
+      }
+    }
+
     const updateData = {};
     if (title !== undefined) updateData.title = String(title);
     if (type !== undefined) updateData.type = String(type);
@@ -5574,7 +5603,13 @@ async function staffOwnsActivitySchool(activityId, authSub) {
 app.get('/api/activities/:activityId', async (req, res) => {
   const owned = await staffOwnsActivitySchool(req.params.activityId, req.auth.sub);
   if (!owned.ok) return res.status(owned.code).json({ success: false, error: owned.error });
-  res.json({ success: true, activity: owned.activity });
+  // How many recorded marks already depend on this activity's rubric and points
+  // total. Activity Builder reads it to decide whether the rubric may still be
+  // edited; the PUT below is what actually enforces that.
+  const gradedCount = await prisma.submission.count({
+    where: { activityId: req.params.activityId, status: 'GRADED' }
+  });
+  res.json({ success: true, activity: owned.activity, gradedCount });
 });
 
 app.get('/api/activities/:activityId/submissions', async (req, res) => {

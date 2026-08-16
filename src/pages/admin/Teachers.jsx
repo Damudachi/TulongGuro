@@ -330,7 +330,7 @@ export default function AdminTeachers() {
                 <div className="flex gap-2">
                   <input required type="text" value={form.password} autoComplete="off"
                     onChange={e => setForm({ ...form, password: e.target.value })}
-                    className="flex-1 border border-slate-200 p-2.5 rounded-lg outline-none focus:ring-2 focus:ring-brand-navy text-sm font-mono" />
+                    className="flex-1 min-w-0 border border-slate-200 p-2.5 rounded-lg outline-none focus:ring-2 focus:ring-brand-navy text-sm font-mono" />
                   <button type="button" onClick={() => setForm({ ...form, password: generatePassword() })}
                     className="px-3 rounded-lg bg-slate-100 text-slate-600 text-xs font-bold hover:bg-slate-200">
                     New

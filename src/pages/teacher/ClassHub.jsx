@@ -2,12 +2,22 @@ import { useState, useEffect } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import { Plus, Search, FileText, ArrowLeft, Clock, CheckCircle2, AlertCircle, UploadCloud, Trash2, PenLine, CloudOff, Eye, ShieldCheck } from 'lucide-react';
 import { API_URL, apiFetch } from '../../config';
-import { ACTIVITY_TYPES } from '../../constants/activityTypes';
-import { isPastDeadline, formatDeadline } from '../../utils/deadlines';
+import { submissionWindow, formatDeadline } from '../../utils/deadlines';
 import { getStoredUser } from '../../utils/session';
 import { saveClassSnapshot, readClassSnapshot } from '../../utils/offlineSnapshot';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
+
+/**
+ * Whether a mark has already been recorded against this activity's rubric.
+ *
+ * hitlScore is stored as a percentage of the activity total, so once one paper
+ * is GRADED both the rubric and the points total are part of what that mark
+ * means — moving either re-values work that has already been assessed. The
+ * server refuses it as well (409 GRADES_RECORDED); this only keeps a teacher
+ * from spending ten minutes on an edit that was never going to save.
+ */
+const hasGradedWork = (activity) => !!activity?.submissions?.some(s => s.status === 'GRADED');
 
 const STATUS_CONFIG = {
   NEEDS_GRADING:    { label: 'Needs Grading',    color: 'bg-amber-100 text-amber-700',  icon: Clock },
@@ -28,17 +38,14 @@ export default function ClassHub() {
   const [savedAt, setSavedAt] = useState(null);
   const [search, setSearch] = useState('');
   const [isLoading, setIsLoading] = useState(true);
-  const [showActivityForm, setShowActivityForm] = useState(false);
-  const [newActivity, setNewActivity] = useState({ title: '', type: 'Essay', points: 100, instructions: '', deadline: '', submissionMode: 'TEACHER_UPLOAD' });
   const [isEditOpen, setIsEditOpen] = useState(false);
   const [editActivity, setEditActivity] = useState(null);
-  const [editForm, setEditForm] = useState({ title: '', type: 'Essay', points: 100, topic: '', deadline: '', instructions: '' });
+  // No `points` — see the read-only field in the edit modal below.
+  const [editForm, setEditForm] = useState({ title: '', type: 'Essay', topic: '', deadline: '', instructions: '' });
   const [deleteConfirmText, setDeleteConfirmText] = useState('');
   const [isDeleting, setIsDeleting] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [isSavingEdit, setIsSavingEdit] = useState(false);
-  const [classLessons, setClassLessons] = useState([]);
-  const [selectedLessonId, setSelectedLessonId] = useState('');
 
   useEffect(() => {
     apiFetch(`${API_URL}/api/classes/${classId}`)
@@ -61,46 +68,11 @@ export default function ClassHub() {
       .finally(() => setIsLoading(false));
   }, [classId]);
 
-  useEffect(() => {
-    if (!classId) return;
-    apiFetch(`${API_URL}/api/teacher/classes/${classId}/lessons`)
-      .then(r => r.json())
-      .then(d => { if (d.success) setClassLessons(d.lessons || []); })
-      .catch(() => {});
-  }, [classId]);
-
-  const handleCreateActivity = async (e) => {
-    e.preventDefault();
-    try {
-      const res = await apiFetch(`${API_URL}/api/teacher/activities`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...newActivity, classId, classLessonId: selectedLessonId || null })
-      });
-      const data = await res.json().catch(() => null);
-      // There was no else and no catch here at all: a refusal — the server
-      // rejects an activity with no rubric, or one on a class that is not
-      // yours — left the modal open with the form untouched and nothing said,
-      // so pressing Create simply appeared to do nothing at all.
-      if (!res.ok || !data?.success) {
-        alert(data?.error || 'That activity could not be created. Nothing has been saved.');
-        return;
-      }
-      setClassData(prev => ({ ...prev, activities: [data.activity, ...prev.activities] }));
-      setShowActivityForm(false);
-      setNewActivity({ title: '', type: 'Essay', points: 100, instructions: '', deadline: '', submissionMode: 'TEACHER_UPLOAD' });
-      setSelectedLessonId('');
-    } catch {
-      alert('Could not reach the server, so the activity was not created.');
-    }
-  };
-
   const openEditModal = (activity) => {
     setEditActivity(activity);
     setEditForm({
       title: activity.title || '',
       type: activity.type || 'Essay',
-      points: activity.points || 100,
       topic: activity.topic || '',
       deadline: activity.deadline ? String(activity.deadline).split('T')[0] : '',
       instructions: activity.instructions || ''
@@ -278,7 +250,10 @@ export default function ClassHub() {
             const needsValidationCount = activity.submissions?.filter(s => s.status === 'PENDING' && s.aiScore !== null && s.aiScore !== undefined).length || 0;
             const releasedCount = activity.submissions?.filter(s => s.status === 'GRADED' && s.releasedAt).length || 0;
             const validatedCount = activity.submissions?.filter(s => s.status === 'GRADED' && !s.releasedAt).length || 0;
-            const pastDeadline = isPastDeadline(activity.deadline);
+            // The same window the four student screens read. Computing "closed"
+            // from the deadline alone ignored lateUntil, so an activity students
+            // could still submit to was labelled Closed to their teacher.
+            const subWindow = submissionWindow(activity);
             return (
               <div
                 key={activity.id}
@@ -302,7 +277,14 @@ export default function ClassHub() {
                     <p className="text-xs text-slate-500 mb-1">
                       {activity.type} • {activity.points} pts
                       {activity.deadline ? ` • Due ${formatDeadline(activity.deadline)}` : ''}
-                      {pastDeadline && activity.deadline ? <span className="text-red-500 font-semibold"> (Closed)</span> : ''}
+                      {activity.deadline && subWindow.isClosed && (
+                        <span className="text-red-500 font-semibold"> (Closed)</span>
+                      )}
+                      {activity.deadline && !subWindow.isClosed && subWindow.isLate && (
+                        <span className="text-amber-600 font-semibold">
+                          {' '}(Late accepted until {formatDeadline(activity.lateUntil)})
+                        </span>
+                      )}
                     </p>
                     <div className="flex items-center gap-1.5 flex-wrap">
                       {subCount === 0 ? (
@@ -386,90 +368,6 @@ export default function ClassHub() {
         </div>
       )}
 
-      {/* New Activity Modal */}
-      {showActivityForm && (
-        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl p-6 w-full max-w-lg shadow-xl">
-            <h2 className="text-xl font-bold text-brand-slate mb-4">Create New Activity</h2>
-            <form onSubmit={handleCreateActivity} className="space-y-4">
-              <div>
-                <label className="block text-sm font-medium mb-1">Title</label>
-                <input required value={newActivity.title} onChange={e => setNewActivity({ ...newActivity, title: e.target.value })}
-                  className="w-full border p-2 rounded-lg outline-none focus:ring-2 focus:ring-brand-navy" placeholder="e.g. Noli Me Tangere Reflection" />
-              </div>
-              {classLessons.length > 0 && (
-                <div>
-                  <label className="block text-sm font-medium mb-1">Curriculum Lesson</label>
-                  <select value={selectedLessonId} onChange={e => {
-                    setSelectedLessonId(e.target.value);
-                    if (e.target.value) {
-                      const lesson = classLessons.find(l => l.id === e.target.value);
-                      if (lesson?.outputType) setNewActivity(prev => ({ ...prev, type: lesson.outputType }));
-                    }
-                  }}
-                    className="w-full border p-2 rounded-lg outline-none focus:ring-2 focus:ring-brand-navy text-sm">
-                    <option value="">— Select a lesson (optional) —</option>
-                    {classLessons.map(l => (
-                      <option key={l.id} value={l.id}>
-                        {l.weekNumber ? `Week ${l.weekNumber}: ` : ''}{l.title} ({l.outputType})
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              )}
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-sm font-medium mb-1">Type</label>
-                  <select value={newActivity.type} onChange={e => setNewActivity({ ...newActivity, type: e.target.value })}
-                    className="w-full border p-2 rounded-lg outline-none focus:ring-2 focus:ring-brand-navy">
-                    {ACTIVITY_TYPES.map(t => <option key={t}>{t}</option>)}
-                    {/* A lesson's outputType may fall outside the list — keep it selectable */}
-                    {newActivity.type && !ACTIVITY_TYPES.includes(newActivity.type) && <option key={newActivity.type}>{newActivity.type}</option>}
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-sm font-medium mb-1">Points</label>
-                  <input type="number" value={newActivity.points} onChange={e => setNewActivity({ ...newActivity, points: e.target.value })}
-                    className="w-full border p-2 rounded-lg outline-none focus:ring-2 focus:ring-brand-navy" />
-                </div>
-              </div>
-              <div>
-                <label className="block text-sm font-medium mb-1">Deadline</label>
-                <input type="date" value={newActivity.deadline} onChange={e => setNewActivity({ ...newActivity, deadline: e.target.value })}
-                  className="w-full border p-2 rounded-lg outline-none focus:ring-2 focus:ring-brand-navy" />
-              </div>
-              <div>
-                <label className="block text-sm font-medium mb-1">Instructions</label>
-                <textarea value={newActivity.instructions} onChange={e => setNewActivity({ ...newActivity, instructions: e.target.value })}
-                  rows={3} className="w-full border p-2 rounded-lg outline-none focus:ring-2 focus:ring-brand-navy resize-none"
-                  placeholder="Write your instructions here..." />
-              </div>
-              {/* Submission Mode */}
-              <div>
-                <label className="block text-sm font-medium mb-2">Who submits the output?</label>
-                <div className="grid grid-cols-2 gap-2">
-                  <button type="button" onClick={() => setNewActivity({ ...newActivity, submissionMode: 'TEACHER_UPLOAD' })}
-                    className={`p-3 rounded-lg border-2 text-sm font-medium transition-all text-left ${newActivity.submissionMode === 'TEACHER_UPLOAD' ? 'border-brand-navy bg-blue-50 text-brand-navy' : 'border-slate-200 text-slate-600'}`}>
-                    📷 Teacher Uploads
-                    <p className="text-xs font-normal mt-0.5 text-slate-500">Teacher scans student papers</p>
-                  </button>
-                  <button type="button" onClick={() => setNewActivity({ ...newActivity, submissionMode: 'STUDENT_SUBMIT' })}
-                    className={`p-3 rounded-lg border-2 text-sm font-medium transition-all text-left ${newActivity.submissionMode === 'STUDENT_SUBMIT' ? 'border-brand-green bg-green-50 text-brand-green' : 'border-slate-200 text-slate-600'}`}>
-                    👤 Student Submits
-                    <p className="text-xs font-normal mt-0.5 text-slate-500">Students upload from dashboard</p>
-                  </button>
-                </div>
-              </div>
-              <div className="flex gap-2 pt-2">
-                <button type="button" onClick={() => setShowActivityForm(false)}
-                  className="flex-1 py-2 border border-slate-200 rounded-lg text-slate-600 font-medium hover:bg-slate-50">Cancel</button>
-                <button type="submit" className="flex-1 py-2 bg-brand-navy text-white rounded-lg font-medium hover:bg-blue-900">Create Activity</button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
       {/* Edit Activity Modal */}
       {isEditOpen && editActivity && (
         <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
@@ -499,7 +397,7 @@ export default function ClassHub() {
                     type="text"
                     value={deleteConfirmText}
                     onChange={(e) => setDeleteConfirmText(e.target.value)}
-                    className="flex-1 border border-red-200 p-2 rounded-lg outline-none focus:ring-2 focus:ring-red-500"
+                    className="flex-1 min-w-0 border border-red-200 p-2 rounded-lg outline-none focus:ring-2 focus:ring-red-500"
                     placeholder="DELETE"
                   />
                   <button
@@ -539,16 +437,17 @@ export default function ClassHub() {
                     <option value="Short Story">Short Story</option>
                   </select>
                 </div>
+                {/* Read-only, and left out of the save entirely.
+                    The points total is one half of what a rubric criterion is
+                    worth, so a quick edit is the wrong place to move it — the
+                    weights live next to it in Advanced Edit, where both can be
+                    seen at once. */}
                 <div className="flex-1">
                   <label className="block text-sm font-medium text-slate-700 mb-1">Points</label>
-                  <input
-                    type="number"
-                    required
-                    min="1"
-                    value={editForm.points}
-                    onChange={(e) => setEditForm((prev) => ({ ...prev, points: parseInt(e.target.value) || 0 }))}
-                    className="w-full border border-slate-200 p-2 rounded-lg outline-none focus:ring-2 focus:ring-brand-navy"
-                  />
+                  <div className="w-full border border-slate-200 bg-slate-50 p-2 rounded-lg text-slate-600 font-medium">
+                    {editActivity.points} pts
+                  </div>
+                  <p className="text-xs text-slate-400 mt-1">Changed in Advanced Edit, with the rubric</p>
                 </div>
               </div>
               <div className="flex gap-4">
@@ -599,12 +498,21 @@ export default function ClassHub() {
                     {isSavingEdit ? 'Saving...' : 'Quick Save'}
                   </button>
                 </div>
-                <Link
-                  to={`/teacher/activity/edit/${editActivity.id}?classId=${classId}`}
-                  className="w-full text-center py-2 rounded-lg border border-brand-navy text-brand-navy font-medium hover:bg-blue-50 mt-2"
-                >
-                  Advanced Edit (Edit Rubric)
-                </Link>
+                {hasGradedWork(editActivity) ? (
+                  <div
+                    className="w-full text-center py-2 rounded-lg border border-slate-200 bg-slate-50 text-slate-400 font-medium mt-2 cursor-not-allowed"
+                    title="Papers have already been marked against this rubric. Changing it now would re-value marks that have been recorded."
+                  >
+                    Rubric Locked (Work Already Graded)
+                  </div>
+                ) : (
+                  <Link
+                    to={`/teacher/activity/edit/${editActivity.id}?classId=${classId}`}
+                    className="w-full text-center py-2 rounded-lg border border-brand-navy text-brand-navy font-medium hover:bg-blue-50 mt-2"
+                  >
+                    Advanced Edit (Edit Rubric)
+                  </Link>
+                )}
               </div>
             </form>
           </div>

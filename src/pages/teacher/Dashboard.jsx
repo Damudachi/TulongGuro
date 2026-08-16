@@ -12,7 +12,7 @@ import EarlyWarningPanel from '../../components/EarlyWarningPanel';
 import SetupChecklist from '../../components/SetupChecklist';
 import ExampleFeedback from '../../components/ExampleFeedback';
 import { buildSteps } from '../../utils/setupSteps';
-import { tintFor } from '../../constants/folderTints';
+import { tintForKey } from '../../constants/folderTints';
 
 // No curriculum step: the admin publishes the school's curriculum, and the
 // matching one is applied for the teacher in step 1 (see CurriculumSuggestion).
@@ -577,11 +577,11 @@ export default function TeacherDashboard() {
         <WizardEmptyState onComplete={() => window.location.reload()} sections={sections} />
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
-          {filteredClasses.map((cls, idx) => {
+          {filteredClasses.map((cls) => {
             const isDemo = cls.name.includes('[DEMO]');
             // Demo classes keep a fixed sun tint so they stay recognisable
             // wherever they land in the stack.
-            const tint = isDemo ? { fill: 'bg-sun-200', chip: 'bg-sun-100/70' } : tintFor(idx);
+            const tint = isDemo ? { fill: 'bg-sun-200', chip: 'bg-sun-100/70' } : tintForKey(cls.id);
             const activityCount = cls._count?.activities || 0;
 
             return (

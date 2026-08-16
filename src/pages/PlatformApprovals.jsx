@@ -240,7 +240,7 @@ export default function PlatformApprovals() {
                           value={rejectReason}
                           onChange={e => setRejectReason(e.target.value)}
                           placeholder="e.g. We could not verify this school with DepEd records."
-                          className="flex-1 px-3 py-2 border border-slate-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-red-400"
+                          className="flex-1 min-w-0 px-3 py-2 border border-slate-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-red-400"
                         />
                         <button onClick={() => act(s, 'reject', { reason: rejectReason })}
                           disabled={!rejectReason.trim() || busyId === s.id}

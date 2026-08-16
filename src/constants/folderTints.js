@@ -18,3 +18,24 @@ export const FOLDER_TINTS = [
 ];
 
 export const tintFor = (index) => FOLDER_TINTS[index % FOLDER_TINTS.length];
+
+/**
+ * A palette slot chosen from a stable identity rather than a list position.
+ *
+ * Keying colour to position meant filtering the dashboard by subject renumbered
+ * the list and repainted every card — the same class was royal blue unfiltered
+ * and lime green under "Filipino" — and creating a class shifted the ones below
+ * it. Colour that moves under the reader looks like a code they have failed to
+ * crack, when it is only meant to tell one card from the next.
+ *
+ * Any stable string works; the callers pass a record id. Deliberately not a
+ * cryptographic hash — this picks between six pastels.
+ */
+export function indexForKey(key, length) {
+  const s = String(key ?? '');
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = (Math.imul(h, 31) + s.charCodeAt(i)) >>> 0;
+  return h % length;
+}
+
+export const tintForKey = (key) => FOLDER_TINTS[indexForKey(key, FOLDER_TINTS.length)];

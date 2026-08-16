@@ -6,6 +6,7 @@ import { getStoredUser } from '../../utils/session';
 import { mergeActivitySnapshot } from '../../utils/offlineSnapshot';
 import { gradeTone, gradeChip, DEFAULT_PASSING_GRADE } from '../../utils/grading';
 import { submissionWindow, formatDeadline } from '../../utils/deadlines';
+import { indexForKey } from '../../constants/folderTints';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
 
@@ -26,7 +27,10 @@ const SUBJECT_THEMES = [
   { tile: 'bg-lime-500', soft: 'bg-lime-100', ink: 'text-lime-800', header: 'bg-lime-600' },
 ];
 
-const themeFor = (index) => SUBJECT_THEMES[index % SUBJECT_THEMES.length];
+// Keyed to the subject, not to where it sits in the list: a positional theme
+// changed colour whenever the list was reordered or a class was added, and the
+// detail screen's header depended on the index it happened to be opened from.
+const themeFor = (key) => SUBJECT_THEMES[indexForKey(key, SUBJECT_THEMES.length)];
 
 // Grade colouring now comes from utils/grading so it tracks the school's own
 // passing grade instead of a hardcoded 75.
@@ -36,7 +40,7 @@ export default function Subjects() {
   // Nobody signed in means there is nothing to fetch, so this must not open on
   // a spinner that only the first commit would take away again.
   const [isLoading, setIsLoading] = useState(() => !!getStoredUser().id);
-  const [selected, setSelected] = useState(null); // { subject, themeIndex }
+  const [selected, setSelected] = useState(null); // { subject }
   const [activeTab, setActiveTab] = useState('activities');
   // The school's own threshold, so colours match what the school counts as passing.
   const [passingGrade, setPassingGrade] = useState(DEFAULT_PASSING_GRADE);
@@ -73,7 +77,7 @@ export default function Subjects() {
   // ── Subject detail ──
   if (selected) {
     const sub = selected.subject;
-    const theme = themeFor(selected.themeIndex);
+    const theme = themeFor(sub.id);
 
     return (
       <div className="p-4 md:p-8 max-w-4xl mx-auto pb-24">
@@ -275,10 +279,10 @@ export default function Subjects() {
         </div>
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
-          {subjects.map((subject, idx) => {
-            const theme = themeFor(idx);
+          {subjects.map((subject) => {
+            const theme = themeFor(subject.id);
             return (
-              <button key={subject.id} onClick={() => setSelected({ subject, themeIndex: idx })}
+              <button key={subject.id} onClick={() => setSelected({ subject })}
                 className="tg-tile bg-white border-2 border-cream-200 p-6 text-left group">
                 <div className="flex items-start justify-between gap-3 mb-5">
                   <div className="flex items-start gap-3 min-w-0">

@@ -399,7 +399,7 @@ export default function RubricManager() {
                                   newC[i].bands[bi].description = e.target.value;
                                   setEditingRubric({...editingRubric, criteria: newC});
                                 }}
-                                className="flex-1 p-1.5 text-xs border border-slate-200 rounded" placeholder="Band description..." />
+                                className="flex-1 min-w-0 p-1.5 text-xs border border-slate-200 rounded" placeholder="Band description..." />
                               <button onClick={() => {
                                   const newC = [...editingRubric.criteria];
                                   newC[i].bands = newC[i].bands.filter((_, bidx) => bidx !== bi);

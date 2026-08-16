@@ -188,7 +188,7 @@ export default function ScoreEntry() {
       </div>
 
       {/* Sticky so the save button is reachable partway down a long class list. */}
-      <div className="fixed bottom-0 left-0 right-0 md:left-64 bg-white/95 backdrop-blur border-t-2 border-slate-200 p-4 z-30">
+      <div className="tg-above-dock fixed bottom-0 left-0 right-0 md:left-64 bg-white/95 backdrop-blur border-t-2 border-slate-200 px-4 pt-4 z-30">
         <div className="max-w-3xl mx-auto flex items-center gap-3">
           <p className="text-sm font-bold text-navy-600 flex-1 min-w-0">
             {invalid.length > 0 ? (

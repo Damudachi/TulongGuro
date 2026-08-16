@@ -40,7 +40,7 @@ export default function RubricEditor({ criteria, onChange, disabled = false }) {
             <div className="flex gap-2">
               <input required type="text" value={c.name} placeholder="Criterion name" disabled={disabled}
                 onChange={e => update(i, 'name', e.target.value)}
-                className="flex-1 border border-slate-200 p-2 rounded text-sm outline-none focus:ring-1 focus:ring-brand-navy disabled:bg-slate-100" />
+                className="flex-1 min-w-0 border border-slate-200 p-2 rounded text-sm outline-none focus:ring-1 focus:ring-brand-navy disabled:bg-slate-100" />
               <input required type="number" min={0} max={100} value={c.points === 0 ? '' : c.points}
                 placeholder="%" disabled={disabled}
                 onChange={e => update(i, 'points', e.target.value === '' ? 0 : parseInt(e.target.value))}

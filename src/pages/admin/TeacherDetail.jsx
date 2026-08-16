@@ -491,7 +491,7 @@ export default function AdminTeacherDetail() {
                   <div className="flex-1 space-y-2">
                     <div className="flex gap-2">
                       <input type="text" value={sectionForm.name} onChange={e => setSectionForm({ ...sectionForm, name: e.target.value })}
-                        className="flex-1 border border-slate-200 p-2 rounded-lg text-sm outline-none focus:ring-2 focus:ring-brand-navy" />
+                        className="flex-1 min-w-0 border border-slate-200 p-2 rounded-lg text-sm outline-none focus:ring-2 focus:ring-brand-navy" />
                       <select value={sectionForm.gradeLevel} onChange={e => setSectionForm({ ...sectionForm, gradeLevel: e.target.value })}
                         className="border border-slate-200 p-2 rounded-lg text-sm outline-none focus:ring-2 focus:ring-brand-navy">
                         <option value="">No grade</option>

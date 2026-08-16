@@ -1386,7 +1386,7 @@ export default function HITLWorkspace() {
                           </span>
                           <input
                             type="text"
-                            className="flex-1 px-3 py-2 bg-white border border-slate-200 rounded-lg text-sm text-slate-700 outline-none focus:border-brand-navy focus:ring-2 focus:ring-brand-navy/10"
+                            className="flex-1 min-w-0 px-3 py-2 bg-white border border-slate-200 rounded-lg text-sm text-slate-700 outline-none focus:border-brand-navy focus:ring-2 focus:ring-brand-navy/10"
                             value={step}
                             onChange={e => updateActionStep(idx, e.target.value)}
                             placeholder="Action step..."
@@ -1521,7 +1521,13 @@ export default function HITLWorkspace() {
             <span className="min-w-0">{saveError}</span>
           </div>
         )}
-        <div className="p-4 flex gap-3">
+        {/* tg-above-dock, and px/pt rather than p-4: the mobile dock is fixed at
+            bottom-0 with z-40 and is painted after the page, so this bar's
+            buttons — the ones that finish a grading run — sat underneath it on a
+            phone. The utility lifts the contents clear and adds the iOS
+            home-indicator inset; a plain `p-4` would override the padding-bottom
+            it works through. */}
+        <div className="tg-above-dock px-4 pt-4 flex gap-3">
           {queueActivityId ? (
             <button onClick={handleSkip}
               title="Come back to this one at the end of the run (S)"

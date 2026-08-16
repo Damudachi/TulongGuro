@@ -118,3 +118,63 @@ describe('the two screens that re-derived lateness by hand', () => {
     expect(isPastDeadline('2025-03-15')).toBe(true);           // MISSING
   });
 });
+
+describe('the teacher activity list tells the same story as the student one', () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  /**
+   * Class Hub used to label an activity "(Closed)" from isPastDeadline(deadline)
+   * alone, ignoring lateUntil entirely. So while a late window was open the
+   * student saw "Late accepted" and their teacher — looking at the same activity
+   * at the same moment — saw Closed, and had no reason to expect more uploads.
+   * It now reads submissionWindow(), the same as the four student screens, and
+   * these are the three states it renders.
+   */
+  const teacherLabel = (activity) => {
+    const w = submissionWindow(activity);
+    if (!activity.deadline) return null;
+    if (w.isClosed) return 'closed';
+    if (w.isLate) return 'late-accepted';
+    return 'open';
+  };
+
+  const WITH_LATE = { deadline: '2025-03-15', lateUntil: '2025-03-20' };
+  const NO_LATE = { deadline: '2025-03-15' };
+
+  it('says late-accepted, not closed, while the teacher\'s own late window is open', () => {
+    vi.setSystemTime(new Date(Date.UTC(2025, 2, 17)));
+    expect(teacherLabel(WITH_LATE)).toBe('late-accepted');
+  });
+
+  it('says closed once the late window itself has passed', () => {
+    vi.setSystemTime(new Date(Date.UTC(2025, 2, 21)));
+    expect(teacherLabel(WITH_LATE)).toBe('closed');
+  });
+
+  it('closes at the deadline when no late window was offered', () => {
+    vi.setSystemTime(new Date(MAR_15_CLOSE_UTC + 1));
+    expect(teacherLabel(NO_LATE)).toBe('closed');
+  });
+
+  it('says nothing at all before the due date', () => {
+    vi.setSystemTime(new Date(Date.UTC(2025, 2, 10)));
+    expect(teacherLabel(WITH_LATE)).toBe('open');
+    expect(teacherLabel(NO_LATE)).toBe('open');
+  });
+
+  it('never labels an activity that has no deadline', () => {
+    vi.setSystemTime(new Date(Date.UTC(2025, 2, 21)));
+    expect(teacherLabel({ deadline: null })).toBeNull();
+  });
+
+  it('agrees with the student view at every instant across the window', () => {
+    // The property that was actually broken: the two roles must never disagree
+    // about whether work can still be handed in.
+    for (const day of [10, 15, 16, 18, 20, 22]) {
+      vi.setSystemTime(new Date(Date.UTC(2025, 2, day, 12)));
+      const student = submissionWindow(WITH_LATE);
+      expect(teacherLabel(WITH_LATE) === 'closed').toBe(student.isClosed);
+    }
+  });
+});

@@ -214,6 +214,18 @@ export default function ActivityBuilder() {
   // picker is the next thing the teacher needs, and folding it away would hide
   // the school's own rubrics behind a click.
   const [showRubricEditor, setShowRubricEditor] = useState(!isEditMode);
+  /**
+   * How many papers have already been marked against this activity's rubric.
+   *
+   * hitlScore is stored as a percentage of the activity total, so once anything
+   * is GRADED the rubric and the points total are part of what that mark means.
+   * The server refuses to change either (409 GRADES_RECORDED); this is how the
+   * screen says so before a teacher rewrites a rubric that cannot be saved.
+   * Class Hub locks its Advanced Edit link on the same rule, so reaching this
+   * state means arriving by URL or by browser history.
+   */
+  const [gradedCount, setGradedCount] = useState(0);
+  const isRubricLocked = gradedCount > 0;
 
   const selectedLesson = classLessons.find(l => l.id === selectedLessonId) || null;
   const selectedTopic = topics.find(t => t.id === form.topic) || null;
@@ -384,6 +396,11 @@ export default function ActivityBuilder() {
           return;
         }
         const activity = data.activity;
+        setGradedCount(data.gradedCount || 0);
+        // A locked rubric opens folded: the summary card and the read-only
+        // criteria list below it are the whole story, and unfolding the picker
+        // would only offer choices the save is going to refuse.
+        if (data.gradedCount > 0) setShowRubricEditor(false);
         setForm({
           title: activity.title || '',
           type: activity.type || 'Essay',
@@ -760,23 +777,35 @@ export default function ActivityBuilder() {
     <div className="space-y-3">
       {criteria.map((c, i) => (
         <div key={i} className="p-3 bg-slate-50 rounded-lg border border-slate-200 space-y-2">
-          <div className="flex gap-2 items-start">
-            <input type="text" value={c.name} onChange={e => updateCriterion(i, 'name', e.target.value)}
-              className="flex-1 px-3 py-1.5 border border-slate-200 rounded text-sm font-medium focus:outline-none focus:ring-1 focus:ring-brand-navy" placeholder="Criterion name" />
+          {/* Stacks on a phone. Side by side, the name input's intrinsic width
+              plus the weight group put the row's minimum past a 390px viewport,
+              and because nothing here could shrink the overflow escaped the card
+              and scrolled the whole page sideways — the heading ended up off the
+              left edge while the fixed dock stayed put. */}
+          <div className="flex flex-col sm:flex-row gap-2 sm:items-start">
+            {/* `sm:contents` dissolves this wrapper from the desktop up, so the
+                name and the bin become direct children of the row again and the
+                original order — name, weight, bin — is preserved by the `order`
+                utilities. On a phone it stays a real row, keeping the bin beside
+                the name rather than stranded on a line of its own. */}
+            <div className="flex gap-2 items-start sm:contents">
+              <input type="text" value={c.name} onChange={e => updateCriterion(i, 'name', e.target.value)}
+                className="flex-1 min-w-0 px-3 py-1.5 border border-slate-200 rounded text-sm font-medium focus:outline-none focus:ring-1 focus:ring-brand-navy" placeholder="Criterion name" />
+              <button type="button" onClick={() => removeCriterion(i)} className="shrink-0 text-slate-400 hover:text-red-500 mt-1 sm:order-3"><Trash2 className="w-4 h-4" /></button>
+            </div>
             {rubricType === 'standard' && (
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 shrink-0 sm:order-2">
                 <input type="number" value={c.points === 0 ? '' : c.points} onChange={e => {
                   const val = e.target.value;
                   updateCriterion(i, 'points', val === '' ? 0 : parseInt(val) || 0);
                 }}
                   className="w-20 px-3 py-1.5 border border-slate-200 rounded-lg text-sm" />
                 <span className="text-slate-500 font-medium">%</span>
-                <span className="text-brand-navy font-bold text-sm ml-2">
+                <span className="text-brand-navy font-bold text-sm ml-2 whitespace-nowrap">
                   = {toActivityPoints(c.points) ?? 0} pts
                 </span>
               </div>
             )}
-            <button type="button" onClick={() => removeCriterion(i)} className="text-slate-400 hover:text-red-500 mt-1"><Trash2 className="w-4 h-4" /></button>
           </div>
           <input type="text" value={c.description} onChange={e => updateCriterion(i, 'description', e.target.value)}
             className="w-full px-3 py-1.5 border border-slate-200 rounded text-xs text-slate-600 focus:outline-none focus:ring-1 focus:ring-brand-navy" placeholder="Description (optional)" />
@@ -786,13 +815,19 @@ export default function ActivityBuilder() {
             <div className="mt-2 space-y-1.5 pl-2 border-l-2 border-slate-200">
               <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Scoring Levels</p>
               {(c.bands || DEFAULT_RANGE_BANDS).map((band, bi) => (
-                <div key={bi} className="flex gap-2 items-center">
-                  <input type="text" value={band.label} onChange={e => updateBand(i, bi, 'label', e.target.value)}
-                    className="w-28 px-2 py-1 border border-slate-200 rounded text-xs font-semibold focus:outline-none focus:ring-1 focus:ring-brand-navy" placeholder="Label" />
-                  <input type="number" value={band.score} onChange={e => updateBand(i, bi, 'score', e.target.value)}
-                    className="w-14 px-2 py-1 border border-slate-200 rounded text-xs text-center focus:outline-none focus:ring-1 focus:ring-brand-navy" placeholder="Score" />
+                /* Label and score share the first line; the description takes
+                   its own beneath on a phone. Side by side the three inputs
+                   needed roughly 370px before the card padding and the rail on
+                   the left, so the description ran off the right edge. */
+                <div key={bi} className="flex flex-col sm:flex-row gap-1.5 sm:gap-2 sm:items-center">
+                  <div className="flex gap-2 items-center sm:contents">
+                    <input type="text" value={band.label} onChange={e => updateBand(i, bi, 'label', e.target.value)}
+                      className="w-28 shrink-0 px-2 py-1 border border-slate-200 rounded text-xs font-semibold focus:outline-none focus:ring-1 focus:ring-brand-navy" placeholder="Label" />
+                    <input type="number" value={band.score} onChange={e => updateBand(i, bi, 'score', e.target.value)}
+                      className="w-14 shrink-0 px-2 py-1 border border-slate-200 rounded text-xs text-center focus:outline-none focus:ring-1 focus:ring-brand-navy" placeholder="Score" />
+                  </div>
                   <input type="text" value={band.description} onChange={e => updateBand(i, bi, 'description', e.target.value)}
-                    className="flex-1 px-2 py-1 border border-slate-200 rounded text-xs text-slate-500 focus:outline-none focus:ring-1 focus:ring-brand-navy" placeholder="Description" />
+                    className="flex-1 min-w-0 px-2 py-1 border border-slate-200 rounded text-xs text-slate-500 focus:outline-none focus:ring-1 focus:ring-brand-navy" placeholder="Description" />
                 </div>
               ))}
             </div>
@@ -978,15 +1013,23 @@ export default function ActivityBuilder() {
             </div>
             <div>
               <label className="block text-sm font-medium text-slate-700 mb-1">Total Points</label>
-              <div className="flex items-center border border-slate-200 rounded-lg overflow-hidden focus-within:ring-2 focus-within:ring-brand-navy focus-within:border-brand-navy bg-white">
-                <button type="button" onClick={() => setForm(f => ({ ...f, points: Math.max(1, (f.points || 0) - 5) }))} className="px-3 py-2 bg-slate-50 text-slate-600 hover:bg-slate-200 font-bold border-r border-slate-200 transition-colors">-</button>
-                <input type="number" min={1} value={form.points === 0 ? '' : form.points} onChange={e => {
-                    const val = e.target.value;
-                    setForm({ ...form, points: val === '' ? 0 : parseInt(val) || 0 });
-                  }}
-                  className="w-full px-4 py-2 text-center outline-none" />
-                <button type="button" onClick={() => setForm(f => ({ ...f, points: (f.points || 0) + 5 }))} className="px-3 py-2 bg-slate-50 text-slate-600 hover:bg-slate-200 font-bold border-l border-slate-200 transition-colors">+</button>
-              </div>
+              {/* Frozen alongside the rubric: the two together are what a
+                  recorded percentage converts back into. */}
+              {isRubricLocked ? (
+                <div className="border border-slate-200 bg-slate-50 rounded-lg px-4 py-2 text-center text-slate-600 font-medium">
+                  {form.points} pts
+                </div>
+              ) : (
+                <div className="flex items-center border border-slate-200 rounded-lg overflow-hidden focus-within:ring-2 focus-within:ring-brand-navy focus-within:border-brand-navy bg-white">
+                  <button type="button" onClick={() => setForm(f => ({ ...f, points: Math.max(1, (f.points || 0) - 5) }))} className="px-3 py-2 bg-slate-50 text-slate-600 hover:bg-slate-200 font-bold border-r border-slate-200 transition-colors">-</button>
+                  <input type="number" min={1} value={form.points === 0 ? '' : form.points} onChange={e => {
+                      const val = e.target.value;
+                      setForm({ ...form, points: val === '' ? 0 : parseInt(val) || 0 });
+                    }}
+                    className="w-full px-4 py-2 text-center outline-none" />
+                  <button type="button" onClick={() => setForm(f => ({ ...f, points: (f.points || 0) + 5 }))} className="px-3 py-2 bg-slate-50 text-slate-600 hover:bg-slate-200 font-bold border-l border-slate-200 transition-colors">+</button>
+                </div>
+              )}
             </div>
           </div>
 
@@ -1006,11 +1049,16 @@ export default function ActivityBuilder() {
           {(classLessons.length > 0 || depedTopicsApply) && (
             <div>
               <label className="block text-sm font-medium text-slate-700 mb-1">
-                Lesson / Topic <span className="font-normal text-slate-400">(optional)</span>
+                Lesson / Topic <span className="text-red-500">*</span>
               </label>
-              <select value={lessonTopicValue} onChange={e => onLessonTopicChange(e.target.value)}
+              {/* Required only where the question can actually be answered. The
+                  guard above already hides the whole field for a class with no
+                  curriculum lessons and no applicable DepEd topics, so this
+                  never becomes a dead end — it enforces the common path without
+                  inventing an option for classes that have none. */}
+              <select value={lessonTopicValue} onChange={e => onLessonTopicChange(e.target.value)} required
                 className="w-full px-4 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-brand-navy outline-none">
-                <option value="">— Not linked to a lesson —</option>
+                <option value="" disabled>— Choose a lesson or competency —</option>
                 {classLessons.length > 0 && (
                   <optgroup label="From your school's curriculum">
                     {classLessons.map(l => (
@@ -1038,7 +1086,7 @@ export default function ActivityBuilder() {
                   ? 'Applies this lesson’s output type and default rubric.'
                   : selectedTopic
                     ? 'Focuses the AI’s feedback on this competency, and groups the activity under it in analytics.'
-                    : 'Links the activity to a curriculum lesson or a DepEd competency. Leave blank if neither fits.'}
+                    : 'Pick the curriculum lesson or DepEd competency this activity is for.'}
               </p>
             </div>
           )}
@@ -1198,17 +1246,39 @@ export default function ActivityBuilder() {
                   </p>
                 )}
               </div>
-              <button type="button" onClick={() => setShowRubricEditor(v => !v)}
-                className="shrink-0 text-xs font-bold text-brand-navy bg-white border-2 border-brand-navy/20 px-3 py-1.5 rounded-lg hover:bg-blue-50 transition-colors">
-                {showRubricEditor ? 'Done' : 'Change'}
-              </button>
+              {isRubricLocked ? (
+                <span className="shrink-0 text-xs font-bold text-slate-500 bg-white border-2 border-slate-200 px-3 py-1.5 rounded-lg">
+                  🔒 Locked
+                </span>
+              ) : (
+                <button type="button" onClick={() => setShowRubricEditor(v => !v)}
+                  className="shrink-0 text-xs font-bold text-brand-navy bg-white border-2 border-brand-navy/20 px-3 py-1.5 rounded-lg hover:bg-blue-50 transition-colors">
+                  {showRubricEditor ? 'Done' : 'Change'}
+                </button>
+              )}
             </div>
           </div>
+
+          {isRubricLocked && (
+            <div className="rounded-xl border-2 border-amber-200 bg-amber-50 p-4 mb-4 text-sm">
+              <p className="font-bold text-amber-800">
+                {gradedCount} paper{gradedCount === 1 ? ' has' : 's have'} already been marked against this rubric
+              </p>
+              <p className="text-amber-700 text-xs mt-1">
+                Marks are stored as a percentage of the {form.points || 0}-point total, so changing the rubric or the
+                points now would re-value work that has already been assessed. Everything else on this page — the
+                title, the instructions, the deadline — can still be edited and saved.
+              </p>
+            </div>
+          )}
 
           {/* The full picker stays folded away by default: the resolved rubric
               is right for most activities, and three modes plus four sources is
               a lot to meet head-on when you only wanted to set a deadline. */}
-          {!showRubricEditor && activeCriteria.length > 0 && rubricMode === 'template' && (
+          {/* A locked rubric shows its criteria whatever mode produced it —
+              folding a hand-written rubric away to nothing would read as the
+              activity having lost it. */}
+          {!showRubricEditor && activeCriteria.length > 0 && (rubricMode === 'template' || isRubricLocked) && (
             <ul className="space-y-1.5">
               {activeCriteria.map((c, i) => (
                 <li key={i} className="flex items-baseline justify-between gap-3 text-sm">
