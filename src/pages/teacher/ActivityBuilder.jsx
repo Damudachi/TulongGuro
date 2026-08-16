@@ -268,13 +268,25 @@ export default function ActivityBuilder() {
   // used to rank still appears in the picker below, in the same order — offered,
   // which is a different act from applied.
 
+  // A picked template is shown read-only until the teacher asks to change it —
+  // and what they change is this activity's copy, never the school's published
+  // rubric. Same rule RubricManager states out loud ("editing saves your own
+  // copy"); until now the Template tab simply had no way to change anything,
+  // so a rubric that was nearly right had to be retyped from scratch in Create.
+  const [isEditingTemplate, setIsEditingTemplate] = useState(false);
+  // The template exactly as it was published, for Cancel and for telling
+  // "as published" apart from "edited here" in the summary above.
+  const [templateBaseline, setTemplateBaseline] = useState(null);
+
   /** Load a rubric the teacher picked from the dropdown. */
   const applyOption = (val) => {
+    setIsEditingTemplate(false);
     // Back to no rubric. A real choice, and the state the form now starts in,
     // so it has to be reachable again after picking something by mistake.
     if (!val) {
       setRubricCriteria([]);
       setSelectedOption('');
+      setTemplateBaseline(null);
       return;
     }
     const all = val.startsWith('saved:')
@@ -283,11 +295,37 @@ export default function ActivityBuilder() {
     const id = val.slice(val.indexOf(':') + 1);
     const found = all.find(r => r.id === id);
     if (!found) return;
-    const criteria = found.criteria;
+    // Deep-copied on the way in. The editor mutates criteria and their bands in
+    // place-by-replacement, and `found.criteria` is the object held in the
+    // savedRubrics/schoolRubrics list — editing it there would silently rewrite
+    // the template in the dropdown, and leave nothing to Cancel back to.
+    const criteria = structuredClone(found.criteria || []);
     setRubricCriteria(criteria);
+    setTemplateBaseline(structuredClone(criteria));
     setRubricType(rubricTypeOf(found, criteria));
     setSelectedOption(val);
   };
+
+  /** Put the template back exactly as its author published it. */
+  const cancelTemplateEdit = () => {
+    if (templateBaseline) setRubricCriteria(structuredClone(templateBaseline));
+    setIsEditingTemplate(false);
+  };
+
+  /** Keep the edits on this activity. The published template is untouched. */
+  const finishTemplateEdit = () => {
+    if (!rubricCriteria.every(c => c.name?.trim())) {
+      alert('Every rubric criterion needs a name.');
+      return;
+    }
+    setIsEditingTemplate(false);
+  };
+
+  // Whether the copy on screen still matches the template it came from. Derived
+  // rather than tracked with a flag, so typing a change and typing it back is
+  // correctly not an edit.
+  const templateEdited = !!templateBaseline
+    && JSON.stringify(rubricCriteria) !== JSON.stringify(templateBaseline);
   const [additionalFiles, setAdditionalFiles] = useState([]); // { file, name }[]
   const [rubricFile, setRubricFile] = useState(null);
 
@@ -464,24 +502,28 @@ export default function ActivityBuilder() {
     if (selectedOption === 'custom') {
       return { name: 'Custom rubric', tone: 'neutral', note: 'Saved with this activity' };
     }
+    // An edited copy is not the thing it came from, and saying it is would be
+    // the one lie this card exists to prevent — a teacher reading "Published by
+    // your school" over criteria they reworded has no way to know.
+    const edited = templateEdited ? ', edited for this activity' : '';
     const school = schoolRubrics.find(r => `saved:${r.id}` === selectedOption);
     if (school) {
       return {
         name: school.name,
         tone: 'good',
-        note: school.curriculumId
+        note: (school.curriculumId
           ? "From your school's curriculum"
-          : `Published by your school${scope ? ` for ${scope}` : ''}`,
+          : `Published by your school${scope ? ` for ${scope}` : ''}`) + edited,
       };
     }
     const mine = savedRubrics.find(r => `saved:${r.id}` === selectedOption);
-    if (mine) return { name: mine.name, tone: 'neutral', note: 'Your own saved template' };
+    if (mine) return { name: mine.name, tone: 'neutral', note: `Your own saved template${edited}` };
     const builtin = builtinRubrics.find(b => `builtin:${b.id}` === selectedOption);
     if (builtin) {
       return {
         name: builtin.name,
         tone: 'warn',
-        note: "Generic sample — your school hasn't published a rubric for this yet",
+        note: `Generic sample — your school hasn't published a rubric for this yet${edited}`,
       };
     }
     return {
@@ -1186,6 +1228,11 @@ export default function ActivityBuilder() {
           <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 mb-4">
             {[['template', '📋 Template'], ['manual', '✏️ Create'], ['upload', '📁 Upload']].map(([val, label]) => (
               <button key={val} type="button" onClick={() => {
+                // Pressing the tab you are already on must not reset anything.
+                // Without this, a teacher who edited a template and tapped
+                // "Template" again — the obvious thing to do to get back to the
+                // list — had their edits replaced by the pristine template.
+                if (val === rubricMode) return;
                 setRubricMode(val);
                 if (val === 'template') {
                   // Re-apply whichever template the dropdown is pointing at.
@@ -1277,9 +1324,57 @@ export default function ActivityBuilder() {
                 </optgroup>
               </select>
 
+              {/* Edit / Save. A template that is nearly right — the wording of
+                  one band, a criterion worth 4 rather than 3 — used to mean
+                  retyping the whole thing in Create, so most teachers took the
+                  template as-is whether or not it matched the work they had
+                  set. Editing here changes this activity's copy only; the
+                  school's published rubric is never written to. */}
+              {rubricCriteria.length > 0 && (
+                <div className="flex flex-wrap items-center justify-between gap-2 pb-1">
+                  <p className="text-xs font-bold text-slate-500">
+                    {isEditingTemplate
+                      ? 'Editing this activity’s copy — the published rubric stays as it is'
+                      : templateEdited ? 'Edited for this activity' : 'What this activity will be marked against'}
+                  </p>
+                  <div className="flex flex-wrap gap-2">
+                    {isEditingTemplate ? (
+                      <>
+                        <button type="button" onClick={cancelTemplateEdit}
+                          className="text-xs font-bold text-slate-600 border border-slate-200 px-3 py-1.5 rounded-lg hover:bg-slate-50 transition-colors flex items-center gap-1">
+                          <X className="w-3.5 h-3.5" /> Cancel
+                        </button>
+                        <button type="button" onClick={handleSaveAsTemplate}
+                          title="Keep this version in your own rubric list for future activities"
+                          className="text-xs font-bold text-purple-700 bg-purple-50 border border-purple-200 px-3 py-1.5 rounded-lg hover:bg-purple-100 transition-colors flex items-center gap-1">
+                          <Save className="w-3.5 h-3.5" /> Save as template
+                        </button>
+                        <button type="button" onClick={finishTemplateEdit}
+                          className="text-xs font-bold text-white bg-brand-green px-3 py-1.5 rounded-lg hover:bg-emerald-600 transition-colors flex items-center gap-1">
+                          <CheckCircle2 className="w-3.5 h-3.5" /> Save
+                        </button>
+                      </>
+                    ) : (
+                      <>
+                        <button type="button" onClick={() => setIsEditingTemplate(true)}
+                          title="Change the wording or points for this activity only"
+                          className="text-xs font-bold text-brand-navy border border-slate-200 px-3 py-1.5 rounded-lg hover:bg-slate-50 transition-colors flex items-center gap-1">
+                          <PenLine className="w-3.5 h-3.5" /> Edit
+                        </button>
+                        <button type="button" onClick={handleSaveAsTemplate}
+                          title="Keep this rubric in your own list for future activities"
+                          className="text-xs font-bold text-purple-700 bg-purple-50 border border-purple-200 px-3 py-1.5 rounded-lg hover:bg-purple-100 transition-colors flex items-center gap-1">
+                          <Save className="w-3.5 h-3.5" /> Save as template
+                        </button>
+                      </>
+                    )}
+                  </div>
+                </div>
+              )}
+
               {/* Provenance for the current pick lives in the summary card
                   above, so it stays visible whichever mode is open. */}
-              {rubricCriteria.map((c, i) => (
+              {isEditingTemplate ? renderCriterionEditor(rubricCriteria) : rubricCriteria.map((c, i) => (
                 <div key={i} className="p-3 bg-slate-50 rounded-lg border border-slate-100 space-y-2">
                   <div className="flex items-start gap-3">
                     <CheckCircle2 className="w-5 h-5 text-brand-green shrink-0 mt-0.5" />

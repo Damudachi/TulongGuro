@@ -229,11 +229,25 @@ export default function Analytics() {
       .filter(Boolean)
   )].sort();
 
-  const visibleActivities = skillFilter === null
+  // A filter is only applied while the thing it filters on is still on offer.
+  //
+  // The chip row is rebuilt from whatever the current section/subject view
+  // returned, so a skill that had activities a moment ago can stop being
+  // offered — and the filter stayed applied with nothing on screen still set to
+  // it. That reads as "the filter is broken": an empty table, no highlighted
+  // chip, and no visible way to undo it. Ignoring a filter that no longer
+  // applies keeps the control and the table describing the same thing.
+  const activeSkillFilter =
+    skillFilter === null ? null
+      : skillFilter === NO_SKILL ? (noSkillCount > 0 ? NO_SKILL : null)
+        : skillFilterOptions.some(s => s.id === skillFilter) ? skillFilter
+          : null;
+
+  const visibleActivities = activeSkillFilter === null
     ? activityBreakdown
-    : skillFilter === NO_SKILL
+    : activeSkillFilter === NO_SKILL
       ? activityBreakdown.filter(a => !a.skills?.length)
-      : activityBreakdown.filter(a => a.skills?.includes(skillFilter));
+      : activityBreakdown.filter(a => a.skills?.includes(activeSkillFilter));
 
   // ── One student's detail ──
   if (selectedStudent) {
@@ -611,17 +625,17 @@ export default function Analytics() {
                   <span className="text-[11px] font-extrabold uppercase tracking-wider text-slate-400 mr-1">Skill</span>
                   <button type="button" onClick={() => setSkillFilter(null)}
                     className={cn('px-3 py-1 rounded-full text-xs font-bold border-2 transition-all',
-                      skillFilter === null
+                      activeSkillFilter === null
                         ? 'border-navy-700 bg-navy-700 text-white'
                         : 'border-slate-200 text-slate-500 hover:border-navy-300')}>
                     All ({activityBreakdown.length})
                   </button>
                   {noSkillCount > 0 && (
                     <button type="button"
-                      onClick={() => setSkillFilter(skillFilter === NO_SKILL ? null : NO_SKILL)}
+                      onClick={() => setSkillFilter(activeSkillFilter === NO_SKILL ? null : NO_SKILL)}
                       title="Graded straight to a score, so there is no rubric to read a skill from"
                       className={cn('px-3 py-1 rounded-full text-xs font-bold border-2 transition-all',
-                        skillFilter === NO_SKILL
+                        activeSkillFilter === NO_SKILL
                           ? 'border-slate-500 bg-slate-500 text-white'
                           : 'border-dashed border-slate-300 text-slate-500 hover:border-slate-400')}>
                       No skill tags ({noSkillCount})
@@ -629,16 +643,41 @@ export default function Analytics() {
                   )}
                   {skillFilterOptions.map(s => (
                     <button key={s.id} type="button"
-                      onClick={() => setSkillFilter(skillFilter === s.id ? null : s.id)}
+                      onClick={() => setSkillFilter(activeSkillFilter === s.id ? null : s.id)}
+                      title={s.count === activityBreakdown.length
+                        ? `Every activity in this list assesses ${s.label}`
+                        : `Show only the ${s.count} activities that assess ${s.label}`}
                       className="px-3 py-1 rounded-full text-xs font-bold border-2 transition-all flex items-center gap-1.5"
-                      style={skillFilter === s.id
+                      style={activeSkillFilter === s.id
                         ? { borderColor: s.color, backgroundColor: s.color, color: 'white' }
                         : { borderColor: '#E2E8F0', color: '#64748B' }}>
                       <span className="w-2 h-2 rounded-full"
-                        style={{ background: skillFilter === s.id ? 'white' : s.color }} />
+                        style={{ background: activeSkillFilter === s.id ? 'white' : s.color }} />
                       {s.label} ({s.count})
                     </button>
                   ))}
+
+                  {/* What the press actually did.
+                      An activity is tagged with every skill its rubric covers,
+                      so a class whose activities all use the same rubric has
+                      every chip matching every row — pressing one then changes
+                      nothing on screen, and the filter reads as broken. It
+                      isn't; it has nothing to narrow. Said plainly here rather
+                      than left to be inferred from a table that did not move. */}
+                  {activeSkillFilter !== null && (
+                    <p className="basis-full text-[11px] text-slate-500 mt-1">
+                      Showing <span className="font-bold">{visibleActivities.length}</span> of {activityBreakdown.length} activities
+                      {visibleActivities.length === activityBreakdown.length && activityBreakdown.length > 1 && (
+                        <> — every activity here assesses this skill, so nothing is hidden</>
+                      )}
+                      {visibleActivities.length === 0 && <> — nothing in this view assesses it</>}
+                      {'. '}
+                      <button type="button" onClick={() => setSkillFilter(null)}
+                        className="font-bold text-royal-600 hover:text-royal-800 underline">
+                        Clear filter
+                      </button>
+                    </p>
+                  )}
                 </div>
               )}
 

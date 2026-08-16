@@ -58,6 +58,20 @@ function serializeStructuredFeedback(sf) {
   });
 }
 
+/**
+ * Everything on this screen a teacher can actually change, as one comparable
+ * string: the criterion scores, the feedback and the reading strategy.
+ *
+ * Scores are sorted by criterion name because object key order is not
+ * meaningful — a rubric read back in a different order is the same mark, and
+ * must not read as an edit.
+ */
+function editSnapshot({ scores, readingStrategy, feedback }) {
+  const orderedScores = Object.keys(scores || {}).sort()
+    .map(key => [key, scores[key]]);
+  return JSON.stringify({ orderedScores, readingStrategy: readingStrategy || '', feedback: feedback || '' });
+}
+
 /** Build a flat text summary for the AI Co-Pilot context window. */
 function flattenFeedback(sf) {
   const parts = [];
@@ -140,8 +154,25 @@ export default function HITLWorkspace() {
   // scan can say so instead of silently showing page one.
   const [isLongScan, setIsLongScan] = useState(false);
 
+  // What this paper looked like when it was loaded (or last saved). The button
+  // at the bottom offers to "Save Changes" only when there are changes; without
+  // this it said so on every already-validated paper in a run, so a teacher
+  // reading through a finished set was asked to save work they had not touched
+  // — and each press wrote an identical grade to the record.
+  const [baseline, setBaseline] = useState(null);
+
   // Computed feedbackText for AI Co-Pilot & backwards compat
   const feedbackText = isStructured ? flattenFeedback(structuredFeedback) : legacyFeedbackText;
+
+  // Whether anything has been touched since this paper was loaded or last
+  // saved. Compared against the snapshot rather than tracked by each editor, so
+  // a value typed and then typed back is correctly not an edit.
+  const currentSnapshot = editSnapshot({
+    scores,
+    readingStrategy,
+    feedback: isStructured ? serializeStructuredFeedback(structuredFeedback) : legacyFeedbackText,
+  });
+  const isDirty = baseline !== null && currentSnapshot !== baseline;
 
   useEffect(() => {
     // A failure belongs to the paper it happened on — carrying it onto the next
@@ -189,20 +220,25 @@ export default function HITLWorkspace() {
           setIsStructured(true);
 
           setReadingStrategy(sub.readingStrategy || '');
+          // Collected into one variable rather than set from four branches, so
+          // the same values that land in the editor are the ones the baseline
+          // below is taken from. A baseline read back out of state instead
+          // would race the setters and mark an untouched paper as edited.
+          let nextScores = null;
           if (sub.rubricData && sub.rubricData !== '[]') {
             try {
               const rd = JSON.parse(sub.rubricData);
               if (Array.isArray(rd)) {
                 const initialScores = {};
                 rd.forEach(r => initialScores[r.criterionName] = r.score);
-                setScores(initialScores);
+                nextScores = initialScores;
                 setDynamicRubric(rd);
               } else {
                 // Absent criteria default to 0, not to invented mid-band scores.
                 // These land straight in the editable score boxes, so a made-up
                 // 35/25/25 is a grade the teacher can approve without ever
                 // realising nothing was actually assessed.
-                setScores({ content: rd.content?.score ?? 0, organization: rd.organization?.score ?? 0, grammar: rd.grammar?.score ?? 0 });
+                nextScores = { content: rd.content?.score ?? 0, organization: rd.organization?.score ?? 0, grammar: rd.grammar?.score ?? 0 };
               }
             } catch { /* unparseable rubricData leaves the editor as it is */ }
           } else if (sub.aiScore === null && sub.status === 'PENDING') {
@@ -212,19 +248,25 @@ export default function HITLWorkspace() {
                 if (parsedRubric.criteria?.length) {
                   const initialScores = {};
                   parsedRubric.criteria.forEach(c => initialScores[c.name] = 0);
-                  setScores(initialScores);
+                  nextScores = initialScores;
                 } else {
-                  setScores({ content: 0, organization: 0, grammar: 0 });
+                  nextScores = { content: 0, organization: 0, grammar: 0 };
                 }
-              } catch { setScores({ content: 0, organization: 0, grammar: 0 }); }
+              } catch { nextScores = { content: 0, organization: 0, grammar: 0 }; }
             } else {
-              setScores({ content: 0, organization: 0, grammar: 0 });
+              nextScores = { content: 0, organization: 0, grammar: 0 };
             }
           }
+          if (nextScores) setScores(nextScores);
           if (sub.covData) {
             try { setCovData(JSON.parse(sub.covData)); } catch { /* no COV data to show */ }
           }
           if (sub.status === 'GRADED') setIsApproved(true);
+          setBaseline(editSnapshot({
+            scores: nextScores || {},
+            readingStrategy: sub.readingStrategy || '',
+            feedback: serializeStructuredFeedback(finalStructured),
+          }));
         }
       })
       .catch(() => {}) /* a failed read leaves the empty state, which is what renders */
@@ -425,6 +467,17 @@ export default function HITLWorkspace() {
    * failing to save is the worst failure this screen has.
    */
   const handleValidate = async () => {
+    // Already validated and untouched: there is nothing to record, so this is
+    // purely "I have read this one, move on". Re-sending an identical grade
+    // would write another entry to the paper's grade history and make the
+    // record claim the teacher changed a mark they only looked at.
+    if (isApproved && !isDirty) {
+      if (queueActivityId) goToNext();
+      // Outside a run, closing the editor puts the release/done view back —
+      // there is nothing else this press could honestly mean.
+      else setIsEditingAssessment(false);
+      return;
+    }
     setIsSaving(true);
     setSaveError('');
     try {
@@ -461,6 +514,9 @@ export default function HITLWorkspace() {
         }
       }
       setIsApproved(true);
+      // What was just written is the new "unchanged" state, so the button drops
+      // back to offering the next paper rather than another save.
+      setBaseline(currentSnapshot);
 
       // "Time-Saved" Celebration — first validation only
       const user = JSON.parse(localStorage.getItem('user') || '{}');
@@ -513,6 +569,22 @@ export default function HITLWorkspace() {
       .then(d => { if (d.success) setReleaseState(d); })
       .catch(() => {});
   };
+
+  /** The next paper this run would go to, or undefined at the end of it. */
+  const nextInQueue = queue.find(q => q.id !== submissionId && !q.reviewed && !skipped.includes(q.id));
+
+  /**
+   * What the primary button will actually do, decided once.
+   *
+   * The label, the icon and the handler all read this, because a button that
+   * says one thing and does another is worse than a vague one — and this button
+   * carries three different jobs depending on where the teacher is in a run.
+   */
+  const validateAction =
+    (isApproved && isDirty) ? { label: 'Save Changes', finishes: false }
+      : (queueActivityId && nextInQueue) ? { label: 'Validate & next', finishes: false }
+        : isApproved ? { label: 'Done', finishes: true }
+          : { label: queueActivityId ? 'Validate & done' : 'Validate', finishes: false };
 
   const goToNext = () => {
     const next = queue.find(q => q.id !== submissionId && !q.reviewed && !skipped.includes(q.id));
@@ -1377,11 +1449,22 @@ export default function HITLWorkspace() {
                 canValidate
                   ? 'bg-brand-green text-white hover:bg-emerald-600 shadow-lg shadow-emerald-500/20 disabled:opacity-60'
                   : 'bg-slate-200 text-slate-400 cursor-not-allowed')}>
-              {isSaving ? <Loader2 className="w-5 h-5 animate-spin" /> : <Check className="w-5 h-5" />}
-              {/* No longer "Validate & Release": validating records the mark,
-                  releasing publishes the set. The teacher does the second one
-                  deliberately, at the end, having seen the whole spread. */}
-              {isSaving ? 'Saving...' : isAnalyzing ? 'AI checking...' : awaitingAiCheck ? 'Waiting for AI check' : (isApproved ? 'Save Changes' : queueActivityId ? 'Validate & next' : 'Validate')}
+              {isSaving ? <Loader2 className="w-5 h-5 animate-spin" />
+                : validateAction.finishes ? <CheckCircle2 className="w-5 h-5" />
+                  : <Check className="w-5 h-5" />}
+              {/* The button says what pressing it will actually do.
+                  It used to read "Save Changes" on every already-validated
+                  paper, edited or not — so most of the way through a run the
+                  teacher was offered a save they had no reason to make, and no
+                  hint that the same button was what moved them on.
+
+                  No longer "Validate & Release" either: validating records the
+                  mark, releasing publishes the set. The teacher does the second
+                  one deliberately, at the end, having seen the whole spread. */}
+              {isSaving ? 'Saving...'
+                : isAnalyzing ? 'AI checking...'
+                  : awaitingAiCheck ? 'Waiting for AI check'
+                    : validateAction.label}
             </button>
           )}
         </div>
