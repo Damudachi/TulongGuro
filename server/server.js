@@ -3235,9 +3235,33 @@ app.get('/api/teacher/:teacherId/setup-status', async (req, res) => {
       prisma.submission.count({ where: { ...ofThisTeacher, releasedAt: { not: null } } }),
     ]);
 
+    // Which activity the checklist's last step should open.
+    //
+    // It used to link to /teacher/batch-upload with no activity at all, which
+    // is a screen with nothing on it: that page is addressed by activityId, so
+    // "Release checked work" landed the teacher on an empty roster with no way
+    // to tell which papers it meant. The honest target is the work the sentence
+    // is about — the activity with checked-but-unreleased papers on it —
+    // falling back to the most recently published activity when there is
+    // nothing waiting, since that is the one a teacher who has just created an
+    // activity is about to upload against.
+    const waiting = await prisma.submission.findFirst({
+      where: { ...ofThisTeacher, status: 'GRADED', releasedAt: null },
+      orderBy: { gradedAt: 'desc' },
+      select: { activity: { select: { id: true, classId: true } } },
+    });
+    const target = waiting?.activity || await prisma.activity.findFirst({
+      where: { class: { teacherId } },
+      orderBy: { createdAt: 'desc' },
+      select: { id: true, classId: true },
+    });
+
     res.json({
       success: true,
-      setup: { sections, students, classes, activities, graded, released },
+      setup: {
+        sections, students, classes, activities, graded, released,
+        gradeTarget: target ? { activityId: target.id, classId: target.classId } : null,
+      },
     });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
@@ -5012,6 +5036,26 @@ app.post('/api/teacher/activities', (req, res, next) => {
 }, async (req, res) => {
   try {
     const { title, type, points, classId, instructions, deadline, lateUntil, submissionMode, rubric, topic, maxAttempts, classLessonId, component } = req.body;
+
+    // The class is proved to exist and to be the caller's before anything else
+    // runs. Without it, a classId that named nothing reached Postgres and came
+    // back as a raw `Foreign key constraint violated: Activity_classId_fkey`
+    // in an alert box — after the teacher had filled in the whole form, and
+    // saying nothing about what was actually wrong. (The form that sent the
+    // literal 'mock-class-id' is fixed too; this is the guard that means any
+    // future caller gets a sentence instead of a Prisma error.)
+    if (!classId) {
+      return res.status(400).json({ success: false, error: 'Choose which class this activity is for.' });
+    }
+    const ownedClass = await teacherOwnsClass(classId, req.auth.sub);
+    if (!ownedClass.ok) {
+      return res.status(ownedClass.code).json({
+        success: false,
+        error: ownedClass.code === 404
+          ? 'That class no longer exists, so the activity could not be created. Open the class again and try from there.'
+          : ownedClass.error,
+      });
+    }
 
     const rubricError = validateRubric(rubric);
     if (rubricError) return res.status(400).json({ success: false, error: rubricError });

@@ -63,7 +63,9 @@ const ROUTE_MANIFEST = {
   'POST /api/teacher/classes/:id/parse-curriculum': { needsCheck: true },
   'GET /api/teacher/classes/:id/lessons': { needsCheck: true },
   'POST /api/teacher/activities/:activityId/scores': { needsCheck: true },
-  'POST /api/teacher/activities': { needsCheck: false, note: 'creates a new activity for the caller' },
+  // Creates a new activity, but hangs it off an existing class named in the
+  // body — so the class, at least, has to be proved the caller's.
+  'POST /api/teacher/activities': { needsCheck: true },
   'PUT /api/teacher/activities/:activityId': { needsCheck: true },
   'DELETE /api/teacher/activities/:activityId': { needsCheck: true },
   'GET /api/teacher/rubric-templates/:teacherId': { needsCheck: false, note: 'authorizePath special-cases this exact GET shape directly' },

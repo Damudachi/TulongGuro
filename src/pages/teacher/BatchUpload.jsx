@@ -311,6 +311,25 @@ export default function BatchUpload() {
     (source === 'camera' ? cameraInputRef : fileInputRef).current?.click();
   };
 
+  /**
+   * Pick a replacement for work that is already on file.
+   *
+   * Same staging path as a first upload — redact, then Confirm Upload — with
+   * the two things that only apply to a replacement said up front: a released
+   * result cannot be swapped underneath the learner (the server refuses it in
+   * /api/teacher/upload), and replacing a validated paper drops the grade,
+   * because that grade was awarded to a different piece of work.
+   */
+  const requestReplace = (studentId, sub, source = 'files') => {
+    if (sub?.releasedAt) {
+      alert('This result has already been released to the student, so the photo can no longer be replaced.');
+      return;
+    }
+    if (sub?.status === 'GRADED' &&
+      !window.confirm('This paper has already been validated. Replacing it will clear that grade so the new photo can be checked fresh. Continue?')) return;
+    triggerFilePick(studentId, source);
+  };
+
   const handleFilePicked = async (e) => {
     const picked = Array.from(e.target.files || []);
     const targetStudentId = pendingUploadStudentId.current;
@@ -678,6 +697,13 @@ export default function BatchUpload() {
               const scorePercent = sub?.hitlScore ?? sub?.aiScore ?? null;
               const grade = scorePercent !== null ? Math.round((scorePercent / 100) * maxPoints) : null;
               const isUploading = uploadingStudentId === student.id;
+              // A submission row is not the same thing as work handed in:
+              // enrolling a learner back-fills one PENDING row per activity so
+              // the roster can list everybody as awaiting work (see REAL_WORK in
+              // access.js). Offering "Replace" against one of those would be
+              // offering to replace nothing — this is the row that has something
+              // in it to replace.
+              const hasWork = !!(sub && (sub.imageUrl || scorePercent !== null));
 
               return (
                 <div key={student.id} className="flex items-center gap-4 border border-slate-200 rounded-xl p-3">
@@ -746,8 +772,14 @@ export default function BatchUpload() {
                     {staged ? (
                       <>
                         <span className="inline-flex mt-2 text-[11px] font-bold px-2 py-0.5 rounded-full bg-blue-100 text-blue-700">
-                          Ready to upload — {stagedPages.length} page{stagedPages.length > 1 ? 's' : ''}
+                          Ready to {hasWork ? 'replace' : 'upload'} — {stagedPages.length} page{stagedPages.length > 1 ? 's' : ''}
                         </span>
+                        {hasWork && (
+                          <p className="text-[11px] text-slate-500 mt-1">
+                            This will take the place of the work already on file
+                            {sub?.status === 'GRADED' ? ', and clears its grade so the new pages can be checked fresh' : ''}.
+                          </p>
+                        )}
                         {/* Both controls are always visible, never hover-only.
                             They used to appear on :hover, which does not exist
                             on the phones this is used on — so on the target
@@ -817,38 +849,23 @@ export default function BatchUpload() {
                     )}
                   </div>
 
-                  {/* In student-submit mode a pupil who has already handed work
-                      in is normally just reviewed — a genuine self-submission
-                      isn't the teacher's to overwrite. But once it's picked up
-                      here (whether the pupil submitted it or a teacher scanned
-                      it in on their behalf), a wrong file is still fixable up
-                      until it's released: Replace stages a new photo through
-                      the exact same redact-then-confirm flow as a first upload.
-                      Once released to the student, it's locked — see the
-                      matching guard in /api/teacher/upload. */}
-                  {isStudentSubmitMode && sub?.id ? (
-                    <div className="flex flex-col items-center gap-1.5 shrink-0">
-                      <Link to={`/teacher/review/${sub.id}`}
-                        className="text-xs bg-brand-navy text-white px-3 py-1.5 rounded-md font-medium hover:bg-blue-900 w-full text-center">
-                        Review
-                      </Link>
-                      {grade !== null && <span className="text-xs font-bold text-brand-slate">{grade}/{maxPoints}</span>}
-                      {!sub.releasedAt && (
-                        <button type="button"
-                          onClick={() => {
-                            if (sub.status === 'GRADED' && !window.confirm('This paper has already been validated. Replacing it will clear that grade so the new photo can be checked fresh. Continue?')) return;
-                            triggerFilePick(student.id);
-                          }}
-                          disabled={!piiConfirmed}
-                          title={!piiConfirmed ? 'Confirm the privacy checkbox above first' : 'Wrong file, or too blurry to read? Upload a replacement.'}
-                          className={cn('text-[11px] font-medium flex items-center gap-1',
-                            piiConfirmed ? 'text-slate-500 hover:text-brand-navy' : 'text-slate-300 cursor-not-allowed')}>
-                          <RefreshCw className="w-3 h-3" /> Replace
-                        </button>
-                      )}
-                    </div>
-                  ) : staged ? (
+                  {/* Staged pages come first, in both modes.
+                      Replace used to be unreachable for exactly the pupils it
+                      was written for: in student-submit mode the branch below
+                      won on `sub?.id` alone, so picking a replacement staged the
+                      photo, drew the thumbnails and the Cover button — and then
+                      still showed Review/Replace, with no Confirm Upload
+                      anywhere on the row. The pages sat there until the page was
+                      reloaded, which is what "I can't replace a submission"
+                      looks like from the teacher's side. Whatever is staged is
+                      the thing that needs finishing, so it decides the column. */}
+                  {staged ? (
                     <div className="flex flex-col items-end gap-1.5 shrink-0">
+                      {sub?.id && (
+                        <span className="text-[10px] font-bold text-blue-700 bg-blue-50 border border-blue-200 px-2 py-0.5 rounded-full">
+                          Replacing
+                        </span>
+                      )}
                       <button type="button" onClick={() => cancelStaged(student.id)}
                         className="text-xs text-slate-400 hover:text-red-600 font-medium flex items-center gap-1">
                         <X className="w-3.5 h-3.5" /> Discard all
@@ -857,8 +874,51 @@ export default function BatchUpload() {
                         disabled={!piiConfirmed || isUploading}
                         className={cn('text-xs px-3 py-1.5 rounded-md font-medium flex items-center gap-1',
                           piiConfirmed ? 'bg-brand-navy text-white hover:bg-blue-900' : 'bg-slate-200 text-slate-400 cursor-not-allowed')}>
-                        {isUploading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : 'Confirm Upload'}
+                        {isUploading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : (sub?.id ? 'Confirm Replace' : 'Confirm Upload')}
                       </button>
+                    </div>
+                  ) : hasWork ? (
+                    /* Work is already on file, however it got here — a pupil
+                       submitted it, or the teacher scanned it in. It is reviewed
+                       from here, and a wrong or unreadable file is still fixable
+                       until it is released: Replace stages a new photo through
+                       the exact same redact-then-confirm flow as a first upload.
+                       Once released to the student it is locked — see the
+                       matching guard in /api/teacher/upload. */
+                    <div className="flex flex-col items-center gap-1.5 shrink-0 w-28">
+                      <Link to={`/teacher/review/${sub.id}`}
+                        className="text-xs bg-brand-navy text-white px-3 py-1.5 rounded-md font-medium hover:bg-blue-900 w-full text-center">
+                        Review
+                      </Link>
+                      {grade !== null && <span className="text-xs font-bold text-brand-slate">{grade}/{maxPoints}</span>}
+                      {sub.releasedAt ? (
+                        <span className="text-[11px] text-slate-400 text-center leading-tight">
+                          Released — locked
+                        </span>
+                      ) : (
+                        <>
+                          <button type="button" onClick={() => requestReplace(student.id, sub)}
+                            disabled={!piiConfirmed}
+                            title={!piiConfirmed ? 'Confirm the privacy checkbox above first' : 'Wrong file, or too blurry to read? Upload a replacement.'}
+                            className={cn('text-xs px-2 py-1.5 rounded-md font-medium flex items-center justify-center gap-1 w-full border',
+                              piiConfirmed
+                                ? 'border-slate-200 bg-white text-slate-600 hover:border-brand-navy hover:text-brand-navy'
+                                : 'border-slate-100 bg-slate-50 text-slate-300 cursor-not-allowed')}>
+                            <RefreshCw className="w-3 h-3" /> Replace
+                          </button>
+                          {/* The camera is the way most replacements are taken —
+                              the paper is in the teacher's hand. On a phone the
+                              file picker offers it too, but only after a detour
+                              through the gallery. */}
+                          <button type="button" onClick={() => requestReplace(student.id, sub, 'camera')}
+                            disabled={!piiConfirmed}
+                            title={!piiConfirmed ? 'Confirm the privacy checkbox above first' : 'Take a new photo to replace this one'}
+                            className={cn('text-[11px] font-medium flex items-center gap-1',
+                              piiConfirmed ? 'text-slate-500 hover:text-brand-navy' : 'text-slate-300 cursor-not-allowed')}>
+                            <Camera className="w-3 h-3" /> Re-take photo
+                          </button>
+                        </>
+                      )}
                     </div>
                   ) : (
                     <div className="flex flex-col items-center gap-1 shrink-0 w-28">
@@ -876,14 +936,14 @@ export default function BatchUpload() {
                           <UploadCloud className="w-3.5 h-3.5" /> Files
                         </button>
                       </div>
+                      {/* A placeholder row with nothing in it yet still has a
+                          review screen, which is where a mark can be typed in
+                          for work that was never photographed. */}
                       {sub?.id && (
-                        <>
-                          <Link to={`/teacher/review/${sub.id}`}
-                            className="text-xs bg-brand-navy text-white px-3 py-1.5 rounded-md font-medium hover:bg-blue-900 w-full text-center">
-                            Review
-                          </Link>
-                          {grade !== null && <span className="text-xs font-bold text-brand-slate">{grade}/{maxPoints}</span>}
-                        </>
+                        <Link to={`/teacher/review/${sub.id}`}
+                          className="text-xs bg-brand-navy text-white px-3 py-1.5 rounded-md font-medium hover:bg-blue-900 w-full text-center">
+                          Review
+                        </Link>
                       )}
                     </div>
                   )}

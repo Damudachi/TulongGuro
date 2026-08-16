@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
-import { Plus, FileText, Filter, ChevronRight, Loader2, UploadCloud, X, Sparkles, CloudOff } from 'lucide-react';
+import { Plus, Filter, ChevronRight, Loader2, Sparkles, CloudOff } from 'lucide-react';
 import { API_URL, apiFetch } from '../../config';
 import { getStoredUser } from '../../utils/session';
 import { saveTeacherSnapshot, readTeacherSnapshot } from '../../utils/offlineSnapshot';
@@ -121,8 +121,8 @@ function WizardEmptyState({ onComplete, sections = [] }) {
         finalSectionId = secData.section?.id || secData.id;
       }
 
-      // Still FormData: the endpoint is shared with the Add Class modal, which
-      // does carry a file.
+      // Still FormData: the endpoint parses multipart, and this is the same
+      // shape the Add Class modal sends.
       const fd = new FormData();
       fd.append('name', resolvedName);
       fd.append('teacherId', user.id);
@@ -368,9 +368,6 @@ export default function TeacherDashboard() {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [sections, setSections] = useState([]);
   const [form, setForm] = useState({ name: '', gradeLevel: '', subject: '', schoolYear: DEFAULT_SCHOOL_YEAR, sectionId: '' });
-  const [modalCurriculumFile, setModalCurriculumFile] = useState(null);
-  const [modalIsParsing, setModalIsParsing] = useState(false);
-  const [modalParseStatus, setModalParseStatus] = useState('');
   const [isCreatingClass, setIsCreatingClass] = useState(false);
   const [useModalCurriculum, setUseModalCurriculum] = useState(true);
   const [filters, setFilters] = useState({ gradeLevel: '', subject: '' });
@@ -453,7 +450,6 @@ export default function TeacherDashboard() {
       fd.append('teacherId', user.id);
       fd.append('sectionId', form.sectionId);
       if (modalSuggestion && useModalCurriculum) fd.append('curriculumId', modalSuggestion.id);
-      if (modalCurriculumFile) fd.append('curriculumFile', modalCurriculumFile);
 
       const res = await apiFetch(`${API_URL}/api/teacher/classes`, {
         method: 'POST',
@@ -464,24 +460,8 @@ export default function TeacherDashboard() {
         if (data.duplicate) {
           alert('You already have a class for this section, subject and school year. Opening the existing one instead.');
         }
-        if (modalCurriculumFile && data.class?.id) {
-          setModalIsParsing(true);
-          setModalParseStatus('Scanning curriculum & generating rubrics...');
-          try {
-            const parseRes = await apiFetch(`${API_URL}/api/teacher/classes/${data.class.id}/parse-curriculum`, {
-              method: 'POST'
-            });
-            const parseData = await parseRes.json();
-            if (parseData.success) {
-              setModalParseStatus(`Done! Extracted ${parseData.lessons?.length || 0} lessons.`);
-            }
-          } catch { /* a malformed stored value just means no draft to restore */ }
-          await new Promise(r => setTimeout(r, 1500));
-          setModalIsParsing(false);
-        }
         setIsModalOpen(false);
         setForm({ name: '', gradeLevel: '', subject: '', schoolYear: DEFAULT_SCHOOL_YEAR, sectionId: '' });
-        setModalCurriculumFile(null);
         window.location.reload();
       } else {
         alert('Failed: ' + data.error);
@@ -744,32 +724,11 @@ export default function TeacherDashboard() {
                 )}
               </div>
 
-              {/* Curriculum File Upload */}
-              <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1">Curriculum / Lesson Plan (Optional)</label>
-                {!modalCurriculumFile ? (
-                  <label className="block border-2 border-dashed border-slate-200 rounded-lg p-4 text-center cursor-pointer hover:border-brand-navy hover:bg-blue-50 transition-colors">
-                    <UploadCloud className="w-6 h-6 mx-auto mb-1 text-slate-400" />
-                    <p className="text-xs text-slate-500">Upload PDF or DOCX</p>
-                    <input type="file" accept=".pdf,.docx" className="hidden" onChange={e => {
-                      if (e.target.files?.[0]) setModalCurriculumFile(e.target.files[0]);
-                    }} />
-                  </label>
-                ) : (
-                  <div className="flex items-center gap-2 p-2 bg-green-50 border border-green-200 rounded-lg">
-                    <FileText className="w-4 h-4 text-green-600 shrink-0" />
-                    <span className="text-xs font-medium text-green-800 truncate flex-1">{modalCurriculumFile.name}</span>
-                    <button type="button" onClick={() => setModalCurriculumFile(null)} className="text-red-400 hover:text-red-600">
-                      <X className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
-                )}
-                {modalIsParsing && (
-                  <div className="flex items-center gap-2 mt-2 text-xs text-blue-600">
-                    <Loader2 className="w-3.5 h-3.5 animate-spin" /> {modalParseStatus}
-                  </div>
-                )}
-              </div>
+              {/* No curriculum upload here. A teacher's own lesson plan was a
+                  second, divergent source of lessons for a class the school had
+                  already defined — the school's published curriculum is matched
+                  and offered above instead, which is the same reason the
+                  first-run wizard never asked for one. */}
 
               <div className="flex gap-2 pt-2">
                 <button type="button" onClick={() => setIsModalOpen(false)} disabled={isCreatingClass}

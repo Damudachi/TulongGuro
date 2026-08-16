@@ -120,3 +120,33 @@ describe('every step is renderable', () => {
     expect(withoutRoute.map((s) => s.id)).toEqual(['class']);
   });
 });
+
+describe('where the last step actually sends the teacher', () => {
+  // The upload/release screen is addressed by activity. Linking to it bare
+  // opened an empty roster — "Release checked work" that released nothing and
+  // named nothing. The server picks the activity the sentence is about; this is
+  // the half that has to put it in the link.
+  const setup = { sections: 1, students: 3, classes: 1, activities: 1, graded: 3, released: 0 };
+  const target = { activityId: 'act-1', classId: 'cls-1' };
+
+  it('opens the activity holding the checked work', () => {
+    expect(byId({ ...setup, gradeTarget: target }).grade.to)
+      .toBe('/teacher/batch-upload?activityId=act-1&classId=cls-1');
+  });
+
+  it('still names the activity when the class is not known', () => {
+    expect(byId({ ...setup, gradeTarget: { activityId: 'act-1' } }).grade.to)
+      .toBe('/teacher/batch-upload?activityId=act-1');
+  });
+
+  it('falls back to the bare screen when the server named no activity', () => {
+    // Only reachable while the step is blocked ("Create an activity first"),
+    // so nothing links to it — but it must stay a valid route either way.
+    expect(byId(setup).grade.to).toBe('/teacher/batch-upload');
+  });
+
+  it('escapes what it puts in the query string', () => {
+    expect(byId({ ...setup, gradeTarget: { activityId: 'a b&c', classId: 'x/y' } }).grade.to)
+      .toBe('/teacher/batch-upload?activityId=a%20b%26c&classId=x%2Fy');
+  });
+});

@@ -87,7 +87,20 @@ export default function ActivityBuilder() {
   const [searchParams] = useSearchParams();
   const { activityId: editActivityId } = useParams();
   const isEditMode = !!editActivityId;
-  const classId = searchParams.get('classId');
+  const classIdFromUrl = searchParams.get('classId');
+  // Which class this activity belongs to, when the URL didn't say.
+  //
+  // /teacher/activity/new is reachable without a classId — the setup checklist
+  // links straight here — and the form used to send the literal string
+  // 'mock-class-id' in that case. There is no such class, so Postgres refused
+  // the insert on Activity_classId_fkey and the teacher got a raw Prisma error
+  // in an alert box after filling the whole form in. The class is a fact about
+  // the activity, so it is asked for like any other required field.
+  const [pickedClassId, setPickedClassId] = useState('');
+  const [teacherClasses, setTeacherClasses] = useState([]);
+  const [isLoadingClasses, setIsLoadingClasses] = useState(false);
+  const classId = classIdFromUrl || pickedClassId;
+  const needsClassPicker = !isEditMode && !classIdFromUrl;
   const fileInputRef = useRef(null);
   const rubricFileRef = useRef(null);
   const [isLoadingEdit, setIsLoadingEdit] = useState(false);
@@ -115,6 +128,28 @@ export default function ActivityBuilder() {
   const [schoolRubrics, setSchoolRubrics] = useState([]);   // published by the admin / curriculum
   const [builtinRubrics, setBuiltinRubrics] = useState([]);
   const [classMeta, setClassMeta] = useState(null);         // { gradeLevel, subject }
+
+  // The teacher's classes, for the picker above. Only fetched when the URL
+  // didn't name one — coming from a class hub, this is already decided.
+  useEffect(() => {
+    if (!needsClassPicker) return;
+    const user = JSON.parse(localStorage.getItem('user') || '{}');
+    if (!user.id) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- flipping the loading flag ahead of an async read; the rule's alternative is a data-fetching library this app doesn't use
+    setIsLoadingClasses(true);
+    apiFetch(`${API_URL}/api/teacher/${user.id}/classes`)
+      .then(r => r.json())
+      .then(d => {
+        if (!d.success) return;
+        const list = d.classes || [];
+        setTeacherClasses(list);
+        // One class is not a choice. Pre-selecting it is the difference between
+        // a form that works and one that asks a question with a single answer.
+        if (list.length === 1) setPickedClassId(list[0].id);
+      })
+      .catch(() => {})
+      .finally(() => setIsLoadingClasses(false));
+  }, [needsClassPicker]);
 
   // The class's grade level and subject, used to narrow which school rubrics
   // apply. Without it a Grade 3 Math teacher was offered Grade 6 English rubrics.
@@ -603,6 +638,15 @@ export default function ActivityBuilder() {
       alert("Total Points must be greater than 0.");
       return;
     }
+    // An activity has to belong to a real class. This used to fall back to the
+    // string 'mock-class-id', which the database rejected on the foreign key
+    // after the teacher had filled the entire form in.
+    if (!isEditMode && !classId) {
+      alert(teacherClasses.length === 0
+        ? 'Create a class first — an activity has to belong to one.'
+        : 'Please choose which class this activity is for.');
+      return;
+    }
     setIsSaving(true);
     // Null, not an empty rubric object. validateRubric() on the server reads
     // null as "no rubric, allowed" and an empty criteria list as a broken one,
@@ -634,7 +678,7 @@ export default function ActivityBuilder() {
         // CREATE new activity via FormData
         const fd = new FormData();
         Object.entries(form).forEach(([k, v]) => fd.append(k, v));
-        fd.append('classId', classId || 'mock-class-id');
+        fd.append('classId', classId);
         if (selectedLessonId) fd.append('classLessonId', selectedLessonId);
 
         // Omitted entirely when there is no rubric: FormData has no null, and
@@ -736,6 +780,39 @@ export default function ActivityBuilder() {
       )}
 
       <form className="space-y-6" onSubmit={handleSubmit}>
+
+        {/* ── CLASS ──
+            Only when the URL didn't say. Opened from a class hub the answer is
+            already known and asking again would be noise; opened from the setup
+            checklist it is the one thing the form cannot infer. */}
+        {needsClassPicker && (
+          <div className="bg-white p-6 rounded-xl border-2 border-brand-navy/10 shadow-sm">
+            <h2 className="text-base font-bold text-brand-slate mb-1">Which class is this for? *</h2>
+            <p className="text-xs text-slate-500 mb-4">The activity, and every mark given for it, belongs to this class.</p>
+            {isLoadingClasses ? (
+              <div className="flex items-center gap-2 text-sm text-slate-500">
+                <Loader2 className="w-4 h-4 animate-spin" /> Loading your classes…
+              </div>
+            ) : teacherClasses.length === 0 ? (
+              <div className="text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-4 py-3">
+                You don&apos;t have a class yet, and an activity has to belong to one.{' '}
+                <button type="button" onClick={() => navigate('/teacher/dashboard')} className="font-bold underline">
+                  Create a class first
+                </button>.
+              </div>
+            ) : (
+              <select required value={pickedClassId} onChange={e => setPickedClassId(e.target.value)}
+                className="w-full px-4 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-brand-navy outline-none">
+                <option value="">— Choose a class —</option>
+                {teacherClasses.map(c => (
+                  <option key={c.id} value={c.id}>
+                    {c.name}{c.section?.name ? ` · ${c.section.name}` : ''}
+                  </option>
+                ))}
+              </select>
+            )}
+          </div>
+        )}
 
         {/* ── SUBMISSION MODE ── */}
         <div className="bg-white p-6 rounded-xl border-2 border-brand-navy/10 shadow-sm">
@@ -1337,8 +1414,9 @@ export default function ActivityBuilder() {
         <div className="flex justify-end pt-2">
           <button type="button" onClick={() => navigate(-1)}
             className="px-6 py-2 rounded-lg text-slate-600 font-medium hover:bg-slate-100 mr-4 transition-colors">Cancel</button>
-          <button type="submit" disabled={isSaving}
-            className="px-6 py-2 rounded-lg bg-brand-navy text-white font-medium hover:bg-blue-900 transition-colors shadow-lg shadow-blue-900/20 disabled:opacity-60">
+          <button type="submit" disabled={isSaving || (!isEditMode && !classId)}
+            title={!isEditMode && !classId ? 'Choose which class this activity is for' : undefined}
+            className="px-6 py-2 rounded-lg bg-brand-navy text-white font-medium hover:bg-blue-900 transition-colors shadow-lg shadow-blue-900/20 disabled:opacity-60 disabled:cursor-not-allowed">
             {isSaving ? (isEditMode ? 'Updating...' : 'Publishing...') : (isEditMode ? 'Update Activity' : 'Publish Activity')}
           </button>
         </div>

@@ -11,10 +11,19 @@
  * database, so the checklist is right on any device and cannot claim a teacher
  * has done something their dashboard shows they have not.
  *
- * @param {{sections:number, students:number, classes:number, activities:number, graded:number, released:number}} setup
+ * @param {{sections:number, students:number, classes:number, activities:number, graded:number, released:number, gradeTarget?:{activityId:string, classId:string}|null}} setup
  */
 export function buildSteps(setup) {
-  const { sections = 0, students = 0, classes = 0, activities = 0, graded = 0, released = 0 } = setup || {};
+  const { sections = 0, students = 0, classes = 0, activities = 0, graded = 0, released = 0, gradeTarget = null } = setup || {};
+
+  // The upload/release screen is addressed by activity — without one it opens
+  // on an empty roster, which is where "Release checked work" used to land.
+  // The server picks the activity the step is actually about: the one holding
+  // checked work, or the most recently published one when there is none.
+  const gradeRoute = gradeTarget?.activityId
+    ? `/teacher/batch-upload?activityId=${encodeURIComponent(gradeTarget.activityId)}` +
+      (gradeTarget.classId ? `&classId=${encodeURIComponent(gradeTarget.classId)}` : '')
+    : '/teacher/batch-upload';
 
   return [
     {
@@ -65,7 +74,7 @@ export function buildSteps(setup) {
         : graded > 0
           ? `${graded} paper${graded === 1 ? '' : 's'} checked — not released to learners yet`
           : null,
-      to: '/teacher/batch-upload',
+      to: gradeRoute,
       cta: graded > 0 ? 'Release checked work' : 'Upload a paper',
       blockedBy: activities === 0 ? 'Create an activity first' : null,
     },
