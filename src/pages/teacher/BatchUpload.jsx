@@ -706,7 +706,13 @@ export default function BatchUpload() {
               const hasWork = !!(sub && (sub.imageUrl || scorePercent !== null));
 
               return (
-                <div key={student.id} className="flex items-center gap-4 border border-slate-200 rounded-xl p-3">
+                /* Wraps on a phone rather than holding three columns side by
+                   side. At 360px the middle column was squeezed to about two
+                   characters wide, so the privacy hint set itself one word per
+                   line and ran straight underneath the buttons — see the
+                   `min-w-0` and the full-width action column below, which are
+                   the other half of the same fix. */
+                <div key={student.id} className="flex flex-wrap sm:flex-nowrap items-start sm:items-center gap-3 sm:gap-4 border border-slate-200 rounded-xl p-3">
                   <div className="w-20 h-24 rounded-lg overflow-hidden bg-slate-100 border border-slate-200 shrink-0 relative">
                     {staged ? (
                       <>
@@ -739,7 +745,7 @@ export default function BatchUpload() {
                       </div>
                     )}
                   </div>
-                  <div className="flex-1 min-w-0">
+                  <div className="flex-1 min-w-[9rem]">
                     <p className="font-semibold text-brand-slate truncate">{student.name}</p>
                     <p className="text-xs text-slate-500">{student.username}</p>
                     {/* Queuing offline cleared the staged pages and said nothing,
@@ -860,7 +866,7 @@ export default function BatchUpload() {
                       looks like from the teacher's side. Whatever is staged is
                       the thing that needs finishing, so it decides the column. */}
                   {staged ? (
-                    <div className="flex flex-col items-end gap-1.5 shrink-0">
+                    <div className="flex flex-col items-stretch sm:items-end gap-1.5 shrink-0 w-full sm:w-auto">
                       {sub?.id && (
                         <span className="text-[10px] font-bold text-blue-700 bg-blue-50 border border-blue-200 px-2 py-0.5 rounded-full">
                           Replacing
@@ -885,7 +891,7 @@ export default function BatchUpload() {
                        the exact same redact-then-confirm flow as a first upload.
                        Once released to the student it is locked — see the
                        matching guard in /api/teacher/upload. */
-                    <div className="flex flex-col items-center gap-1.5 shrink-0 w-28">
+                    <div className="flex flex-col items-center gap-1.5 shrink-0 w-full sm:w-28">
                       <Link to={`/teacher/review/${sub.id}`}
                         className="text-xs bg-brand-navy text-white px-3 py-1.5 rounded-md font-medium hover:bg-blue-900 w-full text-center">
                         Review
@@ -921,7 +927,7 @@ export default function BatchUpload() {
                       )}
                     </div>
                   ) : (
-                    <div className="flex flex-col items-center gap-1 shrink-0 w-28">
+                    <div className="flex flex-col items-center gap-1 shrink-0 w-full sm:w-28">
                       <div className="flex gap-1 w-full">
                         <button type="button" onClick={() => triggerFilePick(student.id, 'camera')} disabled={!piiConfirmed}
                           title={!piiConfirmed ? 'Confirm the privacy checkbox above first' : 'Take a photo'}

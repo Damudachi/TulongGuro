@@ -20,7 +20,7 @@ function fileKind(url) {
  * file can't be fetched — which happens when the API stored it on local disk
  * and that disk has since been recycled (no object storage configured).
  */
-export default function SubmissionImage({ url, alt = 'Submitted work', className, wrapperClassName, compact = false }) {
+export default function SubmissionImage({ url, alt = 'Submitted work', className, wrapperClassName, compact = false, onImageLoad }) {
   const [failed, setFailed] = useState(false);
   const src = resolveUploadUrl(url);
 
@@ -100,6 +100,13 @@ export default function SubmissionImage({ url, alt = 'Submitted work', className
       className={className}
       loading="lazy"
       onError={() => setFailed(true)}
+      // The natural size, for callers that need to know the shape of what
+      // arrived — a stitched multi-page scan is only recognisable by how tall
+      // it is relative to its width.
+      onLoad={onImageLoad ? (e) => onImageLoad({
+        naturalWidth: e.currentTarget.naturalWidth,
+        naturalHeight: e.currentTarget.naturalHeight,
+      }) : undefined}
     />
   );
 }

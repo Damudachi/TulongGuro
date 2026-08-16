@@ -3,8 +3,6 @@ import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { ArrowLeft, Check, Edit2, Info, Sparkles, X, Send, Bot, Loader2, CheckCircle2, ChevronDown, Plus, Trash2, AlertTriangle, SkipForward, Send as SendIcon, RefreshCw } from 'lucide-react';
 import { API_URL, apiFetch } from '../../config';
 import SubmissionImage from '../../components/SubmissionImage';
-import ImageRedactor from '../../components/ImageRedactor';
-import { isRasterizable, rasterizeToPageImages } from '../../utils/fileRasterize';
 import { ONBOARDING, hasSeenOnboarding, markOnboardingSeen } from '../../utils/onboarding';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
@@ -130,16 +128,17 @@ export default function HITLWorkspace() {
   const [showCelebration, setShowCelebration] = useState(false);
   const chatEndRef = useRef(null);
 
-  // ── Replace Photo ──
-  // A wrong or too-blurry-to-read upload used to be a dead end: the "No
-  // Readable Text Detected" banner told the teacher to "re-upload a clearer
-  // photo", but nothing on this screen actually let them. Picked files go
-  // through the same redaction/rasterization pipeline as a fresh upload, one
-  // page at a time, before replacing the submission and re-grading it.
-  const [isPreparingReplace, setIsPreparingReplace] = useState(false);
-  const [replaceQueue, setReplaceQueue] = useState(null); // { files: File[], index, objectUrl, ready: File[] }
-  const [isReplacing, setIsReplacing] = useState(false);
-  const replaceFileInputRef = useRef(null);
+  // Replacing the photo is not done from here.
+  //
+  // This screen is for reading the paper and deciding the mark; swapping the
+  // paper underneath a score that has already been checked is a different act,
+  // and it belongs where the papers are collected — the upload roster, which
+  // has Replace on every learner's row. Keeping a second entry point here meant
+  // the picker, the rasterizer and the redaction queue all had to be repeated
+  // on a screen whose job is review.
+  // Set once the image reports its own dimensions, so a stitched multi-page
+  // scan can say so instead of silently showing page one.
+  const [isLongScan, setIsLongScan] = useState(false);
 
   // Computed feedbackText for AI Co-Pilot & backwards compat
   const feedbackText = isStructured ? flattenFeedback(structuredFeedback) : legacyFeedbackText;
@@ -670,104 +669,6 @@ export default function HITLWorkspace() {
     }
   };
 
-  // ── Replace Photo ──
-  const triggerReplacePhoto = () => replaceFileInputRef.current?.click();
-
-  const handleReplaceFilePicked = async (e) => {
-    const picked = Array.from(e.target.files || []);
-    e.target.value = '';
-    if (picked.length === 0 || !submission) return;
-
-    // Replacing clears the server's own record of this validation (see the
-    // /api/teacher/upload note on why) — ask first so a teacher who validated
-    // moments ago isn't surprised to see it gone.
-    if (submission.status === 'GRADED') {
-      const proceed = window.confirm('This paper has already been validated. Replacing the photo will clear that grade so the new photo can be checked fresh. Continue?');
-      if (!proceed) return;
-    }
-
-    const images = picked.filter(f => (f.type || '').startsWith('image/'));
-    const toRasterize = picked.filter(f => isRasterizable(f));
-
-    if (toRasterize.length > 0) {
-      setIsPreparingReplace(true);
-      for (const f of toRasterize) {
-        try {
-          const pages = await rasterizeToPageImages(f, 12);
-          images.push(...pages);
-        } catch {
-          alert(`Couldn't render "${f.name}" for preview. Try a photo instead, or a different file.`);
-        }
-      }
-      setIsPreparingReplace(false);
-    }
-    if (images.length === 0) return;
-
-    setReplaceQueue({ files: images, index: 0, objectUrl: URL.createObjectURL(images[0]), ready: [] });
-  };
-
-  const uploadReplacementPhoto = async (files) => {
-    setIsReplacing(true);
-    try {
-      const formData = new FormData();
-      files.forEach(f => formData.append('images', f));
-      formData.append('studentId', submission.studentId);
-      formData.append('activityId', submission.activityId);
-      const res = await apiFetch(`${API_URL}/api/teacher/upload`, { method: 'POST', body: formData });
-      const data = await res.json();
-      if (data.success && data.submission) {
-        const sub = { ...submission, ...data.submission, activity: data.submission.activity || submission?.activity, student: data.submission.student || submission?.student };
-        setSubmission(sub);
-        setIsApproved(false);
-        setIsEditingAssessment(false);
-
-        const parsedAi = parseStructuredFeedback(sub.aiFeedback);
-        setStructuredFeedback(parsedAi || { ...EMPTY_STRUCTURED, strengths: sub.aiFeedback || '' });
-        setIsStructured(true);
-        setReadingStrategy(sub.readingStrategy || '');
-        setCovData(null);
-        if (sub.rubricData && sub.rubricData !== '[]') {
-          try {
-            const rd = JSON.parse(sub.rubricData);
-            if (Array.isArray(rd)) {
-              const initialScores = {};
-              rd.forEach(r => initialScores[r.criterionName] = r.score);
-              setScores(initialScores);
-              setDynamicRubric(rd);
-            }
-          } catch { /* fall through to the cleared state below */ }
-        } else {
-          setDynamicRubric(null);
-          setScores({});
-        }
-      } else {
-        alert(data.error || 'Could not replace the photo.');
-      }
-    } catch {
-      alert('Network error while replacing the photo.');
-    } finally {
-      setIsReplacing(false);
-    }
-  };
-
-  const handleReplaceRedactConfirm = (redactedBlob) => {
-    const { files, index, objectUrl, ready } = replaceQueue;
-    URL.revokeObjectURL(objectUrl);
-    const redactedFile = new File([redactedBlob], files[index].name, { type: 'image/jpeg' });
-    const nextReady = [...ready, redactedFile];
-    const nextIndex = index + 1;
-    if (nextIndex < files.length) {
-      setReplaceQueue({ files, index: nextIndex, objectUrl: URL.createObjectURL(files[nextIndex]), ready: nextReady });
-    } else {
-      setReplaceQueue(null);
-      uploadReplacementPhoto(nextReady);
-    }
-  };
-  const handleReplaceRedactCancel = () => {
-    URL.revokeObjectURL(replaceQueue.objectUrl);
-    setReplaceQueue(null);
-  };
-
   if (isLoading) return <div className="flex items-center justify-center h-64 text-slate-400"><Loader2 className="w-6 h-6 animate-spin mr-2" />Loading submission...</div>;
 
   const activity = submission?.activity;
@@ -821,9 +722,28 @@ export default function HITLWorkspace() {
             </div>
           </div>
         )}
-        <div className="flex-1 bg-slate-200 rounded-xl border border-slate-300 overflow-hidden relative min-h-[300px]">
+        {/* Scrolls, rather than fitting the whole scan into a fixed box.
+            Multi-page work is stitched into one tall image on upload, and
+            `object-contain` inside a fixed-height frame shrank that to a
+            thumbnail: page two was on screen but far too small to read, which
+            is what "the other pages aren't in the review page" looks like.
+            Showing it at full panel width and scrolling makes every page
+            legible at the size the paper was scanned at. */}
+        {/* Taller on a phone, where this column stacks above the review panel
+            and `flex-1` has no leftover height to claim — a 300px window is
+            not enough of a page to read a paragraph in. */}
+        <div className="flex-1 bg-slate-200 rounded-xl border border-slate-300 overflow-auto relative min-h-[70vh] md:min-h-[300px]">
           {submission?.imageUrl ? (
-            <SubmissionImage url={submission.imageUrl} alt="Essay" className="w-full h-full object-contain" wrapperClassName="h-full" />
+            <SubmissionImage
+              url={submission.imageUrl}
+              alt="Essay"
+              className="w-full h-auto block"
+              wrapperClassName="h-full"
+              onImageLoad={({ naturalWidth, naturalHeight }) =>
+                // Taller than 1.6 pages of A4 (≈1.41 each) — in practice, a
+                // stitched scan rather than a single sheet.
+                setIsLongScan(naturalHeight / Math.max(naturalWidth, 1) > 2.2)}
+            />
           ) : (
             <div className="absolute inset-0 flex flex-col items-center justify-center text-slate-400 gap-2">
               <div className="w-16 h-20 border-2 border-dashed border-slate-300 rounded-lg flex items-center justify-center">
@@ -833,47 +753,12 @@ export default function HITLWorkspace() {
               <span className="text-xs">Upload image to see here</span>
             </div>
           )}
-          {/* Fixes the wrong-file / too-blurry-to-read case: picks a new photo
-              (or PDF/Word, rasterized the same way a fresh upload is), redacts
-              it, then replaces this submission and re-grades it. Disabled once
-              released — see the matching server-side guard. */}
-          {submission && (
-            <button
-              type="button"
-              onClick={triggerReplacePhoto}
-              disabled={isReplacing || isPreparingReplace || !!submission.releasedAt}
-              title={submission.releasedAt ? 'Already released to the student — can\'t be replaced here.' : 'Wrong file, or too blurry to read? Upload a replacement.'}
-              className="absolute top-2 right-2 bg-white/95 hover:bg-white disabled:opacity-60 disabled:cursor-not-allowed text-slate-700 text-xs font-bold px-3 py-1.5 rounded-lg shadow-md flex items-center gap-1.5 backdrop-blur-sm transition-colors"
-            >
-              {isReplacing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
-              {isReplacing ? 'Replacing…' : 'Replace Photo'}
-            </button>
+          {isLongScan && (
+            <div className="sticky bottom-0 left-0 right-0 bg-navy-900/80 text-white text-[11px] font-bold px-3 py-1.5 text-center backdrop-blur-sm">
+              Multi-page work — scroll to read the rest
+            </div>
           )}
         </div>
-        <input ref={replaceFileInputRef} type="file"
-          accept="image/*,application/pdf,.pdf,.docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-          multiple className="hidden" onChange={handleReplaceFilePicked} />
-
-        {isPreparingReplace && (
-          <div className="fixed inset-0 z-[110] flex flex-col items-center justify-center gap-3 bg-slate-900/85 backdrop-blur-sm text-white">
-            <Loader2 className="w-8 h-8 animate-spin" />
-            <p className="text-sm font-bold">Preparing the file for preview…</p>
-          </div>
-        )}
-        {replaceQueue && (
-          <>
-            <ImageRedactor
-              imageSrc={replaceQueue.objectUrl}
-              onConfirm={handleReplaceRedactConfirm}
-              onCancel={handleReplaceRedactCancel}
-            />
-            {replaceQueue.files.length > 1 && (
-              <div className="fixed top-14 left-1/2 -translate-x-1/2 z-[120] bg-navy-900/85 text-white text-xs font-bold px-4 py-2 rounded-full">
-                Photo {replaceQueue.index + 1} of {replaceQueue.files.length}
-              </div>
-            )}
-          </>
-        )}
         {submission && (
           <div className="mt-3 p-3 bg-white rounded-lg border border-slate-200 text-xs text-slate-500">
             <p className="font-semibold text-brand-slate">{submission.student?.name}</p>

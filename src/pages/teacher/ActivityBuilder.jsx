@@ -487,7 +487,7 @@ export default function ActivityBuilder() {
     return {
       name: 'No rubric set',
       tone: 'warn',
-      note: 'Pick one below, or write your own. AI checking needs a rubric before it can run.',
+      note: 'Required — pick one below, or write your own. This is what the paper is marked against, and AI checking cannot run without it.',
     };
   })();
 
@@ -594,6 +594,11 @@ export default function ActivityBuilder() {
    */
   const normalizeCriteria = (criteria) => normalizeRangeCriteria(criteria, rubricType, DEFAULT_RANGE_BANDS);
 
+  // Every mode but "Scores only" produces a paper that has to be marked against
+  // something. Mirrored on the server, which is what actually enforces it.
+  const rubricRequired = form.submissionMode !== 'MANUAL_SCORE';
+  const rubricMissing = rubricRequired && activeCriteria.length === 0;
+
   const handleSubmit = async (e) => {
     e.preventDefault();
     // Saving a form that never loaded would write blank defaults over a real
@@ -602,12 +607,22 @@ export default function ActivityBuilder() {
       alert(loadError || 'This activity is still loading. Please wait before saving.');
       return;
     }
-    // An activity may be saved with no rubric at all. The teacher may not have
-    // decided yet, or may be setting the work up now and marking it later — and
-    // refusing the save was what forced *something* to be attached, which is how
-    // an unread default became the rubric of record. AI checking is what needs a
-    // rubric, and that is where it is asked for (409 NO_RUBRIC on the server).
+    // Work that gets marked has to say what it is marked against, so the rubric
+    // is required to publish. It was optional, on the reasoning that a teacher
+    // might decide later — but "later" in practice meant an activity that
+    // collected papers nobody could check: AI checking refuses to run without
+    // one (409 NO_RUBRIC), the review screen has no criteria to score against,
+    // and the teacher only found out at the point they tried to mark.
     //
+    // Scores-only activities are the exception, and a real one: the teacher
+    // types the marks in themselves and no paper is ever read, so there is
+    // nothing for a rubric to be applied to. Its editor is hidden for that mode
+    // — asking for one here would be asking for something the form doesn't show.
+    if (rubricRequired && !activeCriteria.length) {
+      alert('Add a grading rubric before publishing. Pick one of your school\'s rubrics, reuse a saved template, or write your own — this is what the paper gets marked against.');
+      setShowRubricEditor(true);
+      return;
+    }
     // A rubric that IS present still has to be a usable one. The three checks
     // below mirror validateRubric() on the server, which is what actually
     // enforces them: an uploaded rubric used to skip every check, so an
@@ -1117,8 +1132,10 @@ export default function ActivityBuilder() {
             it. The whole panel goes rather than being disabled — a greyed-out
             section still reads as something you have failed to fill in. */}
         {form.submissionMode !== 'MANUAL_SCORE' ? (
-        <div className="bg-white p-6 rounded-xl border border-slate-200">
-          <h2 className="text-base font-bold text-brand-slate mb-3">Grading Rubric</h2>
+        <div className={cn('bg-white p-6 rounded-xl border', rubricMissing ? 'border-amber-300' : 'border-slate-200')}>
+          <h2 className="text-base font-bold text-brand-slate mb-3">
+            Grading Rubric <span className="text-red-500">*</span>
+          </h2>
 
           {/* What this activity will actually be graded against. Always shown,
               whichever mode produced it, so the answer is never a guess. */}
@@ -1411,11 +1428,21 @@ export default function ActivityBuilder() {
           </div>
         )}
 
+        {/* A disabled button with no reason on screen reads as a broken page. */}
+        {rubricMissing && (
+          <p className="text-xs font-semibold text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-4 py-2.5 text-right">
+            Add a grading rubric above to publish this activity.
+          </p>
+        )}
+
         <div className="flex justify-end pt-2">
           <button type="button" onClick={() => navigate(-1)}
             className="px-6 py-2 rounded-lg text-slate-600 font-medium hover:bg-slate-100 mr-4 transition-colors">Cancel</button>
-          <button type="submit" disabled={isSaving || (!isEditMode && !classId)}
-            title={!isEditMode && !classId ? 'Choose which class this activity is for' : undefined}
+          <button type="submit" disabled={isSaving || (!isEditMode && !classId) || rubricMissing}
+            title={
+              !isEditMode && !classId ? 'Choose which class this activity is for'
+                : rubricMissing ? 'Add a grading rubric first — it is what the paper gets marked against'
+                  : undefined}
             className="px-6 py-2 rounded-lg bg-brand-navy text-white font-medium hover:bg-blue-900 transition-colors shadow-lg shadow-blue-900/20 disabled:opacity-60 disabled:cursor-not-allowed">
             {isSaving ? (isEditMode ? 'Updating...' : 'Publishing...') : (isEditMode ? 'Update Activity' : 'Publish Activity')}
           </button>

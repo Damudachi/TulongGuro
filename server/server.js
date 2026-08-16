@@ -5020,6 +5020,32 @@ function normalizeComponent(value) {
   return grading.COMPONENTS.includes(c) ? c : 'WW';
 }
 
+/**
+ * Whether a rubric payload actually carries criteria.
+ *
+ * Deliberately not `!!rubric`: the form sends nothing at all when there is no
+ * rubric, but a caller that sends `"null"`, `"{}"` or an empty criteria list
+ * means the same thing and must not slip past the requirement below.
+ * validateRubric() has already refused any shape that is malformed rather than
+ * merely empty, so this only has to answer "is there anything in it".
+ */
+function rubricIsPresent(rubricJson) {
+  if (rubricJson === null || rubricJson === undefined || rubricJson === '') return false;
+  let parsed;
+  try {
+    parsed = typeof rubricJson === 'string' ? JSON.parse(rubricJson) : rubricJson;
+  } catch {
+    return false;
+  }
+  if (!parsed) return false;
+  const criteria = Array.isArray(parsed) ? parsed : parsed?.criteria;
+  return Array.isArray(criteria) && criteria.length > 0;
+}
+
+/** "Scores only" work is typed in by hand and never read, so it has nothing to
+ *  mark against — the one mode exempt from the rubric requirement. */
+const isManualScoreMode = (mode) => String(mode || '').toUpperCase() === 'MANUAL_SCORE';
+
 function normalizeMaxAttempts(value) {
   const n = parseInt(value, 10);
   if (Number.isNaN(n) || n < 0) return 1;
@@ -5060,12 +5086,19 @@ app.post('/api/teacher/activities', (req, res, next) => {
     const rubricError = validateRubric(rubric);
     if (rubricError) return res.status(400).json({ success: false, error: rubricError });
 
-    // An activity may be created with no rubric, and stays that way until a
-    // person attaches one. This used to reach for the school's rubrics on the
-    // teacher's behalf when a form sent none — well meant, but it made "the
-    // rubric this work is marked against" something the system decided, and it
-    // is the teacher's decision. AI checking asks for one (409 NO_RUBRIC); a
-    // teacher marking by hand may never need one at all.
+    // A rubric is required to publish. It used to be optional, on the reasoning
+    // that the teacher might attach one later — in practice that produced
+    // activities which collected papers nobody could then check: AI checking
+    // refuses to run without a rubric (409 NO_RUBRIC) and the review screen has
+    // no criteria to score against, so the gap was only discovered at marking
+    // time. Nothing is chosen on the teacher's behalf to fill it; the form asks.
+    if (!rubricIsPresent(rubric) && !isManualScoreMode(submissionMode)) {
+      return res.status(400).json({
+        success: false,
+        code: 'RUBRIC_REQUIRED',
+        error: 'This activity needs a grading rubric before it can be published — it is what the work gets marked against.',
+      });
+    }
     const resolvedRubric = rubric || null;
 
     const due = normalizeDateInput(deadline);
@@ -5110,6 +5143,22 @@ app.put('/api/teacher/activities/:activityId', async (req, res) => {
     if (rubric !== undefined) {
       const rubricError = validateRubric(rubric);
       if (rubricError) return res.status(400).json({ success: false, error: rubricError });
+
+      // The same requirement as publishing, applied to the edit that would undo
+      // it: an activity whose rubric is taken away is one nobody can mark. Only
+      // checked when the request actually carries a rubric field, so an edit
+      // that just moves the deadline is untouched — and the mode compared
+      // against is the one this update leaves behind, not the one it started
+      // with, so switching to "Scores only" and dropping the rubric together
+      // still works in a single save.
+      const modeAfter = submissionMode !== undefined ? submissionMode : owned.activity.submissionMode;
+      if (!rubricIsPresent(rubric) && !isManualScoreMode(modeAfter)) {
+        return res.status(400).json({
+          success: false,
+          code: 'RUBRIC_REQUIRED',
+          error: 'This activity needs a grading rubric — it is what the work gets marked against.',
+        });
+      }
     }
 
     const updateData = {};
@@ -10095,4 +10144,5 @@ function startServer() {
 module.exports = {
   app, startServer, cleanUpTransferRows, carriedOverForClass, carriedOverPrefetch,
   resolveGradingRubric, rubricScoreNoteFor, UNGRADED_RESET,
+  rubricIsPresent, isManualScoreMode,
 };
