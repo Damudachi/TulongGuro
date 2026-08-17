@@ -2608,6 +2608,9 @@ describe('attaching a badge to an activity', () => {
   const RUBRIC = JSON.stringify({ criteria: [{ name: 'Content', points: 100, description: 'x' }] });
   const body = (over = {}) => ({
     title: 'Times Table Drill', type: 'Quiz', points: 100, classId: 'class-1',
+    // Instructions are required to publish — see the INSTRUCTIONS_REQUIRED
+    // tests below. Part of the baseline here so these stay about badges.
+    instructions: 'Answer all twelve rows without a calculator.',
     submissionMode: 'MANUAL_SCORE', rubric: RUBRIC, ...over,
   });
 
@@ -2740,6 +2743,120 @@ describe('attaching a badge to an activity', () => {
     const written = prismaFake.activity.update.mock.calls[0][0].data;
     expect(written).not.toHaveProperty('badgeId');
     expect(written).not.toHaveProperty('badgePassingScore');
+  });
+});
+
+/**
+ * What an activity has to say for itself.
+ *
+ * Two rules the create/update routes hold, both of them things the form asks
+ * for first — this is the half that cannot be skipped by an older client, a
+ * replayed request, or a form that gets edited later.
+ */
+describe('instructions and topics on an activity', () => {
+  const RUBRIC = JSON.stringify({ criteria: [{ name: 'Content', points: 100, description: 'x' }] });
+  const body = (over = {}) => ({
+    title: 'Reflection Essay', type: 'Essay', points: 100, classId: 'class-1',
+    instructions: 'Write five paragraphs in your own words.',
+    submissionMode: 'MANUAL_SCORE', rubric: RUBRIC, ...over,
+  });
+
+  beforeEach(() => {
+    prismaFake.class.findUnique.mockResolvedValue({ id: 'class-1', teacherId: T1 });
+    prismaFake.activity.create.mockResolvedValue({ id: 'act-1' });
+  });
+
+  it('refuses to publish an activity with no instructions', async () => {
+    // Without them the work reaches the student as a title and a date, and
+    // reaches the AI checker with nothing saying what was asked for.
+    for (const blank of [undefined, '', '   ']) {
+      prismaFake.activity.create.mockClear();
+      const res = await call('POST', '/api/teacher/activities', {
+        token: tokenFor({ id: T1 }), body: body({ instructions: blank }),
+      });
+
+      expect(res.status, `instructions ${JSON.stringify(blank)}`).toBe(400);
+      expect((await res.json()).code).toBe('INSTRUCTIONS_REQUIRED');
+      expect(prismaFake.activity.create).not.toHaveBeenCalled();
+    }
+  });
+
+  it('stores the instructions trimmed', async () => {
+    await call('POST', '/api/teacher/activities', {
+      token: tokenFor({ id: T1 }), body: body({ instructions: '  Read chapter 4 first.  ' }),
+    });
+
+    expect(prismaFake.activity.create.mock.calls[0][0].data.instructions).toBe('Read chapter 4 first.');
+  });
+
+  it('refuses an edit that empties the instructions', async () => {
+    prismaFake.activity.findUnique.mockResolvedValue({
+      id: ACTIVITY, points: 100, rubric: RUBRIC, submissionMode: 'MANUAL_SCORE',
+      class: { teacherId: T1 }, classLesson: null,
+    });
+
+    const res = await call('PUT', `/api/teacher/activities/${ACTIVITY}`, {
+      token: tokenFor({ id: T1 }), body: { instructions: '   ' },
+    });
+
+    expect(res.status).toBe(400);
+    expect((await res.json()).code).toBe('INSTRUCTIONS_REQUIRED');
+    expect(prismaFake.activity.update).not.toHaveBeenCalled();
+  });
+
+  it('leaves an older activity alone on an edit that never mentions instructions', async () => {
+    // Activities made before instructions were asked for still exist. Moving
+    // their deadline must not be blocked by a field the request never carried.
+    prismaFake.activity.findUnique.mockResolvedValue({
+      id: ACTIVITY, points: 100, rubric: RUBRIC, submissionMode: 'MANUAL_SCORE',
+      class: { teacherId: T1 }, classLesson: null,
+    });
+    prismaFake.activity.update.mockResolvedValue({ id: ACTIVITY });
+
+    const res = await call('PUT', `/api/teacher/activities/${ACTIVITY}`, {
+      token: tokenFor({ id: T1 }), body: { title: 'Renamed' },
+    });
+
+    expect(res.status).toBe(200);
+    expect(prismaFake.activity.update.mock.calls[0][0].data).not.toHaveProperty('instructions');
+  });
+
+  it('stores every topic the activity was tagged with', async () => {
+    await call('POST', '/api/teacher/activities', {
+      token: tokenFor({ id: T1 }), body: body({ topic: 't1-01-story,t1-02-irony' }),
+    });
+
+    expect(prismaFake.activity.create.mock.calls[0][0].data.topic).toBe('t1-01-story,t1-02-irony');
+  });
+
+  it('normalizes a hand-typed topic list, and stores no topic as null', async () => {
+    await call('POST', '/api/teacher/activities', {
+      token: tokenFor({ id: T1 }), body: body({ topic: ' t1-01-story , ,t1-01-story, ' }),
+    });
+    expect(prismaFake.activity.create.mock.calls[0][0].data.topic).toBe('t1-01-story');
+
+    prismaFake.activity.create.mockClear();
+    await call('POST', '/api/teacher/activities', {
+      token: tokenFor({ id: T1 }), body: body({ topic: '' }),
+    });
+    // Null rather than an empty string: the analytics grouping asks whether a
+    // topic is there at all, and "" is a bucket nobody can name.
+    expect(prismaFake.activity.create.mock.calls[0][0].data.topic).toBe(null);
+  });
+
+  it('keeps the whole list on an edit, rather than the first one', async () => {
+    prismaFake.activity.findUnique.mockResolvedValue({
+      id: ACTIVITY, points: 100, rubric: RUBRIC, submissionMode: 'MANUAL_SCORE',
+      class: { teacherId: T1 }, classLesson: null,
+    });
+    prismaFake.activity.update.mockResolvedValue({ id: ACTIVITY });
+
+    const res = await call('PUT', `/api/teacher/activities/${ACTIVITY}`, {
+      token: tokenFor({ id: T1 }), body: { topic: 't1-01-story,t1-05-persuasive' },
+    });
+
+    expect(res.status).toBe(200);
+    expect(prismaFake.activity.update.mock.calls[0][0].data.topic).toBe('t1-01-story,t1-05-persuasive');
   });
 });
 

@@ -377,10 +377,64 @@ function getTopicAIGuidance(topicId) {
   return `\nTOPIC-SPECIFIC EVALUATION (${topic.name}, ${topic.weekRef}):\n${topic.description}\n${topic.aiGuidance}\n`;
 }
 
+/**
+ * How an activity records the topics it covers.
+ *
+ * One activity commonly covers more than one competency, so Activity.topic
+ * holds a comma-separated list of topic ids rather than a single id. It is the
+ * same column a single id was stored in: anything tagged before this change
+ * reads back as a one-item list, so nothing already saved needs migrating.
+ * Topic ids are slugs and never contain a comma.
+ *
+ * src/utils/topics.js is the browser's copy of these two functions — there is
+ * no shared module between the client and the server in this app, so the pair
+ * has to be kept in step by hand. tests/activity-topics.test.js checks both.
+ */
+function normalizeTopicIds(list) {
+  const seen = new Set();
+  const out = [];
+  for (const raw of list) {
+    const id = String(raw ?? '').trim();
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    out.push(id);
+  }
+  return out;
+}
+
+/** The topic ids on an activity, from either the stored string or an array. */
+function parseTopicIds(value) {
+  if (Array.isArray(value)) return normalizeTopicIds(value);
+  if (!value) return [];
+  return normalizeTopicIds(String(value).split(','));
+}
+
+/** The stored form of a list of topic ids. Empty string means "no topic". */
+function formatTopicIds(ids) {
+  return parseTopicIds(ids).join(',');
+}
+
+/**
+ * Guidance for every topic an activity is mapped to, for the grading prompt.
+ *
+ * Ids that aren't in the DepEd map contribute nothing — a teacher may have
+ * typed a free-text topic in the quick-edit form, and there is no competency
+ * description to give the model for that.
+ */
+function getTopicsAIGuidance(value) {
+  return parseTopicIds(value)
+    .map(getTopicAIGuidance)
+    .filter(Boolean)
+    .join('');
+}
+
 module.exports = {
   DEPED_GRADE6_ENGLISH_TOPICS,
   getAllTopics,
   getTopicsByTerm,
   getTopicById,
-  getTopicAIGuidance
+  getTopicAIGuidance,
+  getTopicsAIGuidance,
+  parseTopicIds,
+  formatTopicIds
 };

@@ -36,7 +36,7 @@ const {
   cellToText, extractRoster, readBirthday,
   looksLikeAName, looksLikeAHeaderRow, composeName, withSurnameComma, tidyRosterEntry,
 } = require('./rosterSheet');
-const { getAllTopics, getTopicById, getTopicAIGuidance } = require('./depedTopics');
+const { getAllTopics, getTopicById, getTopicsAIGuidance, parseTopicIds, formatTopicIds } = require('./depedTopics');
 // getRubricTemplateById is gone with the grader's topic-recommended rubric
 // tier: a built-in sample is something a teacher may choose, never something
 // the system applies on their behalf.
@@ -5283,6 +5283,19 @@ app.post('/api/teacher/activities', (req, res, next) => {
       });
     }
 
+    // Instructions are required. An activity without them reaches the student
+    // as a title and a deadline, and reaches the AI checker as a rubric with
+    // nothing saying what the work was actually asked to do — which is the
+    // context the model needs most. Enforced here as well as in the form, so a
+    // blank one cannot arrive from an older client or a replayed request.
+    if (!String(instructions || '').trim()) {
+      return res.status(400).json({
+        success: false,
+        code: 'INSTRUCTIONS_REQUIRED',
+        error: 'Write the instructions students will follow — this is what the work is set against, and the AI reads them when it checks the papers.',
+      });
+    }
+
     const rubricError = validateRubric(rubric);
     if (rubricError) return res.status(400).json({ success: false, error: rubricError });
 
@@ -5320,9 +5333,12 @@ app.post('/api/teacher/activities', (req, res, next) => {
     const activity = await prisma.activity.create({
       data: {
         title, type,
-        topic: topic || null,
+        // Several topics are stored as one comma-separated list in the same
+        // column a single id used to occupy — see parseTopicIds. Normalized on
+        // the way in so blanks and repeats never reach the analytics grouping.
+        topic: formatTopicIds(topic) || null,
         points: parseInt(points) || 100,
-        classId, instructions,
+        classId, instructions: String(instructions).trim(),
         deadline: due,
         lateUntil: lateWindow,
         submissionMode: submissionMode || 'TEACHER_UPLOAD',
@@ -5347,6 +5363,19 @@ app.put('/api/teacher/activities/:activityId', async (req, res) => {
     if (!owned.ok) return res.status(owned.code).json({ success: false, error: owned.error });
 
     const { title, type, points, topic, deadline, lateUntil, instructions, submissionMode, maxAttempts, rubric } = req.body;
+
+    // Same rule as publishing, applied to the edit that would undo it. Scoped
+    // to requests that actually carry the field, so an edit that only moves the
+    // deadline is untouched — including on activities created before
+    // instructions were required, which are left as they are until someone
+    // deliberately edits that field.
+    if (instructions !== undefined && !String(instructions || '').trim()) {
+      return res.status(400).json({
+        success: false,
+        code: 'INSTRUCTIONS_REQUIRED',
+        error: 'Instructions cannot be left blank — they are what the work is set against, and the AI reads them when it checks the papers.',
+      });
+    }
 
     if (rubric !== undefined) {
       const rubricError = validateRubric(rubric);
@@ -5420,7 +5449,9 @@ app.put('/api/teacher/activities/:activityId', async (req, res) => {
     if (title !== undefined) updateData.title = String(title);
     if (type !== undefined) updateData.type = String(type);
     if (points !== undefined) updateData.points = parseInt(points);
-    if (topic !== undefined) updateData.topic = topic ? String(topic) : null;
+    // Normalized to the same comma-separated list the create route writes, so a
+    // save from either form leaves one shape behind.
+    if (topic !== undefined) updateData.topic = formatTopicIds(topic) || null;
     if (deadline !== undefined) updateData.deadline = normalizeDateInput(deadline);
     if (instructions !== undefined) updateData.instructions = instructions ? String(instructions) : null;
     if (submissionMode !== undefined) updateData.submissionMode = String(submissionMode);
@@ -6439,9 +6470,12 @@ async function generateSubmissionFeedback(imagePaths, activityId, studentId) {
     }
 
     // 4) Get topic-specific AI evaluation guidance (reuses the activity fetched above)
+    //    An activity may be mapped to several competencies, so every one it
+    //    carries contributes its guidance — grading against only the first
+    //    would ignore half of what the work was actually set for.
     let topicGuidance = '';
     if (activity?.topic) {
-      topicGuidance = getTopicAIGuidance(activity.topic);
+      topicGuidance = getTopicsAIGuidance(activity.topic);
     }
 
     // ── Do the four AI skill scores mean anything for this paper? ──
@@ -6549,7 +6583,7 @@ LANGUAGE:
 - ${languageDirective}
 ${toneOverride}
 ${activityContext}
-${topicGuidance ? `\nTOPIC FOCUS RULE:\nThis activity is mapped to the topic/lesson: ${topicGuidance}\nYou MUST focus your feedback STRICTLY on this topic. Do NOT introduce or critique concepts outside of this topic. Evaluate only how well the student demonstrates mastery of this specific skill or lesson.\n` : ''}
+${topicGuidance ? `\nTOPIC FOCUS RULE:\nThis activity is mapped to the following topic(s)/lesson(s): ${topicGuidance}\nYou MUST focus your feedback STRICTLY on the topic(s) listed above, and on every one of them. Do NOT introduce or critique concepts outside of them. Evaluate only how well the student demonstrates mastery of these specific skills or lessons.\n` : ''}
 ${additionalMaterialParts.length ? `\nREFERENCE MATERIAL RULE:\nThe teacher has attached ${additionalMaterialParts.length} reference file(s) for this activity — sent after this prompt and before the student's ${paperCount > 1 ? 'papers' : 'paper'}, introduced by a "[TEACHER-PROVIDED REFERENCE MATERIAL]" marker. This may be a source passage, an answer key, a diagram, a worksheet, or a required format/template the student's output must follow.\n- Read it FIRST, before grading, and treat any concrete requirement it states — a required structure, required phrases, a required number of parts, a fact the student's answer must match — as MANDATORY, with the same force as the rubric itself, not as optional background.\n- Check the student's submission against every such requirement explicitly. If the student's work deviates from a stated requirement, you MUST name that specific deviation by number/name in areasForGrowth (e.g. "the assignment sheet requires each paragraph to open with 'X'; paragraph 2 does not") — do not fold it into generic writing-quality commentary where it could be mistaken for an ordinary style note.\n- Do NOT grade, transcribe, or critique the reference material itself as if it were student work — it is the standard the student is held to, not something being scored.\n` : ''}
 ${rubricContext}${fewShotExamples}${sectionContext}
 
@@ -9971,16 +10005,27 @@ app.get('/api/student/:studentId/analytics', async (req, res) => {
     // always sum to 100. Points earned is therefore percent × activity.points.
     // The old code divided the percentage by the point total, which produced
     // nonsense like 142% for 85% on a 60-point activity.
+    //
+    // An activity can be mapped to several topics, and the mark it earned
+    // counts towards every one of them: a paper set for both summarising and
+    // figures of speech is evidence about both. Totals therefore do not add up
+    // to the student's overall points, which is correct for a per-topic mastery
+    // reading and is why these numbers are never used as a grade.
     const topicMap = {};
     for (const sub of submissions) {
-      const topic = sub.activity?.topic || sub.activity?.title;
-      if (!topic) continue;
-      if (!topicMap[topic]) topicMap[topic] = { percents: [], earned: 0, possible: 0 };
+      const topicIds = parseTopicIds(sub.activity?.topic);
+      // Untagged work is still worth showing, grouped under its own title —
+      // the behaviour before topics were multi-valued, kept.
+      const keys = topicIds.length ? topicIds : [sub.activity?.title];
       const percent = sub.hitlScore ?? sub.aiScore ?? 0;
       const points = sub.activity?.points || 100;
-      topicMap[topic].percents.push(percent);
-      topicMap[topic].earned += (percent / 100) * points;
-      topicMap[topic].possible += points;
+      for (const topic of keys) {
+        if (!topic) continue;
+        if (!topicMap[topic]) topicMap[topic] = { percents: [], earned: 0, possible: 0 };
+        topicMap[topic].percents.push(percent);
+        topicMap[topic].earned += (percent / 100) * points;
+        topicMap[topic].possible += points;
+      }
     }
 
     const topicMastery = Object.entries(topicMap).map(([topicId, data]) => {

@@ -91,6 +91,12 @@ export default function ClassHub() {
   const handleSaveEdit = async (e) => {
     e.preventDefault();
     if (!editActivity) return;
+    // The textarea's own `required` is satisfied by a single space, and the
+    // server is not — it would come back 400 after the save looked accepted.
+    if (!editForm.instructions.trim()) {
+      alert('Instructions cannot be left blank — they are what the work is set against, and the AI reads them when it checks the papers.');
+      return;
+    }
     setIsSavingEdit(true);
     try {
       const res = await apiFetch(`${API_URL}/api/teacher/activities/${editActivity.id}`,
@@ -478,14 +484,23 @@ export default function ClassHub() {
                   className="w-full border border-slate-200 p-2 rounded-lg outline-none focus:ring-2 focus:ring-brand-navy"
                 />
               </div>
+              {/* Required, like everywhere else an activity is written. The
+                  server refuses a blank one (INSTRUCTIONS_REQUIRED), so asking
+                  here is what keeps that refusal from arriving as an error
+                  after the teacher has pressed Save — including on an activity
+                  made before instructions were asked for, which is the one case
+                  where this field opens empty. */}
               <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1">Details</label>
+                <label className="block text-sm font-medium text-slate-700 mb-1">
+                  Instructions for Students <span className="text-red-500">*</span>
+                </label>
                 <textarea
+                  required
                   rows={4}
                   value={editForm.instructions}
                   onChange={(e) => setEditForm((prev) => ({ ...prev, instructions: e.target.value }))}
                   className="w-full border border-slate-200 p-2 rounded-lg outline-none focus:ring-2 focus:ring-brand-navy resize-none"
-                  placeholder="Add or update assignment details for students..."
+                  placeholder="What students have to do, in your own words."
                 />
               </div>
               <div className="flex flex-col gap-2 pt-2 pb-2">

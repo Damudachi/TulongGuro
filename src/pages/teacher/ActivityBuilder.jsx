@@ -3,6 +3,7 @@ import { useNavigate, useSearchParams, useParams, Link } from 'react-router-dom'
 import { ArrowLeft, CheckCircle2, Plus, Camera, Users, Upload, FileText, X, Trash2, Loader2, Save, PenLine, Medal } from 'lucide-react';
 import { API_URL, apiFetch } from '../../config';
 import { ACTIVITY_TYPES } from '../../constants/activityTypes';
+import { parseTopicIds, formatTopicIds } from '../../utils/topics';
 import {
   badgeLook, BADGE_ICON_KEYS, BADGE_COLOR_KEYS,
   DEFAULT_BADGE_ICON, DEFAULT_BADGE_COLOR,
@@ -297,46 +298,61 @@ export default function ActivityBuilder() {
   const isRubricLocked = gradedCount > 0;
 
   const selectedLesson = classLessons.find(l => l.id === selectedLessonId) || null;
-  const selectedTopic = topics.find(t => t.id === form.topic) || null;
+  // form.topic is the stored shape — a comma-separated list of topic ids — so
+  // that the submit path keeps posting the form object untouched. The list is
+  // derived from it rather than tracked alongside it, which is what stops the
+  // two from drifting when an activity is loaded for editing.
+  const selectedTopicIds = parseTopicIds(form.topic);
+  const selectedTopics = topics.filter(t => selectedTopicIds.includes(t.id));
+  // Tags that aren't in the DepEd map: free text typed into the quick-edit
+  // form, or a competency from a list this class no longer matches. Shown as
+  // removable chips rather than dropped, so nothing sits on the activity that
+  // the teacher cannot see or undo.
+  const unknownTopicIds = selectedTopicIds.filter(id => !topics.some(t => t.id === id));
 
   /**
    * Whether to offer the DepEd competency list at all.
    *
    * depedTopics.js is the MATATAG Grade 6 English map and nothing else, so on
-   * any other class the options are simply wrong answers. An activity that is
-   * already tagged keeps the list visible regardless, or opening it for an edit
-   * would show a blank field and silently drop the topic on save.
+   * any other class the options are simply wrong answers. An activity already
+   * tagged with one of them keeps the list visible regardless, or opening it
+   * for an edit would show a blank field and silently drop the topics on save.
    */
   const depedTopicsApply =
-    !!form.topic ||
+    selectedTopics.length > 0 ||
     (/grade\s*6/i.test(classMeta?.gradeLevel || '') && /english/i.test(classMeta?.subject || ''));
 
-  // The merged picker holds one value for two different mappings, tagged by
-  // source so a lesson id and a topic id can never be mistaken for each other.
-  const lessonTopicValue = selectedLessonId
-    ? `lesson:${selectedLessonId}`
-    : form.topic ? `topic:${form.topic}` : '';
+  // Whether this class can answer the lesson/topic question at all. A class
+  // with no uploaded curriculum and no applicable competency list has nothing
+  // to offer, so the field is not shown — and not required. Tags that came
+  // from somewhere else count too: they are on the activity, so they have to be
+  // on screen where they can be removed.
+  const lessonTopicApplies = classLessons.length > 0 || depedTopicsApply || unknownTopicIds.length > 0;
 
   /**
-   * An activity is mapped to a lesson or to a topic, never both — picking one
-   * has to clear the other, or the old value stays attached invisibly and keeps
-   * steering the rubric and the AI prompt.
+   * Map the activity to a curriculum lesson, or to none.
+   *
+   * The lesson and the competencies used to be one dropdown holding a single
+   * value, so choosing either cleared the other — a lesson and a topic could
+   * not both be attached, and only one topic ever could. They are separate
+   * controls now: a piece of work is often set from one lesson and marked
+   * against several competencies, and both are on screen, so neither can sit
+   * on the activity invisibly the way the old merged value could.
    */
-  const onLessonTopicChange = (value) => {
-    const [kind, id] = value.split(/:(.*)/s);
-    if (kind === 'lesson') {
-      setSelectedLessonId(id);
-      setForm(prev => {
-        const lesson = classLessons.find(l => l.id === id);
-        return { ...prev, topic: '', ...(lesson?.outputType ? { type: lesson.outputType } : {}) };
-      });
-    } else if (kind === 'topic') {
-      setSelectedLessonId('');
-      setForm(prev => ({ ...prev, topic: id }));
-    } else {
-      setSelectedLessonId('');
-      setForm(prev => ({ ...prev, topic: '' }));
-    }
+  const onLessonChange = (id) => {
+    setSelectedLessonId(id);
+    if (!id) return;
+    const lesson = classLessons.find(l => l.id === id);
+    if (lesson?.outputType) setForm(prev => ({ ...prev, type: lesson.outputType }));
+  };
+
+  /** Add or remove one competency from the activity's list. */
+  const toggleTopic = (id) => {
+    setForm(prev => {
+      const current = parseTopicIds(prev.topic);
+      const next = current.includes(id) ? current.filter(t => t !== id) : [...current, id];
+      return { ...prev, topic: formatTopicIds(next) };
+    });
   };
 
   // No rubric is chosen for the teacher — not from the lesson they picked, not
@@ -786,6 +802,18 @@ export default function ActivityBuilder() {
       alert("Total Points must be greater than 0.");
       return;
     }
+    // The lesson and the competencies are two controls answering one required
+    // question, so neither can carry `required` on its own — either alone is a
+    // complete answer. Only asked where the class has something to answer with.
+    if (lessonTopicApplies && !selectedLessonId && selectedTopicIds.length === 0) {
+      alert('Say what this activity covers — choose the curriculum lesson, tick at least one competency, or both.');
+      return;
+    }
+    // Trimmed, because the textarea's own `required` is satisfied by a space.
+    if (!form.instructions.trim()) {
+      alert('Write the instructions students will follow. They are what the work is set against, and the AI reads them when it checks the papers.');
+      return;
+    }
     // A badge with no usable bar would be saved as unreachable, which looks
     // exactly like a badge that works right up until nobody ever earns it.
     // Mirrored by parsePassingScore on the server, which is what enforces it.
@@ -1117,61 +1145,115 @@ export default function ActivityBuilder() {
             </div>
           </div>
 
-          {/* ── LESSON / TOPIC ──
-              One field, two sources. This used to be two required dropdowns
-              sitting next to each other — "Curriculum Lesson / Topic" and
-              "DepEd Topic *" — which read as the same question asked twice.
-              They are not quite: a curriculum lesson comes from the school's
-              own uploaded scope and sequence and carries a rubric, while a
-              DepEd topic is a fixed competency that sharpens the AI's feedback
-              and feeds the topic-breakdown analytics. But only one of them
-              describes any given activity, and the DepEd list only covers
-              Grade 6 English — so requiring it forced a Grade 3 Maths teacher
-              to tag their work with an English competency chosen at random,
-              which then steered the AI's marking towards it. Merged into one
-              optional picker: whichever source actually fits. */}
-          {(classLessons.length > 0 || depedTopicsApply) && (
-            <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">
-                Lesson / Topic <span className="text-red-500">*</span>
-              </label>
-              {/* Required only where the question can actually be answered. The
-                  guard above already hides the whole field for a class with no
-                  curriculum lessons and no applicable DepEd topics, so this
-                  never becomes a dead end — it enforces the common path without
-                  inventing an option for classes that have none. */}
-              <select value={lessonTopicValue} onChange={e => onLessonTopicChange(e.target.value)} required
-                className="w-full px-4 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-brand-navy outline-none">
-                <option value="" disabled>— Choose a lesson or competency —</option>
-                {classLessons.length > 0 && (
-                  <optgroup label="From your school's curriculum">
+          {/* ── LESSON / TOPICS ──
+              Two questions that look like one. A curriculum lesson comes from
+              the school's own uploaded scope and sequence and carries an output
+              type; a DepEd topic is a fixed competency that sharpens the AI's
+              feedback and feeds the topic-breakdown analytics. Neither is shown
+              where the class has no answer for it — the DepEd list only covers
+              Grade 6 English, and requiring it once forced a Grade 3 Maths
+              teacher to tag their work with an English competency chosen at
+              random, which then steered the AI's marking towards it.
+
+              The competencies are a checklist, not a single choice: one piece
+              of work is routinely set against several — a reflection essay
+              marked for both summarising a text and the figures of speech in
+              it — and tagging only one of them lost the rest from the analytics
+              and from what the AI was told to look for. */}
+          {lessonTopicApplies && (
+            <div className="space-y-3">
+              <div>
+                <label className="block text-sm font-medium text-slate-700">
+                  Lesson / Topics <span className="text-red-500">*</span>
+                </label>
+                {/* Required only where the question can actually be answered.
+                    The guard above already hides the whole field for a class
+                    with no curriculum lessons and no applicable DepEd topics,
+                    so this never becomes a dead end. Enforced on submit rather
+                    than with `required` on either control, because either one
+                    on its own is a complete answer. */}
+                <p className="text-xs text-slate-400 mt-0.5">
+                  What this activity covers. Pick the curriculum lesson, the competencies, or both —
+                  at least one is needed.
+                </p>
+              </div>
+
+              {classLessons.length > 0 && (
+                <div>
+                  <label className="block text-xs font-medium text-slate-500 mb-1">Curriculum lesson</label>
+                  <select value={selectedLessonId} onChange={e => onLessonChange(e.target.value)}
+                    className="w-full px-4 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-brand-navy outline-none">
+                    <option value="">— None —</option>
                     {classLessons.map(l => (
-                      <option key={l.id} value={`lesson:${l.id}`}>
+                      <option key={l.id} value={l.id}>
                         {l.weekNumber ? `Week ${l.weekNumber}: ` : ''}{l.title} ({l.outputType})
                       </option>
                     ))}
-                  </optgroup>
-                )}
-                {depedTopicsApply && topics.length > 0 && (
-                  <optgroup label="DepEd Grade 6 English competencies">
-                    {/* Flattened with the term in the label — optgroups cannot
-                        nest, and the term is what tells two similarly-worded
-                        competencies apart. */}
-                    {topics.map(t => (
-                      <option key={t.id} value={`topic:${t.id}`}>
-                        {t.term ? `Term ${t.term} · ` : ''}{t.name}
-                      </option>
+                  </select>
+                  {selectedLesson && (
+                    <p className="text-xs text-slate-400 mt-1">Applies this lesson’s output type.</p>
+                  )}
+                </div>
+              )}
+
+              {depedTopicsApply && topics.length > 0 && (
+                <div>
+                  <div className="flex items-baseline justify-between gap-2 mb-1">
+                    <label className="block text-xs font-medium text-slate-500">
+                      DepEd Grade 6 English competencies
+                    </label>
+                    {selectedTopics.length > 0 && (
+                      <span className="text-[11px] font-bold text-brand-navy">{selectedTopics.length} selected</span>
+                    )}
+                  </div>
+                  {/* A checklist rather than a multi-select box: a native
+                      multi-select needs ctrl-click to add a second item and
+                      silently drops the rest of the selection on a plain click,
+                      which on a phone means it cannot be used at all. */}
+                  <div className="max-h-56 overflow-y-auto border border-slate-200 rounded-lg divide-y divide-slate-100">
+                    {topics.map(t => {
+                      const checked = selectedTopicIds.includes(t.id);
+                      return (
+                        <label key={t.id}
+                          className={cn('flex items-start gap-2.5 px-3 py-2 cursor-pointer transition-colors',
+                            checked ? 'bg-blue-50' : 'hover:bg-slate-50')}>
+                          <input type="checkbox" checked={checked} onChange={() => toggleTopic(t.id)}
+                            className="w-4 h-4 mt-0.5 shrink-0 accent-royal-500" />
+                          <span className="min-w-0">
+                            <span className="block text-sm text-slate-700 leading-snug">{t.name}</span>
+                            {t.term && <span className="block text-[11px] text-slate-400">Term {t.term}</span>}
+                          </span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                  <p className="text-xs text-slate-400 mt-1">
+                    {selectedTopics.length > 0
+                      ? 'The AI’s feedback is held to every competency you tick, and the activity is counted under each of them in analytics.'
+                      : 'Tick every competency this activity is meant to assess.'}
+                  </p>
+                </div>
+              )}
+
+              {unknownTopicIds.length > 0 && (
+                <div>
+                  <p className="text-xs font-medium text-slate-500 mb-1">Other topics on this activity</p>
+                  <div className="flex flex-wrap gap-2">
+                    {unknownTopicIds.map(id => (
+                      <span key={id} className="inline-flex items-center gap-1.5 text-xs bg-slate-100 text-slate-600 px-2.5 py-1 rounded-full">
+                        {id}
+                        <button type="button" onClick={() => toggleTopic(id)} aria-label={`Remove ${id}`}
+                          className="text-slate-400 hover:text-red-500">
+                          <X className="w-3 h-3" />
+                        </button>
+                      </span>
                     ))}
-                  </optgroup>
-                )}
-              </select>
-              <p className="text-xs text-slate-400 mt-1">
-                {selectedLessonId
-                  ? 'Applies this lesson’s output type and default rubric.'
-                  : selectedTopic
-                    ? 'Focuses the AI’s feedback on this competency, and groups the activity under it in analytics.'
-                    : 'Pick the curriculum lesson or DepEd competency this activity is for.'}
-              </p>
+                  </div>
+                  <p className="text-xs text-slate-400 mt-1">
+                    Typed in elsewhere, or from a curriculum this class no longer follows. They still tag the activity.
+                  </p>
+                </div>
+              )}
             </div>
           )}
 
@@ -1261,10 +1343,21 @@ export default function ActivityBuilder() {
           )}
 
           <div>
-            <label className="block text-sm font-medium text-slate-700 mb-1">Instructions for Students</label>
-            <textarea rows={4} value={form.instructions} onChange={e => setForm({ ...form, instructions: e.target.value })}
+            <label className="block text-sm font-medium text-slate-700 mb-1">
+              Instructions for Students <span className="text-red-500">*</span>
+            </label>
+            {/* Required. Without them the activity reaches the student as a
+                title and a date, and reaches the AI checker with a rubric but
+                nothing saying what the work was asked to do — the piece of
+                context the marking leans on hardest. The server refuses a
+                blank one too (INSTRUCTIONS_REQUIRED), so this is the form
+                saying it first rather than the only thing enforcing it. */}
+            <textarea required rows={4} value={form.instructions} onChange={e => setForm({ ...form, instructions: e.target.value })}
               className="w-full px-4 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-brand-navy outline-none resize-none"
-              placeholder="Write your instructions here..." />
+              placeholder="e.g. Write a 5-paragraph reflection on the novel. Use your own words and give at least two examples from the text." />
+            <p className="text-xs text-slate-400 mt-1">
+              Students see this on the activity, and the AI reads it as the task the paper was set.
+            </p>
           </div>
         </div>
 
