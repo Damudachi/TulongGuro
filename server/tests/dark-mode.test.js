@@ -133,6 +133,28 @@ describe('deliberately dark chrome stays dark', () => {
   });
 });
 
+describe('browser-painted controls', () => {
+  it('gives select options an explicit background and colour', () => {
+    // The list a <select> drops down is painted by the browser. It inherits the
+    // page's text colour but not its background, so without these the options
+    // took the app's near-white dark-mode ink onto the browser's white popup
+    // and became invisible — which is what happened on the lesson, badge and
+    // rubric pickers. `color-scheme: dark` on the root does not cover it:
+    // Chrome paints the popup from the control's own background, and these
+    // selects are transparent.
+    const css = indexCss();
+    expect(css).toMatch(/select option\s*\{[^}]*background-color:\s*var\(--tg-surface/);
+    expect(css).toMatch(/select option\s*\{[^}]*color:\s*var\(--tg-navy-700/);
+    expect(css).toMatch(/select optgroup\s*\{[^}]*background-color:\s*var\(--tg-surface/);
+  });
+
+  it('declares color-scheme so native chrome follows the theme', () => {
+    // Scrollbars, the date picker's own panel and form-control defaults are
+    // drawn by the browser and take their cue from this one property.
+    expect(indexCss()).toMatch(/\[data-theme="dark"\][\s\S]*?color-scheme:\s*dark/);
+  });
+});
+
 describe('the theme is applied before the first paint', () => {
   it('sets data-theme from an inline script in index.html', () => {
     // React mounts a moment after the document does. Without this the app

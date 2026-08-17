@@ -37,6 +37,40 @@
   ::selection {
     @apply bg-sun-300 text-ink-900;
   }
+
+  /* ── Native <select> popups ──
+     The list a select drops down is painted by the browser, not by the page.
+     It inherits the page's text COLOUR but not its background, so in dark mode
+     the options took the app's near-white ink onto the browser's white popup
+     and vanished — reported on the lesson, badge and rubric pickers, which is
+     every select that carries a real decision. `color-scheme: dark` on the root
+     is not enough on its own: Chrome paints the popup from the control's own
+     background, and these selects are transparent.
+
+     Set for BOTH themes rather than only dark. The light values are what the
+     browser would have chosen anyway, so stating them costs nothing and removes
+     the chance of the two drifting — and this is a bug that is invisible in the
+     theme most people develop in. */
+  select option {
+    background-color: var(--tg-surface, #FFFFFF);
+    color: var(--tg-navy-700, #0A2463);
+  }
+
+  /* The group headings — "From your school's curriculum", "Your saved rubrics".
+     Quieter than the options beneath them, and bold, so they read as headings
+     rather than as choices that cannot be picked. */
+  select optgroup {
+    background-color: var(--tg-surface, #FFFFFF);
+    color: var(--tg-navy-400, #3E559A);
+    font-weight: 700;
+  }
+
+  /* The placeholder row — "— Choose a lesson or competency —". A prompt, not a
+     choice, so it stays quieter than the options even while it is what is
+     showing. */
+  select option:disabled {
+    color: var(--tg-navy-300, #7285BA);
+  }
 }
 
 @layer components {
