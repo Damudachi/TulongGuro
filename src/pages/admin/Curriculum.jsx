@@ -125,7 +125,18 @@ export default function AdminCurriculum() {
   const draftStarted = (d) => !!d.name.trim() || d.criteria.some(c => c.name.trim());
 
   const readyDrafts = rubricDrafts.filter(draftReady);
-  const unfinishedDrafts = rubricDrafts.filter(d => draftStarted(d) && !draftReady(d));
+  /**
+   * Cards still having their uploaded file read.
+   *
+   * They have to be counted separately, because for the few seconds an
+   * extraction takes a card looks exactly like one nobody typed in: no name, no
+   * criteria. That made it neither ready (so never sent) nor started (so never
+   * objected to), and publishing in that window dropped the rubric with the
+   * success notice saying nothing about it — the admin had picked a file and
+   * watched it disappear. Publishing waits for the read instead.
+   */
+  const readingDrafts = rubricDrafts.filter(d => d.isReading);
+  const unfinishedDrafts = rubricDrafts.filter(d => !d.isReading && draftStarted(d) && !draftReady(d));
 
   /**
    * Two cards with the same name, caught here rather than at the server.
@@ -147,6 +158,12 @@ export default function AdminCurriculum() {
   const handleCreate = async (e) => {
     e.preventDefault();
     if (isSaving) return;
+    if (readingDrafts.length) {
+      setError(readingDrafts.length === 1
+        ? 'One rubric is still being read from the file you uploaded. Give it a moment — publishing now would leave it behind.'
+        : `${readingDrafts.length} rubrics are still being read from the files you uploaded. Give them a moment — publishing now would leave them behind.`);
+      return;
+    }
     if (unfinishedDrafts.length) {
       setError(unfinishedDrafts.length === 1
         ? 'One rubric still needs a name and criteria weights totalling 100%. Finish it, or remove it and add it later.'
@@ -513,7 +530,16 @@ export default function AdminCurriculum() {
                           )}
                           <div>
                             <label className="block text-xs font-medium text-slate-500 mb-1">Rubric name</label>
-                            <input required type="text" value={draft.name}
+                            {/* Deliberately not `required`. A card the admin
+                                added and then thought better of is meant to be
+                                publishable — it is simply not saved — and the
+                                browser's own validation refused that, popping
+                                "Please fill out this field" on an input that
+                                may be scrolled out of the modal. It also took
+                                the nameless case away from the message below,
+                                which explains the choice in words. A card with
+                                criteria but no name is still caught there. */}
+                            <input type="text" value={draft.name}
                               onChange={e => updateRubricDraft(draft.id, { name: e.target.value })}
                               placeholder="e.g. Grade 6 English — Written Output"
                               className="w-full border border-slate-200 p-2 rounded-lg outline-none focus:ring-2 focus:ring-brand-navy text-sm" />
@@ -562,10 +588,18 @@ export default function AdminCurriculum() {
               <div className="flex gap-2 pt-1">
                 <button type="button" onClick={() => { setShowForm(false); resetRubricDrafts(); }}
                   className="flex-1 py-2.5 rounded-lg border border-slate-200 text-slate-600 font-medium hover:bg-slate-50">Cancel</button>
-                <button type="submit" disabled={isSaving}
+                {/* Held while a rubric is being read, as well as while saving —
+                    the guard in handleCreate says why. Greyed rather than
+                    hidden, so the reason is on screen next to the spinner in
+                    the card that is holding it up. */}
+                <button type="submit" disabled={isSaving || readingDrafts.length > 0}
                   className={cn('flex-1 py-2.5 rounded-lg text-white font-bold flex items-center justify-center gap-2',
-                    isSaving ? 'bg-slate-300 cursor-not-allowed' : 'bg-brand-navy hover:bg-blue-900')}>
-                  {isSaving ? <><Loader2 className="w-4 h-4 animate-spin" /> {file ? 'Parsing...' : 'Saving...'}</> : 'Publish'}
+                    isSaving || readingDrafts.length > 0 ? 'bg-slate-300 cursor-not-allowed' : 'bg-brand-navy hover:bg-blue-900')}>
+                  {isSaving
+                    ? <><Loader2 className="w-4 h-4 animate-spin" /> {file ? 'Parsing...' : 'Saving...'}</>
+                    : readingDrafts.length > 0
+                      ? <><Loader2 className="w-4 h-4 animate-spin" /> Reading rubric...</>
+                      : 'Publish'}
                 </button>
               </div>
             </form>

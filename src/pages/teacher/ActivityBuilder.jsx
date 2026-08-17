@@ -112,6 +112,18 @@ export default function ActivityBuilder() {
 
   const [isSaving, setIsSaving] = useState(false);
   const [topics, setTopics] = useState([]);
+  /**
+   * Whether the competency list has actually been answered for.
+   *
+   * 'loading' | 'ready' | 'failed'. An empty `topics` on its own cannot tell
+   * the three apart, and the difference matters: an id on the activity is only
+   * knowably "not a DepEd competency" once the list it would be in has
+   * arrived. Without this, the moment before the fetch returned — and forever,
+   * if it failed offline — every tagged competency was drawn as a raw slug
+   * chip under "Other topics", with the checklist hidden so it could not be
+   * re-picked.
+   */
+  const [topicsStatus, setTopicsStatus] = useState('loading');
   const [classLessons, setClassLessons] = useState([]);
   const [selectedLessonId, setSelectedLessonId] = useState('');
   // Declared before the rubric resolver below, which reads form.type and form.topic.
@@ -308,7 +320,12 @@ export default function ActivityBuilder() {
   // form, or a competency from a list this class no longer matches. Shown as
   // removable chips rather than dropped, so nothing sits on the activity that
   // the teacher cannot see or undo.
-  const unknownTopicIds = selectedTopicIds.filter(id => !topics.some(t => t.id === id));
+  //
+  // Only once the list has arrived. An id cannot be called unrecognised while
+  // the thing that would recognise it is still loading — or never loaded.
+  const unknownTopicIds = topicsStatus === 'ready'
+    ? selectedTopicIds.filter(id => !topics.some(t => t.id === id))
+    : [];
 
   /**
    * Whether to offer the DepEd competency list at all.
@@ -322,12 +339,18 @@ export default function ActivityBuilder() {
     selectedTopics.length > 0 ||
     (/grade\s*6/i.test(classMeta?.gradeLevel || '') && /english/i.test(classMeta?.subject || ''));
 
+  // Tags on the activity that cannot be drawn yet, because the list that names
+  // them has not arrived. Distinct from unknownTopicIds: these are not unknown,
+  // only unresolved, and the difference is what the panel below says out loud.
+  const unresolvedTopicIds = topicsStatus === 'ready' ? [] : selectedTopicIds;
+
   // Whether this class can answer the lesson/topic question at all. A class
   // with no uploaded curriculum and no applicable competency list has nothing
   // to offer, so the field is not shown — and not required. Tags that came
   // from somewhere else count too: they are on the activity, so they have to be
   // on screen where they can be removed.
-  const lessonTopicApplies = classLessons.length > 0 || depedTopicsApply || unknownTopicIds.length > 0;
+  const lessonTopicApplies =
+    classLessons.length > 0 || depedTopicsApply || unknownTopicIds.length > 0 || unresolvedTopicIds.length > 0;
 
   /**
    * Map the activity to a curriculum lesson, or to none.
@@ -439,8 +462,16 @@ export default function ActivityBuilder() {
   useEffect(() => {
     apiFetch(`${API_URL}/api/topics`)
       .then(res => res.json())
-      .then(data => { if (data.success) setTopics(data.topics); })
-      .catch(() => {});
+      .then(data => {
+        if (!data.success) return setTopicsStatus('failed');
+        setTopics(data.topics);
+        setTopicsStatus('ready');
+      })
+      // Was swallowed silently, which is what made an offline load
+      // indistinguishable from a class that simply has no competencies. The
+      // tags on the activity are left exactly as they are either way — see the
+      // note on topicsStatus.
+      .catch(() => setTopicsStatus('failed'));
   }, []);
 
   // Fetch class lessons from parsed curriculum
@@ -804,8 +835,12 @@ export default function ActivityBuilder() {
     }
     // The lesson and the competencies are two controls answering one required
     // question, so neither can carry `required` on its own — either alone is a
-    // complete answer. Only asked where the class has something to answer with.
-    if (lessonTopicApplies && !selectedLessonId && selectedTopicIds.length === 0) {
+    // complete answer. Only asked where the class has something to answer with:
+    // a class whose only possible answer was the competency list is let through
+    // when that list failed to load, or the teacher is held at a question with
+    // no answerable control on the screen.
+    const canAnswerLessonTopic = classLessons.length > 0 || topicsStatus === 'ready';
+    if (canAnswerLessonTopic && lessonTopicApplies && !selectedLessonId && selectedTopicIds.length === 0) {
       alert('Say what this activity covers — choose the curriculum lesson, tick at least one competency, or both.');
       return;
     }
@@ -1233,6 +1268,28 @@ export default function ActivityBuilder() {
                       : 'Tick every competency this activity is meant to assess.'}
                   </p>
                 </div>
+              )}
+
+              {/* The competency list could not be fetched — offline, most
+                  likely. Said out loud, because the alternative is a teacher
+                  opening an activity they tagged last week and finding the
+                  competencies apparently gone. They are not: form.topic is
+                  untouched, and saving from here keeps every one of them. */}
+              {topicsStatus === 'failed' && (
+                <div className="rounded-lg border border-amber-200 bg-amber-50 p-3">
+                  <p className="text-xs text-amber-800 leading-relaxed">
+                    The competency list could not be loaded, so it cannot be changed here right now.
+                    {unresolvedTopicIds.length > 0
+                      ? ` The ${unresolvedTopicIds.length} competenc${unresolvedTopicIds.length === 1 ? 'y' : 'ies'} already on this activity ${unresolvedTopicIds.length === 1 ? 'is' : 'are'} kept as ${unresolvedTopicIds.length === 1 ? 'it is' : 'they are'} — saving will not drop ${unresolvedTopicIds.length === 1 ? 'it' : 'them'}.`
+                      : ' Reconnect and reopen this page to pick from it.'}
+                  </p>
+                </div>
+              )}
+
+              {topicsStatus === 'loading' && unresolvedTopicIds.length > 0 && (
+                <p className="text-xs text-slate-400 flex items-center gap-1.5">
+                  <Loader2 className="w-3 h-3 animate-spin" /> Loading the competencies on this activity…
+                </p>
               )}
 
               {unknownTopicIds.length > 0 && (
