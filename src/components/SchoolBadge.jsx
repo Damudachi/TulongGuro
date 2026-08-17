@@ -56,7 +56,7 @@ export function SchoolLogo({ name, logoUrl, brandColor, size = 'md', tone = 'lig
     <div
       className={cn('flex items-center justify-center font-extrabold shrink-0 tracking-tight border', box,
         !useBrand && (tone === 'onColor'
-          ? 'bg-white/20 text-white border-white/30 backdrop-blur-sm'
+          ? 'bg-sheen/20 text-white border-white/30 backdrop-blur-sm'
           : 'bg-royal-50 text-royal-600 border-royal-100'),
         className)}
       style={style}

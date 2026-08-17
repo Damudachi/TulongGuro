@@ -98,7 +98,7 @@ export default function Subjects() {
               { value: sub.gradedCount, label: 'Graded' },
               { value: sub.activityCount, label: 'Activities' },
             ].map(stat => (
-              <div key={stat.label} className="bg-white/15 px-3 py-2.5 rounded-xl text-center">
+              <div key={stat.label} className="bg-sheen/15 px-3 py-2.5 rounded-xl text-center">
                 <p className="text-xl font-extrabold">{stat.value}</p>
                 <p className="text-[10px] uppercase tracking-wider font-extrabold text-white/70">{stat.label}</p>
               </div>

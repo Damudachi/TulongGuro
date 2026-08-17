@@ -108,7 +108,7 @@ export default function Register() {
       <div className="min-h-screen bg-cream-100 tg-dotgrid flex items-center justify-center p-4 sm:p-6">
         <div className="w-full max-w-lg bg-white rounded-[2rem] shadow-card-lg border-2 border-navy-700/5 overflow-hidden">
           <div className="bg-aqua-500 px-8 py-10 text-white text-center">
-            <span className="w-14 h-14 rounded-3xl bg-white/20 grid place-items-center mx-auto mb-4">
+            <span className="w-14 h-14 rounded-3xl bg-sheen/20 grid place-items-center mx-auto mb-4">
               <Clock className="w-7 h-7" />
             </span>
             <h1 className="font-display text-2xl font-extrabold mb-1.5">Registration received</h1>
@@ -128,7 +128,7 @@ export default function Register() {
               </p>
             </div>
             <Link to="/login"
-              className="block text-center w-full py-3 rounded-2xl bg-navy-700 text-white font-extrabold hover:bg-navy-800 transition-colors">
+              className="block text-center w-full py-3 rounded-2xl bg-brand-chrome text-white font-extrabold hover:bg-ink-800 transition-colors">
               Go to sign in
             </Link>
             <Link to="/" className="block text-center text-sm font-bold text-navy-500 hover:text-royal-500">
@@ -149,11 +149,11 @@ export default function Register() {
 
         <div className="bg-white rounded-[2rem] shadow-card-lg overflow-hidden border-2 border-navy-700/5">
           {/* ── Header ── */}
-          <div className="relative bg-navy-700 px-8 py-10 text-white text-center overflow-hidden">
+          <div className="relative bg-brand-chrome px-8 py-10 text-white text-center overflow-hidden">
             <div className="absolute -top-12 -right-10 w-44 h-44 rounded-full bg-royal-500/30" aria-hidden="true" />
             <div className="absolute -bottom-16 -left-12 w-52 h-52 rounded-full bg-aqua-400/15" aria-hidden="true" />
             <div className="relative">
-              <span className="w-14 h-14 rounded-3xl bg-white/15 grid place-items-center mx-auto mb-4">
+              <span className="w-14 h-14 rounded-3xl bg-sheen/15 grid place-items-center mx-auto mb-4">
                 <BookOpen className="w-7 h-7" />
               </span>
               <h1 className="font-display text-3xl font-extrabold mb-1.5">Register Your School</h1>
@@ -327,8 +327,8 @@ export default function Register() {
               <button
                 type="submit"
                 disabled={isSubmitting}
-                className="w-full rounded-full py-4 font-bold text-sm text-white bg-navy-700 shadow-pop
-                           hover:bg-navy-800 active:translate-y-1 active:shadow-none transition-all
+                className="w-full rounded-full py-4 font-bold text-sm text-white bg-brand-chrome shadow-pop
+                           hover:bg-ink-800 active:translate-y-1 active:shadow-none transition-all
                            disabled:opacity-50 disabled:pointer-events-none"
               >
                 {isSubmitting ? 'Registering school...' : 'Register School & Create Admin'}

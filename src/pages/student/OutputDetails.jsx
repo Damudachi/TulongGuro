@@ -380,7 +380,7 @@ export default function OutputDetails() {
       {sub.imageUrl && (
         <div>
           <button onClick={() => setShowImage(!showImage)}
-            className="w-full bg-slate-800 hover:bg-slate-900 text-white font-medium py-4 px-6 rounded-2xl flex items-center justify-center transition-colors shadow-md">
+            className="w-full bg-ink-800 hover:bg-ink-900 text-white font-medium py-4 px-6 rounded-2xl flex items-center justify-center transition-colors shadow-md">
             <ImageIcon className="w-5 h-5 mr-2" /> {showImage ? 'Hide' : 'View'} Original Submission
           </button>
           {showImage && (

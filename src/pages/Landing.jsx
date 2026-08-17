@@ -27,8 +27,8 @@ function BlobRow() {
           style={{ animationDelay: `${i * 0.4}s` }}
         >
           <div className="flex gap-1.5">
-            <span className="w-2 h-2 rounded-full bg-navy-800" />
-            <span className={`w-2 rounded-full bg-navy-800 ${b.mood === 'wink' ? 'h-0.5 mt-1' : 'h-2'}`} />
+            <span className="w-2 h-2 rounded-full bg-brand-chrome" />
+            <span className={`w-2 rounded-full bg-brand-chrome ${b.mood === 'wink' ? 'h-0.5 mt-1' : 'h-2'}`} />
           </div>
         </div>
       ))}
@@ -240,10 +240,10 @@ export default function Landing() {
       </section>
 
       {/* ── How it works ── */}
-      <section id="how" className="bg-navy-700 py-20 sm:py-28 text-white">
+      <section id="how" className="bg-brand-chrome py-20 sm:py-28 text-white">
         <div className="max-w-6xl mx-auto px-5 sm:px-8">
           <div className="text-center max-w-2xl mx-auto mb-14">
-            <span className="tg-pill bg-white/15 text-sky-300 mb-4">How it works</span>
+            <span className="tg-pill bg-sheen/15 text-sky-300 mb-4">How it works</span>
             <h2 className="font-display text-3xl sm:text-5xl font-extrabold">
               Four steps, start to finish.
             </h2>
@@ -251,7 +251,7 @@ export default function Landing() {
 
           <ol className="grid sm:grid-cols-2 lg:grid-cols-4 gap-5">
             {STEPS.map((s) => (
-              <li key={s.n} className="bg-white/5 border-2 border-white/10 rounded-4xl p-7">
+              <li key={s.n} className="bg-sheen/5 border-2 border-white/10 rounded-4xl p-7">
                 <span className="font-display text-4xl font-extrabold text-sun-400">{s.n}</span>
                 <h3 className="font-display text-lg font-extrabold mt-3 mb-2">{s.title}</h3>
                 <p className="text-sm text-sky-200/80 leading-relaxed">{s.body}</p>
@@ -298,7 +298,7 @@ export default function Landing() {
           <div className="bg-royal-500 rounded-[2.5rem] px-8 py-16 sm:py-20 text-center relative overflow-hidden">
             {/* Translucent yellow over blue blends to grey, so the decorative
                 circles stay in the white/aqua family that reads clean on royal. */}
-            <div className="absolute -top-10 -left-10 w-40 h-40 rounded-full bg-white/10" aria-hidden="true" />
+            <div className="absolute -top-10 -left-10 w-40 h-40 rounded-full bg-sheen/10" aria-hidden="true" />
             <div className="absolute -bottom-14 -right-8 w-52 h-52 rounded-full bg-aqua-400/25" aria-hidden="true" />
 
             <div className="relative">

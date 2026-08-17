@@ -125,7 +125,7 @@ export default function BadgeCelebration({ badges, paused = false }) {
       role="dialog"
       aria-modal="true"
       aria-labelledby="badge-celebration-title"
-      className="fixed inset-0 z-[110] flex items-center justify-center p-4 bg-navy-900/60 backdrop-blur-sm"
+      className="fixed inset-0 z-[110] flex items-center justify-center p-4 bg-ink-900/60 backdrop-blur-sm"
     >
       {/* Behind the card and ignored by assistive tech: it carries no
           information the card does not already say in words. `overflow-hidden`
@@ -175,7 +175,7 @@ export default function BadgeCelebration({ badges, paused = false }) {
           <button
             onClick={dismiss}
             autoFocus
-            className="w-full rounded-full py-3.5 font-bold text-sm text-white bg-royal-600 shadow-pop
+            className="w-full rounded-full py-3.5 font-bold text-sm text-white bg-royal-500 shadow-pop
                        hover:bg-royal-700 active:translate-y-1 active:shadow-none transition-all"
           >
             {remaining > 0 ? `Next badge (${remaining} more)` : 'Awesome!'}

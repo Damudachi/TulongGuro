@@ -365,7 +365,7 @@ export default function ImageRedactor({ imageSrc, onConfirm, onCancel, perspecti
 
   if (!img) {
     return (
-      <div className="fixed inset-0 z-[110] flex items-center justify-center bg-slate-900/80 backdrop-blur-sm">
+      <div className="fixed inset-0 z-[110] flex items-center justify-center bg-ink-900/80 backdrop-blur-sm">
         <div className="w-6 h-6 border-2 border-brand-green border-t-transparent rounded-full animate-spin" />
       </div>
     );
@@ -374,7 +374,7 @@ export default function ImageRedactor({ imageSrc, onConfirm, onCancel, perspecti
   const zoomPercent = Math.round((scale / (fitScale || 1)) * 100);
 
   return (
-    <div className="fixed inset-0 z-[110] flex flex-col bg-slate-900/80 backdrop-blur-sm">
+    <div className="fixed inset-0 z-[110] flex flex-col bg-ink-900/80 backdrop-blur-sm">
       {/* Header. Wraps on a phone rather than squeezing the tool buttons off
           the edge, and every button is a fingertip target rather than a
           cursor-sized one. */}

@@ -101,7 +101,7 @@ export default function PlatformApprovals() {
           }}
           className="w-full max-w-sm bg-white rounded-2xl border border-slate-200 shadow-sm p-6"
         >
-          <div className="w-11 h-11 rounded-xl bg-slate-900 text-white grid place-items-center mb-4">
+          <div className="w-11 h-11 rounded-xl bg-ink-900 text-white grid place-items-center mb-4">
             <ShieldCheck className="w-5 h-5" />
           </div>
           <h1 className="text-lg font-bold text-slate-900 mb-1">School approvals</h1>
@@ -118,7 +118,7 @@ export default function PlatformApprovals() {
           />
           {error && <p className="text-xs text-red-600 mb-3">{error}</p>}
           <button type="submit" disabled={!keyInput.trim()}
-            className="w-full py-2.5 rounded-lg bg-slate-900 text-white font-bold text-sm hover:bg-slate-800 disabled:opacity-40">
+            className="w-full py-2.5 rounded-lg bg-ink-900 text-white font-bold text-sm hover:bg-ink-800 disabled:opacity-40">
             Unlock
           </button>
         </form>
@@ -149,7 +149,7 @@ export default function PlatformApprovals() {
           {['PENDING', 'APPROVED', 'REJECTED', 'ALL'].map(s => (
             <button key={s} onClick={() => setStatus(s)}
               className={cn('px-3 py-1.5 rounded-lg text-xs font-bold transition-colors',
-                status === s ? 'bg-slate-900 text-white' : 'bg-white text-slate-600 border border-slate-200 hover:bg-slate-50')}>
+                status === s ? 'bg-ink-900 text-white' : 'bg-white text-slate-600 border border-slate-200 hover:bg-slate-50')}>
               {s[0] + s.slice(1).toLowerCase()}
             </button>
           ))}

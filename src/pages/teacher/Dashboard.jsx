@@ -159,7 +159,7 @@ function WizardEmptyState({ onComplete, sections = [] }) {
         <div className="flex gap-2 mt-4">
           {WIZARD_STEPS.map((label, i) => (
             <div key={label} className="flex-1">
-              <div className={`h-1.5 rounded-full transition-all ${step >= i + 1 ? 'bg-white' : 'bg-white/30'}`} />
+              <div className={`h-1.5 rounded-full transition-all ${step >= i + 1 ? 'bg-white' : 'bg-sheen/30'}`} />
               <p className={`text-[10px] mt-1.5 font-bold uppercase tracking-wider transition-colors ${step >= i + 1 ? 'text-white' : 'text-blue-200/50'}`}>
                 {label}
               </p>

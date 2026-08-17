@@ -81,7 +81,7 @@ export default function TeacherLayout() {
           fixed would take it out of flow and leave `main` to slide underneath.
           It relies on no ancestor having `overflow` set; the wrapper above is
           plain, so do not add one there without re-checking this. */}
-      <nav className="hidden md:flex flex-col w-64 bg-royal-900 shrink-0 order-first rounded-r-[2rem] overflow-hidden sticky top-0 h-screen">
+      <nav className="hidden md:flex flex-col w-64 bg-brand-chrome shrink-0 order-first rounded-r-[2rem] overflow-hidden sticky top-0 h-screen">
         <Link to="/teacher/dashboard" className="flex items-center gap-3 px-5 py-6">
           <Logo size="lg" />
           <span className="flex flex-col leading-none min-w-0">
@@ -100,17 +100,17 @@ export default function TeacherLayout() {
                   'flex items-center gap-3 px-3 py-3 rounded-2xl text-sm font-bold transition-all',
                   isActive
                     ? 'bg-royal-500 tg-on-brand shadow-pop'
-                    : 'text-white/60 hover:bg-white/10 hover:text-white'
+                    : 'text-white/60 hover:bg-sheen/10 hover:text-white'
                 )}>
                 <span className={cn('w-8 h-8 rounded-xl grid place-items-center shrink-0',
-                  isActive ? 'bg-white/20' : 'bg-white/5')}>
+                  isActive ? 'bg-sheen/20' : 'bg-sheen/5')}>
                   <item.icon className="w-4 h-4" />
                 </span>
                 {item.name}
                 {badge > 0 && (
                   <span className={cn(
                     'ml-auto text-[10px] font-extrabold px-2 py-0.5 rounded-full flex items-center gap-1',
-                    isActive ? 'bg-white/25 text-white' : 'bg-red-500 text-white'
+                    isActive ? 'bg-sheen/25 text-white' : 'bg-red-500 text-white'
                   )}>
                     <AlertTriangle className="w-2.5 h-2.5" /> {badge}
                   </span>
@@ -163,7 +163,7 @@ export default function TeacherLayout() {
           marked by its brand fill instead, and every destination keeps the same
           tap area. */}
       <nav className="tg-bottom-nav fixed bottom-0 left-0 right-0 px-3 pt-2 md:hidden z-40 pointer-events-none">
-        <div className="pointer-events-auto flex items-stretch gap-0.5 bg-royal-900 rounded-[1.5rem] p-1.5 shadow-card-lg">
+        <div className="pointer-events-auto flex items-stretch gap-0.5 bg-brand-chrome rounded-[1.5rem] p-1.5 shadow-card-lg">
           {navItems.map((item) => {
             const isActive = location.pathname.startsWith(item.path);
             const badge = item.name === 'Analytics' ? warningCount : 0;
@@ -175,7 +175,7 @@ export default function TeacherLayout() {
                   'relative flex-1 min-w-0 grid place-items-center rounded-2xl min-h-12 transition-colors',
                   isActive
                     ? 'bg-royal-500 tg-on-brand shadow-pop'
-                    : 'text-white/55 active:bg-white/10'
+                    : 'text-white/55 active:bg-sheen/10'
                 )}>
                 <item.icon className="w-5 h-5 shrink-0" />
                 {badge > 0 && (
@@ -189,7 +189,7 @@ export default function TeacherLayout() {
           {/* The sidebar's account block is desktop-only, so sign-out needs its
               own place in the dock or there's no way out on a phone. The rule
               keeps it from reading as a seventh destination. */}
-          <span aria-hidden="true" className="w-px my-2.5 bg-white/15 shrink-0" />
+          <span aria-hidden="true" className="w-px my-2.5 bg-sheen/15 shrink-0" />
           <Link to="/login" onClick={() => logout()}
             aria-label="Sign out"
             className="flex-1 min-w-0 grid place-items-center rounded-2xl min-h-12 text-white/55 active:bg-red-500 active:text-white transition-colors">

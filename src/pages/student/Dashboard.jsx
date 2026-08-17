@@ -144,7 +144,7 @@ export default function StudentDashboard() {
       <BadgeCelebration badges={data?.justEarnedBadges} paused={showWelcome} />
 
       {showWelcome && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-navy-900/50 backdrop-blur-sm">
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-ink-900/50 backdrop-blur-sm">
           <div className="bg-white rounded-[2rem] w-full max-w-md overflow-hidden shadow-card-lg animate-pop-in">
             <div className="p-8 text-center">
               <div className={`w-20 h-20 rounded-3xl flex items-center justify-center mx-auto mb-6 ${WELCOME.tone}`}>
@@ -166,7 +166,7 @@ export default function StudentDashboard() {
                   decision than this needs. */}
               <button
                 onClick={dismissWelcome}
-                className="mt-8 w-full rounded-full py-3.5 font-bold text-sm text-white bg-royal-600 shadow-pop
+                className="mt-8 w-full rounded-full py-3.5 font-bold text-sm text-white bg-royal-500 shadow-pop
                            hover:bg-royal-700 active:translate-y-1 active:shadow-none transition-all"
               >
                 See my grade
@@ -179,7 +179,7 @@ export default function StudentDashboard() {
       {/* ── Greeting ── */}
       {/* Brand-coloured, like the teacher greeting — it carries the SchoolBadge,
           so it's the one surface that most needs to match the school's colour. */}
-      <div className="bg-royal-600 text-white px-5 py-5 rounded-3xl mb-4">
+      <div className="bg-royal-500 text-white px-5 py-5 rounded-3xl mb-4">
         <SchoolBadge tone="onColor" size="sm" className="mb-3.5 pb-3.5 border-b-2 border-white/20" />
         <h1 className="font-display text-2xl font-extrabold">Hello, {firstName}! 👋</h1>
         <p className="text-royal-100 text-sm font-semibold">{data?.student?.section?.name || 'Student'}</p>
@@ -196,7 +196,7 @@ export default function StudentDashboard() {
       {/* ── Reading strategy tip ── */}
       {latestStrategy && (
         <div className="bg-sun-100 border-2 border-sun-200 rounded-3xl p-5 mb-6 flex items-start gap-4">
-          <div className="bg-sun-400 text-navy-700 p-2.5 rounded-2xl shrink-0 shadow-pop">
+          <div className="bg-sun-400 text-ink-900 p-2.5 rounded-2xl shrink-0 shadow-pop">
             <Lightbulb className="w-5 h-5" />
           </div>
           <div>

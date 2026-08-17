@@ -269,7 +269,7 @@ export default function SubmitWork() {
 
   if (isPreparingFiles) {
     return (
-      <div className="fixed inset-0 z-[110] flex flex-col items-center justify-center gap-3 bg-navy-900/85 backdrop-blur-sm text-white">
+      <div className="fixed inset-0 z-[110] flex flex-col items-center justify-center gap-3 bg-ink-900/85 backdrop-blur-sm text-white">
         <Loader2 className="w-8 h-8 animate-spin" />
         <p className="text-sm font-bold">Preparing your file for preview…</p>
       </div>
@@ -287,7 +287,7 @@ export default function SubmitWork() {
           perspective="student"
         />
         {pendingFiles.length > 1 && (
-          <div className="fixed top-14 left-1/2 -translate-x-1/2 z-[120] bg-navy-900/85 text-white text-xs font-bold px-4 py-2 rounded-full">
+          <div className="fixed top-14 left-1/2 -translate-x-1/2 z-[120] bg-ink-900/85 text-white text-xs font-bold px-4 py-2 rounded-full">
             Image {redactingFile.index + 1} of {pendingFiles.length}
           </div>
         )}
@@ -305,13 +305,13 @@ export default function SubmitWork() {
        header and buttons are pinned and only the notice itself scrolls, so the
        action is always on screen no matter how long the copy gets. dvh rather
        than vh because the mobile URL bar changes the answer. */
-    <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-navy-900/50 backdrop-blur-sm">
+    <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-ink-900/50 backdrop-blur-sm">
       <div className="bg-white rounded-[2rem] w-full max-w-md overflow-hidden shadow-card-lg animate-pop-in
                       flex flex-col max-h-[calc(100dvh-2rem)]">
         <div className="bg-royal-500 p-7 text-center relative overflow-hidden shrink-0">
-          <div className="absolute -top-10 -right-8 w-36 h-36 rounded-full bg-white/10" aria-hidden="true" />
+          <div className="absolute -top-10 -right-8 w-36 h-36 rounded-full bg-sheen/10" aria-hidden="true" />
           <div className="relative">
-            <div className="w-16 h-16 bg-white/20 rounded-3xl flex items-center justify-center mx-auto mb-4">
+            <div className="w-16 h-16 bg-sheen/20 rounded-3xl flex items-center justify-center mx-auto mb-4">
               <ShieldCheck className="w-8 h-8 text-white" />
             </div>
             <h2 className="font-display text-xl font-extrabold text-white">Data Privacy Notice</h2>
@@ -351,7 +351,7 @@ export default function SubmitWork() {
           <button
             onClick={handlePrivacyConfirm}
             className="flex-1 inline-flex items-center justify-center gap-2 rounded-full py-3 px-4 font-bold text-sm
-                       text-white bg-royal-600 shadow-pop hover:bg-royal-700
+                       text-white bg-royal-500 shadow-pop hover:bg-royal-700
                        active:translate-y-1 active:shadow-none transition-all"
           >
             <ShieldCheck className="w-4 h-4" /> I Understand &amp; Confirm
@@ -402,7 +402,7 @@ export default function SubmitWork() {
             </button>
             <button onClick={() => navigate('/student/dashboard')}
               className="flex-1 inline-flex items-center justify-center gap-2 rounded-full py-3 px-6 font-bold text-sm
-                         text-white bg-royal-600 shadow-pop hover:bg-royal-700
+                         text-white bg-royal-500 shadow-pop hover:bg-royal-700
                          active:translate-y-1 active:shadow-none transition-all">
               Go to Dashboard <ChevronRight className="w-4 h-4" />
             </button>
@@ -430,17 +430,17 @@ export default function SubmitWork() {
 
         {/* ── Assignment header ── */}
         <div className="bg-royal-500 text-white px-5 py-5 rounded-3xl mb-5">
-          <span className="tg-pill bg-white/20 text-white uppercase tracking-wider">{selected.type}</span>
+          <span className="tg-pill bg-sheen/20 text-white uppercase tracking-wider">{selected.type}</span>
           <h1 className="font-display text-xl font-extrabold mt-2.5 mb-0.5">{selected.title}</h1>
           <p className="text-royal-100 text-sm font-semibold">{selected.className}</p>
 
           <div className="flex gap-2.5 mt-4 flex-wrap">
-            <div className="bg-white/15 px-3.5 py-2 rounded-xl">
+            <div className="bg-sheen/15 px-3.5 py-2 rounded-xl">
               <span className="block text-[10px] uppercase tracking-wider font-extrabold mb-0.5 text-royal-100">Points</span>
               <span className="font-extrabold flex items-center"><Award className="w-4 h-4 mr-1.5" /> {selected.points}</span>
             </div>
             {dueDate && (
-              <div className={cn('px-3.5 py-2 rounded-xl', isPastDeadline ? 'bg-red-500/40' : 'bg-white/15')}>
+              <div className={cn('px-3.5 py-2 rounded-xl', isPastDeadline ? 'bg-red-500/40' : 'bg-sheen/15')}>
                 <span className="block text-[10px] uppercase tracking-wider font-extrabold mb-0.5 text-royal-100">Due Date</span>
                 <span className="font-extrabold flex items-center">
                   <Calendar className="w-4 h-4 mr-1.5" />
@@ -449,7 +449,7 @@ export default function SubmitWork() {
               </div>
             )}
             {sub && (
-              <div className="bg-white/15 px-3.5 py-2 rounded-xl">
+              <div className="bg-sheen/15 px-3.5 py-2 rounded-xl">
                 <span className="block text-[10px] uppercase tracking-wider font-extrabold mb-0.5 text-royal-100">Status</span>
                 <span className="text-sm font-extrabold flex items-center gap-1">
                   {sub.status === 'GRADED' ? <CheckCircle2 className="w-4 h-4" /> : <Clock className="w-4 h-4" />}
@@ -461,7 +461,7 @@ export default function SubmitWork() {
                 keeps no grade or status), so offline this would read "0/2" and
                 assert that no attempt has been used — which it cannot know. */}
             {!savedListAt && (selected.maxAttempts === 0 || selected.maxAttempts > 1) && (
-              <div className="bg-white/15 px-3.5 py-2 rounded-xl">
+              <div className="bg-sheen/15 px-3.5 py-2 rounded-xl">
                 <span className="block text-[10px] uppercase tracking-wider font-extrabold mb-0.5 text-royal-100">Attempts</span>
                 <span className="font-extrabold flex items-center">
                   <RefreshCw className="w-4 h-4 mr-1.5" />
@@ -541,7 +541,7 @@ export default function SubmitWork() {
               <>
                 <button
                   onClick={() => setResubmitMode(true)}
-                  className="w-full py-4 bg-sun-400 text-navy-700 rounded-3xl font-extrabold text-lg shadow-pop
+                  className="w-full py-4 bg-sun-400 text-ink-900 rounded-3xl font-extrabold text-lg shadow-pop
                              hover:bg-sun-300 active:translate-y-1 active:shadow-none transition-all
                              flex items-center justify-center gap-3"
                 >
@@ -650,7 +650,7 @@ export default function SubmitWork() {
                           ) : (
                             <img src={prev} alt={`page ${idx+1}`} className="w-full h-full object-cover" />
                           )}
-                          <div className="absolute top-2 left-2 bg-navy-900/70 text-white text-[10px] px-2 py-1 rounded-lg font-bold">
+                          <div className="absolute top-2 left-2 bg-ink-900/70 text-white text-[10px] px-2 py-1 rounded-lg font-bold">
                             Page {idx + 1}
                           </div>
                           <button onClick={(e) => { e.stopPropagation(); removeFile(idx); }}
@@ -690,7 +690,7 @@ export default function SubmitWork() {
             {files.length > 0 && (
               <>
                 <button onClick={handleSubmit} disabled={isSubmitting}
-                  className="w-full py-4 bg-royal-600 text-white rounded-3xl font-extrabold text-lg shadow-pop
+                  className="w-full py-4 bg-royal-500 text-white rounded-3xl font-extrabold text-lg shadow-pop
                              hover:bg-royal-700 active:translate-y-1 active:shadow-none transition-all
                              disabled:opacity-60 disabled:pointer-events-none flex items-center justify-center gap-3">
                   {isSubmitting ? (

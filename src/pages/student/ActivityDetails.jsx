@@ -76,19 +76,19 @@ export default function ActivityDetails() {
       <div className="bg-gradient-to-br from-brand-navy to-blue-800 text-white p-6 rounded-2xl mb-6 shadow-lg relative overflow-hidden">
         <div className="absolute top-0 right-0 p-4 opacity-5"><BookOpen className="w-40 h-40" /></div>
         <div className="relative z-10">
-          <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-white/20 text-blue-100 uppercase tracking-wider">
+          <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-sheen/20 text-blue-100 uppercase tracking-wider">
             {activity.type}
           </span>
           <h1 className="text-2xl font-bold mt-3 mb-1">{activity.title}</h1>
           <p className="text-blue-200 text-sm">{activity.className}</p>
 
           <div className="flex gap-3 mt-5 flex-wrap">
-            <div className="bg-white/15 px-4 py-2.5 rounded-xl backdrop-blur-sm">
+            <div className="bg-sheen/15 px-4 py-2.5 rounded-xl backdrop-blur-sm">
               <span className="block text-[10px] uppercase tracking-wider font-bold mb-1 text-blue-200">Points</span>
               <span className="text-lg font-bold flex items-center"><Award className="w-4 h-4 mr-1.5" /> {activity.points}</span>
             </div>
             {activity.deadline && (
-              <div className={cn('px-4 py-2.5 rounded-xl backdrop-blur-sm', isClosed ? 'bg-red-500/30' : 'bg-white/15')}>
+              <div className={cn('px-4 py-2.5 rounded-xl backdrop-blur-sm', isClosed ? 'bg-red-500/30' : 'bg-sheen/15')}>
                 <span className="block text-[10px] uppercase tracking-wider font-bold mb-1 text-blue-200">Due Date</span>
                 <span className="text-lg font-bold flex items-center">
                   <Calendar className="w-4 h-4 mr-1.5" />

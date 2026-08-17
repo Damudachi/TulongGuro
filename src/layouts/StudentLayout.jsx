@@ -88,11 +88,11 @@ export default function StudentLayout() {
           'flex items-center gap-3 px-3 py-3 rounded-2xl text-sm font-bold transition-all',
           isActive
             ? 'bg-royal-500 tg-on-brand shadow-pop'
-            : 'text-white/60 hover:bg-white/10 hover:text-white'
+            : 'text-white/60 hover:bg-sheen/10 hover:text-white'
         )}
       >
         <span className={cn('w-8 h-8 rounded-xl grid place-items-center shrink-0',
-          isActive ? 'bg-white/20' : 'bg-white/5')}>
+          isActive ? 'bg-sheen/20' : 'bg-sheen/5')}>
           <item.icon className="w-4 h-4" />
         </span>
         {item.name}
@@ -113,7 +113,7 @@ export default function StudentLayout() {
       {/* ── Desktop sidebar ── */}
       {/* Pinned to the viewport, not stretched to the content — see the note in
           TeacherLayout for why this is sticky rather than fixed. */}
-      <nav className="hidden md:flex flex-col w-64 bg-royal-900 shrink-0 rounded-r-[2rem] overflow-hidden sticky top-0 h-screen">
+      <nav className="hidden md:flex flex-col w-64 bg-brand-chrome shrink-0 rounded-r-[2rem] overflow-hidden sticky top-0 h-screen">
         <Link to="/student/dashboard" className="flex items-center gap-3 px-5 py-6">
           <Logo size="lg" />
           <span className="flex flex-col leading-none min-w-0">
@@ -134,11 +134,11 @@ export default function StudentLayout() {
                 'w-full flex items-center gap-3 px-3 py-3 rounded-2xl text-sm font-bold transition-all',
                 subjectsActive
                   ? 'bg-royal-500 tg-on-brand shadow-pop'
-                  : 'text-white/60 hover:bg-white/10 hover:text-white'
+                  : 'text-white/60 hover:bg-sheen/10 hover:text-white'
               )}
             >
               <span className={cn('w-8 h-8 rounded-xl grid place-items-center shrink-0',
-                subjectsActive ? 'bg-white/20' : 'bg-white/5')}>
+                subjectsActive ? 'bg-sheen/20' : 'bg-sheen/5')}>
                 <Book className="w-4 h-4" />
               </span>
               <span>Subjects</span>
@@ -155,7 +155,7 @@ export default function StudentLayout() {
                       to={item.path}
                       className={cn(
                         'block px-3 py-2 rounded-xl text-sm font-bold transition-colors',
-                        isActive ? 'text-white bg-white/10' : 'text-white/50 hover:text-white hover:bg-white/5'
+                        isActive ? 'text-white bg-sheen/10' : 'text-white/50 hover:text-white hover:bg-sheen/5'
                       )}
                     >
                       {item.name}
@@ -216,7 +216,7 @@ export default function StudentLayout() {
           cramped once sign-out joined the row; the active cell is now marked by
           its brand fill instead, and every destination keeps the same tap area. */}
       <nav className="tg-bottom-nav fixed bottom-0 left-0 right-0 px-3 pt-2 md:hidden z-50 pointer-events-none">
-        <div className="pointer-events-auto flex items-stretch gap-1 bg-royal-900 rounded-[1.5rem] p-1.5 shadow-card-lg">
+        <div className="pointer-events-auto flex items-stretch gap-1 bg-brand-chrome rounded-[1.5rem] p-1.5 shadow-card-lg">
           {dockItems.map((item) => {
             const isActive = item.path === '/student/subjects'
               ? subjectsActive
@@ -231,7 +231,7 @@ export default function StudentLayout() {
                   'flex-1 min-w-0 grid place-items-center rounded-2xl min-h-12 transition-colors',
                   isActive
                     ? 'bg-royal-500 tg-on-brand shadow-pop'
-                    : 'text-white/55 active:bg-white/10'
+                    : 'text-white/55 active:bg-sheen/10'
                 )}
               >
                 <item.icon className="w-5 h-5 shrink-0" />
@@ -241,7 +241,7 @@ export default function StudentLayout() {
           {/* The sidebar's account block is desktop-only, so sign-out needs its
               own place in the dock or there's no way out on a phone. The rule
               keeps it from reading as a sixth destination. */}
-          <span aria-hidden="true" className="w-px my-2.5 bg-white/15 shrink-0" />
+          <span aria-hidden="true" className="w-px my-2.5 bg-sheen/15 shrink-0" />
           <Link to="/login" onClick={() => logout()}
             aria-label="Sign out"
             className="flex-1 min-w-0 grid place-items-center rounded-2xl min-h-12 text-white/55 active:bg-red-500 active:text-white transition-colors">

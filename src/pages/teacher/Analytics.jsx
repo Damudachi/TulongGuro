@@ -450,7 +450,7 @@ export default function Analytics() {
           <button type="button" onClick={() => setSelectedSubject(null)}
             className={cn('px-3 py-1 rounded-full text-xs font-bold border-2 transition-all',
               selectedSubject === null
-                ? 'border-navy-700 bg-navy-700 text-white'
+                ? 'border-brand-chrome bg-brand-chrome text-white'
                 : 'border-slate-200 text-slate-500 hover:border-navy-300')}>
             All subjects
           </button>
@@ -626,7 +626,7 @@ export default function Analytics() {
                   <button type="button" onClick={() => setSkillFilter(null)}
                     className={cn('px-3 py-1 rounded-full text-xs font-bold border-2 transition-all',
                       activeSkillFilter === null
-                        ? 'border-navy-700 bg-navy-700 text-white'
+                        ? 'border-brand-chrome bg-brand-chrome text-white'
                         : 'border-slate-200 text-slate-500 hover:border-navy-300')}>
                     All ({activityBreakdown.length})
                   </button>
@@ -636,7 +636,7 @@ export default function Analytics() {
                       title="Graded straight to a score, so there is no rubric to read a skill from"
                       className={cn('px-3 py-1 rounded-full text-xs font-bold border-2 transition-all',
                         activeSkillFilter === NO_SKILL
-                          ? 'border-slate-500 bg-slate-500 text-white'
+                          ? 'border-brand-chrome bg-brand-chrome text-white'
                           : 'border-dashed border-slate-300 text-slate-500 hover:border-slate-400')}>
                       No skill tags ({noSkillCount})
                     </button>
@@ -650,7 +650,7 @@ export default function Analytics() {
                       className="px-3 py-1 rounded-full text-xs font-bold border-2 transition-all flex items-center gap-1.5"
                       style={activeSkillFilter === s.id
                         ? { borderColor: s.color, backgroundColor: s.color, color: 'white' }
-                        : { borderColor: '#E2E8F0', color: '#64748B' }}>
+                        : { borderColor: 'var(--tg-neutral-200, #DDE1EE)', color: 'var(--tg-neutral-500, #5F6B8F)' }}>
                       <span className="w-2 h-2 rounded-full"
                         style={{ background: activeSkillFilter === s.id ? 'white' : s.color }} />
                       {s.label} ({s.count})

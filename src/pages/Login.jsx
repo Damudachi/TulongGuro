@@ -28,8 +28,8 @@ const ROLES = {
   },
   admin: {
     label: 'Admin', icon: Building2,
-    accent: 'text-navy-700', chip: 'bg-navy-700', panel: 'bg-navy-700',
-    button: 'bg-navy-700 hover:bg-navy-800 text-white',
+    accent: 'text-navy-700', chip: 'bg-brand-chrome', panel: 'bg-brand-chrome',
+    button: 'bg-brand-chrome hover:bg-ink-800 text-white',
     idLabel: 'Email Address', idPlaceholder: 'name@admin.com', idType: 'email',
     home: '/admin/teachers',
     blurb: 'Manage teachers, sections, curricula, and rubrics.',
@@ -108,8 +108,8 @@ export default function Login() {
 
         {/* ── Brand panel ── */}
         <div className={`${cfg.panel} hidden lg:flex flex-col justify-between p-10 text-white transition-colors duration-500 relative overflow-hidden`}>
-          <div className="absolute -top-16 -right-12 w-56 h-56 rounded-full bg-white/10" aria-hidden="true" />
-          <div className="absolute -bottom-20 -left-16 w-64 h-64 rounded-full bg-white/5" aria-hidden="true" />
+          <div className="absolute -top-16 -right-12 w-56 h-56 rounded-full bg-sheen/10" aria-hidden="true" />
+          <div className="absolute -bottom-20 -left-16 w-64 h-64 rounded-full bg-sheen/5" aria-hidden="true" />
 
           <div className="relative">
             <Link to="/" className="inline-flex items-center gap-2.5 font-display text-2xl font-extrabold">
@@ -132,8 +132,8 @@ export default function Login() {
                   style={{ height: `${68 + i * 14}px`, animationDelay: `${i * 0.5}s` }}
                 >
                   <div className="flex gap-1.5">
-                    <span className="w-1.5 h-1.5 rounded-full bg-navy-800" />
-                    <span className="w-1.5 h-1.5 rounded-full bg-navy-800" />
+                    <span className="w-1.5 h-1.5 rounded-full bg-brand-chrome" />
+                    <span className="w-1.5 h-1.5 rounded-full bg-brand-chrome" />
                   </div>
                 </div>
               ))}

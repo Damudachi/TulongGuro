@@ -521,7 +521,7 @@ export default function BatchUpload() {
     <div className="p-4 md:p-8 max-w-5xl mx-auto flex flex-col gap-6 pb-24">
       {/* Rendering a picked PDF/Word file to page images, before redaction */}
       {preparingFiles && (
-        <div className="fixed inset-0 z-[110] flex flex-col items-center justify-center gap-3 bg-slate-900/85 backdrop-blur-sm text-white">
+        <div className="fixed inset-0 z-[110] flex flex-col items-center justify-center gap-3 bg-ink-900/85 backdrop-blur-sm text-white">
           <Loader2 className="w-8 h-8 animate-spin" />
           <p className="text-sm font-bold">Preparing the file for preview…</p>
         </div>
@@ -545,7 +545,7 @@ export default function BatchUpload() {
             onCancel={handlePendingRedactionCancel}
           />
           {pendingRedaction.queue.length > 1 && (
-            <div className="fixed top-14 left-1/2 -translate-x-1/2 z-[120] bg-navy-900/85 text-white text-xs font-bold px-4 py-2 rounded-full">
+            <div className="fixed top-14 left-1/2 -translate-x-1/2 z-[120] bg-ink-900/85 text-white text-xs font-bold px-4 py-2 rounded-full">
               Photo {pendingRedaction.index + 1} of {pendingRedaction.queue.length}
             </div>
           )}
@@ -814,7 +814,7 @@ export default function BatchUpload() {
                               {isImageFile(page.file) ? (
                                 <button type="button" onClick={() => setRedacting({ studentId: student.id, pageIndex: i })}
                                   title={`Cover the name on page ${i + 1}`}
-                                  className="w-full py-1 bg-slate-800 text-white text-[10px] font-bold flex items-center justify-center gap-1 hover:bg-brand-navy transition-colors">
+                                  className="w-full py-1 bg-ink-800 text-white text-[10px] font-bold flex items-center justify-center gap-1 hover:bg-brand-navy transition-colors">
                                   <ShieldCheck className="w-3 h-3" /> Cover
                                 </button>
                               ) : (

@@ -47,7 +47,7 @@ const BADGE_STYLES = {
 
   // ── Effort ──
   'always-on-time':   { icon: Clock,         tile: 'bg-aqua-600',    shell: 'bg-aqua-100 border-aqua-200',       ink: 'text-aqua-800' },
-  'all-rounder':      { icon: Compass,       tile: 'bg-royal-600',   shell: 'bg-royal-100 border-royal-200',     ink: 'text-royal-700' },
+  'all-rounder':      { icon: Compass,       tile: 'bg-royal-500',   shell: 'bg-royal-100 border-royal-200',     ink: 'text-royal-700' },
   dedicated:          { icon: Flame,         tile: 'bg-sun-600',     shell: 'bg-sun-100 border-sun-200',         ink: 'text-sun-800' },
   'strategy-scholar': { icon: GraduationCap, tile: 'bg-lilac-600',   shell: 'bg-lilac-100 border-lilac-200',     ink: 'text-lilac-700' },
 };
@@ -110,7 +110,7 @@ export default function Awards() {
       </div>
 
       {/* ── Stars summary ── */}
-      <div className="bg-royal-900 text-white px-5 py-5 rounded-3xl mb-6">
+      <div className="bg-brand-chrome text-white px-5 py-5 rounded-3xl mb-6">
         <div className="flex items-center justify-between gap-4">
           <div className="min-w-0">
             <p className="text-white/75 text-sm font-bold">Your Stars</p>
@@ -121,7 +121,7 @@ export default function Awards() {
           </div>
           <Star className="w-14 h-14 fill-sun-400 text-sun-400 shrink-0" />
         </div>
-        <div className="mt-4 h-2.5 bg-white/15 rounded-full overflow-hidden">
+        <div className="mt-4 h-2.5 bg-sheen/15 rounded-full overflow-hidden">
           <div className="h-full bg-sun-400 rounded-full transition-all duration-500" style={{ width: `${progress}%` }} />
         </div>
         {/* Stars and badges are different things, so say so rather than letting

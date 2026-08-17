@@ -1,7 +1,8 @@
 import { useState } from 'react';
-import { User, Shield, Lock, Eye, EyeOff, Loader2 } from 'lucide-react';
+import { User, Shield, Lock, Eye, EyeOff, Loader2, Palette } from 'lucide-react';
 import PageHeader from '../../components/PageHeader';
 import { API_URL, apiFetch, setSession } from '../../config';
+import ThemeToggle from '../../components/ThemeToggle';
 
 /**
  * The Bio field and the Notifications tab used to live here. Both wrote to
@@ -75,6 +76,7 @@ export default function Settings() {
 
   const tabs = [
     { id: 'profile', label: 'Profile Information', short: 'Profile', icon: User },
+    { id: 'appearance', label: 'Appearance', short: 'Look', icon: Palette },
     { id: 'security', label: 'Security & Password', short: 'Security', icon: Shield },
   ];
 
@@ -124,6 +126,13 @@ export default function Settings() {
                     Name, email, and school are set by your administrator and cannot be changed here.
                   </p>
                 </div>
+              </>
+            )}
+
+            {activeTab === 'appearance' && (
+              <>
+                <h2 className="font-display text-lg font-extrabold text-navy-700 mb-5">Appearance</h2>
+                <ThemeToggle />
               </>
             )}
 

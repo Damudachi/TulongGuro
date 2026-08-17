@@ -1,7 +1,8 @@
 import { useState } from 'react';
-import { Shield, Download, Loader2, EyeOff, Eye } from 'lucide-react';
+import { Shield, Download, Loader2, EyeOff, Eye, Palette } from 'lucide-react';
 import PageHeader from '../../components/PageHeader';
 import { API_URL, apiFetch, setSession } from '../../config';
+import ThemeToggle from '../../components/ThemeToggle';
 
 /**
  * What a learner can actually change about their account.
@@ -20,6 +21,7 @@ import { API_URL, apiFetch, setSession } from '../../config';
  * rather than left as decoration.
  */
 const TABS = [
+  { id: 'appearance', label: 'Appearance', short: 'Look', icon: Palette },
   { id: 'security', label: 'Security', short: 'Security', icon: Shield },
   { id: 'data', label: 'Your Data', short: 'Data', icon: Download },
 ];
@@ -153,7 +155,7 @@ export default function Settings() {
                   className={`flex-1 md:flex-none flex items-center justify-center md:justify-start gap-2 px-2 py-2.5 md:px-4 md:py-3
                               text-sm font-bold rounded-xl md:rounded-2xl transition-all ${
                     activeTab === tab.id
-                      ? 'bg-royal-600 text-white md:shadow-pop'
+                      ? 'bg-royal-500 text-white md:shadow-pop'
                       : 'text-navy-500 hover:bg-cream-100'
                   }`}>
                   <tab.icon className="w-4 h-4 md:w-5 md:h-5 shrink-0" />
@@ -166,6 +168,16 @@ export default function Settings() {
 
           {/* ── Content ── */}
           <div className="md:col-span-2 tg-card p-5 md:p-6">
+            {activeTab === 'appearance' && (
+              <>
+                <h2 className="font-display text-lg font-extrabold text-navy-700 mb-1">How TulongGuro looks</h2>
+                <p className="text-sm text-navy-500 mb-5">
+                  Dark mode is easier on your eyes when you are working at night.
+                </p>
+                <ThemeToggle />
+              </>
+            )}
+
             {activeTab === 'security' && (
               <>
                 <h2 className="font-display text-lg font-extrabold text-navy-700 mb-1">Change your password</h2>
@@ -210,7 +222,7 @@ export default function Settings() {
                   )}
                   <button type="submit" disabled={pwBusy}
                     className="inline-flex items-center justify-center gap-2 rounded-full py-2.5 px-5 font-bold text-sm
-                               text-white bg-royal-600 shadow-pop hover:bg-royal-700
+                               text-white bg-royal-500 shadow-pop hover:bg-royal-700
                                active:translate-y-1 active:shadow-none transition-all disabled:opacity-50">
                     {pwBusy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Shield className="w-4 h-4" />}
                     Update password

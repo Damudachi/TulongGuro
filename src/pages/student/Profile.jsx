@@ -41,14 +41,14 @@ export default function StudentProfile() {
       </div>
 
       {/* ── Avatar card ── */}
-      <div className="bg-royal-600 rounded-3xl px-5 py-5 text-white mb-5 flex items-center gap-4">
+      <div className="bg-royal-500 rounded-3xl px-5 py-5 text-white mb-5 flex items-center gap-4">
         <div className="w-16 h-16 rounded-2xl bg-white text-royal-700 flex items-center justify-center text-3xl font-extrabold shrink-0">
           {(student.name || 'S').charAt(0)}
         </div>
         <div className="min-w-0">
           <h2 className="font-display text-2xl font-extrabold truncate">{student.name || 'Student'}</h2>
           <p className="text-royal-100 text-sm font-semibold truncate">{student.section?.name || '—'}</p>
-          <div className="inline-flex items-center gap-1.5 mt-2.5 bg-white/15 px-3 py-1 rounded-full text-sm font-extrabold">
+          <div className="inline-flex items-center gap-1.5 mt-2.5 bg-sheen/15 px-3 py-1 rounded-full text-sm font-extrabold">
             <Star className="w-4 h-4 fill-sun-400 text-sun-400" /> {stars} Stars
           </div>
         </div>

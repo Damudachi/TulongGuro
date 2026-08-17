@@ -35,7 +35,7 @@
   }
 
   ::selection {
-    @apply bg-sun-300 text-navy-700;
+    @apply bg-sun-300 text-ink-900;
   }
 }
 
@@ -88,7 +88,7 @@
     @apply inline-flex items-center justify-center gap-2 rounded-full px-6 py-3
            font-bold text-sm transition-all duration-150
            disabled:opacity-50 disabled:pointer-events-none
-           bg-sun-400 text-navy-700 shadow-pop
+           bg-sun-400 text-ink-900 shadow-pop
            hover:bg-sun-300 active:translate-y-1 active:shadow-none;
   }
 
@@ -221,4 +221,153 @@
       display: none;
     }
   }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   DARK MODE
+
+   The entire theme. Every palette in tailwind.config.js is emitted as
+   `var(--tg-<scale>-<stop>, <light value>)`, so re-pointing those variables
+   here re-colours the whole app — roughly 2,400 colour utilities across forty
+   files — without a single `dark:` variant being written anywhere.
+
+   Light mode is the fallbacks in the config and is not restated here, which is
+   what makes it impossible for the two themes to drift apart: there is only one
+   list of colours, and this is a set of substitutions for it.
+
+   Two rules govern the values below, and both come from how the app actually
+   uses its scales (measured, not guessed):
+
+     1. Stops 50-200 are surfaces and borders; 400-800 are ink. So the ramps
+        are inverted end for end: a chip written `bg-sun-100 text-sun-800`
+        becomes a dark amber tile with pale amber text, and keeps its meaning,
+        with no edit to the chip.
+
+     2. Fills in the 400-500 band keep their saturation, because that is where
+        the primary buttons live and they carry white labels in both themes.
+
+   What is deliberately NOT here: `sheen` and `ink`, which are fixed white and
+   fixed near-black. Those name the two cases where a colour's job is to
+   contrast with whatever it sits on rather than to follow the theme.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+
+  /* ── Canvas and cards ──
+     Cool and navy-tinted rather than neutral grey, so the app stays in the same
+     colour family it has in light mode instead of reading as a different
+     product with the lights off. */
+  --tg-surface: #171E30;          /* bg-white: every card, panel and input */
+
+  --tg-cream-50:  #131A2C;
+  --tg-cream-100: #0B1120;        /* the page canvas (bg-brand-bg) */
+  --tg-cream-200: #232C42;
+  --tg-cream-300: #2E3852;
+  --tg-cream-400: #3A4560;
+  --tg-cream-500: #4A5673;
+  --tg-cream-600: #6B789A;
+  --tg-cream-700: #9AA5C2;
+  --tg-cream-800: #C3CADC;
+  --tg-cream-900: #E4E8F1;
+
+  /* ── The workhorse neutral (stands in for slate and gray) ──
+     200 carries 277 borders on its own, so it is tuned to be visible against
+     both the canvas and a card without becoming a grid of lines. */
+  --tg-neutral-50:  #151C2E;
+  --tg-neutral-100: #1B2337;
+  --tg-neutral-200: #2B3550;
+  --tg-neutral-300: #3E4A6B;
+  --tg-neutral-400: #8892B4;
+  --tg-neutral-500: #A9B2CE;
+  --tg-neutral-600: #C3CADF;
+  --tg-neutral-700: #D9DEEB;
+  --tg-neutral-800: #E9ECF4;
+  --tg-neutral-900: #F5F7FB;
+
+  /* ── Headings and body ink ── */
+  --tg-navy-50:  #141B2D;
+  --tg-navy-100: #1B2338;
+  --tg-navy-200: #6E7A9E;
+  --tg-navy-300: #8791B0;
+  --tg-navy-400: #98A2C2;
+  --tg-navy-500: #B7BFD8;
+  --tg-navy-600: #D2D8E8;
+  --tg-navy-700: #E9EDF7;
+  --tg-navy-800: #F2F5FB;
+  --tg-navy-900: #FFFFFF;
+  --tg-ink-strong: #E9EDF7;       /* text-brand-slate, 115 headings */
+  /* `text-brand-navy` and `text-brand-green` as INK. Their `bg-` counterparts
+     keep the saturated value (see the split in tailwind.config.js) — the brand
+     blue that a white label sits on is far too dark to be read as text against
+     a dark card, and these are the same two colours doing the opposite job. */
+  --tg-brand-ink: #9DBFF3;
+  --tg-brand-ink-green: #8ADEDB;
+
+  /* ── Brand ──
+     Only set when the school has picked no colour of its own; applySchoolTheme
+     writes these inline for a branded school and wins over this block. Tints
+     (50-300) go dark, the button band (400-500) is held, ink (600-800) goes
+     light. --tg-brand-chrome is the sidebar and stays dark in both themes. */
+  --tg-brand-50:  #0E1A38;
+  --tg-brand-100: #16264F;
+  --tg-brand-200: #1E3F91;
+  --tg-brand-300: #2449A6;
+  --tg-brand-400: #5C88D6;
+  --tg-brand-500: #2B59C3;
+  --tg-brand-600: #6E9BE8;
+  --tg-brand-700: #9DBFF3;
+  --tg-brand-800: #C8DAF9;
+  --tg-brand-900: #E4EDFC;
+
+  /* ── Accents, inverted end for end ── */
+  --tg-sun-50: #544508;  --tg-sun-100: #75600E; --tg-sun-200: #9C7F12;
+  --tg-sun-300: #C9A417; --tg-sun-400: #EFC521; --tg-sun-500: #FAD84A;
+  --tg-sun-600: #FCE375; --tg-sun-700: #FDEDA8; --tg-sun-800: #FEF6D4;
+  --tg-sun-900: #FEF9E7;
+
+  --tg-aqua-50: #134746;  --tg-aqua-100: #1A6261; --tg-aqua-200: #217E7C;
+  --tg-aqua-300: #2A9D9A; --tg-aqua-400: #3BB8B4; --tg-aqua-500: #5FD0CD;
+  --tg-aqua-600: #8ADEDB; --tg-aqua-700: #B5E9E7; --tg-aqua-800: #DDF5F4;
+  --tg-aqua-900: #EFFBFA;
+
+  --tg-magenta-50: #660A33;  --tg-magenta-100: #920E49; --tg-magenta-200: #C01360;
+  --tg-magenta-300: #D5176A; --tg-magenta-400: #EE2F80; --tg-magenta-500: #F25795;
+  --tg-magenta-600: #F78BB6; --tg-magenta-700: #FBC2D9; --tg-magenta-800: #FDE3EE;
+  --tg-magenta-900: #FEF1F6;
+
+  --tg-lilac-50: #3B2249;  --tg-lilac-100: #55326A; --tg-lilac-200: #71428D;
+  --tg-lilac-300: #8E5CAF; --tg-lilac-400: #9D5FBD; --tg-lilac-500: #B27FCC;
+  --tg-lilac-600: #C6A0DB; --tg-lilac-700: #E4CEF1; --tg-lilac-800: #F2E7F8;
+  --tg-lilac-900: #FAF5FD;
+
+  --tg-lime-50: #404B08;  --tg-lime-100: #5C6C0C; --tg-lime-200: #7E9410;
+  --tg-lime-300: #8CA01B; --tg-lime-400: #AAC029; --tg-lime-500: #C5DB3F;
+  --tg-lime-600: #D2E572; --tg-lime-700: #E2EEA9; --tg-lime-800: #F1F7D5;
+  --tg-lime-900: #F8FBEB;
+
+  --tg-sky-50: #143549;  --tg-sky-100: #1D4B68; --tg-sky-200: #28648A;
+  --tg-sky-300: #357FAB; --tg-sky-400: #4A9BC9; --tg-sky-500: #6BB2DA;
+  --tg-sky-600: #94C9E8; --tg-sky-700: #C7E3F2; --tg-sky-800: #E4F1F9;
+  --tg-sky-900: #F2F9FD;
+
+  /* Red inverts like the rest, so an alert is a deep red panel with pale red
+     text rather than a white card punched into a dark page. Still unmistakably
+     red, which is the one thing this scale must not lose. */
+  --tg-red-50: #3B1214;  --tg-red-100: #521619; --tg-red-200: #7A1D1D;
+  --tg-red-300: #A32323; --tg-red-400: #CB3333; --tg-red-500: #E5484D;
+  --tg-red-600: #F06A6A; --tg-red-700: #FCA5A5; --tg-red-800: #FECACA;
+  --tg-red-900: #FEE2E2;
+  /* Red is the one scale deliberately not inverted end for end. It has to work
+     as a fill under a white label (the unread-notification dot, a Delete
+     button) AND as text on a dark card, and a straight inversion serves only
+     the second — `bg-red-500 text-white` came out at 2.8:1. 500 is held at a
+     vivid mid-red that clears both jobs. */
+
+  /* A navy shadow is what lifts a card off cream and is invisible on a dark
+     canvas. Near-black at higher opacity is what reads as depth here. */
+  --tg-shadow-pop:     rgba(0, 0, 0, 0.45);
+  --tg-shadow-pop-lg:  rgba(0, 0, 0, 0.50);
+  --tg-shadow-card:    rgba(0, 0, 0, 0.40);
+  --tg-shadow-card-lg: rgba(0, 0, 0, 0.55);
 }

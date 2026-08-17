@@ -937,7 +937,7 @@ export default function HITLWorkspace() {
             </div>
           )}
           {isLongScan && (
-            <div className="sticky bottom-0 left-0 right-0 bg-navy-900/80 text-white text-[11px] font-bold px-3 py-1.5 text-center backdrop-blur-sm">
+            <div className="sticky bottom-0 left-0 right-0 bg-ink-900/80 text-white text-[11px] font-bold px-3 py-1.5 text-center backdrop-blur-sm">
               Multi-page work — scroll to read the rest
             </div>
           )}
@@ -1241,7 +1241,7 @@ export default function HITLWorkspace() {
                     </div>
                   </div>
                   {item.desc && (
-                    <div className="hidden group-hover:block absolute bottom-full mb-2 left-0 right-0 bg-slate-800 text-white text-[10px] p-2 rounded z-10 pointer-events-none">
+                    <div className="hidden group-hover:block absolute bottom-full mb-2 left-0 right-0 bg-ink-800 text-white text-[10px] p-2 rounded z-10 pointer-events-none">
                       {item.desc}
                     </div>
                   )}
@@ -1600,7 +1600,7 @@ export default function HITLWorkspace() {
           instead of having published paper 2 before discovering their standard
           had drifted by paper 20. */}
       {showSummary && (
-        <div className="fixed inset-0 z-[110] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
+        <div className="fixed inset-0 z-[110] flex items-center justify-center p-4 bg-ink-900/60 backdrop-blur-sm">
           <div className="bg-white rounded-2xl w-full max-w-md overflow-hidden shadow-2xl">
             <div className="p-6 text-center border-b border-slate-100">
               <div className="w-14 h-14 bg-green-50 text-brand-green rounded-full flex items-center justify-center mx-auto mb-4">

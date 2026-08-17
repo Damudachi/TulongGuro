@@ -26,7 +26,7 @@ export default function UpdatePrompt() {
 
   return (
     <div className="fixed bottom-24 md:bottom-4 left-1/2 -translate-x-1/2 z-50 px-4 w-full max-w-md">
-      <div className="bg-royal-900 text-white rounded-2xl shadow-card-lg px-4 py-3 flex items-center gap-3">
+      <div className="bg-brand-chrome text-white rounded-2xl shadow-card-lg px-4 py-3 flex items-center gap-3">
         <RefreshCw className="w-4 h-4 shrink-0 text-royal-200" />
         <p className="text-sm font-bold flex-1 leading-snug">
           A new version of TulongGuro is ready.

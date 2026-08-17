@@ -134,7 +134,7 @@ export default function SkillProgressChart({
       <div className="flex flex-wrap gap-2 mb-4">
         <button type="button" onClick={() => setActiveTab('summary')}
           className={cn('px-3.5 py-1.5 rounded-full text-xs font-bold border-2 transition-all',
-            activeTab === 'summary' ? 'border-navy-700 bg-navy-700 text-white' : 'border-cream-300 text-navy-500 hover:border-navy-300')}>
+            activeTab === 'summary' ? 'border-brand-chrome bg-brand-chrome text-white' : 'border-cream-300 text-navy-500 hover:border-navy-300')}>
           Summary
         </button>
         {skills.map(s => (
@@ -142,7 +142,7 @@ export default function SkillProgressChart({
             className="px-3.5 py-1.5 rounded-full text-xs font-bold border-2 transition-all flex items-center gap-1.5"
             style={activeTab === s.id
               ? { borderColor: s.color, backgroundColor: s.color, color: 'white' }
-              : { borderColor: '#DDE1EE', color: '#5F6B8F' }}>
+              : { borderColor: 'var(--tg-neutral-200, #DDE1EE)', color: 'var(--tg-neutral-500, #5F6B8F)' }}>
             <span className="w-2 h-2 rounded-full" style={{ background: activeTab === s.id ? 'white' : s.color }} />
             {s.label}
           </button>
@@ -161,15 +161,15 @@ export default function SkillProgressChart({
       <div className="w-full h-64">
         <ResponsiveContainer width="100%" height="100%">
           <LineChart data={visibleChartData} margin={{ top: 5, right: 12, left: -12, bottom: 14 }}>
-            <CartesianGrid strokeDasharray="3 3" stroke="#EDEFF6" />
+            <CartesianGrid strokeDasharray="3 3" stroke="var(--tg-neutral-100, #EDEFF6)" />
             <XAxis dataKey="label" interval={tickInterval} tickFormatter={tickNumber}
-              tick={{ fontSize: 11, fill: '#5F6B8F' }} axisLine={{ stroke: '#DDE1EE' }} tickLine={false}
+              tick={{ fontSize: 11, fill: 'var(--tg-neutral-500, #5F6B8F)' }} axisLine={{ stroke: 'var(--tg-neutral-200, #DDE1EE)' }} tickLine={false}
               label={{
                 value: data.mode === 'week' ? 'Week' : 'Activity',
                 position: 'insideBottom', offset: -10,
-                style: { fontSize: 11, fontWeight: 800, fill: '#8B95B5' }
+                style: { fontSize: 11, fontWeight: 800, fill: 'var(--tg-neutral-400, #8B95B5)' }
               }} />
-            <YAxis domain={[0, 100]} unit="%" tick={{ fontSize: 11, fill: '#5F6B8F' }} axisLine={{ stroke: '#DDE1EE' }} tickLine={false} width={40} />
+            <YAxis domain={[0, 100]} unit="%" tick={{ fontSize: 11, fill: 'var(--tg-neutral-500, #5F6B8F)' }} axisLine={{ stroke: 'var(--tg-neutral-200, #DDE1EE)' }} tickLine={false} width={40} />
             <Tooltip content={<CustomTooltip />} />
             {activeTab === 'summary' ? (
               <>
