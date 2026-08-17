@@ -87,14 +87,34 @@ describe('scaleCriteriaTo100', () => {
 
   it('carries every other field on the criterion through untouched', () => {
     const result = scaleCriteriaTo100([
-      { name: 'Content', points: 4, description: 'Ideas and detail', bands: [{ label: 'Excellent', score: 4 }] },
-      { name: 'Grammar', points: 4, description: 'Sentence control', bands: [] },
+      { name: 'Content', points: 4, description: 'Ideas and detail' },
+      { name: 'Grammar', points: 4, description: 'Sentence control' },
     ]);
 
     expect(result.criteria[0].name).toBe('Content');
     expect(result.criteria[0].description).toBe('Ideas and detail');
-    expect(result.criteria[0].bands).toEqual([{ label: 'Excellent', score: 4 }]);
     expect(result.criteria[0].points).toBe(50);
+  });
+
+  it('does not touch bands — which is why a banded rubric must never be handed here', () => {
+    // Bands are left exactly as they were, so scaling a criterion that has them
+    // leaves the two disagreeing: 50 points on the criterion, "4" on the band
+    // that is supposed to be its top mark. Both are printed into the grading
+    // prompt, so that disagreement reaches the model as two answers to "what is
+    // this criterion out of".
+    //
+    // Fixing it here would mean rewriting every band's score AND its
+    // human-readable range text ("27-30"), which is guesswork on prose. The
+    // caller skips banded rubrics instead — see the `hasBands` check in
+    // extractRubricFromUpload. This test exists to keep that division of labour
+    // honest: if someone teaches this function about bands, the skip can go.
+    const result = scaleCriteriaTo100([
+      { name: 'Content', points: 4, bands: [{ label: 'Excellent', range: '3-4', score: 4 }] },
+      { name: 'Grammar', points: 4, bands: [{ label: 'Excellent', range: '3-4', score: 4 }] },
+    ]);
+
+    expect(result.criteria[0].points).toBe(50);
+    expect(result.criteria[0].bands).toEqual([{ label: 'Excellent', range: '3-4', score: 4 }]);
   });
 
   it('holds to exactly 100 across awkward splits', () => {

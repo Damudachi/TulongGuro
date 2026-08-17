@@ -5859,11 +5859,12 @@ app.delete('/api/teacher/rubric-templates/:id', async (req, res) => {
  * become 34/33/33 rather than three 33s totalling 99, which the save would then
  * refuse for being 1% short.
  *
- * Range rubrics are deliberately left alone. Their criterion points are a real
- * scale that their bands are written against ("27-30 Excellent" under a 30-point
- * criterion), so rescaling the criterion without rewriting every band's range
- * text would leave the two describing different things. validateRubric exempts
- * them from the 100 rule for the same reason.
+ * Anything carrying bands is deliberately left alone, and the caller is the one
+ * that decides that. A banded criterion's points are a real scale its bands are
+ * written against ("27-30 Excellent" under a 30-point criterion), so rescaling
+ * the criterion without rewriting every band's range text would leave the two
+ * describing different things — and both are printed to the grader.
+ * validateRubric exempts them from the 100 rule for the same reason.
  */
 function scaleCriteriaTo100(criteria) {
   const weights = criteria.map(c => Number(c.points) || 0);
@@ -5964,10 +5965,28 @@ Rules:
     }));
 
     const rubricType = parsed.rubricType || 'standard';
+    // Bands are the deciding fact, not the model's own `rubricType` label.
+    //
+    // The prompt above asks for bands whenever levels are visible, whichever
+    // type it decided on, so "standard" and "has bands" happily co-occur — and
+    // scaling one of those rebased the criterion's points while leaving its
+    // bands at the document's scale, so a criterion came back worth 25 with
+    // bands still reading "3-4 pts". Both go into the grading prompt
+    // (formatRubricCriteria prints the criterion maximum AND every band), which
+    // is the model being handed two different answers for what the criterion is
+    // out of. That is the same reason range rubrics were exempted; the exemption
+    // was just keyed on the wrong thing.
+    //
+    // Every other place that asks this question infers it the same way — see
+    // rubricTypeOf in ActivityBuilder and the type line in validateRubric — so
+    // this also stops the extractor from being the one code path with its own
+    // opinion. An unscaled rubric is not a broken one: it is stored with
+    // source 'upload' and scored as a share of its own total.
+    const hasBands = criteria.some(c => c.bands?.length);
     // Rebased to weights totalling 100 before anyone sees them, so the criteria
     // that come back are already savable and the teacher is never shown a
     // rubric the form beside it would refuse. See scaleCriteriaTo100.
-    const weighted = rubricType === 'standard'
+    const weighted = rubricType === 'standard' && !hasBands
       ? scaleCriteriaTo100(criteria)
       : { criteria, originalTotal: criteria.reduce((s, c) => s + c.points, 0), scaled: false };
 

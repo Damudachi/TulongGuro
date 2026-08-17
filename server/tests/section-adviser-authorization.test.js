@@ -140,6 +140,19 @@ function sectionAdvisedByNewTeacher() {
 
 const tokenFor = (id) => signToken({ id, role: 'TEACHER', schoolId: SCHOOL });
 
+/**
+ * A roster entry the enrolment route will actually accept.
+ *
+ * Birthdays became mandatory (rosterBirthdayProblem, 422) after these tests were
+ * written, and that check sits *above* the adviser check in the same route — so
+ * a roster of bare name strings was refused before it ever reached the rule
+ * under test. The tests still failed, which is why it went unnoticed for a
+ * while: they were failing on the wrong line, and would have stayed red even if
+ * the adviser check had been deleted outright. The birthday is what carries them
+ * past the gate to the refusal they are actually about.
+ */
+const learner = (name) => ({ name, birthday: '03/15/2014' });
+
 const postSection = (token, body) =>
   fetch(`${baseUrl}/api/teacher/sections`, {
     method: 'POST',
@@ -157,7 +170,7 @@ describe('POST /api/teacher/sections respects who advises the section', () => {
     const res = await postSection(tokenFor(OLD_ADVISER), {
       name: SECTION_NAME,
       gradeLevel: 'Grade 6',
-      studentsList: ['Dela Cruz, Juan'],
+      studentsList: [learner('Dela Cruz, Juan')],
     });
 
     expect(res.status).toBe(403);
@@ -174,7 +187,7 @@ describe('POST /api/teacher/sections respects who advises the section', () => {
 
     const res = await postSection(tokenFor(OTHER), {
       name: SECTION_NAME,
-      studentsList: ['Santos, Maria Clara'],
+      studentsList: [learner('Santos, Maria Clara')],
     });
 
     expect(res.status).toBe(403);
@@ -194,7 +207,7 @@ describe('POST /api/teacher/sections respects who advises the section', () => {
 
     const res = await postSection(tokenFor(OLD_ADVISER), {
       name: SECTION_NAME,
-      studentsList: ['Dela Cruz, Juan'],
+      studentsList: [learner('Dela Cruz, Juan')],
     });
 
     const body = await res.json();

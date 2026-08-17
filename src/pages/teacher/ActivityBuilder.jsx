@@ -549,6 +549,12 @@ export default function ActivityBuilder() {
               setRubricCriteria(parsed.criteria);
               setRubricType(rubricTypeOf(parsed, parsed.criteria));
               if (parsed.source) setRubricMode(parsed.source);
+              // Upload mode reads from extractedCriteria and nothing else — see
+              // activeCriteria — so a rubric saved from an uploaded file has to
+              // be loaded into it, or reopening that activity shows an empty
+              // dropzone where its criteria should be. They arrive editable and
+              // named as read from a file, which is what they are.
+              if (parsed.source === 'upload') setExtractedCriteria(parsed.criteria);
               setSelectedOption('custom');
             }
           } catch { /* a rubric that will not parse leaves the editor as it is */ }
@@ -559,24 +565,31 @@ export default function ActivityBuilder() {
   }, [isEditMode, editActivityId]);
 
   // ── Rubric helpers ──
+  /**
+   * Whichever list the editor on screen is editing — the same one activeCriteria
+   * reads, and keyed the same way, so an edit can never land in the list the
+   * save path is ignoring. `prev || []` because Upload mode's list starts as
+   * null; the editor is not drawn in that state, so this is a guard and not a
+   * path anyone reaches.
+   */
+  const editCriteria = (fn) => {
+    const setter = rubricMode === 'upload' ? setExtractedCriteria : setRubricCriteria;
+    setter(prev => fn(prev || []));
+  };
   const updateCriterion = (idx, field, val) => {
-    const setter = rubricMode === 'upload' && extractedCriteria ? setExtractedCriteria : setRubricCriteria;
-    setter(prev => prev.map((c, i) => i === idx ? { ...c, [field]: field === 'points' ? parseInt(val) || 0 : val } : c));
+    editCriteria(prev => prev.map((c, i) => i === idx ? { ...c, [field]: field === 'points' ? parseInt(val) || 0 : val } : c));
   };
   const addCriterion = () => {
     const newCriterion = rubricType === 'range'
       ? { name: '', description: '', points: 0, bands: DEFAULT_RANGE_BANDS.map(b => ({ ...b })) }
       : { name: '', description: '', points: 0 };
-    const setter = rubricMode === 'upload' && extractedCriteria ? setExtractedCriteria : setRubricCriteria;
-    setter(prev => [...prev, newCriterion]);
+    editCriteria(prev => [...prev, newCriterion]);
   };
   const removeCriterion = (idx) => {
-    const setter = rubricMode === 'upload' && extractedCriteria ? setExtractedCriteria : setRubricCriteria;
-    setter(prev => prev.filter((_, i) => i !== idx));
+    editCriteria(prev => prev.filter((_, i) => i !== idx));
   };
   const updateBand = (criterionIdx, bandIdx, field, val) => {
-    const setter = rubricMode === 'upload' && extractedCriteria ? setExtractedCriteria : setRubricCriteria;
-    setter(prev => prev.map((c, ci) => {
+    editCriteria(prev => prev.map((c, ci) => {
       if (ci !== criterionIdx) return c;
       // Seeded from the same defaults the editor renders when a criterion has
       // no bands of its own. Starting from [] instead let an edit to the third
@@ -590,7 +603,31 @@ export default function ActivityBuilder() {
     }));
   };
 
-  const activeCriteria = (rubricMode === 'upload' && extractedCriteria) ? extractedCriteria : rubricCriteria;
+  /**
+   * The rubric this form is actually working on, and the only list the save
+   * path reads.
+   *
+   * Keyed on the mode alone. It used to fall back to `rubricCriteria` whenever
+   * `extractedCriteria` was null, which meant that in Upload mode — before a
+   * file was picked, while it was being read, and permanently after a failed
+   * read — the form quietly went on holding whatever the Template or Create tab
+   * had left behind. Two ways that surfaced, both from this one line:
+   *
+   *  - A teacher who picked a school rubric and then switched to Upload could
+   *    press Publish with nothing uploaded. The summary card said "No rubric
+   *    yet" while the save wrote the template's criteria under source 'upload' —
+   *    a rubric they were told they did not have, mislabelled as a file they
+   *    never sent, and thereafter exempt from the 100% rule validateRubric
+   *    applies to hand-built ones.
+   *  - Create mode leaves one blank criterion behind, so the same switch made
+   *    Publish fail on "Every rubric criterion needs a name" — with no criterion
+   *    fields on screen to fix, because Upload mode only draws them for
+   *    extracted criteria. A dead end you could only leave by guessing.
+   *
+   * `rubricCriteria` is left untouched rather than cleared, so switching back to
+   * Create or Template still finds the work that was there.
+   */
+  const activeCriteria = rubricMode === 'upload' ? (extractedCriteria || []) : rubricCriteria;
   // Runs the same range-band normalization that will actually be saved, so the
   // "Total Weight" preview and the submit-time validation both check the real
   // value rather than a raw, hidden points field that range mode never asks
@@ -728,14 +765,13 @@ export default function ActivityBuilder() {
 
   // ── Save as template ──
   const handleSaveAsTemplate = () => {
-    const criteriaToSave = (rubricMode === 'upload' && extractedCriteria) ? extractedCriteria : rubricCriteria;
-    if (!criteriaToSave.length) return;
+    if (!activeCriteria.length) return;
     setTemplateTitle(form.title ? `${form.title} Rubric` : 'My Custom Rubric');
     setShowSaveTemplateModal(true);
   };
 
   const confirmSaveTemplate = async () => {
-    const criteriaToSave = (rubricMode === 'upload' && extractedCriteria) ? extractedCriteria : rubricCriteria;
+    const criteriaToSave = activeCriteria;
     if (!criteriaToSave.length) return;
     const user = JSON.parse(localStorage.getItem('user') || '{}');
     if (!user.id) return alert('User not found. Please log in again.');
@@ -890,7 +926,10 @@ export default function ActivityBuilder() {
       ? JSON.stringify({
           source: rubricMode,
           type: rubricType,
-          criteria: normalizeCriteria((rubricMode === 'upload' && extractedCriteria) ? extractedCriteria : rubricCriteria)
+          // activeCriteria, so what is saved is what the form validated and what
+          // the summary card named — see the note on it for the three ways those
+          // came apart when this read the two lists for itself.
+          criteria: normalizeCriteria(activeCriteria)
         })
       : null;
 
@@ -1767,8 +1806,7 @@ export default function ActivityBuilder() {
               <button type="button" onClick={() => {
                 setRubricType('range');
                 // Ensure existing criteria get default bands if they don't have any
-                const setter = rubricMode === 'upload' && extractedCriteria ? setExtractedCriteria : setRubricCriteria;
-                setter(prev => prev.map(c => c.bands && c.bands.length ? c : { ...c, bands: DEFAULT_RANGE_BANDS.map(b => ({ ...b })) }));
+                editCriteria(prev => prev.map(c => c.bands && c.bands.length ? c : { ...c, bands: DEFAULT_RANGE_BANDS.map(b => ({ ...b })) }));
               }}
                 className={cn('flex-1 py-2 px-3 text-xs font-bold rounded-lg border-2 transition-all',
                   rubricType === 'range' ? 'border-purple-400 bg-purple-50 text-purple-700' : 'border-slate-200 text-slate-500 hover:border-purple-300')}>
