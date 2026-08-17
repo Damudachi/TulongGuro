@@ -453,6 +453,11 @@ export default function ActivityBuilder() {
   const [extractedCriteria, setExtractedCriteria] = useState(null); // null = not extracted yet
   const [isExtracting, setIsExtracting] = useState(false);
   const [extractionError, setExtractionError] = useState(null);
+  // The document's own total, when the weights had to be rebased off it. null
+  // when the rubric already totalled 100, or when nothing has been uploaded.
+  // Said out loud rather than done quietly: the numbers on screen no longer
+  // match the paper in the teacher's hand, and they should know why.
+  const [weightsScaledFrom, setWeightsScaledFrom] = useState(null);
 
   // Save-as-template modal state
   const [showSaveTemplateModal, setShowSaveTemplateModal] = useState(false);
@@ -685,6 +690,7 @@ export default function ActivityBuilder() {
     setExtractionError(null);
     setIsExtracting(true);
     setExtractedCriteria(null);
+    setWeightsScaledFrom(null);
 
     try {
       const fd = new FormData();
@@ -694,7 +700,14 @@ export default function ActivityBuilder() {
       if (data.success && data.criteria) {
         setExtractedCriteria(data.criteria);
         if (data.rubricType) setRubricType(data.rubricType);
-        if (data.totalPoints) setForm(prev => ({ ...prev, points: data.totalPoints }));
+        // The activity's Total Points is deliberately NOT touched here. It used
+        // to be overwritten with the uploaded document's own total, so a teacher
+        // who had set a 50-point activity and then attached a rubric written out
+        // of 20 found their activity silently reworth 20 — a rubric is what the
+        // work is judged against, not how much it is worth, and the two are
+        // separate fields for that reason. The weights themselves arrive
+        // already scaled to 100 (scaleCriteriaTo100 on the server).
+        setWeightsScaledFrom(data.weightsScaled ? data.totalPoints : null);
       } else {
         setExtractionError(data.error || 'Could not extract rubric criteria.');
       }
@@ -709,6 +722,7 @@ export default function ActivityBuilder() {
     setRubricFile(null);
     setExtractedCriteria(null);
     setExtractionError(null);
+    setWeightsScaledFrom(null);
     if (rubricFileRef.current) rubricFileRef.current.value = '';
   };
 
@@ -1929,6 +1943,23 @@ export default function ActivityBuilder() {
               {extractionError && (
                 <div className="p-3 bg-red-50 border border-red-200 rounded-xl text-sm text-red-700">
                   ⚠ {extractionError}
+                </div>
+              )}
+
+              {/* The weights were rebased. Explained where the changed numbers
+                  are, because the criteria on screen no longer match the
+                  document the teacher just uploaded, and an unexplained "25"
+                  where the paper says "4" reads as a misreading rather than as
+                  arithmetic. Says what it kept, which is the part that
+                  matters — the shares are the rubric. */}
+              {weightsScaledFrom != null && (
+                <div className="p-3 bg-blue-50 border border-blue-200 rounded-xl">
+                  <p className="text-sm text-blue-800 leading-relaxed">
+                    Your rubric adds up to <strong>{weightsScaledFrom}</strong>, so the criteria below have
+                    been converted to percentages of 100 — each one keeps exactly the share of the mark it
+                    had in your document. Your activity is still worth <strong>{form.points} points</strong>;
+                    that is set in Total Points above and a rubric never changes it.
+                  </p>
                 </div>
               )}
 

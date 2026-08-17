@@ -5835,6 +5835,64 @@ app.delete('/api/teacher/rubric-templates/:id', async (req, res) => {
  *
  * Shared by the teacher's Activity Builder and the admin's curriculum form.
  */
+/**
+ * Criterion weights scaled so they total 100, keeping their proportions.
+ *
+ * A standard rubric's `points` are PERCENTAGE WEIGHTS, not marks: the grader
+ * works out earned/possible and stores a percentage, and the mark a learner
+ * actually gets is that percentage times the activity's own points. Every
+ * hand-written rubric in the app is held to totalling 100 for that reason.
+ *
+ * A rubric read out of an uploaded document is not: schools write them in
+ * whatever scale the paper uses — four criteria worth 4 points each, five worth
+ * 10 — and those numbers came through untouched, so the same rubric read the
+ * same way was saved as weights totalling 16 while the form next to it refused
+ * anything but 100. Nothing downstream corrected it either; it simply sat there
+ * as "4%" next to a criterion the teacher meant as a quarter of the mark.
+ *
+ * Scaled rather than refused, because the document is right — a 4/4/4/4 rubric
+ * IS four equal quarters, and asking the teacher to retype it as 25/25/25/25 is
+ * asking them to do arithmetic the app can do exactly. Proportions are all that
+ * is being read here, so nothing is lost by rebasing them.
+ *
+ * Largest-remainder, so the integers land on exactly 100: three equal criteria
+ * become 34/33/33 rather than three 33s totalling 99, which the save would then
+ * refuse for being 1% short.
+ *
+ * Range rubrics are deliberately left alone. Their criterion points are a real
+ * scale that their bands are written against ("27-30 Excellent" under a 30-point
+ * criterion), so rescaling the criterion without rewriting every band's range
+ * text would leave the two describing different things. validateRubric exempts
+ * them from the 100 rule for the same reason.
+ */
+function scaleCriteriaTo100(criteria) {
+  const weights = criteria.map(c => Number(c.points) || 0);
+  const total = weights.reduce((sum, n) => sum + n, 0);
+  if (total <= 0 || total === 100) return { criteria, originalTotal: total, scaled: false };
+
+  const shares = weights.map(w => (w / total) * 100);
+  const floors = shares.map(Math.floor);
+  // What rounding down left on the table — always a whole number, and always
+  // fewer than there are criteria, so every unit finds a home.
+  let remainder = 100 - floors.reduce((sum, n) => sum + n, 0);
+  const byFraction = shares
+    .map((share, i) => ({ i, fraction: share - Math.floor(share) }))
+    .sort((a, b) => b.fraction - a.fraction);
+
+  const points = [...floors];
+  for (const { i } of byFraction) {
+    if (remainder <= 0) break;
+    points[i] += 1;
+    remainder -= 1;
+  }
+
+  return {
+    criteria: criteria.map((c, i) => ({ ...c, points: points[i] })),
+    originalTotal: total,
+    scaled: true,
+  };
+}
+
 async function extractRubricFromUpload(file) {
     // Read file and convert to base64
     const fileBuffer = fs.readFileSync(file.path);
@@ -5905,10 +5963,24 @@ Rules:
       })) : []
     }));
 
+    const rubricType = parsed.rubricType || 'standard';
+    // Rebased to weights totalling 100 before anyone sees them, so the criteria
+    // that come back are already savable and the teacher is never shown a
+    // rubric the form beside it would refuse. See scaleCriteriaTo100.
+    const weighted = rubricType === 'standard'
+      ? scaleCriteriaTo100(criteria)
+      : { criteria, originalTotal: criteria.reduce((s, c) => s + c.points, 0), scaled: false };
+
     return {
-      criteria,
-      totalPoints: parsed.totalPoints || criteria.reduce((s, c) => s + c.points, 0),
-      rubricType: parsed.rubricType || 'standard'
+      criteria: weighted.criteria,
+      // The document's own total, reported and not applied. It is what the
+      // rubric was written out of — useful to say "read out of 16 points" — and
+      // it is emphatically NOT the activity's mark, which is the teacher's to
+      // set. Assigning it to that field is the bug this comment exists to stop
+      // coming back.
+      totalPoints: weighted.originalTotal,
+      weightsScaled: weighted.scaled,
+      rubricType
     };
 }
 
@@ -10873,6 +10945,6 @@ function startServer() {
 module.exports = {
   app, startServer, cleanUpTransferRows, carriedOverForClass, carriedOverPrefetch,
   resolveGradingRubric, rubricScoreNoteFor, UNGRADED_RESET,
-  rubricIsPresent, isManualScoreMode,
+  rubricIsPresent, isManualScoreMode, scaleCriteriaTo100,
   logAiRequest, outcomeOf,
 };

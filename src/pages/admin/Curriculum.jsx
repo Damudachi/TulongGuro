@@ -60,7 +60,9 @@ export default function AdminCurriculum() {
     const id = ++draftSeq.current;
     setRubricDrafts(prev => [...prev, {
       id, mode, name: '', criteria: [{ ...BLANK_CRITERION }],
-      fileName: '', isReading: false, error: ''
+      // scaledFrom: the document's own total, when the weights had to be
+      // rebased off it to reach 100. null when they already totalled 100.
+      fileName: '', isReading: false, error: '', scaledFrom: null
     }]);
     return id;
   };
@@ -93,6 +95,11 @@ export default function AdminCurriculum() {
             points: c.points || 0,
             description: c.description || ''
           })),
+          // Already rebased to total 100 by the server (scaleCriteriaTo100), so
+          // a rubric written out of 16 or 40 points arrives publishable instead
+          // of as a card the 100% rule would refuse until it was retyped by
+          // hand. Recorded so the card can say the numbers were converted.
+          scaledFrom: d.weightsScaled ? d.totalPoints : null,
           name: draft.name.trim() ? draft.name : picked.name.replace(/\.[^.]+$/, '')
         } : draft));
       } else {
@@ -527,6 +534,18 @@ export default function AdminCurriculum() {
                           )}
                           {draft.error && (
                             <p className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg p-2.5">{draft.error}</p>
+                          )}
+                          {/* Said where the changed numbers are. The criteria
+                              below no longer read the way the uploaded document
+                              does, and an unexplained 25 where the paper says 4
+                              looks like a misreading rather than a conversion. */}
+                          {draft.scaledFrom != null && (
+                            <p className="text-xs text-blue-800 bg-blue-50 border border-blue-200 rounded-lg p-2.5 leading-relaxed">
+                              Your rubric adds up to <strong>{draft.scaledFrom}</strong>, so these have been
+                              converted to percentages of 100 — each criterion keeps exactly the share of the
+                              mark it had in your document. Teachers apply this as weights; the points an
+                              activity is worth stay theirs to set.
+                            </p>
                           )}
                           <div>
                             <label className="block text-xs font-medium text-slate-500 mb-1">Rubric name</label>
