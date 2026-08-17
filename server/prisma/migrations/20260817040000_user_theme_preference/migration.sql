@@ -1,0 +1,11 @@
+-- How this person wants the app to look: light | dark | system.
+--
+-- On the account rather than on the device, because the device is shared. A
+-- school computer lab, a classroom phone passed down a row, a teacher's laptop
+-- borrowed by a colleague: with the preference kept per browser, one person
+-- turning dark mode on turned it on for everyone who signed in after them.
+--
+-- Additive only: one nullable column. Null means never chosen, which the app
+-- reads as "follow the operating system" — deliberately distinct from an
+-- explicit "light".
+ALTER TABLE "User" ADD COLUMN "themePreference" TEXT;

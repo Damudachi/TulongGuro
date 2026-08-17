@@ -140,10 +140,43 @@ describe('the theme is applied before the first paint', () => {
     // the single worst thing a dark mode can do.
     const html = readFileSync(join(ROOT, 'index.html'), 'utf8');
     expect(html).toMatch(/documentElement\.dataset\.theme/);
-    expect(html).toMatch(/localStorage\.getItem\('tg-theme'\)/);
-    // Same key the runtime uses, or the pre-paint guess and the app disagree.
+    // Same per-account key the runtime builds, or the pre-paint guess and the
+    // app disagree and the flash comes back for exactly the people who set a
+    // preference.
+    expect(html).toMatch(/'tg-theme:' \+ \(id \|\| 'guest'\)/);
     const theme = readFileSync(join(SRC, 'utils/theme.js'), 'utf8');
-    expect(theme).toMatch(/THEME_KEY = 'tg-theme'/);
+    expect(theme).toMatch(/KEY_PREFIX = 'tg-theme'/);
+    expect(theme).toMatch(/\$\{KEY_PREFIX\}:\$\{userId \|\| 'guest'\}/);
+  });
+
+  it('reads the account id only when there is a real session', () => {
+    // A one-off sign-in that ended with the tab leaves the user blob behind by
+    // design (see session.js). Keying off the blob alone would keep applying a
+    // departed user's theme to the login screen the next person sees — the same
+    // cross-account leak, moved to the front door.
+    const html = readFileSync(join(ROOT, 'index.html'), 'utf8');
+    expect(html).toMatch(/sessionStorage\.getItem\('tg_token'\) \|\| localStorage\.getItem\('tg_token'\)/);
+    expect(html).toMatch(/if \(token\)/);
+    // The runtime asks sessionFor(), which applies the same token-and-user rule.
+    const theme = readFileSync(join(SRC, 'utils/theme.js'), 'utf8');
+    expect(theme).toMatch(/currentUserId = \(\) => sessionFor\(\)\.id/);
+  });
+
+  it('switches theme when the session does', () => {
+    // Signing in has to adopt that account's theme, and signing out has to drop
+    // back to the guest slot. Without both, one account's choice keeps showing
+    // on the next person's screen until a reload — the whole defect the
+    // per-account key exists to close.
+    const config = readFileSync(join(SRC, 'config.js'), 'utf8');
+    expect(config).toMatch(/refreshThemeForSession\(user\?\.themePreference/);
+    expect(config).toMatch(/clearStoredSession\(\);[\s\S]*?refreshThemeForSession\(\)/);
+  });
+
+  it('never adopts the old browser-wide key into an account', () => {
+    // There is no way to know whose choice it was. Adopting it would hand one
+    // person's setting to whoever signed in first — precisely the bug.
+    const theme = readFileSync(join(SRC, 'utils/theme.js'), 'utf8');
+    expect(theme).toMatch(/dropRaw\(LEGACY_KEY\)/);
   });
 
   it('offers follow-the-system as a real third choice', () => {

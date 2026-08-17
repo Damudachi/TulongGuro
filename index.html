@@ -44,16 +44,31 @@
          a white flash, which on a phone at night is the most unpleasant thing a
          dark mode can do and the reason people stop using one.
 
+         The preference belongs to the ACCOUNT, not the browser: TulongGuro runs
+         on shared lab machines, and a browser-wide setting meant the first
+         person to pick dark picked it for everyone after them. So the key
+         carries the signed-in account's id, and the fallback slot is ':guest'.
+
+         "Signed in" is a token AND a user, matching sessionFor() in
+         utils/session.js — a one-off session that ended with the tab leaves the
+         user blob behind by design, and reading the blob alone would keep
+         applying a departed user's theme to the login screen.
+
          Deliberately inline and deliberately tiny: it has to run before the
          stylesheet paints, so it cannot be an imported module. It only sets the
          attribute the CSS keys off; utils/theme.js owns everything else and
-         reads the same localStorage key. Wrapped in try/catch because storage
-         is blocked in some embedded WebViews, and a theme preference must never
-         be able to stop the app loading. -->
+         builds the same key. Wrapped in try/catch because storage is blocked in
+         some embedded WebViews, and a theme preference must never be able to
+         stop the app loading. -->
     <script>
       (function () {
         try {
-          var stored = localStorage.getItem('tg-theme');
+          var token = sessionStorage.getItem('tg_token') || localStorage.getItem('tg_token');
+          var id = null;
+          if (token) {
+            try { id = (JSON.parse(localStorage.getItem('user') || '{}') || {}).id || null; } catch (e) { id = null; }
+          }
+          var stored = localStorage.getItem('tg-theme:' + (id || 'guest'));
           var pref = (stored === 'light' || stored === 'dark' || stored === 'system') ? stored : 'system';
           var dark = pref === 'dark' || (pref === 'system' &&
             window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches);

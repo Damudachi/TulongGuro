@@ -111,6 +111,20 @@ model User {
   /// year. It is knowable by classmates, so it is a starting credential rather
   /// than a secret — see the password-change note on the roster screen.
   birthdate         DateTime?
+  /// light | dark | system — how this person wants the app to look.
+  ///
+  /// On the account rather than on the device, because the device is shared.
+  /// A school computer lab, a classroom phone passed down a row, a teacher's
+  /// laptop borrowed by a colleague: with the preference kept per browser, one
+  /// person turning dark mode on turned it on for everyone who signed in after
+  /// them. It is also the only way the choice follows someone from the lab PC
+  /// to their own phone.
+  ///
+  /// Null means never chosen, which is treated as "follow the operating
+  /// system" — deliberately distinct from an explicit "light", so a user who
+  /// has said nothing still gets a dark app at night while one who chose light
+  /// keeps it at any hour.
+  themePreference   String?
   schoolName        String?
   schoolId          String?
   createdAt         DateTime         @default(now())

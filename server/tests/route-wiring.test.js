@@ -2479,6 +2479,59 @@ describe('marking a celebration as seen', () => {
   });
 });
 
+describe('a theme preference belongs to one account', () => {
+  const ME = 'user-me';
+  const url = `/api/users/${ME}/theme`;
+
+  it('saves the choice against the caller, not the id in the path', async () => {
+    prismaFake.user.update.mockResolvedValue({ id: ME });
+
+    const res = await call('PUT', url, {
+      token: tokenFor({ id: ME, role: 'STUDENT' }), body: { themePreference: 'dark' },
+    });
+
+    expect(res.status).toBe(200);
+    const arg = prismaFake.user.update.mock.calls[0][0];
+    expect(arg.where.id).toBe(ME);
+    expect(arg.data.themePreference).toBe('dark');
+  });
+
+  it('refuses one account writing the theme of another', async () => {
+    // The whole point of moving this off the device: on a shared lab machine,
+    // one person's choice must not reach anybody else's account.
+    const res = await call('PUT', '/api/users/someone-else/theme', {
+      token: tokenFor({ id: ME, role: 'STUDENT' }), body: { themePreference: 'dark' },
+    });
+
+    expect(res.status).toBe(403);
+    expect(prismaFake.user.update).not.toHaveBeenCalled();
+  });
+
+  it('refuses a value that is not one of the three', async () => {
+    // This is the one column a user writes directly, and it is read back into a
+    // data-theme attribute on <html>.
+    for (const bad of ['DARK', 'blue', '', null, 42]) {
+      prismaFake.user.update.mockClear();
+      const res = await call('PUT', url, {
+        token: tokenFor({ id: ME, role: 'STUDENT' }), body: { themePreference: bad },
+      });
+      expect(res.status, `themePreference ${JSON.stringify(bad)}`).toBe(400);
+      expect(prismaFake.user.update).not.toHaveBeenCalled();
+    }
+  });
+
+  it('accepts each of the three', async () => {
+    for (const good of ['light', 'dark', 'system']) {
+      prismaFake.user.update.mockClear().mockResolvedValue({ id: ME });
+      const res = await call('PUT', url, {
+        token: tokenFor({ id: ME, role: 'STUDENT' }), body: { themePreference: good },
+      });
+      expect(res.status).toBe(200);
+      expect(prismaFake.user.update.mock.calls[0][0].data.themePreference).toBe(good);
+    }
+  });
+});
+
 describe('a teacher\'s badge library belongs to that teacher', () => {
   const BADGE = 'badge-1';
   const OTHER_TEACHER = 'teacher-2';

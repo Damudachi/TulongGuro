@@ -15,6 +15,7 @@ export const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
 export const MAX_SUBMISSION_PAGES = 12;
 
 import { readToken, storeSession, clearStoredSession, renewStoredToken } from './utils/session';
+import { refreshThemeForSession, configureThemePersistence } from './utils/theme';
 
 export const getToken = () => readToken();
 
@@ -25,9 +26,35 @@ export const getToken = () => readToken();
  * utils/session.js. Omitting it keeps an existing session where it already is,
  * which is what the password-change screens want.
  */
-export const setSession = (user, token, options) => storeSession(user, token, options);
+/**
+ * How a theme choice reaches the server. Installed here rather than imported by
+ * theme.js, which would make this module and that one import each other — and
+ * routed through apiFetch so it carries the session token like every other call.
+ */
+configureThemePersistence((userId, themePreference) =>
+  apiFetch(`${API_URL}/api/users/${userId}/theme`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ themePreference }),
+  }).catch(() => {}));
 
-export const clearSession = () => clearStoredSession();
+export const setSession = (user, token, options) => {
+  storeSession(user, token, options);
+  // The theme belongs to the account, so signing in has to switch to that
+  // account's. `user.themePreference` is what their User row says and comes
+  // back on the login response; it wins over anything cached on this device,
+  // which is how the choice follows someone to a machine they have never used.
+  refreshThemeForSession(user?.themePreference ?? null);
+};
+
+export const clearSession = () => {
+  clearStoredSession();
+  // Back to the guest slot. Without this, signing out of a dark account leaves
+  // the login screen dark for whoever sits down next — the same leak across
+  // accounts that made the preference per-account in the first place, just
+  // pointed at the front door.
+  refreshThemeForSession();
+};
 
 /**
  * Sign out: locally first, then everywhere.

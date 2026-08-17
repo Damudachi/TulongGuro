@@ -2295,6 +2295,45 @@ app.get('/api/health/storage', async (req, res) => {
  * Admins and teachers carry schoolId directly; students inherit it from their
  * section, so resolve through that when their own is unset.
  */
+/**
+ * Save how this person wants the app to look.
+ *
+ * On the account, not the device. TulongGuro runs on shared hardware — a
+ * computer lab, one classroom phone passed down a row — and a preference kept
+ * per browser meant the first person to turn dark mode on turned it on for
+ * everyone who signed in after them. It also means the choice follows a teacher
+ * from the lab PC to their own phone.
+ *
+ * Scoped to `req.auth.sub` rather than to the id in the path. authorizePath
+ * already refuses anyone reaching for another account under /api/users — the
+ * whole area is self-only — and keying the write to the session as well means
+ * the path param cannot be what decides whose row moves.
+ *
+ * The value is checked against a fixed set rather than stored as given: this is
+ * the one column a user writes to directly, and it is read back into a
+ * `data-theme` attribute.
+ */
+const THEME_PREFERENCES = ['light', 'dark', 'system'];
+
+app.put('/api/users/:userId/theme', async (req, res) => {
+  try {
+    const preference = req.body?.themePreference;
+    if (!THEME_PREFERENCES.includes(preference)) {
+      return res.status(400).json({
+        success: false,
+        error: `themePreference must be one of: ${THEME_PREFERENCES.join(', ')}.`,
+      });
+    }
+    await prisma.user.update({
+      where: { id: req.auth.sub },
+      data: { themePreference: preference },
+    });
+    res.json({ success: true, themePreference: preference });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
 app.get('/api/users/:userId/school', async (req, res) => {
   try {
     const user = await prisma.user.findUnique({
