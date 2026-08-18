@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { BookOpen, Eye, EyeOff, UploadCloud, X, Image as ImageIcon, ArrowLeft, Clock, Pipette } from 'lucide-react';
 import { API_URL, apiFetch } from '../config';
+import { ADMIN_EMAIL_DOMAIN, localPartOf, buildAccountEmail } from '../constants/accountEmails';
 
 /**
  * Suggested school colours — the admin can still pick any hex via the picker
@@ -34,12 +35,17 @@ const COLOR_PRESETS = [
 const DEFAULT_BRAND = '#2B59C3';
 
 export default function Register() {
+  // `email` holds only the part before the @. The domain is fixed and rendered
+  // as a suffix on the field rather than left to be typed: an admin account has
+  // to sit on @admin.com, and a form that accepts anything and refuses it on
+  // submit teaches the rule one rejection at a time.
   const [formData, setFormData] = useState({
     name: '',
     email: '',
     password: '',
     schoolName: ''
   });
+  const adminEmail = buildAccountEmail(formData.email, 'ADMIN');
   // Branding is optional — a school with neither falls back to the initials
   // placeholder and the default palette.
   const [logo, setLogo] = useState(null);
@@ -78,7 +84,8 @@ export default function Register() {
     setIsSubmitting(true);
     try {
       const body = new FormData();
-      Object.entries(formData).forEach(([k, v]) => body.append(k, v));
+      // The full address, not the local part the field holds.
+      Object.entries({ ...formData, email: adminEmail }).forEach(([k, v]) => body.append(k, v));
       if (brandColor) body.append('brandColor', brandColor);
       if (logo) body.append('logo', logo);
 
@@ -88,7 +95,7 @@ export default function Register() {
         // No session is stored: the account exists but cannot sign in until a
         // TulongGuro operator approves the school, so sending them to the admin
         // area would only bounce them straight back out at the login gate.
-        setSubmitted({ school: data.school?.name || formData.schoolName, email: formData.email });
+        setSubmitted({ school: data.school?.name || formData.schoolName, email: adminEmail });
       } else {
         setError(data.error || 'Registration failed. Please try again.');
       }
@@ -166,6 +173,8 @@ export default function Register() {
               As the school admin you'll create teacher accounts, publish the curriculum for each grade
               level and subject, and set the rubrics your teachers grade with. Teachers and students
               can't sign themselves up — you create teachers, and they create their students.
+              This first account is also the school's <strong>super admin</strong>: the only one who
+              can add or remove other admins later.
             </div>
 
             <form onSubmit={handleRegister} className="space-y-5" autoComplete="off">
@@ -181,14 +190,31 @@ export default function Register() {
               </div>
 
               <div>
-                <label className="tg-label">Email Address</label>
-                <input
-                  type="email"
-                  required
-                  className="tg-input"
-                  placeholder="teacher@deped.gov.ph"
-                  onChange={(e) => setFormData({...formData, email: e.target.value})}
-                />
+                <label className="tg-label">Admin Email Address</label>
+                {/* Split field: they type the name, the domain is shown and
+                    cannot be changed. localPartOf() cuts at any @ they type or
+                    paste, so pasting a whole address does the obvious thing
+                    instead of producing "principal@admin.com@admin.com". */}
+                <div className="flex items-stretch rounded-2xl border-2 border-navy-700/10 bg-white overflow-hidden focus-within:border-royal-400 transition-colors">
+                  <input
+                    type="text"
+                    required
+                    value={formData.email}
+                    inputMode="email"
+                    autoComplete="off"
+                    aria-describedby="admin-email-hint"
+                    className="flex-1 min-w-0 px-4 py-3 outline-none text-navy-700 font-semibold"
+                    placeholder="principal"
+                    onChange={(e) => setFormData({ ...formData, email: localPartOf(e.target.value) })}
+                  />
+                  <span className="shrink-0 px-3 grid place-items-center bg-cream-100 border-l-2 border-navy-700/10 text-sm font-extrabold text-navy-500 select-none">
+                    @{ADMIN_EMAIL_DOMAIN}
+                  </span>
+                </div>
+                <p id="admin-email-hint" className="text-xs text-navy-400 mt-1.5 font-semibold">
+                  Every admin account signs in on @{ADMIN_EMAIL_DOMAIN}. Teachers you create later
+                  get @teacher.edu.ph addresses.
+                </p>
               </div>
 
               <div>

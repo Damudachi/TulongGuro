@@ -225,12 +225,48 @@ describe('the review screen drawer', () => {
   it('applies the revision payload, never the message text', () => {
     // applyFeedback(msg.text, …) is what put a chat reply into the feedback
     // form. It takes the separate revision now.
-    expect(workspace).toContain('applyFeedback(msg.revision');
+    expect(workspace).toContain('applyFeedback(idx, msg.revision');
     expect(workspace).not.toContain('applyFeedback(msg.text');
   });
 
-  it('only offers Apply on a message that carries a rewrite', () => {
-    expect(workspace).toMatch(/msg\.role === 'ai' && !msg\.failed && msg\.revision/);
+  it('only offers a proposal on a message that carries a rewrite', () => {
+    expect(workspace).toMatch(/msg\.role === 'ai' && !msg\.failed && msg\.preview/);
+  });
+
+  it('shows the proposed feedback before there is anything to accept', () => {
+    // The whole point of the preview: a teacher approving a rewrite of a
+    // student's feedback has to be able to read it first. If the accept button
+    // ever moves out of RevisionPreview, or the card stops rendering the
+    // proposed text, this is what notices.
+    expect(workspace).toContain('function RevisionPreview');
+    expect(workspace).toContain('Proposed feedback');
+    expect(workspace).toContain('<RevisionPreview');
+    // "Use this" lives inside the card, under the text it applies.
+    const card = workspace.slice(
+      workspace.indexOf('function RevisionPreview'),
+      workspace.indexOf('export default function HITLWorkspace'),
+    );
+    expect(card).toContain('onApply');
+    expect(card).toContain('onDismiss');
+    expect(card).toMatch(/field\.after/);
+  });
+
+  it('computes the preview when the reply arrives, not at render time', () => {
+    // A preview recomputed on every render re-baselines against edits the
+    // teacher made after the reply, so a field about to be overwritten can
+    // read as "unchanged".
+    const send = workspace.slice(
+      workspace.indexOf('const handleChatSubmit'),
+      workspace.indexOf('const applyFeedback'),
+    );
+    expect(send).toContain('describeRevision(');
+    expect(send).toContain('preview,');
+  });
+
+  it('says so when a rewrite cannot be shown, instead of offering to apply it', () => {
+    // describeRevision and applyFeedback refuse the same payloads, so a card
+    // must never appear for one the form cannot take.
+    expect(workspace).toContain('previewUnavailable');
   });
 
   it('sends the paper and the conversation so far as context', () => {

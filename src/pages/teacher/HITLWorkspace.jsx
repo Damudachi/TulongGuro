@@ -87,6 +87,208 @@ function flattenFeedback(sf) {
 
 const EMPTY_STRUCTURED = { strengths: '', areasForGrowth: [], actionableSteps: [], skillExplanations: {} };
 
+/**
+ * What a rewrite the assistant offered would actually do to the feedback form.
+ *
+ * The Apply button used to be the only thing a teacher could see about a
+ * proposed change. The assistant's reply says what it changed in a sentence
+ * ("I shortened the second paragraph and added a step about topic sentences"),
+ * and the only way to find out whether that sentence was true was to press
+ * Apply and read the form afterwards — by which point the words the teacher had
+ * written were already gone. A summary is not a preview, and this is a
+ * student's feedback: what goes out under a teacher's name should never be
+ * something they agreed to sight-unseen.
+ *
+ * So this turns the revision payload into the same fields the form has, each
+ * marked as changed or not, and the drawer renders it above the button.
+ *
+ * Returns null when the revision cannot be read into the form's shape at all.
+ * That is not a display problem to paper over: applyFeedback() refuses the same
+ * payload, so a preview that showed something for it would be promising a
+ * change that will not happen.
+ */
+function describeRevision(revision, isStructuredResponse, isStructured, current) {
+  if (!revision) return null;
+
+  if (!isStructured) {
+    const after = String(revision);
+    const before = String(current.legacy || '');
+    return {
+      fields: [{ key: 'feedback', label: 'Feedback', before, after, changed: after.trim() !== before.trim() }],
+      untouched: [],
+    };
+  }
+
+  let parsed = null;
+  if (isStructuredResponse) {
+    try { parsed = JSON.parse(revision); } catch { /* handled below */ }
+  }
+
+  // A plain-text rewrite of a structured paper can only be the narrative half —
+  // the same reading applyFeedback() takes, so the preview matches what the
+  // button will actually do rather than describing a different change.
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    if (!isStructuredResponse && !String(revision).trimStart().startsWith('{')) {
+      const after = String(revision);
+      const before = String(current.strengths || '');
+      return {
+        fields: [{ key: 'strengths', label: 'Strengths', before, after, changed: after.trim() !== before.trim() }],
+        untouched: ['Areas for growth', 'Next steps'],
+      };
+    }
+    return null;
+  }
+
+  const fields = [];
+  const untouched = [];
+
+  const strengths = typeof parsed.strengths === 'string' && parsed.strengths.trim() ? parsed.strengths : null;
+  if (strengths !== null) {
+    const before = String(current.strengths || '');
+    fields.push({ key: 'strengths', label: 'Strengths', before, after: strengths, changed: strengths.trim() !== before.trim() });
+  } else {
+    untouched.push('Strengths');
+  }
+
+  if (Array.isArray(parsed.areasForGrowth)) {
+    const after = parsed.areasForGrowth.map(a => ({
+      quote: String(a?.studentQuote ?? ''),
+      explanation: String(a?.explanation ?? ''),
+    }));
+    const before = (current.areasForGrowth || []).map(a => ({
+      quote: String(a?.studentQuote ?? ''),
+      explanation: String(a?.explanation ?? ''),
+    }));
+    fields.push({
+      key: 'areasForGrowth', label: 'Areas for growth', kind: 'areas',
+      before, after, changed: JSON.stringify(after) !== JSON.stringify(before),
+    });
+  } else {
+    untouched.push('Areas for growth');
+  }
+
+  if (Array.isArray(parsed.actionableSteps)) {
+    const after = parsed.actionableSteps.map(String);
+    const before = (current.actionableSteps || []).map(String);
+    fields.push({
+      key: 'actionableSteps', label: 'Next steps', kind: 'list',
+      before, after, changed: JSON.stringify(after) !== JSON.stringify(before),
+    });
+  } else {
+    untouched.push('Next steps');
+  }
+
+  return fields.length ? { fields, untouched } : null;
+}
+
+/** The "current text" half of one field, as the plain lines it will replace. */
+function beforeText(field) {
+  if (field.kind === 'areas') {
+    return field.before.length
+      ? field.before.map(a => `"${a.quote}" — ${a.explanation}`).join('\n')
+      : 'None.';
+  }
+  if (field.kind === 'list') {
+    return field.before.length ? field.before.map((x, i) => `${i + 1}. ${x}`).join('\n') : 'None.';
+  }
+  return field.before || 'Nothing written yet.';
+}
+
+/**
+ * The proposed feedback, field by field, with the current text kept beside
+ * anything that actually changes.
+ *
+ * Shows the proposal plainly and the current text only where they differ, and
+ * then only behind a disclosure. Both at equal weight would be a diff view, and
+ * a teacher working through forty papers reads the proposal, not the
+ * comparison — the old text is there for the one time in ten it is needed.
+ */
+function RevisionPreview({ preview, onApply, onDismiss, applied, dismissed }) {
+  const changedCount = preview.fields.filter(f => f.changed).length;
+
+  return (
+    <div className="mt-2 w-full border-2 border-emerald-200 bg-emerald-50/60 rounded-2xl overflow-hidden">
+      <div className="px-3 py-2 bg-emerald-100/70 border-b border-emerald-200 flex items-center gap-1.5">
+        <Edit2 className="w-3.5 h-3.5 text-emerald-700 shrink-0" />
+        <span className="text-xs font-bold text-emerald-800">Proposed feedback</span>
+        <span className="ml-auto text-[10px] font-bold uppercase tracking-wider text-emerald-700/70">
+          {changedCount === 0 ? 'nothing changes' : `${changedCount} field${changedCount > 1 ? 's' : ''} change`}
+        </span>
+      </div>
+
+      <div className="p-3 space-y-3">
+        {preview.fields.map(field => (
+          <div key={field.key}>
+            <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-1">
+              {field.label}
+              {!field.changed && <span className="ml-1.5 font-semibold normal-case tracking-normal text-slate-400">· unchanged</span>}
+            </p>
+
+            {field.kind === 'areas' ? (
+              field.after.length === 0
+                ? <p className="text-xs text-slate-400 italic">None.</p>
+                : <ul className="space-y-1.5">
+                    {field.after.map((a, i) => (
+                      <li key={i} className="text-xs text-slate-700 leading-relaxed">
+                        <span className="block text-slate-500 italic">&ldquo;{a.quote}&rdquo;</span>
+                        {a.explanation}
+                      </li>
+                    ))}
+                  </ul>
+            ) : field.kind === 'list' ? (
+              field.after.length === 0
+                ? <p className="text-xs text-slate-400 italic">None.</p>
+                : <ol className="list-decimal list-inside space-y-0.5">
+                    {field.after.map((step, i) => (
+                      <li key={i} className="text-xs text-slate-700 leading-relaxed">{step}</li>
+                    ))}
+                  </ol>
+            ) : (
+              <p className="text-xs text-slate-700 leading-relaxed whitespace-pre-wrap">{field.after}</p>
+            )}
+
+            {field.changed && (
+              <details className="mt-1.5">
+                <summary className="text-[11px] font-bold text-slate-400 hover:text-slate-600 cursor-pointer select-none">
+                  Show current text
+                </summary>
+                <div className="mt-1 pl-2 border-l-2 border-slate-200 text-[11px] text-slate-500 leading-relaxed whitespace-pre-wrap">
+                  {beforeText(field)}
+                </div>
+              </details>
+            )}
+          </div>
+        ))}
+
+        {preview.untouched.length > 0 && (
+          <p className="text-[11px] text-slate-400">Left as it is: {preview.untouched.join(', ')}.</p>
+        )}
+      </div>
+
+      {applied ? (
+        <div className="px-3 py-2 bg-emerald-100/70 border-t border-emerald-200 text-xs font-bold text-emerald-800 flex items-center gap-1.5">
+          <Check className="w-3.5 h-3.5" /> Written into the feedback form
+        </div>
+      ) : dismissed ? (
+        <div className="px-3 py-2 bg-slate-100 border-t border-slate-200 text-xs font-bold text-slate-500 flex items-center gap-1.5">
+          <X className="w-3.5 h-3.5" /> Not used — your feedback is unchanged
+        </div>
+      ) : (
+        <div className="p-2 bg-white/60 border-t border-emerald-200 flex gap-2">
+          <button onClick={onDismiss}
+            className="flex-1 py-2 rounded-xl border border-slate-200 bg-white text-xs font-bold text-slate-500 hover:bg-slate-50">
+            Keep mine
+          </button>
+          <button onClick={onApply}
+            className="flex-1 py-2 rounded-xl bg-brand-green text-white text-xs font-bold hover:brightness-95 flex items-center justify-center gap-1.5">
+            <Check className="w-3.5 h-3.5" /> Use this
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function HITLWorkspace() {
   const navigate = useNavigate();
   const { submissionId } = useParams();
@@ -502,13 +704,29 @@ export default function HITLWorkspace() {
           text: data.refineFailedReason || data.error || "The AI Teacher Assistant couldn't answer that right now.",
         }]);
       } else {
+        // The preview is computed here rather than at render time, and against
+        // the feedback as it stands right now. A preview recomputed on every
+        // render would silently re-baseline itself against edits the teacher
+        // made after the reply arrived, so "Strengths · unchanged" could appear
+        // on a card that is about to overwrite something they just typed.
+        const preview = describeRevision(
+          data.revisedFeedback || null,
+          data.isStructured,
+          isStructured,
+          { ...structuredFeedback, legacy: legacyFeedbackText },
+        );
         setChatHistory(prev => [...prev, {
           role: 'ai',
           text: data.reply,
-          // Absent on an answer — which is what keeps "Apply to Feedback" off
+          // Absent on an answer — which is what keeps the proposal card off
           // bubbles that were never a rewrite in the first place.
           revision: data.revisedFeedback || null,
           isStructuredResponse: data.isStructured,
+          preview,
+          // A revision whose shape the form cannot take is refused by
+          // applyFeedback(). Saying so here, instead of offering a button that
+          // will answer with an error bubble, is the honest version.
+          previewUnavailable: !!data.revisedFeedback && !preview,
         }]);
       }
     } catch {
@@ -532,7 +750,7 @@ export default function HITLWorkspace() {
    * rewrite silently landing in "Strengths" is worse than no rewrite, because
    * it reads as something the teacher wrote.
    */
-  const applyFeedback = (revision, isStructuredResponse) => {
+  const applyFeedback = (idx, revision, isStructuredResponse) => {
     if (!revision) return;
 
     if (isStructured) {
@@ -564,7 +782,16 @@ export default function HITLWorkspace() {
     } else {
       setLegacyFeedbackText(revision);
     }
-    setIsChatOpen(false);
+    // The card stays, marked as applied, instead of vanishing with the drawer.
+    // Closing on apply was the last piece of "you find out what changed by
+    // looking at the form afterwards": the teacher lost the proposal at the
+    // exact moment they might want to compare it against what landed.
+    setChatHistory(prev => prev.map((m, i) => (i === idx ? { ...m, applied: true } : m)));
+  };
+
+  /** Decline a proposal. Nothing is written; the card records that it was refused. */
+  const dismissRevision = (idx) => {
+    setChatHistory(prev => prev.map((m, i) => (i === idx ? { ...m, dismissed: true } : m)));
   };
 
   // ── Save / Validate ──
@@ -1774,7 +2001,13 @@ export default function HITLWorkspace() {
         </div>
         <div className="flex-1 p-4 overflow-y-auto bg-slate-50 space-y-4">
           {chatHistory.map((msg, idx) => (
-            <div key={idx} className={cn('flex flex-col max-w-[85%]', msg.role === 'user' ? 'ml-auto items-end' : 'mr-auto items-start')}>
+            /* A bubble carrying a proposal takes the full width of the
+               drawer. At 85% the preview's quoted evidence wrapped every three
+               or four words, which is unreadable for the one thing on this
+               screen a teacher has to actually read before approving. */
+            <div key={idx} className={cn('flex flex-col',
+              msg.preview ? 'w-full' : 'max-w-[85%]',
+              msg.role === 'user' ? 'ml-auto items-end' : 'mr-auto items-start')}>
               {msg.role === 'ai' && (
                 <div className={cn('flex items-center text-xs mb-1 ml-1 font-bold', msg.failed ? 'text-amber-600' : 'text-slate-500')}>
                   {msg.failed ? <AlertTriangle className="w-3.5 h-3.5 mr-1" /> : <Bot className="w-3.5 h-3.5 mr-1" />}
@@ -1792,12 +2025,25 @@ export default function HITLWorkspace() {
               </div>
               {/* Only on a reply that actually carries a rewrite. It used to sit
                   under every AI bubble, so answering a question offered to paste
-                  that answer into the student's feedback. */}
-              {msg.role === 'ai' && !msg.failed && msg.revision && (
-                <button onClick={() => applyFeedback(msg.revision, msg.isStructuredResponse)}
-                  className="mt-2 text-xs font-bold text-brand-green flex items-center bg-green-50 px-3 py-1.5 rounded-full hover:bg-green-100 transition-colors border border-green-200">
-                  <Check className="w-3.5 h-3.5 mr-1" /> Apply to Feedback
-                </button>
+                  that answer into the student's feedback.
+
+                  And it shows the rewrite, not just a button to accept it —
+                  see describeRevision above for why a one-line summary was not
+                  enough to approve a student's feedback on. */}
+              {msg.role === 'ai' && !msg.failed && msg.preview && (
+                <RevisionPreview
+                  preview={msg.preview}
+                  applied={!!msg.applied}
+                  dismissed={!!msg.dismissed}
+                  onApply={() => applyFeedback(idx, msg.revision, msg.isStructuredResponse)}
+                  onDismiss={() => dismissRevision(idx)}
+                />
+              )}
+              {msg.role === 'ai' && !msg.failed && msg.previewUnavailable && (
+                <p className="mt-2 text-[11px] font-bold text-amber-700 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2">
+                  That rewrite came back in a shape this form can't take, so there is nothing to
+                  show or apply. Ask again and it will be redone.
+                </p>
               )}
             </div>
           ))}

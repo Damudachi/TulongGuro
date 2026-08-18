@@ -1,10 +1,12 @@
 import { useState, useEffect, useCallback } from 'react';
 import {
   Plus, Loader2, KeyRound, X, Copy, Check, ArrowUpCircle,
-  UserMinus, History, Info, Pencil
+  UserMinus, History, Info, Pencil, ShieldCheck
 } from 'lucide-react';
 import { API_URL, apiFetch } from '../../config';
 import { getStoredUser, updateStoredUser } from '../../utils/session';
+import { ADMIN_EMAIL_DOMAIN, buildAccountEmail, validateAccountEmail } from '../../constants/accountEmails';
+import DomainEmailField from '../../components/DomainEmailField';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
 
@@ -65,6 +67,11 @@ export default function AdminAdmins() {
   const [nameDraft, setNameDraft] = useState(null);
   const [nameError, setNameError] = useState('');
   const [isRenaming, setIsRenaming] = useState(false);
+  // Promotion moves the account onto the admin domain, so the teacher being
+  // promoted is picked first and their new address chosen second — hence a
+  // selected teacher rather than a click that acts immediately.
+  const [promoting, setPromoting] = useState(null);   // { teacher, email }
+  const [promoteError, setPromoteError] = useState('');
 
   const load = useCallback(() => {
     if (!me.id) return;
@@ -97,14 +104,16 @@ export default function AdminAdmins() {
     setIsSaving(true);
     setError('');
     try {
+      // form.email holds the part before the @ only; the domain is fixed.
+      const email = buildAccountEmail(form.email, 'ADMIN');
       const res = await apiFetch(`${API_URL}/api/admin/${me.id}/admins`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(form),
+        body: JSON.stringify({ ...form, email }),
       });
       const d = await res.json().catch(() => null);
       if (res.ok && d?.success) {
-        setCredentials({ email: form.email, password: form.password });
+        setCredentials({ email, password: form.password });
         setShowForm(false);
         load();
       } else {
@@ -117,26 +126,58 @@ export default function AdminAdmins() {
     }
   };
 
-  const handlePromote = async (teacher) => {
+  /**
+   * Step one of promoting: choose the address the account will move to.
+   *
+   * A teacher signs in on @teacher.edu.ph and an admin on @admin.com, so a
+   * promotion is also a change of login. Seeding the new local part from their
+   * existing one means the usual case is a confirmation rather than a decision.
+   */
+  const startPromote = (teacher) => {
+    setPromoteError('');
+    setPromoting({
+      teacher,
+      email: String(teacher.email || '').split('@')[0] || '',
+    });
+  };
+
+  const handlePromote = async (e) => {
+    e.preventDefault();
+    if (!promoting || busyId) return;
+    const { teacher } = promoting;
+    const email = buildAccountEmail(promoting.email, 'ADMIN');
+
+    const check = validateAccountEmail(email, 'ADMIN');
+    if (!check.ok) { setPromoteError(check.error); return; }
+
     if (!confirm(
-      `Make ${teacher.name} an admin?\n\n`
-      + 'They will lose access to the teacher console and be signed out, so they '
-      + 'have to sign in again from the Admin tab.'
+      `Make ${teacher.name} an admin?
+
+`
+      + `They will sign in as ${email} from now on — their old address stops working — `
+      + 'and they lose access to the teacher console. They are signed out immediately.'
     )) return;
+
     setBusyId(teacher.id);
+    setPromoteError('');
     try {
       const res = await apiFetch(`${API_URL}/api/admin/${me.id}/admins/promote`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ teacherId: teacher.id }),
+        body: JSON.stringify({ teacherId: teacher.id, adminEmail: email }),
       });
       const d = await res.json().catch(() => null);
-      if (res.ok && d?.success) { setShowPromote(false); load(); }
-      // The server names the classes and sections still holding them — that
-      // message is the whole point of the guard, so it must not be swallowed.
-      else alert(failureMessage(res, d, 'Nothing has been changed.'));
+      if (res.ok && d?.success) {
+        setPromoting(null);
+        setShowPromote(false);
+        load();
+      } else {
+        // The server names the classes and sections still holding them — that
+        // message is the whole point of the guard, so it must not be swallowed.
+        setPromoteError(failureMessage(res, d, 'Nothing has been changed.'));
+      }
     } catch {
-      alert('Could not reach the server. Nothing has been changed.');
+      setPromoteError('Could not reach the server. Nothing has been changed.');
     } finally {
       setBusyId(null);
     }
@@ -232,6 +273,14 @@ export default function AdminAdmins() {
   const history = data?.history || [];
   const maxAdmins = data?.maxAdmins || 5;
   const atCap = admins.length >= maxAdmins;
+  // Who may change the set of admins. Defaults to false when the list could not
+  // be read: offering controls that will 403 is worse than hiding controls that
+  // would have worked, and the load-failure banner already says the page is not
+  // showing the state of the school.
+  const superAdminId = data?.superAdminId || null;
+  const iAmSuperAdmin = !!data?.isSuperAdmin;
+  const superAdmin = admins.find(a => a.id === superAdminId) || null;
+  const canManage = iAmSuperAdmin && !loadFailed;
   // Mirrors the server's promotion guard so the reason is visible before the
   // click, not only after it. The server still decides — this is only the copy.
   const eligible = teachers.filter(t => !(t._count?.taughtClasses || t._count?.ownedSections));
@@ -244,33 +293,59 @@ export default function AdminAdmins() {
           <h1 className="text-2xl font-bold text-brand-slate">School admins</h1>
           <p className="text-slate-500 text-sm">Who else can run this school's console</p>
         </div>
-        <div className="flex gap-2 shrink-0">
-          <button onClick={() => setShowPromote(true)} disabled={atCap}
-            className="border border-slate-200 bg-white text-brand-slate px-4 py-2.5 rounded-lg text-sm font-bold hover:border-brand-navy disabled:opacity-40 flex items-center gap-2">
-            <ArrowUpCircle className="w-4 h-4" /> Promote Teacher
-          </button>
-          <button onClick={openForm} disabled={atCap}
-            className="bg-brand-navy text-white px-4 py-2.5 rounded-lg text-sm font-bold hover:bg-blue-900 shadow-md disabled:opacity-40 flex items-center gap-2">
-            <Plus className="w-4 h-4" /> Add Admin
-          </button>
-        </div>
+        {/* Hidden outright rather than shown disabled for anyone but the super
+            admin. A greyed-out button reads as "not right now"; this is "not
+            you, ever", and the notice below says who instead. */}
+        {canManage && (
+          <div className="flex gap-2 shrink-0">
+            <button onClick={() => { setShowPromote(true); setPromoting(null); setPromoteError(''); }} disabled={atCap}
+              className="border border-slate-200 bg-white text-brand-slate px-4 py-2.5 rounded-lg text-sm font-bold hover:border-brand-navy disabled:opacity-40 flex items-center gap-2">
+              <ArrowUpCircle className="w-4 h-4" /> Promote Teacher
+            </button>
+            <button onClick={openForm} disabled={atCap}
+              className="bg-brand-navy text-white px-4 py-2.5 rounded-lg text-sm font-bold hover:bg-blue-900 shadow-md disabled:opacity-40 flex items-center gap-2">
+              <Plus className="w-4 h-4" /> Add Admin
+            </button>
+          </div>
+        )}
       </div>
 
       {/* What the role actually means. Admin is total authority over the
           school's data, and someone adding a colleague should be told that
           before they do it rather than discover it afterwards. */}
-      <div className="bg-blue-50 border border-blue-200 rounded-2xl p-4 mb-6 flex gap-3">
-        <Info className="w-5 h-5 text-brand-navy shrink-0 mt-0.5" />
-        <div className="text-sm text-blue-900">
-          <p className="font-bold mb-1">An admin can do everything you can.</p>
-          <p className="text-blue-800 text-xs leading-relaxed">
-            That includes adding and removing teachers, changing the grading policy, and
-            reading every learner's grades. Give it only to people who run the school —
-            colleagues who teach need a teacher account instead. A school can have up to{' '}
-            {maxAdmins} admins, and must always keep at least one.
-          </p>
+      {canManage ? (
+        <div className="bg-blue-50 border border-blue-200 rounded-2xl p-4 mb-6 flex gap-3">
+          <Info className="w-5 h-5 text-brand-navy shrink-0 mt-0.5" />
+          <div className="text-sm text-blue-900">
+            <p className="font-bold mb-1">An admin can do everything you can, except this page.</p>
+            <p className="text-blue-800 text-xs leading-relaxed">
+              An admin adds and removes teachers, changes the grading policy, and reads every
+              learner's grades. Give it only to people who run the school — colleagues who teach
+              need a teacher account instead. Adding and removing admins stays with you as the
+              super admin, so nobody you add here can remove you. A school can have up to{' '}
+              {maxAdmins} admins, and must always keep at least one. Admin accounts sign in on{' '}
+              @{ADMIN_EMAIL_DOMAIN}.
+            </p>
+          </div>
         </div>
-      </div>
+      ) : (
+        /* Not a refusal to read — every admin should be able to see who else can
+           reach their school. It is a refusal to *change* it, and saying whose
+           job that is beats leaving them to guess why the buttons are missing. */
+        <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4 mb-6 flex gap-3">
+          <ShieldCheck className="w-5 h-5 text-slate-400 shrink-0 mt-0.5" />
+          <div className="text-sm text-slate-700">
+            <p className="font-bold mb-1">Only the super admin can change this list.</p>
+            <p className="text-slate-600 text-xs leading-relaxed">
+              {superAdmin
+                ? <>Admin accounts are added and removed by <strong>{superAdmin.name}</strong>{superAdmin.email ? ` (${superAdmin.email})` : ''}, who registered this school. Ask them to make the change.</>
+                : <>Admin accounts are added and removed by whoever registered this school. Ask them to make the change.</>}
+              {' '}Everything else an admin does — teachers, curriculum, rubrics, grading policy —
+              is fully yours.
+            </p>
+          </div>
+        </div>
+      )}
 
       {loadFailed && (
         <div className="bg-red-50 border border-red-200 rounded-2xl p-4 mb-6">
@@ -327,6 +402,7 @@ export default function AdminAdmins() {
           // The last admin cannot be demoted; saying so on the button is
           // friendlier than letting the server refuse after a confirm dialog.
           const isLast = admins.length <= 1;
+          const isSuper = !!superAdminId && a.id === superAdminId;
           return (
             <div key={a.id}
               className="bg-white border border-slate-200 rounded-xl p-4 flex items-center gap-4">
@@ -353,6 +429,12 @@ export default function AdminAdmins() {
                 ) : (
                   <p className="font-semibold text-brand-slate truncate flex items-center gap-2">
                     <span className="truncate">{a.name}</span>
+                    {isSuper && (
+                      <span title="Registered this school — the only account that can add or remove admins"
+                        className="text-[10px] font-bold uppercase tracking-wide text-amber-700 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-full shrink-0 flex items-center gap-1">
+                        <ShieldCheck className="w-3 h-3" /> Super admin
+                      </span>
+                    )}
                     {isMe && (
                       <>
                         <span className="text-[10px] font-bold uppercase tracking-wide text-brand-navy bg-blue-50 px-2 py-0.5 rounded-full shrink-0">You</span>
@@ -371,20 +453,22 @@ export default function AdminAdmins() {
                 {isMe && nameError && <p className="text-xs text-red-600 mt-1">{nameError}</p>}
                 <p className="text-xs text-slate-500 truncate">{a.email}</p>
               </div>
-              <div className="flex gap-1 shrink-0">
-                <button onClick={() => handleResetPassword(a)}
-                  disabled={isMe || busyId === a.id}
-                  title={isMe ? 'Change your own password from the login screen' : 'Reset password'}
-                  className="p-2 rounded-lg bg-slate-100 text-slate-600 hover:bg-slate-200 disabled:opacity-30">
-                  <KeyRound className="w-4 h-4" />
-                </button>
-                <button onClick={() => handleDemote(a)}
-                  disabled={isMe || isLast || busyId === a.id}
-                  title={isMe ? 'Another admin has to do this' : isLast ? 'A school must keep at least one admin' : 'Remove admin access'}
-                  className="p-2 rounded-lg bg-slate-100 text-slate-600 hover:bg-red-100 hover:text-red-600 disabled:opacity-30">
-                  {busyId === a.id ? <Loader2 className="w-4 h-4 animate-spin" /> : <UserMinus className="w-4 h-4" />}
-                </button>
-              </div>
+              {canManage && (
+                <div className="flex gap-1 shrink-0">
+                  <button onClick={() => handleResetPassword(a)}
+                    disabled={isMe || busyId === a.id}
+                    title={isMe ? 'Change your own password from the login screen' : 'Reset password'}
+                    className="p-2 rounded-lg bg-slate-100 text-slate-600 hover:bg-slate-200 disabled:opacity-30">
+                    <KeyRound className="w-4 h-4" />
+                  </button>
+                  <button onClick={() => handleDemote(a)}
+                    disabled={isMe || isLast || busyId === a.id}
+                    title={isMe ? 'The super admin cannot remove their own access' : isLast ? 'A school must keep at least one admin' : 'Remove admin access'}
+                    className="p-2 rounded-lg bg-slate-100 text-slate-600 hover:bg-red-100 hover:text-red-600 disabled:opacity-30">
+                    {busyId === a.id ? <Loader2 className="w-4 h-4 animate-spin" /> : <UserMinus className="w-4 h-4" />}
+                  </button>
+                </div>
+              )}
             </div>
           );
         })}
@@ -439,13 +523,13 @@ export default function AdminAdmins() {
                   placeholder="Juan Dela Cruz"
                   className="w-full border border-slate-200 p-2.5 rounded-lg outline-none focus:ring-2 focus:ring-brand-navy text-sm" />
               </div>
-              <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1">Email *</label>
-                <input required type="email" value={form.email} autoComplete="off"
-                  onChange={e => setForm({ ...form, email: e.target.value })}
-                  placeholder="principal@deped.gov.ph"
-                  className="w-full border border-slate-200 p-2.5 rounded-lg outline-none focus:ring-2 focus:ring-brand-navy text-sm" />
-              </div>
+              <DomainEmailField
+                id="new-admin-email"
+                role="ADMIN"
+                value={form.email}
+                onChange={email => setForm({ ...form, email })}
+                hint={`Admin accounts always sign in on @${ADMIN_EMAIL_DOMAIN} — you only choose the name.`}
+              />
               <div>
                 <label className="block text-sm font-medium text-slate-700 mb-1">Temporary password *</label>
                 <div className="flex gap-2">
@@ -477,19 +561,61 @@ export default function AdminAdmins() {
       {showPromote && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-2xl p-6 w-full max-w-md shadow-xl max-h-[85vh] flex flex-col">
-            <h2 className="text-xl font-bold text-brand-slate mb-1">Promote a teacher</h2>
+            <h2 className="text-xl font-bold text-brand-slate mb-1">
+              {promoting ? `Promote ${promoting.teacher.name}` : 'Promote a teacher'}
+            </h2>
             <p className="text-slate-500 text-sm mb-4">
-              Their existing account becomes an admin account. They are signed out and sign
-              back in from the Admin tab.
+              {promoting
+                ? 'Their account keeps its history and becomes an admin account. Choose the admin address they will sign in with.'
+                : 'Their existing account becomes an admin account. They are signed out and sign back in from the Admin tab.'}
             </p>
 
+            {/* ── Step 2: the new address ──
+                Split out rather than done with a prompt() because it is a real
+                decision with a real consequence: the address they sign in with
+                changes, and the old one stops working the moment this is
+                confirmed. That is worth showing before and after in full. */}
+            {promoting ? (
+              <form onSubmit={handlePromote} className="flex-1 overflow-y-auto -mx-1 px-1 space-y-4">
+                <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 text-xs">
+                  <p className="text-slate-500 font-bold uppercase tracking-wider text-[10px] mb-1">Signs in today as</p>
+                  <p className="font-mono text-slate-700 break-all">{promoting.teacher.email}</p>
+                </div>
+
+                <DomainEmailField
+                  id="promote-admin-email"
+                  role="ADMIN"
+                  autoFocus
+                  value={promoting.email}
+                  onChange={email => setPromoting(prev => ({ ...prev, email }))}
+                  label="New admin email"
+                  hint={`Their teacher address stops working. From then on they sign in as ${buildAccountEmail(promoting.email, 'ADMIN') || `name@${ADMIN_EMAIL_DOMAIN}`}.`}
+                />
+
+                {promoteError && (
+                  <p className="text-xs text-red-600 bg-red-50 border border-red-200 rounded-lg p-2.5">{promoteError}</p>
+                )}
+
+                <div className="flex gap-2 pt-1">
+                  <button type="button" onClick={() => { setPromoting(null); setPromoteError(''); }}
+                    className="flex-1 py-2.5 rounded-lg border border-slate-200 text-slate-600 font-medium hover:bg-slate-50">
+                    Back
+                  </button>
+                  <button type="submit" disabled={!!busyId || !promoting.email.trim()}
+                    className={cn('flex-1 py-2.5 rounded-lg text-white font-bold flex items-center justify-center gap-2',
+                      busyId ? 'bg-slate-300 cursor-not-allowed' : 'bg-brand-navy hover:bg-blue-900')}>
+                    {busyId ? <><Loader2 className="w-4 h-4 animate-spin" /> Promoting...</> : 'Promote to admin'}
+                  </button>
+                </div>
+              </form>
+            ) : (
             <div className="flex-1 overflow-y-auto -mx-1 px-1">
               {eligible.length === 0 && blocked.length === 0 && (
                 <p className="text-sm text-slate-400 text-center py-8">No teacher accounts yet.</p>
               )}
 
               {eligible.map(t => (
-                <button key={t.id} onClick={() => handlePromote(t)} disabled={busyId === t.id}
+                <button key={t.id} onClick={() => startPromote(t)} disabled={busyId === t.id}
                   className="w-full text-left bg-white border border-slate-200 rounded-xl p-3 mb-2 flex items-center gap-3 hover:border-brand-navy disabled:opacity-40">
                   <span className="w-9 h-9 rounded-full bg-blue-50 text-brand-navy font-bold grid place-items-center shrink-0">
                     {t.name.charAt(0).toUpperCase()}
@@ -521,11 +647,14 @@ export default function AdminAdmins() {
                 </>
               )}
             </div>
+            )}
 
-            <button type="button" onClick={() => setShowPromote(false)}
-              className="mt-4 w-full py-2.5 rounded-lg border border-slate-200 text-slate-600 font-medium hover:bg-slate-50 shrink-0">
-              Close
-            </button>
+            {!promoting && (
+              <button type="button" onClick={() => setShowPromote(false)}
+                className="mt-4 w-full py-2.5 rounded-lg border border-slate-200 text-slate-600 font-medium hover:bg-slate-50 shrink-0">
+                Close
+              </button>
+            )}
           </div>
         </div>
       )}

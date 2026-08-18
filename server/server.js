@@ -31,6 +31,9 @@ const {
   RENEWED_TOKEN_HEADER,
 } = require('./auth');
 const { classSchoolId, staffMayAccess, staffMayReadStudent, REAL_WORK } = require('./access');
+const {
+  TEACHER_EMAIL_DOMAIN, ADMIN_EMAIL_DOMAIN, validateAccountEmail,
+} = require('./accountEmails');
 const { currentSchoolYear, isCurrentSchoolYear, compareSchoolYearsDesc } = require('./schoolYear');
 const {
   cellToText, extractRoster, readBirthday,
@@ -1553,13 +1556,27 @@ app.post('/api/auth/register', registerRateLimit, (req, res, next) => {
     if (!name || !email || !password || !schoolName) {
       return res.status(400).json({ success: false, error: 'Name, email, password and school name are all required.' });
     }
+    // This form creates an ADMIN, so the admin domain rule binds here too —
+    // otherwise the one admin every school is guaranteed to have would be the
+    // one account exempt from it, and the rule would mean nothing.
+    const emailCheck = validateAccountEmail(email, 'ADMIN');
+    if (!emailCheck.ok) {
+      return res.status(400).json({ success: false, error: emailCheck.error });
+    }
+    const adminEmail = emailCheck.email;
     // Branding is optional; reject only a malformed colour rather than silently
     // storing something the UI can't render.
     if (brandColor && !/^#[0-9a-fA-F]{6}$/.test(brandColor)) {
       return res.status(400).json({ success: false, error: 'School colour must be a hex value like #1E3A8A.' });
     }
 
-    const existing = await prisma.user.findFirst({ where: { email } });
+    // Normalized, not as typed. `email` and `username` are both unique columns
+    // and the account is created from the normalized address below, so looking
+    // up the raw one let "Principal@Admin.com" past a check that the create
+    // then failed on with a bare P2002.
+    const existing = await prisma.user.findFirst({
+      where: { OR: [{ email: adminEmail }, { username: adminEmail }] },
+    });
     if (existing) {
       return res.status(400).json({ success: false, error: 'An account with this email already exists. Please log in instead.' });
     }
@@ -1586,10 +1603,19 @@ app.post('/api/auth/register', registerRateLimit, (req, res, next) => {
     const hashedPassword = await bcrypt.hash(password, BCRYPT_SALT_ROUNDS);
     const user = await prisma.user.create({
       data: {
-        name, email, username: email, password: hashedPassword,
+        name, email: adminEmail, username: adminEmail, password: hashedPassword,
         role: 'ADMIN', schoolName: trimmedSchool, schoolId: school.id
       }
     });
+
+    // Whoever filled in this form is the school's super admin: the only account
+    // that may afterwards change who else can reach the school. Written in a
+    // second statement because the admin's id does not exist until the row
+    // above does, and tolerant of its own failure — a school with no ownerId
+    // still resolves its super admin from the earliest ADMIN row, which is this
+    // one, so losing the write costs a stored answer rather than the feature.
+    await prisma.school.update({ where: { id: school.id }, data: { ownerId: user.id } })
+      .catch((err) => console.warn('[register] could not record school owner:', err.message));
 
     // No session is returned: the account exists but cannot be used until the
     // school is approved, so handing back a user object would only let the
@@ -2502,7 +2528,11 @@ app.post('/api/admin/:adminId/teachers', async (req, res) => {
     if (!name?.trim() || !email?.trim() || !password) {
       return res.status(400).json({ success: false, error: 'Name, email and a temporary password are required.' });
     }
-    const normalizedEmail = email.trim().toLowerCase();
+    // A teacher account has to sit on the teacher domain — see accountEmails.js
+    // for why the domain carries the role.
+    const emailCheck = validateAccountEmail(email, 'TEACHER');
+    if (!emailCheck.ok) return res.status(400).json({ success: false, error: emailCheck.error });
+    const normalizedEmail = emailCheck.email;
     const clash = await prisma.user.findFirst({ where: { OR: [{ email: normalizedEmail }, { username: normalizedEmail }] } });
     if (clash) return res.status(400).json({ success: false, error: 'An account with this email already exists.' });
 
@@ -2651,13 +2681,28 @@ app.delete('/api/admin/:adminId/teachers/:teacherId', async (req, res) => {
 // console, and a school whose sole admin leaves or forgets their password has
 // no way back in short of a developer editing the database.
 //
-// So an admin can grant admin to someone else *in their own school*. That is
-// not a privilege escalation: an admin already has total authority over their
-// school's data, and the person they promote gains nothing the person granting
-// it did not already have. It crosses no trust boundary, because the boundary
-// that matters is the tenant one, and this stays inside it. Platform-level
-// access — approving schools, anything cross-school — remains where it is, on
-// the PLATFORM_ADMIN_KEY routes that no school account can reach.
+// So an admin can be granted admin to someone else *in their own school*. That
+// is not a privilege escalation: an admin already has total authority over
+// their school's data, and the person promoted gains nothing the person
+// granting it did not already have. It crosses no trust boundary, because the
+// boundary that matters is the tenant one, and this stays inside it.
+// Platform-level access — approving schools, anything cross-school — remains
+// where it is, on the PLATFORM_ADMIN_KEY routes that no school account can
+// reach.
+//
+// ── Who may use these four routes: the super admin, and nobody else ──
+//
+// "Any admin may add and remove any admin" is symmetric, and symmetry is the
+// problem: a co-admin added for one term could remove the head teacher who
+// added them, and the head teacher would find out by being unable to log in.
+// The school has no way back from that on its own — the remaining admin is a
+// legitimate admin, so nothing looks wrong from the outside.
+//
+// The account that registered the school (School.ownerId, see the schema note)
+// is therefore the only one that may change the set of admins. Every other
+// admin power stays exactly where it was: a co-admin still runs teachers,
+// curriculum, rubrics, grading policy and every grade in the school. What they
+// cannot do is change who else holds the keys.
 //
 // Every route below reads the school from the *calling admin's* row and never
 // from the request. That is the one mistake here that would actually matter: a
@@ -2671,6 +2716,59 @@ app.delete('/api/admin/:adminId/teachers/:teacherId', async (req, res) => {
  * raised by an operator; nobody has yet.
  */
 const MAX_ADMINS_PER_SCHOOL = 5;
+
+/**
+ * Who the school's super admin is — the account that registered it.
+ *
+ * School.ownerId is the stored answer, but it is nullable and every school that
+ * existed before the column did has NULL there. Treating NULL as "nobody" would
+ * lock those schools out of admin management entirely at the moment this
+ * deploys, so it falls back to the earliest ADMIN row of the school, which is
+ * who registered it — the same person ownerId would have named.
+ *
+ * The fallback is a read, not a write: scripts/backfill-school-owner.js exists
+ * to make the answer permanent, and until it is run this is recomputed per
+ * request. That is one indexed lookup on a route nobody calls in a loop.
+ *
+ * Returns null only for a school with no admins at all, which cannot happen
+ * through any code path here — the demote guard keeps at least one — but is
+ * treated as "no super admin" rather than "everyone is one" if it ever does.
+ */
+async function resolveSuperAdminId(schoolId, school) {
+  if (school?.ownerId) return school.ownerId;
+  const first = await prisma.user.findFirst({
+    where: { schoolId, role: 'ADMIN' },
+    orderBy: { createdAt: 'asc' },
+    select: { id: true },
+  });
+  return first?.id || null;
+}
+
+/**
+ * Refuses anyone but the super admin.
+ *
+ * Guards the four routes that change *who can reach the school*: create an
+ * admin, promote a teacher into one, demote one, reset one's password. Every
+ * other admin power is untouched — a co-admin still runs the school's
+ * curriculum, teachers, rubrics and grading policy in full.
+ *
+ * The reason to draw the line exactly here: those four are the only actions
+ * whose effect is on the set of admins itself, which makes them the only ones a
+ * co-admin could use to remove the person who added them. Everything else is
+ * authority over data, which co-admins are supposed to have.
+ */
+async function requireSuperAdmin(admin) {
+  const superAdminId = await resolveSuperAdminId(admin.schoolId, admin.school);
+  if (!superAdminId || admin.id !== superAdminId) {
+    const err = new Error(
+      'Only the super admin — the account that registered this school — can add or remove admins. '
+      + 'Ask them to make the change.'
+    );
+    err.status = 403;
+    throw err;
+  }
+  return superAdminId;
+}
 
 /** Fire-and-forget: a failure to write history must not fail the action. */
 async function logAdminEvent(event, actor, target) {
@@ -2711,6 +2809,21 @@ async function coAdminInSchool(admin, userId) {
     err.status = 404;
     throw err;
   }
+  // The super admin cannot be demoted or have their password reset from here.
+  //
+  // Strictly this is already unreachable: both routes are behind
+  // requireSuperAdmin, so the only caller is the super admin themselves, and
+  // the self-check above has already refused them. It is stated anyway because
+  // the guarantee "the account that registered the school cannot be removed by
+  // anyone inside it" should not rest on a second guard elsewhere continuing to
+  // be applied — if requireSuperAdmin is ever relaxed on one of these routes,
+  // this is what stops the relaxation from also handing over the school.
+  const superAdminId = await resolveSuperAdminId(admin.schoolId, admin.school);
+  if (superAdminId && target.id === superAdminId) {
+    const err = new Error('This is the super admin who registered the school. Their access cannot be changed here.');
+    err.status = 400;
+    throw err;
+  }
   return target;
 }
 
@@ -2734,6 +2847,9 @@ app.get('/api/admin/:adminId/admins', async (req, res) => {
       select: { id: true, name: true, email: true, createdAt: true },
       orderBy: { createdAt: 'asc' }
     });
+    // Sent so the page can label the row and hide the controls the caller
+    // cannot use, rather than offering four buttons that all end in a 403.
+    const superAdminId = await resolveSuperAdminId(admin.schoolId, admin.school);
     const history = await prisma.adminAuditLog.findMany({
       where: { schoolId: admin.schoolId },
       orderBy: { createdAt: 'desc' },
@@ -2753,6 +2869,13 @@ app.get('/api/admin/:adminId/admins', async (req, res) => {
       // which would be a claim it cannot support.
       historyUnavailable: history === null,
       maxAdmins: MAX_ADMINS_PER_SCHOOL,
+      superAdminId,
+      isSuperAdmin: !!superAdminId && admin.id === superAdminId,
+      // The frontend puts these in front of the person typing an address; the
+      // server is still what decides. Sent rather than hardcoded twice so a
+      // change to the rule reaches an already-loaded page on its next request.
+      teacherEmailDomain: TEACHER_EMAIL_DOMAIN,
+      adminEmailDomain: ADMIN_EMAIL_DOMAIN,
     });
   } catch (e) { sendAdminError(res, e); }
 });
@@ -2761,6 +2884,7 @@ app.get('/api/admin/:adminId/admins', async (req, res) => {
 app.post('/api/admin/:adminId/admins', async (req, res) => {
   try {
     const admin = await requireAdminSchool(req.params.adminId);
+    await requireSuperAdmin(admin);
     const { name, email, password } = req.body || {};
     if (!name?.trim() || !email?.trim() || !password) {
       return res.status(400).json({ success: false, error: 'Name, email and a temporary password are required.' });
@@ -2768,6 +2892,8 @@ app.post('/api/admin/:adminId/admins', async (req, res) => {
     if (String(password).length < 6) {
       return res.status(400).json({ success: false, error: 'The temporary password must be at least 6 characters.' });
     }
+    const emailCheck = validateAccountEmail(email, 'ADMIN');
+    if (!emailCheck.ok) return res.status(400).json({ success: false, error: emailCheck.error });
 
     const adminCount = await prisma.user.count({ where: { schoolId: admin.schoolId, role: 'ADMIN' } });
     if (adminCount >= MAX_ADMINS_PER_SCHOOL) {
@@ -2777,7 +2903,7 @@ app.post('/api/admin/:adminId/admins', async (req, res) => {
       });
     }
 
-    const normalizedEmail = email.trim().toLowerCase();
+    const normalizedEmail = emailCheck.email;
     // The same clash check the teacher route does, and for the same reason:
     // username and email are both unique columns, so without it the create
     // throws a P2002 that reaches the admin as a bare 500.
@@ -2785,6 +2911,9 @@ app.post('/api/admin/:adminId/admins', async (req, res) => {
     if (clash) {
       return res.status(400).json({
         success: false,
+        // Kept, though the domain rule now makes it near-unreachable: a teacher
+        // account is on @teacher.edu.ph and this address must be on @admin.com,
+        // so the two can only collide on an account created before the rule.
         error: clash.schoolId === admin.schoolId && clash.role === 'TEACHER'
           ? 'This person already has a teacher account here. Promote that account instead of creating a second one.'
           : 'An account with this email already exists.'
@@ -2822,7 +2951,8 @@ app.post('/api/admin/:adminId/admins', async (req, res) => {
 app.post('/api/admin/:adminId/admins/promote', async (req, res) => {
   try {
     const admin = await requireAdminSchool(req.params.adminId);
-    const { teacherId } = req.body || {};
+    await requireSuperAdmin(admin);
+    const { teacherId, adminEmail } = req.body || {};
     if (!teacherId) return res.status(400).json({ success: false, error: 'Choose a teacher to promote.' });
 
     const teacher = await prisma.user.findUnique({
@@ -2851,13 +2981,65 @@ app.post('/api/admin/:adminId/admins/promote', async (req, res) => {
       });
     }
 
+    /**
+     * The promoted account has to move onto the admin domain.
+     *
+     * This is the one place the domain rule and an existing feature actually
+     * collide: a teacher's address is on @teacher.edu.ph by the rule above, and
+     * this route is about to make them an ADMIN, whose address must be on
+     * @admin.com. Three ways out were possible and two are worse:
+     *
+     *   - let the promoted account keep its teacher address. Then "an admin's
+     *     address ends in @admin.com" is not true, and a rule with an exception
+     *     nobody can see is not a rule.
+     *   - refuse promotion outright unless they somehow already hold an
+     *     @admin.com address. That deletes a working feature — no teacher ever
+     *     will — and leaves "create a second account for the same person" as
+     *     the only path, which is exactly what promotion exists to avoid.
+     *
+     * So the caller supplies the new address, and the account moves to it.
+     * `username` moves with `email` because it is the login identifier and the
+     * two are the same string everywhere else in this codebase; the person
+     * signs in with the new address afterwards, which is the honest reflection
+     * of "this is now an admin account". Skipped entirely when the account is
+     * already on the admin domain, so an account created before the rule can
+     * still be promoted without being asked to change address.
+     */
+    let emailMove = {};
+    const alreadyOnAdminDomain = String(teacher.email || '').endsWith(`@${ADMIN_EMAIL_DOMAIN}`);
+    if (!alreadyOnAdminDomain) {
+      if (!adminEmail?.trim()) {
+        return res.status(400).json({
+          success: false,
+          code: 'ADMIN_EMAIL_REQUIRED',
+          error: `${teacher.name} signs in as ${teacher.email}, which is a teacher address. `
+            + `Give them the @${ADMIN_EMAIL_DOMAIN} address they will use as an admin.`,
+        });
+      }
+      const emailCheck = validateAccountEmail(adminEmail, 'ADMIN');
+      if (!emailCheck.ok) return res.status(400).json({ success: false, error: emailCheck.error });
+
+      const clash = await prisma.user.findFirst({
+        where: {
+          OR: [{ email: emailCheck.email }, { username: emailCheck.email }],
+          NOT: { id: teacher.id },
+        },
+      });
+      if (clash) {
+        return res.status(400).json({ success: false, error: 'An account with this email already exists.' });
+      }
+      emailMove = { email: emailCheck.email, username: emailCheck.email };
+    }
+
     // Their current session is signed in as a TEACHER and the token is what
     // authorizes every request — so without ending it they would keep the
-    // teacher console, and not get the admin one, until it expired.
+    // teacher console, and not get the admin one, until it expired. The address
+    // change makes this doubly necessary: the credential they signed in with no
+    // longer exists.
     const revokedAt = new Date();
     const promoted = await prisma.user.update({
       where: { id: teacher.id },
-      data: { role: 'ADMIN', sessionsValidFrom: revokedAt }
+      data: { role: 'ADMIN', sessionsValidFrom: revokedAt, ...emailMove }
     });
     markRevoked(teacher.id, revokedAt);
     await logAdminEvent('ADMIN_PROMOTED', admin, promoted);
@@ -2878,6 +3060,7 @@ app.post('/api/admin/:adminId/admins/promote', async (req, res) => {
 app.put('/api/admin/:adminId/admins/:userId/demote', async (req, res) => {
   try {
     const admin = await requireAdminSchool(req.params.adminId);
+    await requireSuperAdmin(admin);
     const target = await coAdminInSchool(admin, req.params.userId);
 
     // The guard that matters most on this route. A school with no admin cannot
@@ -2913,6 +3096,10 @@ app.put('/api/admin/:adminId/admins/:userId/demote', async (req, res) => {
 app.put('/api/admin/:adminId/admins/:userId/password', async (req, res) => {
   try {
     const admin = await requireAdminSchool(req.params.adminId);
+    // Behind the same gate as add and remove, and for the same reason: whoever
+    // sets an admin's password can sign in as them, so this changes who can
+    // reach the school just as surely as creating an account does.
+    await requireSuperAdmin(admin);
     const target = await coAdminInSchool(admin, req.params.userId);
     const { password } = req.body || {};
     if (!password) return res.status(400).json({ success: false, error: 'A new password is required.' });

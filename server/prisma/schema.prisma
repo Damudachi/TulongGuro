@@ -28,6 +28,29 @@ model School {
   /// When a platform operator approved it, and who/why if it was refused.
   approvedAt       DateTime?
   rejectedReason   String?
+  /// The admin who registered this school — its super admin.
+  ///
+  /// Every admin already has total authority over their school's data, so this
+  /// is not another tier of that. It answers a different question: who is
+  /// accountable for *who else holds the keys*. Adding, promoting, demoting and
+  /// resetting the password of an admin are the four actions that change the
+  /// set of people who can reach a school, and letting any admin do them to any
+  /// other meant a co-admin added for one term could remove the head teacher
+  /// who added them. Those four are now the super admin's alone; everything
+  /// else an admin can do is untouched.
+  ///
+  /// A plain String rather than a relation to User. A relation would need a
+  /// matching back-reference on User, and schema changes here ship through
+  /// `prisma db push` with no migration history to roll back — a nullable
+  /// scalar column is the change with the smallest blast radius. Nullable for
+  /// the same reason School.status defaults the way it does: every school that
+  /// already exists gets NULL when this column is pushed, and locking those
+  /// schools out of admin management until someone backfills them would be a
+  /// worse failure than the one this prevents. resolveSuperAdminId() in
+  /// server.js therefore falls back to the school's earliest ADMIN row, which
+  /// is who registered it; scripts/backfill-school-owner.js writes that answer
+  /// down permanently.
+  ownerId          String?
   /// Grade at or above which a student is considered passing. DepEd uses 75.
   /// School-wide on purpose: "who needs help" has to mean the same thing in
   /// every class, or the analytics can't be compared across sections.

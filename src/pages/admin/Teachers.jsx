@@ -3,6 +3,8 @@ import { Link } from 'react-router-dom';
 import { Users, Plus, Loader2, Trash2, KeyRound, X, Copy, Check, GraduationCap, BookOpen, ClipboardList, ChevronRight, Search } from 'lucide-react';
 import { API_URL, apiFetch } from '../../config';
 import { GRADE_LEVELS } from '../../constants/school';
+import { TEACHER_EMAIL_DOMAIN, buildAccountEmail } from '../../constants/accountEmails';
+import DomainEmailField from '../../components/DomainEmailField';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
 
@@ -49,15 +51,18 @@ export default function AdminTeachers() {
     if (isSaving) return;
     setIsSaving(true);
     setError('');
+    // form.email holds only the part before the @; the domain is fixed by the
+    // role and added here, which is also what gets handed over as the login.
+    const teacherEmail = buildAccountEmail(form.email, 'TEACHER');
     try {
       const res = await apiFetch(`${API_URL}/api/admin/${admin.id}/teachers`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(form)
+        body: JSON.stringify({ ...form, email: teacherEmail })
       });
       const d = await res.json();
       if (d.success) {
-        setCreatedCredentials({ email: form.email, password: form.password });
+        setCreatedCredentials({ email: teacherEmail, password: form.password });
         setShowForm(false);
         load();
       } else {
@@ -318,13 +323,13 @@ export default function AdminTeachers() {
                   placeholder="Juan Dela Cruz"
                   className="w-full border border-slate-200 p-2.5 rounded-lg outline-none focus:ring-2 focus:ring-brand-navy text-sm" />
               </div>
-              <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1">Email *</label>
-                <input required type="email" value={form.email} autoComplete="off"
-                  onChange={e => setForm({ ...form, email: e.target.value })}
-                  placeholder="teacher@deped.gov.ph"
-                  className="w-full border border-slate-200 p-2.5 rounded-lg outline-none focus:ring-2 focus:ring-brand-navy text-sm" />
-              </div>
+              <DomainEmailField
+                id="new-teacher-email"
+                role="TEACHER"
+                value={form.email}
+                onChange={email => setForm({ ...form, email })}
+                hint={`Teacher accounts always sign in on @${TEACHER_EMAIL_DOMAIN} — you only choose the name.`}
+              />
               <div>
                 <label className="block text-sm font-medium text-slate-700 mb-1">Temporary password *</label>
                 <div className="flex gap-2">
