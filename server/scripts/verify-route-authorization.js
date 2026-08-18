@@ -91,7 +91,10 @@ const ROUTE_MANIFEST = {
   'POST /api/teacher/submissions/:id/release': { needsCheck: true },
   'POST /api/teacher/submissions/excuse': { needsCheck: true },
   'GET /api/teacher/submissions/:id/history': { needsCheck: true },
-  'POST /api/teacher/refine': { needsCheck: false, note: 'rewrites feedback text passed in the body, no resource id' },
+  'POST /api/teacher/assistant': { needsCheck: false, note: 'chats about / rewrites feedback text passed in the body, no resource id' },
+  // Legacy path for the same handler, kept while older frontend builds are
+  // still loaded in browsers. Same reasoning: nothing is read by id.
+  'POST /api/teacher/refine': { needsCheck: false, note: 'legacy alias of POST /api/teacher/assistant' },
   'PUT /api/teacher/submissions/:id/grade': { needsCheck: true },
   'GET /api/teacher/:teacherId/analytics': { needsCheck: false, note: 'authorizePath: seg[2] is the teacherId itself' },
   'GET /api/teacher/student/:studentId/analytics': { needsCheck: true },

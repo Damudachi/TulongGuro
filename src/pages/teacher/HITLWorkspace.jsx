@@ -72,7 +72,7 @@ function editSnapshot({ scores, readingStrategy, feedback }) {
   return JSON.stringify({ orderedScores, readingStrategy: readingStrategy || '', feedback: feedback || '' });
 }
 
-/** Build a flat text summary for the AI Co-Pilot context window. */
+/** Build a flat text summary for the AI Teacher Assistant's context window. */
 function flattenFeedback(sf) {
   const parts = [];
   if (sf.strengths) parts.push(`Strengths: ${sf.strengths}`);
@@ -131,7 +131,10 @@ export default function HITLWorkspace() {
   const [isEditingAssessment, setIsEditingAssessment] = useState(false);
   const [isChatOpen, setIsChatOpen] = useState(false);
   const [chatHistory, setChatHistory] = useState([
-    { role: 'ai', text: "Hi! I'm your AI Co-Pilot. Tell me how you'd like to improve this feedback." }
+    // Opens with what it can do, not with one thing it can do. The old greeting
+    // ("tell me how you'd like to improve this feedback") was the whole reason
+    // teachers only ever used this to reword text.
+    { role: 'ai', text: "Hi! I'm your AI Teacher Assistant. Ask me anything about this paper, the rubric or how to teach what it shows — or tell me how you'd like the feedback changed." }
   ]);
   const [chatInput, setChatInput] = useState('');
   const [isChatLoading, setIsChatLoading] = useState(false);
@@ -143,7 +146,7 @@ export default function HITLWorkspace() {
   const [skillAnalysisOpen, setSkillAnalysisOpen] = useState(false);
   // Read straight from the onboarding store on first render: shown once, so
   // there is nothing to re-check later and nothing worth a spare render pass.
-  const [showTooltip, setShowTooltip] = useState(() => !hasSeenOnboarding(ONBOARDING.TEACHER_COPILOT_TIP));
+  const [showTooltip, setShowTooltip] = useState(() => !hasSeenOnboarding(ONBOARDING.TEACHER_ASSISTANT_TIP));
   const [showCelebration, setShowCelebration] = useState(false);
   const chatEndRef = useRef(null);
 
@@ -166,7 +169,7 @@ export default function HITLWorkspace() {
   // — and each press wrote an identical grade to the record.
   const [baseline, setBaseline] = useState(null);
 
-  // Computed feedbackText for AI Co-Pilot & backwards compat
+  // Computed feedbackText for the AI Teacher Assistant & backwards compat
   const feedbackText = isStructured ? flattenFeedback(structuredFeedback) : legacyFeedbackText;
 
   // Whether anything has been touched since this paper was loaded or last
@@ -366,6 +369,33 @@ export default function HITLWorkspace() {
   // What that percentage is worth in the activity's own points.
   const scoreInPoints = (scorePercent / 100) * (submission?.activity?.points || 100);
 
+  /**
+   * What the assistant is told about the paper being reviewed.
+   *
+   * Nothing here is new information — it is this screen, flattened into the
+   * order a colleague would say it. Without it the assistant could only ever
+   * reword the feedback it was handed, so any real question ("why did
+   * Organization land on 3?", "what should I reteach after this?") came back
+   * as a guess or as a rewrite nobody asked for.
+   */
+  const assistantContext = (() => {
+    const lines = [];
+    if (submission?.activity?.title) lines.push(`Activity: ${submission.activity.title}`);
+    if (submission?.activity?.class?.name) lines.push(`Class: ${submission.activity.class.name}`);
+    if (submission?.student?.name) lines.push(`Student: ${submission.student.name}`);
+    if (rubricItems.length) {
+      lines.push('Rubric, as currently scored on screen:');
+      for (const item of rubricItems) {
+        lines.push(`- ${item.name}: ${scores[item.key] || 0} of ${item.max}${item.desc ? ` (${item.desc})` : ''}`);
+      }
+      lines.push(`Total: ${totalScore} of ${rubricTotal} rubric points = ${Math.round(scorePercent)}%, worth ${scoreInPoints.toFixed(1)} of ${submission?.activity?.points || 100} activity points.`);
+    } else {
+      lines.push('This activity has no rubric attached, so there are no criterion scores.');
+    }
+    if (readingStrategy) lines.push(`Reading strategy recorded by the teacher: ${readingStrategy}`);
+    return lines.join('\n');
+  })();
+
   // AI grading hasn't produced a result yet. The AI-failure case still counts as
   // "done" so the teacher can fall back to grading manually.
   const aiFailed = !!submission?.aiFeedback?.includes('⚠ AI grading is currently unavailable');
@@ -425,58 +455,114 @@ export default function HITLWorkspace() {
     }));
   };
 
-  // ── AI Co-Pilot ──
+  // ── AI Teacher Assistant ──
+  /**
+   * One message to the assistant.
+   *
+   * The reply and the revision are two different things now. The server sends
+   * back `reply` — what the assistant says, in plain sentences — and, only when
+   * the teacher actually asked for the feedback to change, a `revisedFeedback`
+   * payload carried alongside it. Before this, the rewrite *was* the reply, so
+   * on a structured paper the chat bubble printed the raw JSON the model had
+   * produced ({"strengths": "...) and every message, question or not, came back
+   * as a block of student feedback.
+   */
   const handleChatSubmit = async (e) => {
     e.preventDefault();
     if (!chatInput.trim()) return;
     const msg = chatInput.trim();
+    // Sent before the new message is appended, so the server sees the
+    // conversation as it stood when this question was asked. Follow-ups like
+    // "shorten that" or "why?" are meaningless without it.
+    const history = chatHistory.map(m => ({ role: m.role, text: m.text }));
     setChatHistory(prev => [...prev, { role: 'user', text: msg }]);
     setChatInput('');
     setIsChatLoading(true);
     try {
-      const res = await apiFetch(`${API_URL}/api/teacher/refine`, {
+      const res = await apiFetch(`${API_URL}/api/teacher/assistant`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ currentFeedback: feedbackText, prompt: msg, isStructured })
+        body: JSON.stringify({
+          currentFeedback: feedbackText,
+          prompt: msg,
+          isStructured,
+          history,
+          context: assistantContext,
+        })
       });
       const data = await res.json();
-      // refineFailed means the AI never actually ran — the server falls back to
-      // returning the original text unchanged rather than failing the request.
-      // Showing that as a normal AI reply used to be indistinguishable from the
-      // AI genuinely deciding your wording didn't need to change, and it came
-      // with an "Apply" button that would silently reapply the identical text.
-      if (data.refineFailed) {
-        setChatHistory(prev => [...prev, { role: 'ai', failed: true, text: data.refineFailedReason || "The AI Co-Pilot couldn't make this change right now." }]);
+      // refineFailed means the AI never actually ran — the server answers 200
+      // either way rather than failing the request. Showing that as a normal
+      // reply was indistinguishable from a real answer, and it used to come
+      // with an "Apply" button that would silently reapply the untouched text.
+      if (!res.ok || data.refineFailed || !data.reply) {
+        setChatHistory(prev => [...prev, {
+          role: 'ai',
+          failed: true,
+          text: data.refineFailedReason || data.error || "The AI Teacher Assistant couldn't answer that right now.",
+        }]);
       } else {
-        setChatHistory(prev => [...prev, { role: 'ai', text: data.refinedFeedback, isStructuredResponse: data.isStructured }]);
+        setChatHistory(prev => [...prev, {
+          role: 'ai',
+          text: data.reply,
+          // Absent on an answer — which is what keeps "Apply to Feedback" off
+          // bubbles that were never a rewrite in the first place.
+          revision: data.revisedFeedback || null,
+          isStructuredResponse: data.isStructured,
+        }]);
       }
     } catch {
-      setChatHistory(prev => [...prev, { role: 'ai', failed: true, text: 'Error reaching AI. Please check your connection.' }]);
+      setChatHistory(prev => [...prev, { role: 'ai', failed: true, text: 'Error reaching the assistant. Please check your connection.' }]);
     } finally {
       setIsChatLoading(false);
     }
   };
 
-  const applyFeedback = (text, isStructuredResponse) => {
-    if (isStructured && isStructuredResponse) {
-      // Try to parse the AI response as structured JSON and merge intelligently
-      try {
-        const parsed = JSON.parse(text);
+  /**
+   * Write a revision the assistant offered into the feedback form.
+   *
+   * Only ever called with a message's `revision` payload — never with what the
+   * assistant said. That separation is the point: the reply is prose for the
+   * teacher, and pasting it into the form is how an answer to a question, or a
+   * block of raw JSON, used to end up as the student's feedback.
+   *
+   * On a structured paper the revision is serialized JSON in the same shape the
+   * form holds. Anything that doesn't parse into that shape is refused outright
+   * rather than dropped into whichever field looks closest — a malformed
+   * rewrite silently landing in "Strengths" is worse than no rewrite, because
+   * it reads as something the teacher wrote.
+   */
+  const applyFeedback = (revision, isStructuredResponse) => {
+    if (!revision) return;
+
+    if (isStructured) {
+      let parsed = null;
+      if (isStructuredResponse) {
+        try { parsed = JSON.parse(revision); } catch { /* handled below */ }
+      }
+
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
         setStructuredFeedback(prev => ({
           ...prev,
-          strengths: parsed.strengths || prev.strengths,
+          strengths: typeof parsed.strengths === 'string' && parsed.strengths.trim() ? parsed.strengths : prev.strengths,
           areasForGrowth: Array.isArray(parsed.areasForGrowth) ? parsed.areasForGrowth : prev.areasForGrowth,
           actionableSteps: Array.isArray(parsed.actionableSteps) ? parsed.actionableSteps : prev.actionableSteps,
         }));
-      } catch {
-        // If JSON parsing fails, fall back to setting strengths
-        setStructuredFeedback(prev => ({ ...prev, strengths: text }));
+      } else if (!isStructuredResponse && !revision.trimStart().startsWith('{')) {
+        // A plain-text rewrite of a structured paper can only be the narrative
+        // half, so it replaces Strengths and leaves the quoted evidence and the
+        // action steps as they were.
+        setStructuredFeedback(prev => ({ ...prev, strengths: revision }));
+      } else {
+        setChatHistory(prev => [...prev, {
+          role: 'ai',
+          failed: true,
+          text: "That rewrite came back in a shape I couldn't put into the form. Ask again and I'll redo it.",
+        }]);
+        return;
       }
-    } else if (isStructured) {
-      // Plain text AI response for structured feedback — set as strengths only
-      setStructuredFeedback(prev => ({ ...prev, strengths: text }));
     } else {
-      setLegacyFeedbackText(text);
+      setLegacyFeedbackText(revision);
     }
     setIsChatOpen(false);
   };
@@ -1300,16 +1386,16 @@ export default function HITLWorkspace() {
                     setIsChatOpen(true);
                     if (showTooltip) {
                       setShowTooltip(false);
-                      markOnboardingSeen(ONBOARDING.TEACHER_COPILOT_TIP);
+                      markOnboardingSeen(ONBOARDING.TEACHER_ASSISTANT_TIP);
                     }
                   }}
                   className="flex items-center text-xs font-bold text-brand-navy bg-blue-50 hover:bg-blue-100 px-3 py-1.5 rounded-full transition-colors border border-blue-200">
-                  <Sparkles className="w-3.5 h-3.5 mr-1" /> Refine with AI Co-Pilot
+                  <Sparkles className="w-3.5 h-3.5 mr-1" /> Ask AI Teacher Assistant
                 </button>
                 {showTooltip && (
                   <div className="absolute right-0 top-full mt-2 w-48 bg-brand-navy text-white text-xs font-medium p-3 rounded-xl shadow-xl z-20 animate-fade-in-up">
                     <div className="absolute -top-1 right-8 w-3 h-3 bg-brand-navy rotate-45" />
-                    Try asking the AI to make this feedback sound more encouraging!
+                    Ask about the rubric or this paper — or tell it how to change the feedback.
                     <div className="absolute -top-1 -right-1 w-3 h-3 bg-blue-400 rounded-full animate-ping" />
                     <div className="absolute -top-1 -right-1 w-3 h-3 bg-blue-500 rounded-full" />
                   </div>
@@ -1671,17 +1757,20 @@ export default function HITLWorkspace() {
         </div>
       )}
 
-      {/* AI Co-Pilot Drawer */}
+      {/* AI Teacher Assistant Drawer */}
       <div className={cn('fixed inset-y-0 right-0 w-full md:w-[400px] bg-white shadow-2xl border-l border-slate-200 transform transition-transform duration-300 z-50 flex flex-col',
         isChatOpen ? 'translate-x-0' : 'translate-x-full')}>
         <div className="p-4 bg-brand-navy text-white flex items-center justify-between">
           <div className="flex items-center font-bold">
-            <Sparkles className="w-5 h-5 mr-2 text-blue-300" /> AI Co-Pilot
+            <Sparkles className="w-5 h-5 mr-2 text-blue-300" /> AI Teacher Assistant
           </div>
           <button onClick={() => setIsChatOpen(false)} className="text-white/70 hover:text-white"><X className="w-6 h-6" /></button>
         </div>
         <div className="bg-blue-50/50 border-b border-slate-100 p-3 text-xs text-slate-500 leading-relaxed">
-          <strong className="text-slate-600">Current feedback:</strong> "{feedbackText.slice(0, 80)}..."
+          <strong className="text-slate-600">Current feedback:</strong>{' '}
+          {feedbackText
+            ? `"${feedbackText.slice(0, 80)}${feedbackText.length > 80 ? '…' : ''}"`
+            : 'nothing written yet.'}
         </div>
         <div className="flex-1 p-4 overflow-y-auto bg-slate-50 space-y-4">
           {chatHistory.map((msg, idx) => (
@@ -1692,16 +1781,20 @@ export default function HITLWorkspace() {
                   {msg.failed ? 'AI Assistant — couldn\'t run' : 'AI Assistant'}
                 </div>
               )}
-              <div className={cn('p-3 rounded-2xl text-sm shadow-sm',
+              {/* whitespace-pre-wrap because replies are prose now: an
+                  assistant answering a question writes paragraphs, and HTML
+                  would otherwise run them together into one block. */}
+              <div className={cn('p-3 rounded-2xl text-sm shadow-sm whitespace-pre-wrap leading-relaxed',
                 msg.role === 'user' ? 'bg-brand-navy text-white rounded-br-none'
                   : msg.failed ? 'bg-amber-50 border border-amber-200 text-amber-800 rounded-bl-none'
                   : 'bg-white border border-slate-200 text-slate-700 rounded-bl-none')}>
                 {msg.text}
               </div>
-              {/* No "Apply" action when the AI never actually produced anything —
-                  that button used to reapply the untouched original text. */}
-              {msg.role === 'ai' && idx > 0 && !msg.failed && (
-                <button onClick={() => applyFeedback(msg.text, msg.isStructuredResponse)}
+              {/* Only on a reply that actually carries a rewrite. It used to sit
+                  under every AI bubble, so answering a question offered to paste
+                  that answer into the student's feedback. */}
+              {msg.role === 'ai' && !msg.failed && msg.revision && (
+                <button onClick={() => applyFeedback(msg.revision, msg.isStructuredResponse)}
                   className="mt-2 text-xs font-bold text-brand-green flex items-center bg-green-50 px-3 py-1.5 rounded-full hover:bg-green-100 transition-colors border border-green-200">
                   <Check className="w-3.5 h-3.5 mr-1" /> Apply to Feedback
                 </button>
@@ -1718,7 +1811,7 @@ export default function HITLWorkspace() {
         <div className="p-4 bg-white border-t border-slate-200">
           <form onSubmit={handleChatSubmit} className="relative">
             <input type="text" value={chatInput} onChange={e => setChatInput(e.target.value)}
-              placeholder="e.g. Make it more encouraging..."
+              placeholder="Ask a question, or say how to change the feedback…"
               className="w-full pl-4 pr-12 py-3 bg-slate-100 border-none rounded-xl focus:ring-2 focus:ring-brand-navy outline-none text-sm"
               disabled={isChatLoading} />
             <button type="submit" disabled={isChatLoading || !chatInput.trim()}

@@ -725,10 +725,11 @@ WHEN MORE THAN ONE PAPER IS SENT IN ONE REQUEST:
 - Never let a quote, an error, or an observation from one paper leak into another paper's result.
 - Apply the privacy gate separately per paper — one flagged paper does not affect the others.`;
 
-// The teacher's AI Co-Pilot rewrites feedback wording on request. It is short
-// text turns, not vision grading, so it gets a model deliberately NOT in the
-// grading pool: rewording a comment must never be able to spend budget the
-// grading queue is depending on.
+// The AI Teacher Assistant answers the teacher's questions about a paper and
+// rewrites feedback wording on request. It is short text turns, not vision
+// grading, so it gets a model deliberately NOT in the grading pool: a side
+// conversation must never be able to spend budget the grading queue is
+// depending on.
 //
 // There is no student-facing AI. The Study Buddy chatbot that used to run here
 // was removed along with its endpoint — the AI in this system is a teacher tool,
@@ -813,7 +814,7 @@ function rollPoolDayIfNeeded() {
 // credentials as the ends of the pool, plain model config otherwise.
 const model = genAIByKey[0]?.client.getGenerativeModel({ model: GRADING_MODEL_IDS[0], generationConfig: { responseMimeType: 'application/json' } }) || null;
 const modelLite = genAIByKey[genAIByKey.length - 1]?.client.getGenerativeModel({ model: GRADING_MODEL_IDS[GRADING_MODEL_IDS.length - 1], generationConfig: { responseMimeType: 'application/json' } }) || null;
-// Runs on the LAST credential, so on a multi-project deployment the Co-Pilot is
+// Runs on the LAST credential, so on a multi-project deployment the assistant is
 // charged to a different project than the grading rotation opens on — the same
 // isolation reasoning as giving it its own model.
 const assistModel = genAIByKey.length
@@ -822,7 +823,7 @@ const assistModel = genAIByKey.length
 
 if (aiConfigured) {
   console.log(`🤖 Gemini AI enabled — ${gradingPool.length} grading bucket(s): ${gradingPool.map(e => e.label).join(', ')}`);
-  console.log(`   teacher co-pilot: ${ASSIST_MODEL_ID}@${genAIByKey[genAIByKey.length - 1].name}`);
+  console.log(`   teacher assistant: ${ASSIST_MODEL_ID}@${genAIByKey[genAIByKey.length - 1].name}`);
   if (aiApiKeys.length === 1) {
     console.log('   note: one credential in use. Quota is metered per project, so a key from a second project doubles the daily budget.');
   }
@@ -8275,84 +8276,224 @@ app.get('/api/teacher/submissions/:id/history', async (req, res) => {
   }
 });
 
-app.post('/api/teacher/refine', async (req, res) => {
+/**
+ * The AI Teacher Assistant behind the review screen's chat drawer.
+ *
+ * Two jobs in one turn, and which one it is is decided by reading the
+ * teacher's message, not by the caller: ANSWER a question they want to talk
+ * through (why a criterion landed where it did, what a rubric band means, how
+ * to reteach the thing this paper got wrong), or REVISE the feedback on
+ * screen.
+ *
+ * It used to only do the second. Every message was fed to a "rewrite this
+ * feedback" prompt, so a teacher asking a plain question got a rewritten
+ * paragraph of student feedback back instead of an answer — and in structured
+ * mode that rewrite was raw JSON, printed into the chat bubble verbatim
+ * ({"strengths": "...) for the teacher to read. The revision now travels
+ * *beside* the reply rather than being the reply: `reply` is what the teacher
+ * reads, `revisedFeedback` is what the Apply button writes into the form, and
+ * an answer simply carries no revision at all.
+ */
+/**
+ * One assistant turn, read out of whatever the model actually returned.
+ *
+ * Kept apart from the route because this is the part that has to be right: it
+ * decides what the teacher reads versus what the Apply button would write into
+ * a student's feedback, and getting that backwards is how raw JSON ended up in
+ * a chat bubble.
+ *
+ * Rules it enforces, whatever the model does:
+ *  - `reply` is prose or nothing. It is never the serialized revision.
+ *  - a revision is only ever returned for action "revise" — an answer to a
+ *    question is not something to paste into the feedback form.
+ *  - output that isn't the requested JSON at all is treated as an answer, not
+ *    as a rewrite. A formatting slip should read as a reply; it must not become
+ *    the student's feedback.
+ */
+function parseAssistantTurn(rawText, { isStructured } = {}) {
+  const text = String(rawText ?? '')
+    .trim()
+    .replace(/^```(?:json)?\s*/i, '')
+    .replace(/\s*```$/i, '')
+    .trim();
+
+  let parsed = null;
   try {
-    const { currentFeedback, prompt: teacherPrompt, isStructured } = req.body;
-    
-    // Build prompt based on whether the feedback is structured
-    let sys;
+    parsed = JSON.parse(text);
+  } catch { /* not JSON — handled below */ }
+
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return { action: 'answer', reply: text, revisedFeedback: null };
+  }
+
+  const action = parsed.action === 'revise' ? 'revise' : 'answer';
+  const reply = typeof parsed.reply === 'string' ? parsed.reply.trim() : '';
+
+  let revisedFeedback = null;
+  if (action === 'revise' && parsed.revisedFeedback) {
     if (isStructured) {
-      // Tone here must match the grading prompt's, not soften it. This endpoint
-      // rewrites feedback the grader produced under an explicitly clinical,
-      // non-sugarcoating rule; telling the rewriter to be "warm and encouraging"
-      // meant a teacher could silently undo that rule just by asking for a
-      // wording tweak, and the same essay would read two different ways
-      // depending on whether it had been refined.
-      sys = `You are an expert teaching assistant. Rewrite the following student feedback based on the teacher's instruction.
-
-TONE RULE: Keep the tone objective, clinical and measured. Do NOT add praise, exclamation marks, or words like "excellent", "amazing", "wonderful", "great job". State facts about the work. Preserve the substance and any exact student quotes — you are rewording, not re-grading, and you must not change any score or invent new evidence.
-
-Original Feedback:
-${currentFeedback}
-
-Teacher's Instruction: ${teacherPrompt}
-
-Return ONLY a valid JSON object matching this schema exactly:
-{
-  "strengths": "<rewritten strengths text>",
-  "areasForGrowth": [
-    { "studentQuote": "<exact quote>", "explanation": "<rewritten explanation>" }
-  ],
-  "actionableSteps": ["<rewritten step 1>", "<rewritten step 2>"]
-}`;
+      // The client applies this by parsing it back into the form's shape, so
+      // only an object is any use; a bare string would land in the wrong field
+      // or not at all.
+      const r = parsed.revisedFeedback;
+      if (typeof r === 'object' && !Array.isArray(r)) revisedFeedback = JSON.stringify(r);
     } else {
-      sys = `You are an expert teaching assistant. Rewrite the following student feedback based on the teacher's instruction.
-TONE RULE: Keep the tone objective, clinical and measured. Do NOT add praise, exclamation marks, or words like "excellent", "amazing", "wonderful", "great job". You are rewording, not re-grading.
-Return ONLY the rewritten feedback text — no markdown, no quotes, no conversational filler.
+      revisedFeedback = typeof parsed.revisedFeedback === 'string'
+        ? parsed.revisedFeedback.trim()
+        : JSON.stringify(parsed.revisedFeedback);
+    }
+  }
 
-Original Feedback:
-"${currentFeedback}"
+  return {
+    // A "revise" that produced nothing usable is an answer: there is no
+    // rewrite to offer, and the reply still stands on its own.
+    action: revisedFeedback ? 'revise' : 'answer',
+    reply,
+    revisedFeedback,
+  };
+}
 
-Teacher's Instruction: ${teacherPrompt}`;
+const teacherAssistantHandler = async (req, res) => {
+  try {
+    const {
+      currentFeedback,
+      prompt: teacherPrompt,
+      isStructured,
+      history,
+      context: screenContext,
+    } = req.body;
+
+    if (!teacherPrompt || !String(teacherPrompt).trim()) {
+      return res.status(400).json({ success: false, error: 'Ask the assistant something first.' });
     }
 
-    let refinedFeedback = currentFeedback; // fallback: return unchanged
-    // Distinguishes "the AI declined to change anything" from "the AI never ran."
-    // Both used to come back as identical text with success: true — a teacher
-    // asking the Co-Pilot to soften a phrase and seeing the exact same words
-    // return had no way to tell whether that was the rewrite or a silent
-    // failure. This does NOT get its own rotation/fallback the way grading
-    // does (see ASSIST_MODEL_ID above on why it's kept off the grading pool),
-    // so a single exhausted credential here is expected to surface, not retry
-    // forever.
+    // The last few turns, so follow-ups ("shorten that", "why?") mean
+    // something. Capped and truncated: this is a side conversation about one
+    // paper, not a transcript worth paying for in full on every message.
+    const priorTurns = Array.isArray(history)
+      ? history.slice(-8)
+          .filter(m => m && typeof m.text === 'string' && m.text.trim())
+          .map(m => `${m.role === 'user' ? 'TEACHER' : 'ASSISTANT'}: ${m.text.slice(0, 600)}`)
+          .join('\n')
+      : '';
+
+    // The feedback schema the Apply button knows how to merge. Only the
+    // structured screen has one; legacy papers carry a single block of text.
+    const revisionSchema = isStructured
+      ? `{
+    "strengths": "<rewritten strengths text>",
+    "areasForGrowth": [ { "studentQuote": "<exact quote, unchanged>", "explanation": "<rewritten explanation>" } ],
+    "actionableSteps": ["<step>", "<step>"]
+  }`
+      : `"<the full rewritten feedback as one plain-text string>"`;
+
+    // The TONE RULE below exists because this endpoint rewrites feedback the
+    // grader produced under an explicitly clinical, non-sugarcoating rule.
+    // Telling the rewriter to be "warm and encouraging" let a teacher silently
+    // undo that rule by asking for a wording tweak, so the same essay read two
+    // different ways depending on whether it had been through here.
+    //
+    // It binds the *student-facing* feedback only. What the assistant says to
+    // the teacher is a normal conversation and should read like one; holding
+    // the chat itself to the grader's clinical register is part of what made
+    // this a text-rewriting box rather than someone to ask.
+    const sys = `You are the AI Teacher Assistant inside TulongGuro, a grading platform for Philippine classrooms. You are talking with the TEACHER, privately, while they review one student's paper. The student never sees this conversation.
+
+You do two things, and you decide which from the teacher's message:
+
+1. ANSWER ("action": "answer") — they are asking you something or thinking out loud: what a rubric criterion means, why the work scored where it did, how to explain a concept, what to reteach, how to handle the student, or anything else about their teaching. Answer it directly and concretely, grounded in the paper and rubric below when those are relevant. This is the default: if the message is not clearly an instruction to change the feedback, answer it. Leave "revisedFeedback" null.
+
+2. REVISE ("action": "revise") — they are telling you to change the feedback currently on screen ("make it shorter", "less harsh", "add a step about topic sentences", "mention the run-on in paragraph 2"). Rewrite it into "revisedFeedback", with "reply" being one or two sentences saying plainly what you changed.
+
+RULES FOR STUDENT-FACING FEEDBACK you write in "revisedFeedback":
+- Tone is objective, clinical and measured. No praise words ("excellent", "amazing", "wonderful", "great job") and no exclamation marks. State facts about the work.
+- You are rewording, not re-grading. Never change a score, never invent evidence, and keep every exact student quote exactly as it is.
+
+RULES FOR "reply" (what the teacher reads):
+- Talk like a knowledgeable colleague: plain, direct, specific. Two or three short paragraphs at most, usually less.
+- Plain text only. No markdown headings, no bullet syntax, no code fences, and never paste JSON or field names into it.
+- If you are genuinely unsure what they want changed, answer with a question instead of guessing at a rewrite.
+
+--- THIS PAPER ---
+${String(screenContext || 'No additional context was provided.').slice(0, 4000)}
+
+--- FEEDBACK CURRENTLY ON SCREEN ---
+${String(currentFeedback || '(the feedback is empty)').slice(0, 6000)}
+${priorTurns ? `\n--- CONVERSATION SO FAR ---\n${priorTurns}\n` : ''}
+--- TEACHER'S MESSAGE ---
+${teacherPrompt}
+
+Return ONLY a valid JSON object, nothing else:
+{
+  "action": "answer" | "revise",
+  "reply": "<what you say to the teacher, plain conversational text>",
+  "revisedFeedback": null | ${revisionSchema}
+}`;
+
+    let reply = null;
+    let revisedFeedback = null;
+    let action = 'answer';
+    // Distinguishes "the assistant had nothing to change" from "the assistant
+    // never ran." Both used to come back as the unchanged feedback with
+    // success: true, so a teacher who saw their own words returned could not
+    // tell which had happened. This deliberately does NOT get grading's
+    // rotation/fallback (see ASSIST_MODEL_ID above on why it is kept off the
+    // grading pool), so one exhausted credential surfaces here rather than
+    // retrying forever.
     let refineFailed = false;
     let refineFailedReason = null;
+
     if (assistModel) {
       try {
         const result = await generateContentWithRetry(assistModel, {
           contents: [{ role: 'user', parts: [{ text: sys }] }],
-          generationConfig: isStructured ? { responseMimeType: "application/json" } : undefined
+          generationConfig: { responseMimeType: 'application/json' }
         }, { purpose: 'ASSIST', modelLabel: ASSIST_MODEL_ID });
-        let text = result.response.text().trim();
-        // Clean markdown code blocks just in case
-        text = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
-        refinedFeedback = text;
+        const turn = parseAssistantTurn(result.response.text(), { isStructured });
+        action = turn.action;
+        reply = turn.reply;
+        revisedFeedback = turn.revisedFeedback;
+
+        if (!reply) {
+          reply = revisedFeedback
+            ? 'I rewrote the feedback — read it over before applying.'
+            : "I didn't get anything back for that. Try asking again.";
+        }
       } catch (e) {
-        console.log('⚠ AI refine failed:', e.message?.slice(0, 80));
+        console.log('⚠ AI assistant failed:', e.message?.slice(0, 80));
         refineFailed = true;
         refineFailedReason = classifyAiError(e).quota
-          ? 'The AI Co-Pilot has reached its usage limit for now.'
-          : 'The AI Co-Pilot could not be reached.';
+          ? 'The AI Teacher Assistant has reached its usage limit for now.'
+          : 'The AI Teacher Assistant could not be reached.';
       }
     } else {
       refineFailed = true;
-      refineFailedReason = 'The AI Co-Pilot is not configured on this server.';
+      refineFailedReason = 'The AI Teacher Assistant is not configured on this server.';
     }
-    res.json({ success: true, refinedFeedback, refineFailed, refineFailedReason, isStructured: !!isStructured });
+
+    res.json({
+      success: true,
+      action,
+      reply,
+      revisedFeedback,
+      hasRevision: !!revisedFeedback,
+      isStructured: !!isStructured,
+      refineFailed,
+      refineFailedReason,
+      // Kept for a browser still running the previous frontend build, which
+      // reads refinedFeedback and shows it as the assistant's message.
+      refinedFeedback: revisedFeedback || reply || currentFeedback,
+    });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
   }
-});
+};
+
+app.post('/api/teacher/assistant', teacherAssistantHandler);
+// The frontend (Vercel) and this server (Render) deploy separately, so a tab
+// still running the previous build keeps working on the old path until it
+// reloads.
+app.post('/api/teacher/refine', teacherAssistantHandler);
 
 /**
  * Whether hitlFeedback differs from aiFeedback in substance, not just in serialization.
@@ -11660,4 +11801,5 @@ module.exports = {
   rubricIsPresent, isManualScoreMode, scaleCriteriaTo100,
   logAiRequest, outcomeOf,
   normalizeTerm, normalizeCompetencies, readCompetencies,
+  parseAssistantTurn,
 };

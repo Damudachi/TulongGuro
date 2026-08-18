@@ -57,6 +57,9 @@ export const ONBOARDING = {
   // property of the device: the old walkthrough restarted itself on the other
   // staff-room computer and, once dismissed, could never be got back.
   TEACHER_SETUP_HIDDEN: 'teacher-setup-hidden',
-  TEACHER_COPILOT_TIP: 'teacher-copilot-tip',
+  // Renamed from teacher-copilot-tip when the Co-Pilot became the AI Teacher
+  // Assistant. The flag is deliberately a new key: what the tip says changed
+  // too, so a teacher who dismissed the old one is shown the new one once.
+  TEACHER_ASSISTANT_TIP: 'teacher-assistant-tip',
   STUDENT_WELCOME: 'student-welcome',
 };
