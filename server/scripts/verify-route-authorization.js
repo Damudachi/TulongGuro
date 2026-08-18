@@ -27,6 +27,9 @@ const fs = require('fs');
 const path = require('path');
 
 const SERVER_SRC = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
+// Read from auth.js itself rather than restated here, for the same reason
+// auth.js exports it: a second copy of this set is a second thing to forget.
+const { TEACHER_ROUTE_SEGMENTS } = require('../auth');
 
 // Idioms this codebase actually uses to prove "the caller owns this resource".
 // Keep in sync with teacherOwnsActivity/teacherOwnsClass/requireOwnTemplate
@@ -139,6 +142,25 @@ const TRACKED_EXTRA = new Set([
 let pass = 0, fail = 0;
 const seen = new Set();
 
+/**
+ * True if authorizePath will actually let this route through to its handler.
+ *
+ * Only /api/teacher/<literal>/... routes can fail here: a route whose second
+ * segment is a `:param` is addressing the caller's own id, which is the case
+ * authorizePath is built around. Anything outside /api/teacher/ is not gated
+ * by TEACHER_ROUTE_SEGMENTS at all.
+ */
+function checkReachable(key, routePath) {
+  if (!routePath.startsWith(TRACKED_PREFIX)) return true;
+  const seg = routePath.split('/').filter(Boolean)[2];   // ['api','teacher',<seg>]
+  if (!seg || seg.startsWith(':')) return true;
+  if (seg === 'rubric-templates') return true;           // special-cased in authorizePath
+  if (TEACHER_ROUTE_SEGMENTS.has(seg)) return true;
+  fail++;
+  console.error(`  FAIL ${key}: '${seg}' is not in TEACHER_ROUTE_SEGMENTS (auth.js), so authorizePath 403s every call to this route before the handler runs.`);
+  return false;
+}
+
 matches.forEach((m, i) => {
   const method = m[1].toUpperCase();
   const routePath = m[3];
@@ -153,6 +175,15 @@ matches.forEach((m, i) => {
     console.error(`  FAIL ${key}: not in ROUTE_MANIFEST — classify it as needsCheck true/false before shipping.`);
     return;
   }
+
+  // Reachability, checked before ownership. A /api/teacher/<literal> route
+  // whose literal is not in TEACHER_ROUTE_SEGMENTS is not "unprotected" — it
+  // is unreachable: authorizePath reads that segment as a teacher id, finds it
+  // is not the caller's, and 403s every request with "You can only access your
+  // own classes." That is how POST /api/teacher/assistant shipped dead while
+  // this script reported 51/51 passing — it only ever asked whether handlers
+  // prove ownership, never whether the route can be called at all.
+  if (!checkReachable(key, routePath)) return;
 
   if (!manifestEntry.needsCheck) {
     pass++;

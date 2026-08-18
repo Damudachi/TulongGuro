@@ -319,7 +319,13 @@ const platformRateLimit = rateLimit({ windowMs: 15 * 60_000, max: 20, key: clien
  * match the caller.
  */
 const TEACHER_ROUTE_SEGMENTS = new Set([
-  'classes', 'activities', 'rubric-templates', 'rubric', 'upload', 'refine',
+  // 'assistant' is the AI Teacher Assistant chat; 'refine' is its legacy alias,
+  // kept while older frontend builds are still loaded in browsers. Neither
+  // reads a resource by id — both act on feedback text passed in the body —
+  // so there is nothing here for an ownership check to compare against. The
+  // rename shipped without adding 'assistant' here, which made every chat
+  // message 403 with "You can only access your own classes."
+  'classes', 'activities', 'rubric-templates', 'rubric', 'upload', 'assistant', 'refine',
   'sections', 'quick-setup', 'submissions', 'extract-students', 'demo-data', 'student',
   // Batch AI checking: 'ai-jobs' addresses a job id and 'ai-capacity' takes no
   // id at all, so neither is a teacher id. Ownership of the underlying activity

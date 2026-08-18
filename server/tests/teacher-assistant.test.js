@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
 
 /**
  * The AI Teacher Assistant — the chat drawer on the review screen.
@@ -23,6 +24,7 @@ import { fileURLToPath } from 'node:url';
  * that separation is enforced, whatever the model returns.
  */
 
+const require = createRequire(import.meta.url);
 const here = path.dirname(fileURLToPath(import.meta.url));
 const readSource = (rel) => fs.readFileSync(path.join(here, '..', rel), 'utf8');
 const SERVER_SRC = readSource('server.js');
@@ -175,6 +177,19 @@ describe('the endpoint the drawer talks to', () => {
     // tab still running the previous build posts to /refine until it reloads.
     expect(SERVER_SRC).toContain("app.post('/api/teacher/assistant', teacherAssistantHandler)");
     expect(SERVER_SRC).toContain("app.post('/api/teacher/refine', teacherAssistantHandler)");
+  });
+
+  // Registering the route is only half of reaching it. authorizePath() reads
+  // the segment after /api/teacher/ as a teacher id unless it is listed as a
+  // route segment, so a route named 'assistant' that is not in that set 403s
+  // every call with "You can only access your own classes." — which is exactly
+  // what the rename shipped, with the route registration test above passing
+  // the whole time. The alias is asserted too: it was already listed, and
+  // dropping it would break the tabs the alias exists for.
+  it('is reachable — both paths are listed as teacher route segments', () => {
+    const { TEACHER_ROUTE_SEGMENTS } = require('../auth');
+    expect(TEACHER_ROUTE_SEGMENTS.has('assistant')).toBe(true);
+    expect(TEACHER_ROUTE_SEGMENTS.has('refine')).toBe(true);
   });
 
   it('refuses an empty message before spending a model call', () => {
