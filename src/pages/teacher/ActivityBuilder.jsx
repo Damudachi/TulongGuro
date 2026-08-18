@@ -3,7 +3,7 @@ import { useNavigate, useSearchParams, useParams, Link } from 'react-router-dom'
 import { ArrowLeft, CheckCircle2, Plus, Camera, Users, Upload, FileText, X, Trash2, Loader2, Save, PenLine, Medal } from 'lucide-react';
 import { API_URL, apiFetch } from '../../config';
 import { ACTIVITY_TYPES } from '../../constants/activityTypes';
-import { parseTopicIds, formatTopicIds } from '../../utils/topics';
+import { parseTopicIds, formatTopicIds, lessonTopicId, lessonIdFromTopicId, isLessonTopicId, termForWeek, readCompetencies } from '../../utils/topics';
 import {
   badgeLook, BADGE_ICON_KEYS, BADGE_COLOR_KEYS,
   DEFAULT_BADGE_ICON, DEFAULT_BADGE_COLOR,
@@ -113,24 +113,37 @@ export default function ActivityBuilder() {
   const [isSaving, setIsSaving] = useState(false);
   const [topics, setTopics] = useState([]);
   /**
-   * Whether the competency list has actually been answered for.
+   * Whether the retired DepEd competency list has been answered for.
    *
    * 'loading' | 'ready' | 'failed'. An empty `topics` on its own cannot tell
-   * the three apart, and the difference matters: an id on the activity is only
-   * knowably "not a DepEd competency" once the list it would be in has
-   * arrived. Without this, the moment before the fetch returned — and forever,
-   * if it failed offline — every tagged competency was drawn as a raw slug
-   * chip under "Other topics", with the checklist hidden so it could not be
-   * re-picked.
+   * the three apart, and the difference decides whether a tag this form does
+   * not recognise is drawn yet: while the list is still on its way it may
+   * still turn out to have a name, so drawing it as a raw slug would flicker.
+   * A failed fetch is treated as answered — the chip loses its label and
+   * nothing else, which beats hiding a tag the teacher is still marked against.
    */
   const [topicsStatus, setTopicsStatus] = useState('loading');
   const [classLessons, setClassLessons] = useState([]);
-  const [selectedLessonId, setSelectedLessonId] = useState('');
+  /**
+   * Whether the class's lesson list has actually been answered for.
+   *
+   * An empty `classLessons` cannot tell "this class has no curriculum" apart
+   * from "the fetch has not come back yet", and the difference decides what
+   * gets written to Activity.classLessonId on save. Without it, opening an
+   * activity for edit and pressing Save before the lessons arrived resolved
+   * the mapped lesson to nothing and cleared the column — taking the lesson's
+   * rubric and the AI's lesson context with it.
+   */
+  const [lessonsLoaded, setLessonsLoaded] = useState(false);
   // Declared before the rubric resolver below, which reads form.type and form.topic.
   const [form, setForm] = useState({
     title: '',
     type: 'Essay',
     topic: '',
+    // Which grading term this activity belongs to: '1' | '2' | '3', or '' for
+    // not yet chosen. A string because it rides through FormData on create,
+    // which stringifies everything anyway — the server normalises it.
+    term: '',
     points: 100,
     deadline: '',
     instructions: '',
@@ -309,71 +322,141 @@ export default function ActivityBuilder() {
   const [gradedCount, setGradedCount] = useState(0);
   const isRubricLocked = gradedCount > 0;
 
-  const selectedLesson = classLessons.find(l => l.id === selectedLessonId) || null;
-  // form.topic is the stored shape — a comma-separated list of topic ids — so
-  // that the submit path keeps posting the form object untouched. The list is
-  // derived from it rather than tracked alongside it, which is what stops the
-  // two from drifting when an activity is loaded for editing.
+  // form.topic is the stored shape — a comma-separated list of ids — so that
+  // the submit path keeps posting the form object untouched. Everything below
+  // is derived from it rather than tracked alongside it, which is what stops
+  // the two from drifting when an activity is loaded for editing.
   const selectedTopicIds = parseTopicIds(form.topic);
-  const selectedTopics = topics.filter(t => selectedTopicIds.includes(t.id));
-  // Tags that aren't in the DepEd map: free text typed into the quick-edit
-  // form, or a competency from a list this class no longer matches. Shown as
-  // removable chips rather than dropped, so nothing sits on the activity that
-  // the teacher cannot see or undo.
+
+  /**
+   * What this activity can be tagged with: the class's own curriculum lessons.
+   *
+   * One source now, where there used to be two. The other was a hardcoded
+   * DepEd competency list in server/depedTopics.js, which existed for one
+   * reason: the curriculum extraction read past the Learning Competencies
+   * column of the uploaded document, so a lesson reached the AI as a one-line
+   * description and something had to supply the actual marking criteria. That
+   * list covered Grade 6 English and nothing else, so every other subject had
+   * no competencies at all — and the two controls asked what teachers rightly
+   * read as the same question twice.
+   *
+   * The extraction keeps that column now (see normalizeCompetencies on the
+   * server), so a lesson carries its own competencies, from the school's own
+   * scope and sequence, in every subject. One list, one source, and the
+   * competencies are shown on the row so it is visible what the AI will mark
+   * against. Competencies tagged before this change still resolve for display
+   * — see legacyTopicName — they are simply no longer offered.
+   *
+   * `term` is what the picker filters on. A lesson records a week number and no
+   * term, so its term is inferred (see termForWeek); a lesson with no week at
+   * all is placed in every term rather than hidden from all of them.
+   */
+  const coverageOptions = classLessons.map(l => ({
+    id: lessonTopicId(l.id),
+    name: l.weekNumber ? `Week ${l.weekNumber}: ${l.title}` : l.title,
+    detail: l.outputType ? `Output: ${l.outputType}` : null,
+    term: termForWeek(l.weekNumber),
+    competencies: readCompetencies(l.competencies),
+    lesson: l,
+  }));
+  const coverageById = new Map(coverageOptions.map(o => [o.id, o]));
+  const selectedCoverage = selectedTopicIds.map(id => coverageById.get(id)).filter(Boolean);
+
+  // Filtered to the chosen term. Before a term is picked everything is shown,
+  // so the control is never empty at the moment it first appears; a lesson that
+  // cannot be placed in a term stays visible in every term rather than becoming
+  // unreachable.
   //
-  // Only once the list has arrived. An id cannot be called unrecognised while
-  // the thing that would recognise it is still loading — or never loaded.
-  const unknownTopicIds = topicsStatus === 'ready'
-    ? selectedTopicIds.filter(id => !topics.some(t => t.id === id))
+  // Anything already ticked survives the filter whatever its term. A teacher
+  // who tags a Term 2 lesson and then switches the activity to Term 1 has not
+  // untagged it — and a tag that is on the activity but not on the screen is
+  // one they cannot see, cannot remove, and will still be marked against.
+  const visibleCoverage = form.term
+    ? coverageOptions.filter(o =>
+        o.term === null ||
+        String(o.term) === String(form.term) ||
+        selectedTopicIds.includes(o.id))
+    : coverageOptions;
+
+  /**
+   * The lesson that supplies the rubric, the output type and the AI's lesson
+   * context — the single `Activity.classLessonId`.
+   *
+   * Derived from the ticked lessons rather than held separately, so the one
+   * stored on the row and the ones shown in the checklist cannot disagree.
+   * First ticked wins; the rest ride along in `topic` and reach the grading
+   * prompt through the "ALSO COVERS" block.
+   */
+  const selectedLessonIds = selectedTopicIds
+    .map(lessonIdFromTopicId)
+    .filter(Boolean)
+    // Checked against the real list only once there is one to check against.
+    // Filtering unconditionally meant that in the window before the lessons
+    // arrived every tag looked stale, so a save in that window wrote null over
+    // a perfectly good lesson mapping.
+    .filter(id => !lessonsLoaded || classLessons.some(l => l.id === id));
+  const selectedLessonId = selectedLessonIds[0] || '';
+  const selectedLesson = classLessons.find(l => l.id === selectedLessonId) || null;
+
+  /**
+   * The name of a competency tagged before the list stopped being offered.
+   *
+   * /api/topics is still fetched for exactly this: an activity a Grade 6
+   * English teacher tagged last term holds ids like `t1-02-hyperbole-irony`,
+   * and dropping the map outright would redraw those as raw slugs on the one
+   * screen where they can be removed. Read-only — nothing here can add one.
+   */
+  const legacyTopicName = (id) => topics.find(t => t.id === id)?.name || null;
+
+  // Tags that resolve against no lesson: a retired DepEd competency, free text
+  // typed into the quick-edit form, or a lesson deleted when the curriculum was
+  // re-parsed. Shown as removable chips rather than dropped, so nothing sits on
+  // the activity that the teacher cannot see or undo.
+  //
+  // Only once the legacy list has been answered for. An id cannot be called
+  // unnameable while the thing that would name it is still loading — or never
+  // loaded.
+  //
+  // 'failed' counts as answered here, not as still loading. The list is only a
+  // source of names now, so a fetch that never returned costs the chip its
+  // label and nothing else — hiding the tag instead would be strictly worse.
+  const unknownTopicIds = topicsStatus === 'loading'
+    ? []
+    : selectedTopicIds.filter(id => !coverageById.has(id));
+
+  // Tags that cannot be drawn yet, because the list that names them has not
+  // arrived. Distinct from unknownTopicIds: these are not unknown, only
+  // unresolved, and the difference is what the panel below says out loud.
+  const unresolvedTopicIds = topicsStatus === 'loading'
+    ? selectedTopicIds.filter(id => !coverageById.has(id))
     : [];
 
-  /**
-   * Whether to offer the DepEd competency list at all.
-   *
-   * depedTopics.js is the MATATAG Grade 6 English map and nothing else, so on
-   * any other class the options are simply wrong answers. An activity already
-   * tagged with one of them keeps the list visible regardless, or opening it
-   * for an edit would show a blank field and silently drop the topics on save.
-   */
-  const depedTopicsApply =
-    selectedTopics.length > 0 ||
-    (/grade\s*6/i.test(classMeta?.gradeLevel || '') && /english/i.test(classMeta?.subject || ''));
-
-  // Tags on the activity that cannot be drawn yet, because the list that names
-  // them has not arrived. Distinct from unknownTopicIds: these are not unknown,
-  // only unresolved, and the difference is what the panel below says out loud.
-  const unresolvedTopicIds = topicsStatus === 'ready' ? [] : selectedTopicIds;
-
-  // Whether this class can answer the lesson/topic question at all. A class
-  // with no uploaded curriculum and no applicable competency list has nothing
-  // to offer, so the field is not shown — and not required. Tags that came
-  // from somewhere else count too: they are on the activity, so they have to be
-  // on screen where they can be removed.
+  // Whether this class can answer the coverage question at all. A class whose
+  // curriculum has not been uploaded or parsed has nothing to offer, so the
+  // field is not shown — and not required. Tags that came from somewhere else
+  // count too: they are on the activity, so they have to be on screen where
+  // they can be removed.
   const lessonTopicApplies =
-    classLessons.length > 0 || depedTopicsApply || unknownTopicIds.length > 0 || unresolvedTopicIds.length > 0;
+    coverageOptions.length > 0 || unknownTopicIds.length > 0 || unresolvedTopicIds.length > 0;
 
   /**
-   * Map the activity to a curriculum lesson, or to none.
+   * Tick or untick one lesson this activity covers.
    *
-   * The lesson and the competencies used to be one dropdown holding a single
-   * value, so choosing either cleared the other — a lesson and a topic could
-   * not both be attached, and only one topic ever could. They are separate
-   * controls now: a piece of work is often set from one lesson and marked
-   * against several competencies, and both are on screen, so neither can sit
-   * on the activity invisibly the way the old merged value could.
+   * Ticking one also applies its output type, as the old single-select lesson
+   * dropdown did. There is no longer a second list to keep in step: the
+   * competencies come with the lesson.
    */
-  const onLessonChange = (id) => {
-    setSelectedLessonId(id);
-    if (!id) return;
-    const lesson = classLessons.find(l => l.id === id);
-    if (lesson?.outputType) setForm(prev => ({ ...prev, type: lesson.outputType }));
-  };
-
-  /** Add or remove one competency from the activity's list. */
   const toggleTopic = (id) => {
+    const option = coverageById.get(id);
+    const removing = selectedTopicIds.includes(id);
+
+    if (!removing && option?.lesson?.outputType) {
+      setForm(prev => ({ ...prev, type: option.lesson.outputType }));
+    }
+
     setForm(prev => {
       const current = parseTopicIds(prev.topic);
-      const next = current.includes(id) ? current.filter(t => t !== id) : [...current, id];
+      const next = removing ? current.filter(t => t !== id) : [...current, id];
       return { ...prev, topic: formatTopicIds(next) };
     });
   };
@@ -463,7 +546,12 @@ export default function ActivityBuilder() {
   const [showSaveTemplateModal, setShowSaveTemplateModal] = useState(false);
   const [templateTitle, setTemplateTitle] = useState('');
 
-  // ── Fetch topics on mount ──
+  // ── The retired DepEd competency list, fetched only to name old tags ──
+  //
+  // This list is no longer offered for tagging — see coverageOptions — but
+  // activities tagged from it before it was retired still hold ids like
+  // `t1-02-hyperbole-irony`, and this is the screen where those can be seen and
+  // removed. Without the names they would redraw as raw slugs.
   useEffect(() => {
     apiFetch(`${API_URL}/api/topics`)
       .then(res => res.json())
@@ -473,9 +561,9 @@ export default function ActivityBuilder() {
         setTopicsStatus('ready');
       })
       // Was swallowed silently, which is what made an offline load
-      // indistinguishable from a class that simply has no competencies. The
-      // tags on the activity are left exactly as they are either way — see the
-      // note on topicsStatus.
+      // indistinguishable from a class that simply has no old tags. The tags on
+      // the activity are left exactly as they are either way — see the note on
+      // topicsStatus.
       .catch(() => setTopicsStatus('failed'));
   }, []);
 
@@ -485,7 +573,10 @@ export default function ActivityBuilder() {
     apiFetch(`${API_URL}/api/teacher/classes/${classId}/lessons`)
       .then(res => res.json())
       .then(data => { if (data.success) setClassLessons(data.lessons || []); })
-      .catch(() => {});
+      .catch(() => {})
+      // Answered either way. A failed read must not leave the form believing
+      // the list is still on its way, or the guard above never lifts.
+      .finally(() => setLessonsLoaded(true));
   }, [classId]);
 
   // ── Edit Mode: Fetch existing activity and pre-fill form ──
@@ -525,7 +616,16 @@ export default function ActivityBuilder() {
         setForm({
           title: activity.title || '',
           type: activity.type || 'Essay',
-          topic: activity.topic || '',
+          // A legacy activity carries its lesson only in classLessonId, and the
+          // checklist below reads lessons out of `topic`. Folding it in on
+          // open is what makes that lesson appear ticked rather than missing —
+          // and saving writes it back to both, so nothing is lost either way.
+          topic: formatTopicIds(
+            activity.classLessonId
+              ? [...parseTopicIds(activity.topic), lessonTopicId(activity.classLessonId)]
+              : activity.topic
+          ),
+          term: activity.term == null ? '' : String(activity.term),
           points: activity.points || 100,
           deadline: activity.deadline ? String(activity.deadline).split('T')[0] : '',
           lateUntil: activity.lateUntil ? String(activity.lateUntil).split('T')[0] : '',
@@ -541,7 +641,6 @@ export default function ActivityBuilder() {
         });
         // Pre-fill rubric if it exists. This is the activity's rubric of
         // record, so nothing may overwrite it.
-        if (activity.classLessonId) setSelectedLessonId(activity.classLessonId);
         if (activity.rubric) {
           try {
             const parsed = JSON.parse(activity.rubric);
@@ -889,9 +988,16 @@ export default function ActivityBuilder() {
     // a class whose only possible answer was the competency list is let through
     // when that list failed to load, or the teacher is held at a question with
     // no answerable control on the screen.
-    const canAnswerLessonTopic = classLessons.length > 0 || topicsStatus === 'ready';
-    if (canAnswerLessonTopic && lessonTopicApplies && !selectedLessonId && selectedTopicIds.length === 0) {
-      alert('Say what this activity covers — choose the curriculum lesson, tick at least one competency, or both.');
+    if (coverageOptions.length > 0 && selectedTopicIds.length === 0) {
+      alert('Say what this activity covers — tick at least one lesson from the curriculum.');
+      return;
+    }
+    // Required, because the gradebook's term filter and every term-scoped
+    // export read this column: an activity left untagged is one that quietly
+    // drops out of the term record a teacher assembles from them. Asked here
+    // rather than with `required` on the buttons, so the message can say why.
+    if (!form.term) {
+      alert('Choose which term this activity belongs to. The gradebook and its exports are filtered by term, and an activity with none is left out of all of them.');
       return;
     }
     // Trimmed, because the textarea's own `required` is satisfied by a space.
@@ -1233,125 +1339,169 @@ export default function ActivityBuilder() {
             </div>
           </div>
 
-          {/* ── LESSON / TOPICS ──
-              Two questions that look like one. A curriculum lesson comes from
-              the school's own uploaded scope and sequence and carries an output
-              type; a DepEd topic is a fixed competency that sharpens the AI's
-              feedback and feeds the topic-breakdown analytics. Neither is shown
-              where the class has no answer for it — the DepEd list only covers
-              Grade 6 English, and requiring it once forced a Grade 3 Maths
-              teacher to tag their work with an English competency chosen at
-              random, which then steered the AI's marking towards it.
+          {/* ── TERM ──
+              Universal: every DepEd school runs three terms, whatever the
+              subject, so unlike the competency list below this is asked of
+              every class. It does two jobs at once — it is what the gradebook
+              and its exports filter on, and it narrows the checklist under it
+              from a whole year of curriculum to one term's worth, which is the
+              thing that made that list unusable. */}
+          <div>
+            <label className="block text-sm font-medium text-slate-700 mb-1">
+              Term <span className="text-red-500">*</span>
+            </label>
+            <div className="flex flex-wrap gap-2">
+              {[1, 2, 3].map(t => {
+                const active = String(form.term) === String(t);
+                return (
+                  <button key={t} type="button"
+                    onClick={() => setForm(f => ({ ...f, term: String(t) }))}
+                    aria-pressed={active}
+                    className={cn(
+                      'px-5 py-2 rounded-lg text-sm font-bold border transition-colors',
+                      active
+                        ? 'bg-brand-navy text-white border-brand-navy'
+                        : 'bg-white text-slate-600 border-slate-200 hover:border-brand-navy'
+                    )}>
+                    Term {t}
+                  </button>
+                );
+              })}
+            </div>
+            <p className="text-xs text-slate-400 mt-1">
+              The gradebook and its exports are filtered by term. Picking one also narrows the
+              list below to that term&rsquo;s curriculum.
+            </p>
+          </div>
 
-              The competencies are a checklist, not a single choice: one piece
-              of work is routinely set against several — a reflection essay
-              marked for both summarising a text and the figures of speech in
-              it — and tagging only one of them lost the rest from the analytics
-              and from what the AI was told to look for. */}
+          {/* ── WHAT THIS ACTIVITY COVERS ──
+              One checklist over one source: the lessons in this class's own
+              curriculum, ticked as many as apply.
+
+              There used to be a second control beside it — a hardcoded DepEd
+              Grade 6 English competency list — and it existed because the
+              curriculum extraction read past the Learning Competencies column
+              of the uploaded document. A lesson reached the AI as a one-line
+              description, so something had to supply the actual marking
+              criteria, and the only thing that could covered one subject out of
+              every subject a school teaches. Teachers were right that the two
+              controls asked the same question twice.
+
+              The extraction keeps that column now, so a lesson carries its own
+              competencies in every subject, from the school's own scope and
+              sequence. They are printed under the lesson because they are what
+              the AI will be held to — a teacher ticking a box should be able to
+              see what they are agreeing to mark against. */}
           {lessonTopicApplies && (
             <div className="space-y-3">
               <div>
                 <label className="block text-sm font-medium text-slate-700">
-                  Lesson / Topics <span className="text-red-500">*</span>
+                  What this activity covers <span className="text-red-500">*</span>
                 </label>
                 {/* Required only where the question can actually be answered.
                     The guard above already hides the whole field for a class
-                    with no curriculum lessons and no applicable DepEd topics,
-                    so this never becomes a dead end. Enforced on submit rather
-                    than with `required` on either control, because either one
-                    on its own is a complete answer. */}
+                    whose curriculum has not been parsed, so this never becomes
+                    a dead end. Enforced on submit rather than with `required`
+                    on a checkbox, which cannot express "at least one of these". */}
                 <p className="text-xs text-slate-400 mt-0.5">
-                  What this activity covers. Pick the curriculum lesson, the competencies, or both —
-                  at least one is needed.
+                  Tick every lesson this work is set against. The AI is held to their competencies,
+                  and the activity is counted under each in analytics.
                 </p>
               </div>
 
-              {classLessons.length > 0 && (
-                <div>
-                  <label className="block text-xs font-medium text-slate-500 mb-1">Curriculum lesson</label>
-                  <select value={selectedLessonId} onChange={e => onLessonChange(e.target.value)}
-                    className="w-full px-4 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-brand-navy outline-none">
-                    <option value="">— None —</option>
-                    {classLessons.map(l => (
-                      <option key={l.id} value={l.id}>
-                        {l.weekNumber ? `Week ${l.weekNumber}: ` : ''}{l.title} ({l.outputType})
-                      </option>
-                    ))}
-                  </select>
-                  {selectedLesson && (
-                    <p className="text-xs text-slate-400 mt-1">Applies this lesson’s output type.</p>
-                  )}
-                </div>
-              )}
-
-              {depedTopicsApply && topics.length > 0 && (
+              {visibleCoverage.length > 0 ? (
                 <div>
                   <div className="flex items-baseline justify-between gap-2 mb-1">
                     <label className="block text-xs font-medium text-slate-500">
-                      DepEd Grade 6 English competencies
+                      {form.term ? `Term ${form.term} lessons` : 'Curriculum lessons'}
                     </label>
-                    {selectedTopics.length > 0 && (
-                      <span className="text-[11px] font-bold text-brand-navy">{selectedTopics.length} selected</span>
+                    {selectedCoverage.length > 0 && (
+                      <span className="text-[11px] font-bold text-brand-navy">{selectedCoverage.length} selected</span>
                     )}
                   </div>
                   {/* A checklist rather than a multi-select box: a native
                       multi-select needs ctrl-click to add a second item and
                       silently drops the rest of the selection on a plain click,
                       which on a phone means it cannot be used at all. */}
-                  <div className="max-h-56 overflow-y-auto border border-slate-200 rounded-lg divide-y divide-slate-100">
-                    {topics.map(t => {
-                      const checked = selectedTopicIds.includes(t.id);
+                  <div className="max-h-72 overflow-y-auto border border-slate-200 rounded-lg divide-y divide-slate-100">
+                    {visibleCoverage.map(o => {
+                      const checked = selectedTopicIds.includes(o.id);
                       return (
-                        <label key={t.id}
+                        <label key={o.id}
                           className={cn('flex items-start gap-2.5 px-3 py-2 cursor-pointer transition-colors',
                             checked ? 'bg-blue-50' : 'hover:bg-slate-50')}>
-                          <input type="checkbox" checked={checked} onChange={() => toggleTopic(t.id)}
+                          <input type="checkbox" checked={checked} onChange={() => toggleTopic(o.id)}
                             className="w-4 h-4 mt-0.5 shrink-0 accent-royal-500" />
                           <span className="min-w-0">
-                            <span className="block text-sm text-slate-700 leading-snug">{t.name}</span>
-                            {t.term && <span className="block text-[11px] text-slate-400">Term {t.term}</span>}
+                            <span className="block text-sm text-slate-700 leading-snug">{o.name}</span>
+                            {(o.detail || (!form.term && o.term)) && (
+                              <span className="block text-[11px] text-slate-400">
+                                {o.detail}
+                                {o.detail && !form.term && o.term ? ' · ' : ''}
+                                {!form.term && o.term ? `Term ${o.term}` : ''}
+                              </span>
+                            )}
+                            {/* What the AI will actually mark for. Printed
+                                rather than summarised: these are copied
+                                verbatim from the curriculum guide, and a
+                                teacher agreeing to them should see the same
+                                words the model will. */}
+                            {o.competencies.length > 0 ? (
+                              <span className="block mt-1 text-[11px] text-slate-500 leading-snug">
+                                {o.competencies.map((c, i) => (
+                                  <span key={i} className="block">• {c}</span>
+                                ))}
+                              </span>
+                            ) : (
+                              /* Said out loud, because a lesson with no
+                                 competencies grades against its description
+                                 alone — weaker feedback, and not obvious from
+                                 a row that otherwise looks identical. */
+                              <span className="block mt-1 text-[11px] text-amber-700">
+                                No competencies found for this lesson in the curriculum file — the AI
+                                will mark against its description only.
+                              </span>
+                            )}
                           </span>
                         </label>
                       );
                     })}
                   </div>
-                  <p className="text-xs text-slate-400 mt-1">
-                    {selectedTopics.length > 0
-                      ? 'The AI’s feedback is held to every competency you tick, and the activity is counted under each of them in analytics.'
-                      : 'Tick every competency this activity is meant to assess.'}
-                  </p>
+                  {selectedLesson && (
+                    <p className="text-xs text-slate-400 mt-1">
+                      Output type comes from &ldquo;{selectedLesson.title}&rdquo;
+                      {selectedLessonIds.length > 1 && `, the first of ${selectedLessonIds.length} lessons ticked`}.
+                    </p>
+                  )}
                 </div>
-              )}
-
-              {/* The competency list could not be fetched — offline, most
-                  likely. Said out loud, because the alternative is a teacher
-                  opening an activity they tagged last week and finding the
-                  competencies apparently gone. They are not: form.topic is
-                  untouched, and saving from here keeps every one of them. */}
-              {topicsStatus === 'failed' && (
-                <div className="rounded-lg border border-amber-200 bg-amber-50 p-3">
-                  <p className="text-xs text-amber-800 leading-relaxed">
-                    The competency list could not be loaded, so it cannot be changed here right now.
-                    {unresolvedTopicIds.length > 0
-                      ? ` The ${unresolvedTopicIds.length} competenc${unresolvedTopicIds.length === 1 ? 'y' : 'ies'} already on this activity ${unresolvedTopicIds.length === 1 ? 'is' : 'are'} kept as ${unresolvedTopicIds.length === 1 ? 'it is' : 'they are'} — saving will not drop ${unresolvedTopicIds.length === 1 ? 'it' : 'them'}.`
-                      : ' Reconnect and reopen this page to pick from it.'}
-                  </p>
-                </div>
-              )}
+              ) : coverageOptions.length > 0 ? (
+                /* Everything was filtered away by the term picker — a real
+                   state, not an empty curriculum, and one that reads as a
+                   broken control unless it says so. */
+                <p className="text-xs text-slate-500 bg-slate-50 border border-slate-200 rounded-lg p-3">
+                  No lesson in this class&rsquo;s curriculum is scheduled for Term {form.term}.
+                  Pick another term, or ask your admin to check the uploaded scope and sequence.
+                </p>
+              ) : null}
 
               {topicsStatus === 'loading' && unresolvedTopicIds.length > 0 && (
                 <p className="text-xs text-slate-400 flex items-center gap-1.5">
-                  <Loader2 className="w-3 h-3 animate-spin" /> Loading the competencies on this activity…
+                  <Loader2 className="w-3 h-3 animate-spin" /> Loading the tags on this activity&hellip;
                 </p>
               )}
 
               {unknownTopicIds.length > 0 && (
                 <div>
-                  <p className="text-xs font-medium text-slate-500 mb-1">Other topics on this activity</p>
+                  {/* Tags from before the competency list was retired, plus
+                      anything typed in elsewhere. Read-only and removable:
+                      nothing here can be added back, but an activity tagged
+                      last term must not have those tags silently vanish from
+                      the one screen where they can be seen. */}
+                  <p className="text-xs font-medium text-slate-500 mb-1">Other tags on this activity</p>
                   <div className="flex flex-wrap gap-2">
                     {unknownTopicIds.map(id => (
                       <span key={id} className="inline-flex items-center gap-1.5 text-xs bg-slate-100 text-slate-600 px-2.5 py-1 rounded-full">
-                        {id}
+                        {isLessonTopicId(id) ? 'Removed curriculum lesson' : (legacyTopicName(id) || id)}
                         <button type="button" onClick={() => toggleTopic(id)} aria-label={`Remove ${id}`}
                           className="text-slate-400 hover:text-red-500">
                           <X className="w-3 h-3" />
@@ -1360,7 +1510,8 @@ export default function ActivityBuilder() {
                     ))}
                   </div>
                   <p className="text-xs text-slate-400 mt-1">
-                    Typed in elsewhere, or from a curriculum this class no longer follows. They still tag the activity.
+                    From a DepEd competency list this app no longer offers, or typed in elsewhere.
+                    They still tag the activity and still count in analytics.
                   </p>
                 </div>
               )}

@@ -334,6 +334,22 @@ model CurriculumLesson {
   description      String?
   outputType       String     @default("Essay")
   weekNumber       Int?
+  /// The Learning Competencies this lesson covers, as a JSON array of strings.
+  ///
+  /// A DepEd curriculum guide states these per week, in their own column, and
+  /// the extraction used to read past them — keeping a one-or-two sentence
+  /// summary and nothing else. That summary is all the AI ever got about what
+  /// a lesson was for, which is why a hardcoded Grade 6 English competency map
+  /// existed alongside this table: it was the only place a specific "evaluate
+  /// for X, then Y" instruction could come from, and it covered exactly one
+  /// subject. Reading the column the document already has gives every subject
+  /// the same thing, from the school's own scope and sequence.
+  ///
+  /// JSON rather than a related table because nothing queries an individual
+  /// competency: they are read as a set, for one lesson, to be written into a
+  /// grading prompt. Null means the document had none to give, or predates
+  /// this column — both leave grading exactly as it was.
+  competencies     String?
   defaultRubric    String?
   /// The school RubricTemplate this lesson's rubric was saved as, so picking
   /// the lesson in the Activity Builder selects that template by id rather
@@ -368,6 +384,22 @@ model ClassLesson {
   description      String?
   outputType       String     @default("Essay")
   weekNumber       Int?
+  /// The Learning Competencies this lesson covers, as a JSON array of strings.
+  ///
+  /// A DepEd curriculum guide states these per week, in their own column, and
+  /// the extraction used to read past them — keeping a one-or-two sentence
+  /// summary and nothing else. That summary is all the AI ever got about what
+  /// a lesson was for, which is why a hardcoded Grade 6 English competency map
+  /// existed alongside this table: it was the only place a specific "evaluate
+  /// for X, then Y" instruction could come from, and it covered exactly one
+  /// subject. Reading the column the document already has gives every subject
+  /// the same thing, from the school's own scope and sequence.
+  ///
+  /// JSON rather than a related table because nothing queries an individual
+  /// competency: they are read as a set, for one lesson, to be written into a
+  /// grading prompt. Null means the document had none to give, or predates
+  /// this column — both leave grading exactly as it was.
+  competencies     String?
   defaultRubric    String?
   /// Carried over from CurriculumLesson when the curriculum is applied to a
   /// class — see the note there. Copy-on-apply is deliberate (HANDOFF §4), so
@@ -383,6 +415,15 @@ model Activity {
   title             String
   type              String
   topic             String?
+  /// Which grading term (1, 2 or 3) this activity belongs to.
+  ///
+  /// Null means untagged, which is what every activity created before this
+  /// column existed is: there is no date range recorded anywhere that could
+  /// place them, and guessing from `deadline` would silently file work under
+  /// a term it was never part of. The gradebook groups those under "No term"
+  /// rather than hiding them, so nothing disappears from a teacher's record
+  /// because of a column they have not filled in yet.
+  term              Int?
   points            Int
   classId           String
   instructions      String?

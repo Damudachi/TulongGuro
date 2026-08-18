@@ -1,8 +1,9 @@
 import { useState, useEffect } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import {
   BarChart2, Users, Loader2, ArrowLeft, FileText, ChevronRight, Sparkles,
   AlertTriangle, Trophy, Target, TrendingUp, TrendingDown, Minus, ClipboardList,
+  Scale,
 } from 'lucide-react';
 import { API_URL, apiFetch } from '../../config';
 import { getStoredUser } from '../../utils/session';
@@ -10,6 +11,13 @@ import { bandsFor, bandFor, toPoints, pct, DEFAULT_PASSING_GRADE } from '../../u
 import SkillProgressChart from '../../components/SkillProgressChart';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
+
+/** The three DepEd grading components, spelled out for the weights panel. */
+const COMPONENT_LABELS = {
+  WW: 'Written Work',
+  PT: 'Performance Task',
+  QA: 'Quarterly Assessment',
+};
 
 const SKILL_LABELS = {
   vocabulary: 'Vocabulary',
@@ -240,12 +248,18 @@ export default function Analytics() {
                 const earned = graded.reduce((sum, s) => sum + toPoints(s.hitlScore ?? s.aiScore ?? 0, s.points), 0);
                 const possible = graded.reduce((sum, s) => sum + (s.points || 100), 0);
                 const band = bandFor(studentData.avgScore, passingGrade);
+                // What the raw points total would be if it were a percentage.
+                // Shown next to the average because the gap between the two is
+                // exactly what the component weights do, and a teacher looking
+                // at two unrelated-looking numbers has no way to see that.
+                const rawPercent = possible > 0 ? Math.round((earned / possible) * 100) : null;
                 return (
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                     <div className="bg-royal-50 rounded-2xl p-4">
                       <p className="text-[11px] font-bold uppercase tracking-wider text-royal-600 mb-1">Average</p>
                       <p className="text-3xl font-extrabold text-royal-700">{pct(studentData.avgScore)}%</p>
                       {band && <span className={cn('inline-block mt-1.5 text-[11px] font-bold px-2 py-0.5 rounded-full', band.chip)}>{band.emoji} {band.short}</span>}
+                      <p className="text-[11px] text-royal-500 mt-1.5">Weighted by DepEd components</p>
                       {/* Flags an average that only covers some of this student's
                           subjects with this teacher — otherwise it renders
                           identically to one covering all of them. */}
@@ -258,7 +272,16 @@ export default function Analytics() {
                     <div className="bg-aqua-50 rounded-2xl p-4">
                       <p className="text-[11px] font-bold uppercase tracking-wider text-aqua-700 mb-1">Points earned</p>
                       <p className="text-3xl font-extrabold text-aqua-700">{Math.round(earned)}<span className="text-lg text-aqua-400">/{possible}</span></p>
-                      <p className="text-[11px] text-slate-500 mt-1.5">Across all graded work</p>
+                      {/* Said plainly, because the obvious reading of these two
+                          cards is that one is the other as a percentage — and
+                          it is not. This is a straight sum of marks; the
+                          average above runs each component through its weight.
+                          Where they differ, the difference is the weighting,
+                          and a teacher is entitled to see that rather than
+                          wonder which number is wrong. */}
+                      <p className="text-[11px] text-slate-500 mt-1.5">
+                        Raw total, not weighted{rawPercent !== null && ` · ${rawPercent}%`}
+                      </p>
                     </div>
                     <div className="bg-sun-50 rounded-2xl p-4">
                       <p className="text-[11px] font-bold uppercase tracking-wider text-sun-700 mb-1">Graded</p>
@@ -268,6 +291,72 @@ export default function Analytics() {
                   </div>
                 );
               })()}
+
+              {/* ── How the average was actually worked out ──
+                  DepEd grades a subject by component, not by pooling marks:
+                  each of Written Work, Performance Task and Quarterly
+                  Assessment is scored on its own points total, then combined
+                  under weights that differ per subject. That is why the average
+                  above and the raw points beside it disagree. Components with
+                  nothing graded yet are dropped and the rest renormalised, so
+                  the applied weight is shown next to the school's configured
+                  one whenever the two differ — a teacher reading "30%" against
+                  a grade computed at 37.5% would be right to call it wrong. */}
+              {studentData.gradeBreakdown?.length > 0 && (
+                <div className="border border-slate-200 rounded-2xl p-4">
+                  <h3 className="text-sm font-extrabold text-navy-700 mb-3 flex items-center gap-2">
+                    <Scale className="w-4 h-4 text-slate-400" /> How this average is worked out
+                  </h3>
+                  <div className="space-y-4">
+                    {studentData.gradeBreakdown.map(b => (
+                      <div key={`${b.subject}|${b.gradeLevel}`}>
+                        {studentData.gradeBreakdown.length > 1 && (
+                          <p className="text-xs font-bold text-navy-600 mb-1.5">{b.subject || 'This subject'}</p>
+                        )}
+                        <div className="space-y-1">
+                          {['WW', 'PT', 'QA'].map(key => {
+                            const score = b.componentPercents?.[key];
+                            const configured = b.weights?.[key] ?? 0;
+                            const applied = b.usedWeights?.[key];
+                            const missing = typeof score !== 'number';
+                            return (
+                              <div key={key} className="flex items-baseline justify-between gap-3 text-[12px]">
+                                <span className={cn('font-semibold', missing ? 'text-slate-400' : 'text-slate-600')}>
+                                  {COMPONENT_LABELS[key]}
+                                </span>
+                                <span className="flex items-baseline gap-2 shrink-0">
+                                  <span className={cn('font-bold tabular-nums', missing ? 'text-slate-300' : 'text-navy-700')}>
+                                    {missing ? 'nothing graded' : `${Math.round(score)}%`}
+                                  </span>
+                                  <span className="text-slate-400 tabular-nums">
+                                    ×{configured}%
+                                    {!missing && applied !== undefined && applied !== configured && (
+                                      <span className="text-amber-600"> → {applied}%</span>
+                                    )}
+                                  </span>
+                                </span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                        <div className="flex items-baseline justify-between gap-3 text-[12px] mt-2 pt-2 border-t border-slate-100">
+                          <span className="font-extrabold text-navy-700">Subject grade</span>
+                          <span className="font-extrabold text-navy-800 tabular-nums">
+                            {b.subjectGrade === null ? '—' : `${b.subjectGrade}%`}
+                          </span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  {studentData.gradeBreakdown.some(b => b.missingComponents?.length > 0) && (
+                    <p className="text-[11px] text-slate-400 mt-3 leading-relaxed">
+                      A component with nothing graded yet is left out and the remaining weights are
+                      shared out to fill the gap — the amber figure is what was actually applied. It
+                      settles back to the school&rsquo;s own weights once every component has work in it.
+                    </p>
+                  )}
+                </div>
+              )}
 
               <SkillProgressChart
                 studentId={selectedStudent.id}
@@ -286,15 +375,24 @@ export default function Analytics() {
                     const percent = sub.hitlScore ?? sub.aiScore;
                     const isGraded = sub.status === 'GRADED' && percent !== null;
                     const band = isGraded ? bandFor(percent, passingGrade) : null;
+                    // Every row here is a real submission, so there is always
+                    // something to open — the review screen holds the paper,
+                    // the rubric scores and the feedback, which is the whole
+                    // reason a teacher clicks a grade in the first place.
+                    // Rendered as a link rather than a click handler so it
+                    // keeps middle-click, "open in new tab" and the keyboard.
                     return (
-                      <div key={sub.id} className="flex items-center gap-3 p-3 bg-slate-50 rounded-2xl">
+                      <Link key={sub.id} to={`/teacher/review/${sub.id}`}
+                        className="flex items-center gap-3 p-3 bg-slate-50 rounded-2xl hover:bg-slate-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-royal-400 transition-colors">
                         <div className="w-10 h-10 bg-white border border-slate-200 rounded-xl grid place-items-center shrink-0">
                           <FileText className="w-5 h-5 text-slate-400" />
                         </div>
                         <div className="flex-1 min-w-0">
                           <p className="text-sm font-bold text-navy-800 truncate">{sub.activityTitle}</p>
                           <p className="text-[11px] text-slate-400">
-                            {sub.className} · {sub.activityType} · {new Date(sub.createdAt).toLocaleDateString('en-PH', { month: 'short', day: 'numeric' })}
+                            {sub.className} · {sub.activityType}
+                            {sub.term ? ` · Term ${sub.term}` : ''}
+                            {' · '}{new Date(sub.createdAt).toLocaleDateString('en-PH', { month: 'short', day: 'numeric' })}
                           </p>
                         </div>
                         <div className="text-right shrink-0">
@@ -310,7 +408,8 @@ export default function Analytics() {
                             <p className="text-[11px] font-semibold text-sun-700 bg-sun-100 px-2 py-1 rounded-full">Not graded yet</p>
                           )}
                         </div>
-                      </div>
+                        <ChevronRight className="w-4 h-4 text-slate-300 shrink-0" aria-hidden="true" />
+                      </Link>
                     );
                   })}
                 </div>

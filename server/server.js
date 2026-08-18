@@ -36,7 +36,7 @@ const {
   cellToText, extractRoster, readBirthday,
   looksLikeAName, looksLikeAHeaderRow, composeName, withSurnameComma, tidyRosterEntry,
 } = require('./rosterSheet');
-const { getAllTopics, getTopicById, getTopicsAIGuidance, parseTopicIds, formatTopicIds } = require('./depedTopics');
+const { getAllTopics, getTopicById, getTopicsAIGuidance, parseTopicIds, formatTopicIds, lessonIdFromTopicId, lessonIdsFromTopics, termForWeek } = require('./depedTopics');
 // getRubricTemplateById is gone with the grader's topic-recommended rubric
 // tier: a built-in sample is something a teacher may choose, never something
 // the system applies on their behalf.
@@ -3095,6 +3095,10 @@ app.post('/api/admin/:adminId/curriculums', upload.single('curriculumFile'), asy
               description: l.description || null,
               outputType: l.outputType || 'Essay',
               weekNumber: l.weekNumber ?? null,
+              // What the document says this lesson is *for*. Kept because it is
+              // what the AI is held to when it marks work tagged to this lesson
+              // — see the note on the column.
+              competencies: l.competencies ?? null,
               // Both null by design. A lesson read out of a document says what
               // is taught that week, not how it should be marked — the admin
               // attaches the school's rubric separately, or nobody does and
@@ -4086,6 +4090,11 @@ const CARRIED_OVER_SELECT = {
   activity: {
     select: {
       id: true, title: true, points: true, component: true, deadline: true, classId: true,
+      // The term this work was set in, so a term-filtered export drops carried
+      // columns from other terms too. Without it a Term 2 sheet would carry a
+      // transferred learner's Term 1 marks from their old section into a
+      // Term 2 average, and only for the learners who happened to move.
+      term: true,
       // Whether a stored isLate flag describes the learner at all: on anything
       // but a student-submit activity it records when the teacher scanned the
       // paper, not when the child handed it in.
@@ -4781,6 +4790,11 @@ app.post('/api/teacher/classes', (req, res, next) => {
             description: l.description,
             outputType: l.outputType,
             weekNumber: l.weekNumber,
+            // Carried over with the rest of the lesson. Without it a class
+            // created through the school-curriculum flow got lessons whose
+            // competencies were left behind in CurriculumLesson, and its
+            // grading silently fell back to the one-line description.
+            competencies: l.competencies,
             defaultRubric: l.defaultRubric,
             // Carried over with the rest of the lesson. Missing here, every
             // class created through the main "accept the school curriculum"
@@ -4806,6 +4820,51 @@ app.post('/api/teacher/classes', (req, res, next) => {
  * plain lesson objects. Shared by the per-class parse endpoint and the
  * school-wide admin curriculum builder.
  */
+/**
+ * The competency list a lesson carries, as it is stored.
+ *
+ * A JSON array of strings, or null when there is nothing to store. Null rather
+ * than "[]" so that "this document listed none" and "this lesson predates the
+ * column" read identically downstream — they mean the same thing to grading,
+ * and a caller checking truthiness should not have to know the difference.
+ *
+ * Everything is squeezed through here rather than trusted as returned: this
+ * text is written verbatim into a grading prompt, so a model that answers with
+ * a string instead of an array, or pads the list with blanks and repeats, must
+ * not put that into what a pupil is marked against. Capped for the same
+ * reason — a runaway list would crowd the rubric out of the prompt.
+ */
+function normalizeCompetencies(value) {
+  const list = Array.isArray(value) ? value : (typeof value === 'string' ? [value] : []);
+  const seen = new Set();
+  const out = [];
+  for (const raw of list) {
+    // Strings only. String({}) is "[object Object]" — non-empty, so it would
+    // pass every check below and be written into a grading prompt as something
+    // a pupil is marked against.
+    if (typeof raw !== 'string') continue;
+    const text = raw.trim().replace(/\s+/g, ' ');
+    if (!text || seen.has(text.toLowerCase())) continue;
+    seen.add(text.toLowerCase());
+    out.push(text.slice(0, 400));
+    if (out.length >= 12) break;
+  }
+  return out.length ? JSON.stringify(out) : null;
+}
+
+/** The competencies stored on a lesson, as a plain array. Never throws. */
+function readCompetencies(stored) {
+  if (!stored) return [];
+  try {
+    const parsed = JSON.parse(stored);
+    return Array.isArray(parsed) ? parsed.filter(c => typeof c === 'string' && c.trim()) : [];
+  } catch {
+    // A column that will not parse is treated as empty rather than crashing a
+    // grading run. The lesson still contributes its title and description.
+    return [];
+  }
+}
+
 async function extractLessonsFromCurriculum(filePath, subjectInput, gradeLevelInput) {
     if (!aiConfigured || !model) {
       throw new Error('AI is not configured. Cannot parse curriculum.');
@@ -4834,7 +4893,8 @@ You MUST respond with valid JSON matching this exact schema:
       "title": "<Lesson/topic/week title, e.g. 'Week 1: Elements of a Short Story'>",
       "description": "<Brief 1-2 sentence description of what the lesson covers>",
       "weekNumber": <integer week number if identifiable, or null>,
-      "outputType": "<One of: Essay, Short Answer, Journal, Reflection, Creative Writing, Research Paper, Survey/Form, Outline, Report, Letter, Poem, Speech, Summary>"
+      "outputType": "<One of: Essay, Short Answer, Journal, Reflection, Creative Writing, Research Paper, Survey/Form, Outline, Report, Letter, Poem, Speech, Summary>",
+      "competencies": ["<one learning competency, verbatim from the document>", "..."]
     }
   ]
 }
@@ -4842,6 +4902,13 @@ You MUST respond with valid JSON matching this exact schema:
 RULES:
 - Extract EVERY lesson/topic/week you can find in the document.
 - The outputType should reflect the most likely student output for that lesson.
+- "competencies" is the Learning Competencies (or MELC / Content Standards /
+  Performance Standards) the document lists for that lesson. Copy them as
+  written, one string per competency — do NOT paraphrase them into a summary,
+  and do NOT invent any the document does not state. These are what the AI is
+  later held to when it marks a pupil's work against this lesson, so an
+  invented competency becomes an invented marking criterion. Return an empty
+  array if the document lists none for that lesson.
 - Report only what the document says. Do NOT invent grading criteria, rubrics,
   scoring bands or point weights — writing a rubric is the teacher's work, and
   this system does not do it for them. Any rubric field you return is discarded.
@@ -4868,7 +4935,10 @@ RULES:
     // rubrics, but a prompt is a request, not a guarantee — and a rubric that
     // slipped through here would be indistinguishable downstream from one a
     // teacher wrote. The one place this is enforced is in code.
-    return (parsed.lessons || []).map(({ defaultRubric, rubric, ...lesson }) => lesson);
+    return (parsed.lessons || []).map(({ defaultRubric, rubric, ...lesson }) => ({
+      ...lesson,
+      competencies: normalizeCompetencies(lesson.competencies),
+    }));
 }
 
 app.post('/api/teacher/classes/:id/parse-curriculum', async (req, res) => {
@@ -4919,6 +4989,9 @@ app.post('/api/teacher/classes/:id/parse-curriculum', async (req, res) => {
           description: lesson.description || null,
           weekNumber: lesson.weekNumber || null,
           outputType: lesson.outputType || 'Essay',
+          // See the note on the column: this is what the AI marks against for
+          // any activity tagged to this lesson.
+          competencies: lesson.competencies ?? null,
           // A parsed document supplies no rubric — see extractLessonsFromCurriculum,
           // which strips any the model returns anyway. The teacher picks one per
           // activity from their school's rubrics.
@@ -5143,6 +5216,22 @@ function normalizeComponent(value) {
 }
 
 /**
+ * The grading term an activity belongs to: 1, 2, 3 — or null for "not said".
+ *
+ * Null rather than a default of 1, because a wrong term is worse than an
+ * absent one here. The gradebook's term filter is what a teacher uses to
+ * assemble one term's record, so an activity silently filed under Term 1
+ * would appear in a report it has no business in and vanish from the one it
+ * belongs to. Anything unrecognised — a blank, a stray string, a 4 — is
+ * therefore treated as unsaid rather than coerced onto the nearest valid term.
+ */
+function normalizeTerm(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const n = parseInt(value, 10);
+  return n === 1 || n === 2 || n === 3 ? n : null;
+}
+
+/**
  * Whether a rubric payload actually carries criteria.
  *
  * Deliberately not `!!rubric`: the form sends nothing at all when there is no
@@ -5261,7 +5350,7 @@ app.post('/api/teacher/activities', (req, res, next) => {
   }
 }, async (req, res) => {
   try {
-    const { title, type, points, classId, instructions, deadline, lateUntil, submissionMode, rubric, topic, maxAttempts, classLessonId, component } = req.body;
+    const { title, type, points, classId, instructions, deadline, lateUntil, submissionMode, rubric, topic, term, maxAttempts, classLessonId, component } = req.body;
 
     // The class is proved to exist and to be the caller's before anything else
     // runs. Without it, a classId that named nothing reached Postgres and came
@@ -5337,6 +5426,7 @@ app.post('/api/teacher/activities', (req, res, next) => {
         // column a single id used to occupy — see parseTopicIds. Normalized on
         // the way in so blanks and repeats never reach the analytics grouping.
         topic: formatTopicIds(topic) || null,
+        term: normalizeTerm(term),
         points: parseInt(points) || 100,
         classId, instructions: String(instructions).trim(),
         deadline: due,
@@ -5362,7 +5452,7 @@ app.put('/api/teacher/activities/:activityId', async (req, res) => {
     const owned = await teacherOwnsActivity(req.params.activityId, req.auth.sub);
     if (!owned.ok) return res.status(owned.code).json({ success: false, error: owned.error });
 
-    const { title, type, points, topic, deadline, lateUntil, instructions, submissionMode, maxAttempts, rubric } = req.body;
+    const { title, type, points, topic, term, deadline, lateUntil, instructions, submissionMode, maxAttempts, rubric } = req.body;
 
     // Same rule as publishing, applied to the edit that would undo it. Scoped
     // to requests that actually carry the field, so an edit that only moves the
@@ -5452,6 +5542,9 @@ app.put('/api/teacher/activities/:activityId', async (req, res) => {
     // Normalized to the same comma-separated list the create route writes, so a
     // save from either form leaves one shape behind.
     if (topic !== undefined) updateData.topic = formatTopicIds(topic) || null;
+    // Clearing the term back to "not said" has to be possible, so an explicit
+    // empty value normalises to null rather than being ignored.
+    if (term !== undefined) updateData.term = normalizeTerm(term);
     if (deadline !== undefined) updateData.deadline = normalizeDateInput(deadline);
     if (instructions !== undefined) updateData.instructions = instructions ? String(instructions) : null;
     if (submissionMode !== undefined) updateData.submissionMode = String(submissionMode);
@@ -6419,16 +6512,64 @@ async function generateSubmissionFeedback(imagePaths, activityId, studentId) {
         where: { id: activityId },
         include: {
           class: { select: { subject: true } },
-          classLesson: { select: { title: true, description: true, outputType: true, defaultRubric: true } }
+          classLesson: { select: { title: true, description: true, outputType: true, defaultRubric: true, competencies: true } }
         }
       });
       if (activity) {
         activityContext = `Activity: "${activity.title}" (${activity.type}). Instructions: "${activity.instructions || 'N/A'}".`;
         if (activity.class?.subject) subjectForPrompt = activity.class.subject;
 
+        // ── What the curriculum says this work is for ──
+        //
+        // The title and description place the activity; the competencies are
+        // what the model is actually held to. Those come from the Learning
+        // Competencies column of the school's own curriculum guide, which the
+        // extraction used to read past — leaving a one-line description as
+        // everything the model knew about a lesson's purpose. A hardcoded
+        // Grade 6 English competency map existed to fill that gap and covered
+        // one subject; this covers whatever subject the document is for.
+        const lessonBlock = (l, lead) => {
+          const competencies = readCompetencies(l.competencies);
+          let text = `${lead}: "${l.title}"\nLesson Description: ${l.description || 'N/A'}\n`;
+          if (competencies.length > 0) {
+            text += `Learning Competencies for this lesson:\n`
+              + competencies.map(c => `  - ${c}`).join('\n')
+              + `\nEvaluate this submission against these competencies specifically. Do not mark against competencies that are not listed here.\n`;
+          }
+          return text;
+        };
+
         if (activity.classLesson) {
           const cl = activity.classLesson;
-          classLessonContext = `\nCURRICULUM LESSON CONTEXT:\nThis activity is mapped to the lesson: "${cl.title}"\nLesson Description: ${cl.description || 'N/A'}\nExpected Output Type: ${cl.outputType}\nYou MUST evaluate this submission specifically against the learning objectives of this lesson.\n`;
+          classLessonContext = `\nCURRICULUM LESSON CONTEXT:\n`
+            + lessonBlock(cl, 'This activity is mapped to the lesson')
+            + `Expected Output Type: ${cl.outputType}\n`
+            + `You MUST evaluate this submission specifically against the learning objectives of this lesson.\n`;
+        }
+
+        // ── The other lessons this activity was tagged with ──
+        //
+        // classLessonId holds one lesson — the one that supplied the output
+        // type and the default rubric — but an activity routinely covers
+        // several weeks. Without this the model was told about exactly one of
+        // them, and marked a three-week review paper against a third of what
+        // it was actually set for.
+        const extraLessonIds = lessonIdsFromTopics(activity.topic)
+          .filter(id => id !== activity.classLessonId);
+        if (extraLessonIds.length > 0) {
+          const extraLessons = await prisma.classLesson.findMany({
+            // Scoped to this activity's own class. A tag is only a string in a
+            // column, so an id naming a lesson in someone else's class would
+            // otherwise pull that class's curriculum into this prompt.
+            where: { id: { in: extraLessonIds }, classId: activity.classId },
+            select: { title: true, description: true, competencies: true },
+            orderBy: [{ weekNumber: 'asc' }, { createdAt: 'asc' }],
+          });
+          if (extraLessons.length > 0) {
+            classLessonContext += `\nALSO COVERS:\n`
+              + extraLessons.map(l => lessonBlock(l, 'Lesson')).join('\n')
+              + `\nEvaluate against these learning objectives as well.\n`;
+          }
         }
 
         const resolved = resolveGradingRubric(activity);
@@ -8378,7 +8519,7 @@ app.get('/api/teacher/student/:studentId/analytics', async (req, res) => {
       // the average blended subjects the teacher has no part in.
       where: { studentId: student.id, activity: { class: { teacherId: req.auth.sub } } },
       orderBy: { createdAt: 'asc' },
-      include: { activity: { select: { title: true, type: true, points: true, classId: true, component: true, class: { select: { name: true, subject: true, gradeLevel: true } } } } }
+      include: { activity: { select: { id: true, title: true, type: true, points: true, classId: true, component: true, term: true, class: { select: { name: true, subject: true, gradeLevel: true } } } } }
     });
 
     const skillHistory = submissions
@@ -8400,7 +8541,12 @@ app.get('/api/teacher/student/:studentId/analytics', async (req, res) => {
     // different component weightings, so one hardcoded policy was wrong for
     // everyone not taking a language.
     const studentSchoolId = student.schoolId ?? null;
-    const { average: avgScoreOrNull, subjectsIncluded } = await workingAverageAcrossSubjects(gradedSubs, studentSchoolId);
+    // One cache for both the average and the breakdown below, so the two
+    // cannot read different policies and disagree — and so the per-subject
+    // policy is fetched once rather than once per computation.
+    const policyCache = makePolicyCache(studentSchoolId);
+    const { average: avgScoreOrNull, subjectsIncluded } =
+      await workingAverageAcrossSubjects(gradedSubs, studentSchoolId, policyCache);
     const avgScore = avgScoreOrNull ?? 0;
     // How many subjects this teacher actually teaches this student in, so the
     // UI can tell "averaged across all of them" apart from "only 1 of 3 have
@@ -8410,6 +8556,52 @@ app.get('/api/teacher/student/:studentId/analytics', async (req, res) => {
       select: { subject: true },
       distinct: ['subject']
     })).length;
+
+    // ── How that average was actually arrived at ──
+    //
+    // The screen showed an "Average" beside a "Points earned" total and said
+    // nothing about the relationship between them, which invited exactly one
+    // reading: that the average is the points total expressed as a percentage.
+    // It is not. The average runs every mark through the DepEd component
+    // weights for its subject (Written Work / Performance Task / Quarterly
+    // Assessment), while the points total is a plain sum of raw marks — so a
+    // learner strong on written work and weak on performance tasks shows a
+    // healthy points total and a lower average, with nothing on screen
+    // explaining the gap.
+    //
+    // Returning the working means the UI can show it rather than leaving a
+    // teacher to guess which number to trust. Per subject, because the weights
+    // differ per subject and there is no single set that is correct for a whole
+    // workload — see workingAverageAcrossSubjects.
+    const gradedBySubject = new Map();
+    for (const sub of gradedSubs) {
+      const cls = sub.activity?.class;
+      const key = `${cls?.subject || ''}|${cls?.gradeLevel || ''}`;
+      if (!gradedBySubject.has(key)) {
+        gradedBySubject.set(key, { subject: cls?.subject || null, gradeLevel: cls?.gradeLevel || null, items: [] });
+      }
+      gradedBySubject.get(key).items.push(sub);
+    }
+    const gradeBreakdown = [];
+    for (const { subject, gradeLevel, items } of gradedBySubject.values()) {
+      const policy = await policyCache(gradeLevel, subject);
+      const entries = toGradeEntries(items);
+      if (entries.length === 0) continue;
+      const result = grading.computeGrade(entries, policy, { transmute: false });
+      gradeBreakdown.push({
+        subject, gradeLevel,
+        // The school's configured weights, and the ones actually applied after
+        // components with nothing graded yet are dropped and the rest
+        // renormalised. Both, because they differ before the quarterly
+        // assessment exists and a teacher reading "Written Work 30%" against a
+        // grade computed at 37.5% would be right to call it wrong.
+        weights: result.weights,
+        usedWeights: result.usedWeights,
+        componentPercents: result.componentPercents,
+        missingComponents: result.missingComponents,
+        subjectGrade: result.initialGrade === null ? null : Math.round(result.initialGrade),
+      });
+    }
 
     const avgSkills = {};
     AI_SKILLS.forEach(skill => {
@@ -8423,7 +8615,15 @@ app.get('/api/teacher/student/:studentId/analytics', async (req, res) => {
 
     res.json({
       success: true, student, submissions: submissions.map(s => ({
-        id: s.id, activityTitle: s.activity?.title, activityType: s.activity?.type,
+        id: s.id,
+        // The activity behind the row, so the list can link to it. `id` above
+        // is the submission — which is what the review screen is keyed on —
+        // but a row for work that was never handed in has no submission to
+        // open, and the two must not be confused at the call site.
+        activityId: s.activity?.id,
+        activityTitle: s.activity?.title, activityType: s.activity?.type,
+        component: s.activity?.component || 'WW',
+        term: s.activity?.term ?? null,
         className: s.activity?.class?.name, points: s.activity?.points,
         aiScore: s.aiScore, hitlScore: s.hitlScore, status: s.status,
         imageUrl: s.imageUrl, aiFeedback: s.aiFeedback, hitlFeedback: s.hitlFeedback,
@@ -8433,6 +8633,7 @@ app.get('/api/teacher/student/:studentId/analytics', async (req, res) => {
       avgScoreSubjectsIncluded: subjectsIncluded,
       avgScoreSubjectsTotal: subjectsTotal,
       avgScorePartial: subjectsTotal > 0 && subjectsIncluded < subjectsTotal,
+      gradeBreakdown,
       avgSkills, totalSubmissions: submissions.length
     });
   } catch (e) {
@@ -10144,13 +10345,47 @@ app.get('/api/student/:studentId/analytics', async (req, res) => {
       }
     }
 
+    // ── Names for the curriculum-lesson tags ──
+    //
+    // A tag is either a DepEd competency slug, which getTopicById resolves, or
+    // a `lesson:<uuid>` naming a lesson from the class's own curriculum — the
+    // only kind of tag that exists outside Grade 6 English. Without this
+    // lookup those rows were labelled with the raw uuid, so the topic
+    // breakdown for every non-English subject read as a column of
+    // meaningless identifiers.
+    const taggedLessonIds = Object.keys(topicMap).map(lessonIdFromTopicId).filter(Boolean);
+    const lessonNames = new Map();
+    if (taggedLessonIds.length > 0) {
+      const lessons = await prisma.classLesson.findMany({
+        where: { id: { in: taggedLessonIds } },
+        select: { id: true, title: true, weekNumber: true },
+      });
+      for (const l of lessons) {
+        lessonNames.set(l.id, {
+          name: l.weekNumber ? `Week ${l.weekNumber}: ${l.title}` : l.title,
+          // Lessons carry a week, never a term — see termForWeek, which is a
+          // best guess and is why this is derived rather than stored.
+          term: termForWeek(l.weekNumber),
+        });
+      }
+    }
+
     const topicMastery = Object.entries(topicMap).map(([topicId, data]) => {
       const avgPercentage = Math.round(data.percents.reduce((a, b) => a + b, 0) / data.percents.length);
       const topicInfo = getTopicById(topicId);
+      // A lesson tag whose lesson has since been deleted (re-parsing a
+      // curriculum replaces every ClassLesson in the class) resolves to
+      // nothing. Falls through to the raw id rather than dropping the row —
+      // the marks behind it are real, and a row a teacher cannot identify is
+      // still better than work that silently vanishes from the breakdown.
+      const lessonInfo = lessonNames.get(lessonIdFromTopicId(topicId));
       return {
         topicId,
-        topicName: topicInfo?.name || topicId,
-        term: topicInfo?.term || null,
+        topicName: topicInfo?.name || lessonInfo?.name || topicId,
+        term: topicInfo?.term ?? lessonInfo?.term ?? null,
+        // Which list this tag came from, so the UI can say "from your school's
+        // curriculum" rather than presenting a lesson as a DepEd competency.
+        source: topicInfo ? 'deped' : (lessonInfo ? 'curriculum' : 'other'),
         avgPercentage,
         pointsEarned: Math.round(data.earned),
         pointsPossible: data.possible,
@@ -10207,6 +10442,12 @@ app.get('/api/teacher/:teacherId/gradebook/export', async (req, res) => {
   try {
     const { classId, sectionId, format = 'csv' } = req.query;
     const teacherId = req.params.teacherId;
+    // Which term the file covers. The gradebook filters to one term on screen
+    // and the Export button sits above that filtered table, so a file covering
+    // the whole year would silently disagree with what the teacher was looking
+    // at when they pressed it. Null (no `term` parameter, or an unrecognised
+    // one) means every term, which is what the button did before this existed.
+    const exportTerm = normalizeTerm(req.query.term);
 
     // Determine which classes to export — always confirming this teacher owns
     // them, so a class reassigned away can't still be exported by its old owner.
@@ -10240,7 +10481,20 @@ app.get('/api/teacher/:teacherId/gradebook/export', async (req, res) => {
       });
       if (!cls) continue;
 
-      const activities = cls.activities || [];
+      // Filtered to the requested term, so the sheet contains exactly the
+      // columns the teacher had in view. Activities with no term recorded are
+      // left out of a single-term export rather than folded into it: an
+      // untagged activity is one nobody has placed yet, and quietly counting it
+      // toward a term's average would put a number on a report card that the
+      // teacher never agreed to.
+      const activities = exportTerm === null
+        ? (cls.activities || [])
+        : (cls.activities || []).filter(a => a.term === exportTerm);
+      // How many were held back, so the sheet can say so rather than leaving
+      // the teacher to notice a missing column.
+      const untaggedExcluded = exportTerm === null
+        ? 0
+        : (cls.activities || []).filter(a => a.term === null || a.term === undefined).length;
 
       // ── Learners who have left this section ──
       //
@@ -10337,9 +10591,13 @@ app.get('/api/teacher/:teacherId/gradebook/export', async (req, res) => {
 
       // Every distinct carried activity in this class, so the sheet has a
       // stable column per one rather than a ragged row per student.
+      // Filtered by term for the same reason the class's own activities are —
+      // otherwise a term-filtered sheet grows a column for a previous section's
+      // activity from another term with nothing but dashes underneath it.
       const carriedActivities = new Map();
       for (const subs of carriedByStudent.values()) {
         for (const sub of subs) {
+          if (exportTerm !== null && sub.activity?.term !== exportTerm) continue;
           if (!carriedActivities.has(sub.activity.id)) carriedActivities.set(sub.activity.id, sub.activity);
         }
       }
@@ -10384,7 +10642,8 @@ app.get('/api/teacher/:teacherId/gradebook/export', async (req, res) => {
         //
         // Same entry shape and the same computeGrade, so a merged grade is not
         // computed by different code than an unmerged one.
-        const carried = carriedByStudent.get(student.id) || [];
+        const carried = (carriedByStudent.get(student.id) || [])
+          .filter(sub => exportTerm === null || sub.activity?.term === exportTerm);
         for (const sub of carried) {
           if (grading.isExcused(sub)) {
             row[`carried:${sub.activity.id}`] = 'Excused';
@@ -10424,7 +10683,7 @@ app.get('/api/teacher/:teacherId/gradebook/export', async (req, res) => {
       classData.push({
         cls, activities, students, rows, passingGrade: exportPassing, unreviewedCount, useTransmutation,
         carriedActivities, carriedUnreviewedCount, carriedUnreviewedSections: [...carriedUnreviewedSections],
-        departedCount: departedStudents.length,
+        departedCount: departedStudents.length, untaggedExcluded,
       });
     }
 
@@ -10470,6 +10729,21 @@ app.get('/api/teacher/:teacherId/gradebook/export', async (req, res) => {
      * class's standing. Stated on the sheet rather than left to be inferred.
      */
     const averagedRows = (rows) => rows.filter(r => !r.transferredOut);
+
+    /**
+     * The "Term:" line. Shared so xlsx and csv cannot describe different
+     * scopes, and always printed — a sheet that says nothing about its term
+     * reads as the whole year, which is exactly the mistake a term-filtered
+     * export invites.
+     */
+    const termNotice = (untaggedExcluded) => {
+      if (exportTerm === null) return 'All terms.';
+      let text = `Term ${exportTerm} only. Activities from other terms are not in this file and do not count toward the averages below.`;
+      if (untaggedExcluded > 0) {
+        text += ` ${untaggedExcluded} activit${untaggedExcluded === 1 ? 'y has' : 'ies have'} no term recorded and ${untaggedExcluded === 1 ? 'is' : 'are'} also excluded — set a term on ${untaggedExcluded === 1 ? 'it' : 'them'} in the Activity Builder to have ${untaggedExcluded === 1 ? 'it' : 'them'} appear here.`;
+      }
+      return text;
+    };
 
     /** The "Transferred out:" notice, shared so xlsx and csv cannot disagree. */
     const transferredOutNotice = (n) =>
@@ -10518,6 +10792,7 @@ app.get('/api/teacher/:teacherId/gradebook/export', async (req, res) => {
       for (const {
         cls, activities, rows, passingGrade: exportPassing, unreviewedCount, useTransmutation,
         carriedActivities, carriedUnreviewedCount, carriedUnreviewedSections, departedCount,
+        untaggedExcluded,
       } of classData) {
         const sheetName = (cls.name || 'Grades').substring(0, 31);
         const sheet = workbook.addWorksheet(sheetName);
@@ -10526,6 +10801,11 @@ app.get('/api/teacher/:teacherId/gradebook/export', async (req, res) => {
         sheet.addRow(['Class:', cls.name]);
         sheet.addRow(['Section:', cls.section?.name || 'N/A']);
         sheet.addRow(['School Year:', cls.schoolYear]);
+        // What the file covers, stated on its face. The Export button sits
+        // above a term-filtered table, so the scope has to travel with the file
+        // — otherwise a Term 2 sheet and a whole-year sheet are impossible to
+        // tell apart once they are two attachments in an inbox.
+        sheet.addRow(['Term:', termNotice(untaggedExcluded)]);
         sheet.addRow(['Exported:', new Date().toLocaleDateString('en-PH', { dateStyle: 'long' })]);
         // Two schools can export the same raw marks and get different final
         // grades, so the sheet has to say which basis produced these. Without
@@ -10648,9 +10928,13 @@ app.get('/api/teacher/:teacherId/gradebook/export', async (req, res) => {
         });
       }
 
+      // The term is in the name as well as in the sheet: two exports of the
+      // same class for two terms would otherwise land in a downloads folder
+      // under one filename, and the second would overwrite or shadow the first.
+      const termSuffix = exportTerm === null ? '' : `_Term${exportTerm}`;
       const fileName = classData.length === 1
-        ? `${classData[0].cls.name.replace(/[^a-zA-Z0-9]/g, '_')}_Grades.xlsx`
-        : `Section_Grades_Export.xlsx`;
+        ? `${classData[0].cls.name.replace(/[^a-zA-Z0-9]/g, '_')}_Grades${termSuffix}.xlsx`
+        : `Section_Grades_Export${termSuffix}.xlsx`;
 
       res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
       res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
@@ -10663,10 +10947,12 @@ app.get('/api/teacher/:teacherId/gradebook/export', async (req, res) => {
       for (const {
         cls, activities, rows, unreviewedCount, useTransmutation,
         carriedActivities, carriedUnreviewedCount, carriedUnreviewedSections, departedCount,
+        untaggedExcluded,
       } of classData) {
         lines.push(`# Class: ${cls.name}`);
         lines.push(`# Section: ${cls.section?.name || 'N/A'}`);
         lines.push(`# School Year: ${cls.schoolYear}`);
+        lines.push(`# Term: ${termNotice(untaggedExcluded)}`);
         lines.push(`# Exported: ${new Date().toLocaleDateString('en-PH', { dateStyle: 'long' })}`);
         lines.push(`# Grading basis: ${useTransmutation
           ? 'DepEd transmutation table applied (DO 8 s.2015). Activity scores are raw; the final grade is transmuted.'
@@ -10991,4 +11277,5 @@ module.exports = {
   resolveGradingRubric, rubricScoreNoteFor, UNGRADED_RESET,
   rubricIsPresent, isManualScoreMode, scaleCriteriaTo100,
   logAiRequest, outcomeOf,
+  normalizeTerm, normalizeCompetencies, readCompetencies,
 };

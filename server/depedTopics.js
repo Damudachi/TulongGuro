@@ -1,4 +1,27 @@
 /**
+ * DepEd Grade 6 English Topic Coverage — RETIRED AS A PICKER, KEPT AS A READER.
+ *
+ * This list is no longer offered in the Activity Builder and nothing new can be
+ * tagged with it. It existed to fill one gap: the curriculum extraction used to
+ * read past the Learning Competencies column of a school's uploaded guide, so a
+ * lesson reached the grading prompt as a one-line description and something had
+ * to supply the actual marking criteria. That made this file the only source of
+ * competency-level AI guidance in the app — for one subject, at one grade level,
+ * while schools teach every subject.
+ *
+ * extractLessonsFromCurriculum keeps that column now (see normalizeCompetencies
+ * in server.js), so every lesson carries its own competencies from the school's
+ * own document, in whatever subject it is for. What remains here is read-only:
+ * activities tagged from this list before it was retired still hold its ids, and
+ * this is what turns them back into readable names in the Activity Builder and
+ * in the topic-mastery breakdown. Deleting it outright would redraw a term's
+ * worth of a teacher's tags as raw slugs.
+ *
+ * The helpers below it — parseTopicIds, formatTopicIds, the lesson-tag prefix,
+ * termForWeek — are NOT legacy. They are how Activity.topic is read and written
+ * for every subject, and they stay.
+ *
+ * ── original header ──
  * DepEd Grade 6 English Topic Coverage
  * Based on DepEd MATATAG Curriculum — English Language Arts, Grade 6
  * Reference: Tulongguro Grade 6 English curriculum map (Term 1-3, Weeks 1-40)
@@ -343,10 +366,67 @@ const DEPED_GRADE6_ENGLISH_TOPICS = [
 ];
 
 /**
+ * Where a term ends, in school weeks.
+ *
+ * The competency map above already carries an explicit `term` on every entry,
+ * so these boundaries are only needed for the *other* source of curriculum
+ * tags: a school's own uploaded scope-and-sequence, whose lessons record a
+ * week number and no term at all. Read off the map itself — Term 1 runs to
+ * week 12, Term 2 from 14 to 26, Term 3 from 27 — with the gaps at 13 and
+ * between terms falling to the earlier term, which is where a school that
+ * numbers its weeks continuously would put them.
+ *
+ * A best guess, and labelled as one wherever it is shown: it places a lesson
+ * in the term picker so the teacher does not have to scroll past two other
+ * terms' worth of weeks, and it is always overridable by picking the term
+ * directly. Nothing is stored from it.
+ */
+const TERM_LAST_WEEK = { 1: 13, 2: 26 };
+
+/** The term a school week most likely falls in, or null if it can't be placed. */
+function termForWeek(week) {
+  const n = parseInt(week, 10);
+  if (!Number.isFinite(n) || n < 1) return null;
+  if (n <= TERM_LAST_WEEK[1]) return 1;
+  if (n <= TERM_LAST_WEEK[2]) return 2;
+  return 3;
+}
+
+/**
+ * The week numbers named in a topic's `weekRef`.
+ *
+ * Not always one: "Term 2, Weeks 14 & 18" is a competency revisited later in
+ * the term, and both numbers matter — matching a curriculum lesson against
+ * only the first would leave the week-18 lesson unable to find it.
+ */
+function weeksForWeekRef(weekRef) {
+  const text = String(weekRef || '');
+  // Read from the word "Week" onward, never from the start of the string: the
+  // leading "Term 2, " contributes a number too, and filtering it out by value
+  // would silently drop weeks 1 to 3 with it.
+  const at = text.search(/Weeks?/i);
+  if (at === -1) return [];
+  return [...text.slice(at).matchAll(/\d+/g)].map(m => parseInt(m[0], 10));
+}
+
+/**
+ * The competency list as the API serves it, with the week numbers pre-parsed.
+ *
+ * Derived once here rather than in the browser so the client never has to
+ * re-parse `weekRef` prose to work out which lesson a competency lines up
+ * with — the two would be free to disagree, and the auto-tick in the Activity
+ * Builder rests on them agreeing.
+ */
+const TOPICS_WITH_WEEKS = DEPED_GRADE6_ENGLISH_TOPICS.map(t => ({
+  ...t,
+  weeks: weeksForWeekRef(t.weekRef),
+}));
+
+/**
  * Get all topics
  */
 function getAllTopics() {
-  return DEPED_GRADE6_ENGLISH_TOPICS;
+  return TOPICS_WITH_WEEKS;
 }
 
 /**
@@ -409,6 +489,49 @@ function parseTopicIds(value) {
   return normalizeTopicIds(String(value).split(','));
 }
 
+/**
+ * Curriculum lessons as topic tags.
+ *
+ * The DepEd map above is the MATATAG Grade 6 English competency list and
+ * nothing else, so on a Grade 5 Mathematics class it has no rows to offer and
+ * the whole competency control used to disappear — leaving that teacher with a
+ * single-select lesson dropdown and no way to say an activity covered more
+ * than one week. Every subject has a curriculum; only one of them has a
+ * competency map shipped in this repo.
+ *
+ * So a lesson from the class's own uploaded scope-and-sequence can be tagged
+ * onto an activity the same way a competency can, written as `lesson:<id>`.
+ * The prefix is what keeps the two apart in one column: DepEd ids are slugs
+ * that never contain a colon, so an id either resolves in the map or names a
+ * ClassLesson, and neither can be mistaken for the other.
+ *
+ * Deliberately the same `Activity.topic` column rather than a new join table.
+ * Topic-mastery analytics, the AI guidance lookup and the multi-select UI all
+ * already read that column, so lessons become taggable everywhere at once —
+ * and an activity tagged before this existed still reads back unchanged.
+ */
+const LESSON_TOPIC_PREFIX = 'lesson:';
+
+/** Whether a topic id names a curriculum lesson rather than a DepEd competency. */
+function isLessonTopicId(id) {
+  return String(id || '').startsWith(LESSON_TOPIC_PREFIX);
+}
+
+/** The topic id for a curriculum lesson. */
+function lessonTopicId(lessonId) {
+  return `${LESSON_TOPIC_PREFIX}${lessonId}`;
+}
+
+/** The ClassLesson id inside a lesson topic id, or null if it isn't one. */
+function lessonIdFromTopicId(id) {
+  return isLessonTopicId(id) ? String(id).slice(LESSON_TOPIC_PREFIX.length) : null;
+}
+
+/** Every ClassLesson id tagged on an activity, in order. */
+function lessonIdsFromTopics(value) {
+  return parseTopicIds(value).map(lessonIdFromTopicId).filter(Boolean);
+}
+
 /** The stored form of a list of topic ids. Empty string means "no topic". */
 function formatTopicIds(ids) {
   return parseTopicIds(ids).join(',');
@@ -436,5 +559,12 @@ module.exports = {
   getTopicAIGuidance,
   getTopicsAIGuidance,
   parseTopicIds,
-  formatTopicIds
+  formatTopicIds,
+  termForWeek,
+  weeksForWeekRef,
+  LESSON_TOPIC_PREFIX,
+  isLessonTopicId,
+  lessonTopicId,
+  lessonIdFromTopicId,
+  lessonIdsFromTopics
 };

@@ -39,3 +39,71 @@ export function parseTopicIds(value) {
 export function formatTopicIds(ids) {
   return parseTopicIds(ids).join(',');
 }
+
+/**
+ * Curriculum lessons as topic tags.
+ *
+ * The DepEd map is Grade 6 English and nothing else, so on any other class it
+ * has no rows and the competency control used to disappear altogether —
+ * leaving that teacher a single-select lesson dropdown and no way to say an
+ * activity covered more than one week. Every subject has a curriculum; only
+ * one of them has a competency map shipped in this repo.
+ *
+ * So a lesson from the class's own uploaded scope-and-sequence is taggable the
+ * same way a competency is, written as `lesson:<id>` in the same column. The
+ * prefix keeps the two apart: DepEd ids are slugs that never contain a colon.
+ *
+ * Mirrors server/depedTopics.js — see the note above about the two copies.
+ */
+export const LESSON_TOPIC_PREFIX = 'lesson:';
+
+/** Whether a topic id names a curriculum lesson rather than a DepEd competency. */
+export function isLessonTopicId(id) {
+  return String(id || '').startsWith(LESSON_TOPIC_PREFIX);
+}
+
+/** The topic id for a curriculum lesson. */
+export function lessonTopicId(lessonId) {
+  return `${LESSON_TOPIC_PREFIX}${lessonId}`;
+}
+
+/** The ClassLesson id inside a lesson topic id, or null if it isn't one. */
+export function lessonIdFromTopicId(id) {
+  return isLessonTopicId(id) ? String(id).slice(LESSON_TOPIC_PREFIX.length) : null;
+}
+
+/**
+ * The Learning Competencies stored on a curriculum lesson, as a plain array.
+ *
+ * Stored as a JSON array of strings, extracted from the Learning Competencies
+ * column of the school's own curriculum guide. Null or unparseable is an empty
+ * list, never a throw: a lesson with no competencies is a normal thing (the
+ * document may not have listed any), and it still contributes its title and
+ * description to what the AI is told.
+ *
+ * Mirrors readCompetencies in server/server.js.
+ */
+export function readCompetencies(stored) {
+  if (!stored) return [];
+  if (Array.isArray(stored)) return stored.filter(c => typeof c === 'string' && c.trim());
+  try {
+    const parsed = JSON.parse(stored);
+    return Array.isArray(parsed) ? parsed.filter(c => typeof c === 'string' && c.trim()) : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Where a term ends, in school weeks — mirrors server/depedTopics.js.
+ *
+ * Only needed for curriculum lessons, which record a week number and no term.
+ * A best guess, shown as one and always overridable; nothing is stored from it.
+ */
+export function termForWeek(week) {
+  const n = parseInt(week, 10);
+  if (!Number.isFinite(n) || n < 1) return null;
+  if (n <= 13) return 1;
+  if (n <= 26) return 2;
+  return 3;
+}
