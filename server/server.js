@@ -2548,6 +2548,277 @@ app.delete('/api/admin/:adminId/teachers/:teacherId', async (req, res) => {
   } catch (e) { sendAdminError(res, e); }
 });
 
+// ─────────────────────────────────────────
+// ADMIN — co-admins of the same school
+// ─────────────────────────────────────────
+//
+// A school gets exactly one admin at registration: whoever filled in the form.
+// Real schools do not run that way — a principal and a registrar both need the
+// console, and a school whose sole admin leaves or forgets their password has
+// no way back in short of a developer editing the database.
+//
+// So an admin can grant admin to someone else *in their own school*. That is
+// not a privilege escalation: an admin already has total authority over their
+// school's data, and the person they promote gains nothing the person granting
+// it did not already have. It crosses no trust boundary, because the boundary
+// that matters is the tenant one, and this stays inside it. Platform-level
+// access — approving schools, anything cross-school — remains where it is, on
+// the PLATFORM_ADMIN_KEY routes that no school account can reach.
+//
+// Every route below reads the school from the *calling admin's* row and never
+// from the request. That is the one mistake here that would actually matter: a
+// schoolId taken from the body would turn "add a colleague" into "add yourself
+// to somebody else's school".
+
+/**
+ * Deliberately small. Admin is total authority over a school's data, so the cap
+ * is a blast-radius limit and a nudge that it is not the default role for
+ * office staff — a teacher account is. Schools that genuinely need more can be
+ * raised by an operator; nobody has yet.
+ */
+const MAX_ADMINS_PER_SCHOOL = 5;
+
+/** Fire-and-forget: a failure to write history must not fail the action. */
+async function logAdminEvent(event, actor, target) {
+  try {
+    await prisma.adminAuditLog.create({
+      data: {
+        schoolId: actor.schoolId,
+        event,
+        actorId: actor.id,
+        actorName: actor.name,
+        targetId: target?.id || null,
+        targetName: target?.name || null,
+        targetEmail: target?.email || null,
+      }
+    });
+  } catch { /* the grant already happened; losing the note is the lesser harm */ }
+}
+
+/**
+ * Loads another admin of the same school.
+ *
+ * Refuses the caller's own id on purpose. Every route that uses this either
+ * demotes or resets the password of its target, and both are things an admin
+ * must not do to themselves: an admin changing their own password has
+ * /api/auth/change-password, which asks for the current one first, and
+ * self-demotion is a way to lock a school out that the count-based guard below
+ * cannot see coming.
+ */
+async function coAdminInSchool(admin, userId) {
+  if (userId === admin.id) {
+    const err = new Error('You cannot do this to your own account. Ask another admin.');
+    err.status = 400;
+    throw err;
+  }
+  const target = await prisma.user.findUnique({ where: { id: userId } });
+  if (!target || target.schoolId !== admin.schoolId || target.role !== 'ADMIN') {
+    const err = new Error('Admin not found in your school.');
+    err.status = 404;
+    throw err;
+  }
+  return target;
+}
+
+/** The school's admins, plus the recent record of how they got that way. */
+app.get('/api/admin/:adminId/admins', async (req, res) => {
+  try {
+    const admin = await requireAdminSchool(req.params.adminId);
+    const [admins, history] = await Promise.all([
+      prisma.user.findMany({
+        where: { schoolId: admin.schoolId, role: 'ADMIN' },
+        select: { id: true, name: true, email: true, createdAt: true },
+        orderBy: { createdAt: 'asc' }
+      }),
+      prisma.adminAuditLog.findMany({
+        where: { schoolId: admin.schoolId },
+        orderBy: { createdAt: 'desc' },
+        take: 20
+      })
+    ]);
+    res.json({ success: true, admins, history, maxAdmins: MAX_ADMINS_PER_SCHOOL });
+  } catch (e) { sendAdminError(res, e); }
+});
+
+/** Create a second (or third) admin account for this school. */
+app.post('/api/admin/:adminId/admins', async (req, res) => {
+  try {
+    const admin = await requireAdminSchool(req.params.adminId);
+    const { name, email, password } = req.body || {};
+    if (!name?.trim() || !email?.trim() || !password) {
+      return res.status(400).json({ success: false, error: 'Name, email and a temporary password are required.' });
+    }
+    if (String(password).length < 6) {
+      return res.status(400).json({ success: false, error: 'The temporary password must be at least 6 characters.' });
+    }
+
+    const adminCount = await prisma.user.count({ where: { schoolId: admin.schoolId, role: 'ADMIN' } });
+    if (adminCount >= MAX_ADMINS_PER_SCHOOL) {
+      return res.status(400).json({
+        success: false,
+        error: `A school can have at most ${MAX_ADMINS_PER_SCHOOL} admins. Remove one before adding another.`
+      });
+    }
+
+    const normalizedEmail = email.trim().toLowerCase();
+    // The same clash check the teacher route does, and for the same reason:
+    // username and email are both unique columns, so without it the create
+    // throws a P2002 that reaches the admin as a bare 500.
+    const clash = await prisma.user.findFirst({ where: { OR: [{ email: normalizedEmail }, { username: normalizedEmail }] } });
+    if (clash) {
+      return res.status(400).json({
+        success: false,
+        error: clash.schoolId === admin.schoolId && clash.role === 'TEACHER'
+          ? 'This person already has a teacher account here. Promote that account instead of creating a second one.'
+          : 'An account with this email already exists.'
+      });
+    }
+
+    const created = await prisma.user.create({
+      data: {
+        name: name.trim(),
+        email: normalizedEmail,
+        username: normalizedEmail,
+        password: await bcrypt.hash(password, BCRYPT_SALT_ROUNDS),
+        role: 'ADMIN',
+        // From the caller's row, never the request body. See the note above.
+        schoolId: admin.schoolId,
+        schoolName: admin.school?.name || admin.schoolName
+      }
+    });
+    await logAdminEvent('ADMIN_CREATED', admin, created);
+    const { password: _pw, ...safeAdmin } = created;
+    res.json({ success: true, admin: safeAdmin });
+  } catch (e) { sendAdminError(res, e); }
+});
+
+/**
+ * Promote an existing teacher of this school to admin.
+ *
+ * Refused while they still hold classes or sections. An admin cannot reach the
+ * teacher console — RequireRole sends them to /admin — so promoting a teacher
+ * mid-term would leave their classes with an owner who can no longer open them
+ * and their advisees with an adviser who cannot mark anything. It is the same
+ * "reassign first" the remove-teacher route asks for, which is why this reports
+ * the counts rather than a bare refusal.
+ */
+app.post('/api/admin/:adminId/admins/promote', async (req, res) => {
+  try {
+    const admin = await requireAdminSchool(req.params.adminId);
+    const { teacherId } = req.body || {};
+    if (!teacherId) return res.status(400).json({ success: false, error: 'Choose a teacher to promote.' });
+
+    const teacher = await prisma.user.findUnique({
+      where: { id: teacherId },
+      include: { _count: { select: { taughtClasses: true, ownedSections: true } } }
+    });
+    if (!teacher || teacher.schoolId !== admin.schoolId || teacher.role !== 'TEACHER') {
+      return res.status(404).json({ success: false, error: 'Teacher not found in your school.' });
+    }
+
+    const adminCount = await prisma.user.count({ where: { schoolId: admin.schoolId, role: 'ADMIN' } });
+    if (adminCount >= MAX_ADMINS_PER_SCHOOL) {
+      return res.status(400).json({
+        success: false,
+        error: `A school can have at most ${MAX_ADMINS_PER_SCHOOL} admins. Remove one before adding another.`
+      });
+    }
+
+    const classes = teacher._count?.taughtClasses || 0;
+    const sections = teacher._count?.ownedSections || 0;
+    if (classes > 0 || sections > 0) {
+      return res.status(400).json({
+        success: false,
+        error: `${teacher.name} still holds ${classes} class(es) and ${sections} section(s). `
+          + 'Admins cannot open the teacher console, so reassign those to another teacher first.'
+      });
+    }
+
+    // Their current session is signed in as a TEACHER and the token is what
+    // authorizes every request — so without ending it they would keep the
+    // teacher console, and not get the admin one, until it expired.
+    const revokedAt = new Date();
+    const promoted = await prisma.user.update({
+      where: { id: teacher.id },
+      data: { role: 'ADMIN', sessionsValidFrom: revokedAt }
+    });
+    markRevoked(teacher.id, revokedAt);
+    await logAdminEvent('ADMIN_PROMOTED', admin, promoted);
+    const { password: _pw, ...safeAdmin } = promoted;
+    res.json({ success: true, admin: safeAdmin });
+  } catch (e) { sendAdminError(res, e); }
+});
+
+/**
+ * Take admin back off someone, returning them to a teacher account.
+ *
+ * Demote rather than delete: the account keeps its history and can be removed
+ * afterwards through the ordinary remove-teacher route, which already knows how
+ * to refuse while real classes or learners still hang off it. Duplicating that
+ * teardown here would mean a second copy of the guards that stop an admin
+ * deleting children's grades by accident.
+ */
+app.put('/api/admin/:adminId/admins/:userId/demote', async (req, res) => {
+  try {
+    const admin = await requireAdminSchool(req.params.adminId);
+    const target = await coAdminInSchool(admin, req.params.userId);
+
+    // The guard that matters most on this route. A school with no admin cannot
+    // add teachers, publish anything school-wide, or recover itself — it becomes
+    // a support ticket only a developer with production database access can
+    // close, which is the situation this whole feature exists to avoid.
+    const adminCount = await prisma.user.count({ where: { schoolId: admin.schoolId, role: 'ADMIN' } });
+    if (adminCount <= 1) {
+      return res.status(400).json({
+        success: false,
+        error: 'A school must keep at least one admin. Add another before removing this one.'
+      });
+    }
+
+    const revokedAt = new Date();
+    await prisma.user.update({
+      where: { id: target.id },
+      data: {
+        role: 'TEACHER',
+        // Without this their existing token still says ADMIN for up to another
+        // twelve hours, and the token is what authorizes every request — so the
+        // demotion would not actually take effect until it expired.
+        sessionsValidFrom: revokedAt
+      }
+    });
+    markRevoked(target.id, revokedAt);
+    await logAdminEvent('ADMIN_DEMOTED', admin, target);
+    res.json({ success: true });
+  } catch (e) { sendAdminError(res, e); }
+});
+
+/** Reset a fellow admin's password to a new temporary one. */
+app.put('/api/admin/:adminId/admins/:userId/password', async (req, res) => {
+  try {
+    const admin = await requireAdminSchool(req.params.adminId);
+    const target = await coAdminInSchool(admin, req.params.userId);
+    const { password } = req.body || {};
+    if (!password) return res.status(400).json({ success: false, error: 'A new password is required.' });
+    if (String(password).length < 6) {
+      return res.status(400).json({ success: false, error: 'The temporary password must be at least 6 characters.' });
+    }
+
+    const revokedAt = new Date();
+    await prisma.user.update({
+      where: { id: target.id },
+      data: {
+        password: await bcrypt.hash(password, BCRYPT_SALT_ROUNDS),
+        // Resetting the password of an account that may have been misused and
+        // leaving its session open would defeat the point of the reset.
+        sessionsValidFrom: revokedAt
+      }
+    });
+    markRevoked(target.id, revokedAt);
+    await logAdminEvent('ADMIN_PASSWORD_RESET', admin, target);
+    res.json({ success: true });
+  } catch (e) { sendAdminError(res, e); }
+});
+
 /** Loads a teacher, asserting they belong to the admin's school. */
 async function teacherInSchool(admin, teacherId) {
   const teacher = await prisma.user.findUnique({ where: { id: teacherId } });

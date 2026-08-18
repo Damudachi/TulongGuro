@@ -10,6 +10,7 @@ import UpdatePrompt from './components/UpdatePrompt';
 
 // Admin Pages
 import AdminTeachers from './pages/admin/Teachers';
+import AdminAdmins from './pages/admin/Admins';
 import AdminTeacherDetail from './pages/admin/TeacherDetail';
 import AdminSectionDetail from './pages/admin/SectionDetail';
 import AdminCurriculum from './pages/admin/Curriculum';
@@ -68,6 +69,7 @@ function App() {
           <Route path="rubrics" element={<AdminRubrics />} />
           <Route path="grading" element={<AdminGrading />} />
           <Route path="analytics" element={<AdminAnalytics />} />
+          <Route path="admins" element={<AdminAdmins />} />
         </Route>
 
         {/* Teacher Routes */}

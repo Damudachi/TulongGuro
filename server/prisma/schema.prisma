@@ -728,3 +728,35 @@ model AiRequestLog {
   @@index([createdAt])
   @@index([purpose, createdAt])
 }
+
+/// Who was granted or lost school-admin access, and who did it.
+///
+/// A school's admin can now create and demote other admins of the same school
+/// (see the /api/admin/:adminId/admins routes). That is the right place for
+/// the decision — an admin they create can do nothing they could not already
+/// do themselves, and routing it through a developer would make production
+/// database access a routine support step. What it does need is a record:
+/// "who gave this person the keys, and when" is the first question anyone
+/// asks when a school's data has been changed by someone unexpected, and
+/// User.role only ever shows the current answer.
+///
+/// Names and emails are denormalized onto the row the same way GradingAuditLog
+/// denormalizes its subject, and for the same reason: a demoted admin can
+/// later be deleted as a teacher, and a row that could only identify them by
+/// a dangling id would be worthless at exactly the moment it is read. Nothing
+/// here is a foreign key, so no delete anywhere can cascade this history away.
+model AdminAuditLog {
+  id          String   @id @default(uuid())
+  schoolId    String
+  /// ADMIN_CREATED | ADMIN_PROMOTED | ADMIN_DEMOTED | ADMIN_PASSWORD_RESET
+  event       String
+  /// The admin who performed it. Null only for a row written by a script.
+  actorId     String?
+  actorName   String?
+  targetId    String?
+  targetName  String?
+  targetEmail String?
+  createdAt   DateTime @default(now())
+
+  @@index([schoolId, createdAt])
+}
