@@ -132,6 +132,28 @@ export function getStoredUser() {
   }
 }
 
+/** The event `updateStoredUser` fires. Subscribe to re-read the blob. */
+export const USER_UPDATED_EVENT = 'tg-user-updated';
+
+/**
+ * Patch fields on the stored user blob, leaving the token alone.
+ *
+ * The blob is read inline by forty-odd screens, so a value that changes after
+ * login — a name the admin just edited — has to be written back here or those
+ * screens keep showing the value from sign-in until the next one.
+ *
+ * Fires `tg-user-updated` afterwards. A component that read the blob during
+ * its own render has no way to learn it moved: nothing it subscribes to
+ * changed, and the browser's own `storage` event only fires in *other* tabs.
+ * Listeners of this event re-read and re-render in the tab that made the edit.
+ */
+export function updateStoredUser(patch) {
+  const next = { ...getStoredUser(), ...patch };
+  write(localStore(), USER_KEY, JSON.stringify(next));
+  try { globalThis.dispatchEvent?.(new Event(USER_UPDATED_EVENT)); } catch { /* no DOM, e.g. under test */ }
+  return next;
+}
+
 /** Where each role belongs when it finds itself somewhere it does not. */
 const HOME_FOR = {
   ADMIN: '/admin/teachers',

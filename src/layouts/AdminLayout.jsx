@@ -1,10 +1,11 @@
 import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { Users, BookOpen, ClipboardList, Scale, TrendingUp, ShieldCheck, LogOut } from 'lucide-react';
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import SchoolBadge from '../components/SchoolBadge';
 import Logo from '../components/Logo';
 import { useSchoolTheme } from '../utils/useSchool';
 import { logout } from '../config';
+import { getStoredUser, USER_UPDATED_EVENT } from '../utils/session';
 import ThemeToggle from '../components/ThemeToggle';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
@@ -23,7 +24,16 @@ export default function AdminLayout() {
   useSchoolTheme();
   const location = useLocation();
   const navigate = useNavigate();
-  const user = JSON.parse(localStorage.getItem('user') || '{}');
+  // Held in state, not read inline, because the account block below shows the
+  // admin's own name and they can now change it from /admin/admins. A plain
+  // read would keep showing the name they signed in with until the next full
+  // page load.
+  const [user, setUser] = useState(getStoredUser);
+  useEffect(() => {
+    const sync = () => setUser(getStoredUser());
+    window.addEventListener(USER_UPDATED_EVENT, sync);
+    return () => window.removeEventListener(USER_UPDATED_EVENT, sync);
+  }, []);
 
   // Keep non-admins out of the console entirely.
   useEffect(() => {

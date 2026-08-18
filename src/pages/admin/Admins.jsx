@@ -1,9 +1,10 @@
 import { useState, useEffect, useCallback } from 'react';
 import {
   Plus, Loader2, KeyRound, X, Copy, Check, ArrowUpCircle,
-  UserMinus, History, Info
+  UserMinus, History, Info, Pencil
 } from 'lucide-react';
 import { API_URL, apiFetch } from '../../config';
+import { getStoredUser, updateStoredUser } from '../../utils/session';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
 
@@ -22,7 +23,7 @@ const EVENT_LABEL = {
 };
 
 export default function AdminAdmins() {
-  const me = JSON.parse(localStorage.getItem('user') || '{}');
+  const me = getStoredUser();
   const [data, setData] = useState(null);
   const [teachers, setTeachers] = useState([]);
   const [isLoading, setIsLoading] = useState(() => !!me.id);
@@ -37,6 +38,11 @@ export default function AdminAdmins() {
   // A failed load is not an empty school. Without this the page rendered
   // "0 of 5 admins" to an admin who was looking at their own account.
   const [loadFailed, setLoadFailed] = useState(false);
+  // Renaming is self-only — there is no route that takes a target id — so this
+  // is a single draft, never keyed by which row is being edited.
+  const [nameDraft, setNameDraft] = useState(null);
+  const [nameError, setNameError] = useState('');
+  const [isRenaming, setIsRenaming] = useState(false);
 
   const load = useCallback(() => {
     if (!me.id) return;
@@ -150,6 +156,39 @@ export default function AdminAdmins() {
       alert('Could not reach the server. Their password has not been changed.');
     } finally {
       setBusyId(null);
+    }
+  };
+
+  const handleRename = async (e) => {
+    e.preventDefault();
+    if (isRenaming) return;
+    const name = nameDraft.trim();
+    if (!name) { setNameError('Name cannot be empty.'); return; }
+    setIsRenaming(true);
+    setNameError('');
+    try {
+      // No id in the body. The server keys the write to the session, so this
+      // can only ever move the caller's own row.
+      const res = await apiFetch(`${API_URL}/api/users/${me.id}/name`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name }),
+      });
+      const d = await res.json().catch(() => null);
+      if (res.ok && d?.success) {
+        // The sidebar, the account block and every other screen read the stored
+        // blob, so the new name has to land there too or it reverts on the next
+        // navigation until the admin signs in again.
+        updateStoredUser({ name: d.name });
+        setNameDraft(null);
+        load();
+      } else {
+        setNameError(d?.error || 'Could not save that name.');
+      }
+    } catch {
+      setNameError('Could not reach the server. Your name has not been changed.');
+    } finally {
+      setIsRenaming(false);
     }
   };
 
@@ -273,10 +312,41 @@ export default function AdminAdmins() {
                 {(a.name || 'A').charAt(0).toUpperCase()}
               </div>
               <div className="flex-1 min-w-0">
-                <p className="font-semibold text-brand-slate truncate">
-                  {a.name}
-                  {isMe && <span className="ml-2 text-[10px] font-bold uppercase tracking-wide text-brand-navy bg-blue-50 px-2 py-0.5 rounded-full">You</span>}
-                </p>
+                {isMe && nameDraft !== null ? (
+                  <form onSubmit={handleRename} className="flex items-center gap-2">
+                    <input autoFocus type="text" value={nameDraft} maxLength={80}
+                      onChange={e => setNameDraft(e.target.value)}
+                      onKeyDown={e => { if (e.key === 'Escape') { setNameDraft(null); setNameError(''); } }}
+                      aria-label="Your name"
+                      className="flex-1 min-w-0 border border-slate-200 px-2.5 py-1.5 rounded-lg text-sm outline-none focus:ring-2 focus:ring-brand-navy" />
+                    <button type="submit" disabled={isRenaming}
+                      className="px-3 py-1.5 rounded-lg bg-brand-navy text-white text-xs font-bold disabled:opacity-40 shrink-0">
+                      {isRenaming ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : 'Save'}
+                    </button>
+                    <button type="button" onClick={() => { setNameDraft(null); setNameError(''); }}
+                      className="px-3 py-1.5 rounded-lg border border-slate-200 text-slate-600 text-xs font-medium shrink-0">
+                      Cancel
+                    </button>
+                  </form>
+                ) : (
+                  <p className="font-semibold text-brand-slate truncate flex items-center gap-2">
+                    <span className="truncate">{a.name}</span>
+                    {isMe && (
+                      <>
+                        <span className="text-[10px] font-bold uppercase tracking-wide text-brand-navy bg-blue-50 px-2 py-0.5 rounded-full shrink-0">You</span>
+                        {/* Only ever on your own row. Another admin's name is
+                            theirs to change, and the server has no route that
+                            would accept the attempt. */}
+                        <button type="button" onClick={() => { setNameDraft(a.name); setNameError(''); }}
+                          title="Change your name" aria-label="Change your name"
+                          className="text-slate-400 hover:text-brand-navy shrink-0">
+                          <Pencil className="w-3.5 h-3.5" />
+                        </button>
+                      </>
+                    )}
+                  </p>
+                )}
+                {isMe && nameError && <p className="text-xs text-red-600 mt-1">{nameError}</p>}
                 <p className="text-xs text-slate-500 truncate">{a.email}</p>
               </div>
               <div className="flex gap-1 shrink-0">

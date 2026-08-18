@@ -393,3 +393,64 @@ describe('when the access history cannot be read', () => {
     expect((await res.json()).historyUnavailable).toBe(false);
   });
 });
+
+// ───────────────────────────────────────────────────────────────────────────
+// 10. Renaming yourself, and only yourself
+// ───────────────────────────────────────────────────────────────────────────
+describe('PUT /api/users/:userId/name', () => {
+  const nameCall = (userId, body, token) =>
+    fetch(`${baseUrl}/api/users/${userId}/name`, {
+      method: 'PUT',
+      headers: { Authorization: `Bearer ${token || adminToken()}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+
+  it('updates the caller\'s own row', async () => {
+    prismaFake.user.update.mockResolvedValue({ id: ADMIN, name: 'Maria Santos-Cruz' });
+    const res = await nameCall(ADMIN, { name: '  Maria Santos-Cruz  ' });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ success: true, name: 'Maria Santos-Cruz' });
+    expect(prismaFake.user.update.mock.calls[0][0].where).toEqual({ id: ADMIN });
+  });
+
+  it('writes to the session id, never to an id from the path', async () => {
+    // The path is already refused by authorizePath, so this asserts the second
+    // line of defence: even reached directly, the handler has no target but the
+    // caller. That is what makes "cannot rename another admin" structural
+    // rather than a check someone could later get wrong.
+    prismaFake.user.update.mockResolvedValue({ id: ADMIN, name: 'Whoever' });
+    await nameCall(ADMIN, { name: 'Whoever' });
+    const where = prismaFake.user.update.mock.calls[0][0].where;
+    expect(where).toEqual({ id: ADMIN });
+    expect(where.id).not.toBe(CO_ADMIN);
+  });
+
+  it('refuses a path naming another admin', async () => {
+    const res = await nameCall(CO_ADMIN, { name: 'Renamed By Someone Else' });
+    expect(res.status).toBe(403);
+    expect(prismaFake.user.update).not.toHaveBeenCalled();
+  });
+
+  it('rejects an empty or whitespace-only name', async () => {
+    const res = await nameCall(ADMIN, { name: '   ' });
+    expect(res.status).toBe(400);
+    expect(prismaFake.user.update).not.toHaveBeenCalled();
+  });
+
+  it('rejects a name past the length cap', async () => {
+    const res = await nameCall(ADMIN, { name: 'x'.repeat(81) });
+    expect(res.status).toBe(400);
+    expect(prismaFake.user.update).not.toHaveBeenCalled();
+  });
+
+  it('is closed to teachers and students', async () => {
+    // Their names identify them in rosters, gradebooks and released grades,
+    // which other people depend on; an admin corrects those instead.
+    for (const role of ['TEACHER', 'STUDENT']) {
+      const token = signToken({ id: 'someone-1', role, schoolId: SCHOOL });
+      const res = await nameCall('someone-1', { name: 'New Name' }, token);
+      expect(res.status).toBe(403);
+    }
+    expect(prismaFake.user.update).not.toHaveBeenCalled();
+  });
+});

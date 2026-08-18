@@ -2334,6 +2334,50 @@ app.put('/api/users/:userId/theme', async (req, res) => {
   }
 });
 
+/**
+ * Change your own display name.
+ *
+ * Keyed to `req.auth.sub`, exactly as the theme route above is, and that is
+ * the whole of "an admin may rename themselves but not another admin". There
+ * is no target id anywhere in this handler: the path param is not read, so no
+ * request can name a row other than the caller's. A permission check that
+ * compared two ids could be got wrong later; a handler with nothing to compare
+ * cannot be.
+ *
+ * ADMIN only, deliberately. A learner's name is how a teacher identifies them
+ * in a roster, a gradebook and on a released grade, and letting a child rewrite
+ * it would corrupt records other people depend on — a teacher's, likewise, is
+ * on the classes and sections an admin reassigns by. Both of those already have
+ * an owner who can correct them: an admin, through the teacher-edit and roster
+ * routes. An admin's own name is the one nobody else is positioned to fix.
+ */
+app.put('/api/users/:userId/name', async (req, res) => {
+  try {
+    if (req.auth.role !== 'ADMIN') {
+      return res.status(403).json({
+        success: false,
+        error: 'Ask your school admin to change the name on your account.',
+      });
+    }
+    const name = typeof req.body?.name === 'string' ? req.body.name.trim() : '';
+    if (!name) return res.status(400).json({ success: false, error: 'Name cannot be empty.' });
+    // Long enough for a full Filipino name with a middle initial and a suffix,
+    // short enough that the sidebar and every list row still truncate sanely.
+    if (name.length > 80) {
+      return res.status(400).json({ success: false, error: 'Name must be 80 characters or fewer.' });
+    }
+
+    const updated = await prisma.user.update({
+      where: { id: req.auth.sub },
+      data: { name },
+      select: { id: true, name: true },
+    });
+    res.json({ success: true, name: updated.name });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
 app.get('/api/users/:userId/school', async (req, res) => {
   try {
     const user = await prisma.user.findUnique({
