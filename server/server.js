@@ -661,6 +661,41 @@ const GRADING_MAX_OUTPUT_TOKENS = Number(process.env.GEMINI_GRADING_MAX_OUTPUT_T
 const GRADING_TEMPERATURE = Number(process.env.GRADING_TEMPERATURE ?? 0.2);
 
 /**
+ * How long one call to Google may hang before it is abandoned.
+ *
+ * Nothing set this before, so every call rode the SDK's own default and a
+ * stalled request held the whole sequential run for as long as Google took to
+ * admit defeat. Measured from this deployment's own AiRequestLog, that was not
+ * hypothetical: the 503 "this model is currently experiencing high demand"
+ * responses took an average of 73 SECONDS to arrive, the worst 160s, and the
+ * retry that followed then had to run from scratch. Two real sequences:
+ *
+ *     105s of 503, then a 14.5s success   → 2 minutes for one paper
+ *     160s of 503, then an 84s success    → 4 minutes for one paper
+ *
+ * 45s is set above the 3.6-flash grading p50 of ~23s with room for a slow but
+ * genuine read of a dense page, and well under the point where a teacher
+ * watching a spinner concludes the app is broken. A call cut off here is not a
+ * failed paper: it raises the same transient error a 503 does, so the rotation
+ * moves to the next bucket, which is exactly the behaviour that was wanted
+ * from the pool in the first place.
+ *
+ * Raise it if legitimate grading calls start being cut off — the AiRequestLog
+ * rows for this deployment are the thing to check, not a general figure.
+ */
+const GEMINI_REQUEST_TIMEOUT_MS = Number(process.env.GEMINI_REQUEST_TIMEOUT_MS || 45000);
+
+/**
+ * The same ceiling for the callers that hand the model a whole DOCUMENT rather
+ * than one pupil's paper — curriculum guides, rubric files, roster sheets.
+ * Deliberately far more generous: a curriculum PDF is tens of pages and is
+ * parsed once when a teacher sets a class up, not once per submission, so the
+ * grading ceiling would cut off legitimate work to save a wait nobody is
+ * sitting through repeatedly.
+ */
+const GEMINI_DOCUMENT_TIMEOUT_MS = Number(process.env.GEMINI_DOCUMENT_TIMEOUT_MS || 120000);
+
+/**
  * The grading models' system role — set once, at pool construction, via the
  * SDK's own systemInstruction field rather than folded into the first line of
  * the per-call prompt.
@@ -780,7 +815,7 @@ const gradingPool = GRADING_MODEL_IDS.flatMap(id =>
         maxOutputTokens: GRADING_MAX_OUTPUT_TOKENS,
         temperature: GRADING_TEMPERATURE,
       }
-    }),
+    }, { timeout: GEMINI_REQUEST_TIMEOUT_MS }),
     unavailableUntil: 0,  // set when this bucket reports its *daily* quota is gone
     used: 0,              // calls this bucket actually answered today
     failed: 0
@@ -812,13 +847,13 @@ function rollPoolDayIfNeeded() {
 // legitimately need a larger output than one paper's grading JSON, and it
 // should not be grading a paper's tone rules while it does it. Same
 // credentials as the ends of the pool, plain model config otherwise.
-const model = genAIByKey[0]?.client.getGenerativeModel({ model: GRADING_MODEL_IDS[0], generationConfig: { responseMimeType: 'application/json' } }) || null;
-const modelLite = genAIByKey[genAIByKey.length - 1]?.client.getGenerativeModel({ model: GRADING_MODEL_IDS[GRADING_MODEL_IDS.length - 1], generationConfig: { responseMimeType: 'application/json' } }) || null;
+const model = genAIByKey[0]?.client.getGenerativeModel({ model: GRADING_MODEL_IDS[0], generationConfig: { responseMimeType: 'application/json' } }, { timeout: GEMINI_DOCUMENT_TIMEOUT_MS }) || null;
+const modelLite = genAIByKey[genAIByKey.length - 1]?.client.getGenerativeModel({ model: GRADING_MODEL_IDS[GRADING_MODEL_IDS.length - 1], generationConfig: { responseMimeType: 'application/json' } }, { timeout: GEMINI_DOCUMENT_TIMEOUT_MS }) || null;
 // Runs on the LAST credential, so on a multi-project deployment the assistant is
 // charged to a different project than the grading rotation opens on — the same
 // isolation reasoning as giving it its own model.
 const assistModel = genAIByKey.length
-  ? genAIByKey[genAIByKey.length - 1].client.getGenerativeModel({ model: ASSIST_MODEL_ID })
+  ? genAIByKey[genAIByKey.length - 1].client.getGenerativeModel({ model: ASSIST_MODEL_ID }, { timeout: GEMINI_REQUEST_TIMEOUT_MS })
   : null;
 
 if (aiConfigured) {
@@ -1163,7 +1198,16 @@ async function retainUntilForActivity(activityId) {
 // requested wait) to absorb the rest of the headroom instead of spacing for
 // it. Before raising this, get an actual per-minute 429 body rather than
 // trusting a general figure again.
-const GEMINI_MAX_CONCURRENCY = Number(process.env.GEMINI_MAX_CONCURRENCY || 2);
+// Raised from 2 alongside AI_JOB_CONCURRENCY. A batch now genuinely holds two
+// calls in flight, and at a ceiling of 2 it would fill the gate completely —
+// leaving a teacher who asks the assistant a question, or uploads a rubric,
+// queued behind two grading calls for as long as they take. The third slot is
+// headroom for those interactive callers, not extra throughput for the batch.
+//
+// This does not loosen the quota position: GEMINI_MIN_SPACING_MS still admits
+// one start per 6s no matter how many slots exist, so requests per minute are
+// unchanged. Concurrency only decides how many of those starts may overlap.
+const GEMINI_MAX_CONCURRENCY = Number(process.env.GEMINI_MAX_CONCURRENCY || 3);
 const GEMINI_MIN_SPACING_MS = Number(process.env.GEMINI_MIN_SPACING_MS || 6000);
 
 const geminiGate = { active: 0, lastStart: 0, waiting: [] };
@@ -1225,7 +1269,12 @@ function classifyAiError(err) {
     quota,
     // The one that cannot be waited out inside a single request.
     dailyQuota: quota && /PerDay|per_day|requests per day/i.test(msg),
-    transient: /50[034]|overloaded|high demand|unavailable|deadline|timeout|ETIMEDOUT|ECONNRESET/i.test(msg),
+    // "Request aborted when fetching ..." is what the SDK raises when
+    // GEMINI_REQUEST_TIMEOUT_MS cuts a hanging call off. It is transient by
+    // definition — we stopped waiting, the model never said anything was
+    // wrong — and classifying it as a hard error would both mislabel it in
+    // AiRequestLog and turn a slow minute into a reported outage.
+    transient: /50[034]|overloaded|high demand|unavailable|deadline|timeout|ETIMEDOUT|ECONNRESET|request aborted|operation was aborted/i.test(msg),
     // A page image the model refuses to decode — measured at ~62 megapixels of
     // stitched output, i.e. roughly 12 phone photos in one submission. Not
     // retryable and not a quota problem: the fix is fewer pages.
@@ -6853,10 +6902,18 @@ async function generateSubmissionFeedback(imagePaths, activityId, studentId) {
     // The criteria actually in force, whichever tier supplied them.
     let resolvedCriteria = null;
     if (activityId && activityId !== 'mock-activity-id') {
+      // One fetch, read by every block below that needs the activity.
+      //
+      // There were four of these — the same row loaded again for the mini-RAG's
+      // teacherId, again for the section memory's sectionId, and again for the
+      // grade level — each a separate round trip to a database in another
+      // region, on every single paper of a class set. They are selected
+      // together here instead. The `class` selection is the union of what those
+      // callers asked for; nothing else about them changes.
       activity = await prisma.activity.findUnique({
         where: { id: activityId },
         include: {
-          class: { select: { subject: true } },
+          class: { select: { subject: true, teacherId: true, gradeLevel: true, sectionId: true } },
           classLesson: { select: { title: true, description: true, outputType: true, defaultRubric: true, competencies: true } }
         }
       });
@@ -6973,8 +7030,7 @@ async function generateSubmissionFeedback(imagePaths, activityId, studentId) {
 
     // 3) Mini-RAG — fetch teacher's past grading examples
     let fewShotExamples = '';
-    if (activityId && activityId !== 'mock-activity-id') {
-      const activity = await prisma.activity.findUnique({ where: { id: activityId }, include: { class: true } });
+    {
       const teacherId = activity?.class?.teacherId;
       if (teacherId) {
         // Scoped to the grade level as well as the teacher and activity type.
@@ -7003,10 +7059,9 @@ async function generateSubmissionFeedback(imagePaths, activityId, studentId) {
 
     // 3b) Few-Shot Section Memory — fetch recent teacher-approved submissions from the same section
     let sectionContext = '';
-    if (activityId && activityId !== 'mock-activity-id') {
+    {
       try {
-        const actForSection = await prisma.activity.findUnique({ where: { id: activityId }, include: { class: { select: { sectionId: true } } } });
-        const sectionId = actForSection?.class?.sectionId;
+        const sectionId = activity?.class?.sectionId;
         if (sectionId) {
           const [recentGraded, roster] = await Promise.all([
             prisma.submission.findMany({
@@ -7077,12 +7132,28 @@ async function generateSubmissionFeedback(imagePaths, activityId, studentId) {
      * written out in classLessonContext above, so this names them rather than
      * repeating them; the retired map's guidance has no such block and is
      * still spelled out here.
+     *
+     * The competency count is not the gate, though — the LESSON CONTEXT is.
+     * Widening it a second time, for the same reason as the first: measured
+     * against this deployment's own database, all 240 curriculum lessons have
+     * an empty `competencies` column, because every one of them was parsed
+     * before competency extraction shipped. Gating on the count meant 29 of 32
+     * activities got no focus rule at all — the exact silent widening the
+     * paragraph above describes, reintroduced through a different door.
+     *
+     * A lesson with a title and a description is a perfectly good scope to
+     * mark against, so that is enough to fire the rule; the wording just says
+     * whichever of the two the prompt actually carries. Once curricula are
+     * re-parsed and competencies populate, the stronger phrasing takes over on
+     * its own with no further change here.
      */
     const focusSource = topicGuidance
       ? `This activity is mapped to the following topic(s)/lesson(s): ${topicGuidance}`
       : (lessonCompetencyCount > 0
           ? 'This activity is mapped to the curriculum lesson(s) and Learning Competencies set out above.'
-          : '');
+          : (classLessonContext
+              ? 'This activity is mapped to the curriculum lesson(s) set out above.'
+              : ''));
     const topicFocusRule = focusSource
       ? `\nTOPIC FOCUS RULE:\n${focusSource}\nYou MUST focus your feedback STRICTLY on those, and on every one of them. Do NOT introduce or critique concepts outside of them. Evaluate only how well the student demonstrates mastery of these specific skills or lessons.\n`
       : '';
@@ -7121,12 +7192,9 @@ async function generateSubmissionFeedback(imagePaths, activityId, studentId) {
     // drives the curriculum band, language complexity, and score calibration
     // below, not just a label.
     let gradeLevelAssumed = true;
-    if (activityId && activityId !== 'mock-activity-id') {
-      const actForLevel = await prisma.activity.findUnique({ where: { id: activityId }, include: { class: { select: { gradeLevel: true } } } });
-      if (actForLevel?.class?.gradeLevel) {
-        gradeLevelForPrompt = actForLevel.class.gradeLevel;
-        gradeLevelAssumed = false;
-      }
+    if (activity?.class?.gradeLevel) {
+      gradeLevelForPrompt = activity.class.gradeLevel;
+      gradeLevelAssumed = false;
     }
 
     // Determine language complexity based on grade level
@@ -7833,10 +7901,40 @@ async function runAiCheckJob(job) {
   }
 }
 
-async function runAiCheckChunks(job, chunks) {
-  for (const chunk of chunks) {
-    if (job.cancelled) break;
+/**
+ * How many chunks of a batch are graded at once.
+ *
+ * This used to be one, not by decision but by omission: the loop below awaited
+ * each chunk before starting the next, so a class set was strictly serial even
+ * though the rate gate had always been willing to hold two calls in flight.
+ * GEMINI_MAX_CONCURRENCY was, in effect, dead configuration.
+ *
+ * Running two papers at once is NOT the batching that AI_BATCH_SIZE documents
+ * and deliberately refuses. That one puts several pupils' work in a single
+ * request, where the model grades them against each other — a measured 14-point
+ * reproducible swing depending on whose work a paper was sent alongside. These
+ * are separate requests with separate prompts; the model cannot see one pupil's
+ * paper while grading another's, so nothing about a mark depends on who else is
+ * being checked. The only thing shared is wall-clock time.
+ *
+ * Quota is unaffected: GEMINI_MIN_SPACING_MS governs the RATE (one start per
+ * 6s, i.e. the 10 req/min target), and concurrency only governs how many of
+ * those starts may still be in flight together. Two 23s calls launched 6s apart
+ * is the same number of requests per minute as one at a time — it just stops
+ * the second one waiting for the first to come back.
+ */
+const AI_JOB_CONCURRENCY = Math.max(1, Number(process.env.AI_JOB_CONCURRENCY || 2));
 
+/**
+ * Grade one chunk. Returns true when the whole job should stop.
+ *
+ * Split out of runAiCheckChunks so several can be in flight at once. The
+ * distinction it returns matters: "this paper failed" leaves the rest of the
+ * run alone, while "there is no rubric" or "the pool is out of budget" are
+ * properties of the activity or the day and would fail every remaining chunk
+ * identically.
+ */
+async function runOneChunk(job, chunk) {
     // Resolve the images first, so a submission whose photo has gone missing
     // fails on its own rather than taking the rest of the batch down with it.
     const loaded = [];
@@ -7851,7 +7949,7 @@ async function runAiCheckChunks(job, chunks) {
         });
       }
     }
-    if (!loaded.length) continue;
+    if (!loaded.length) return false;
 
     try {
       let results;
@@ -7877,27 +7975,57 @@ async function runAiCheckChunks(job, chunks) {
         // The rubric is a property of the activity, so every remaining chunk
         // would fail identically. Stop and say why once, rather than marking
         // each paper failed with the same message.
-        job.stoppedReason = 'NO_RUBRIC';
-        job.stoppedMessage = err.message;
-        console.log(`⚠ AI check job ${job.id} stopped: no rubric on the activity.`);
-        break;
+        // Guarded because chunks now run concurrently: two workers can fail on
+        // the same cause in the same tick, and the first reason recorded is the
+        // one the teacher is shown.
+        if (!job.stoppedReason) {
+          job.stoppedReason = 'NO_RUBRIC';
+          job.stoppedMessage = err.message;
+          console.log(`⚠ AI check job ${job.id} stopped: no rubric on the activity.`);
+        }
+        return true;
       }
       if (err instanceof AiUnavailableError) {
         // Out of budget. Stop rather than grinding through the remaining
         // chunks: every one of them would fail the same way, and nothing is
         // recorded for a paper the AI never read.
-        job.stoppedReason = err.reason;
-        job.stoppedMessage = err.message;
-        console.log(`⚠ AI check job ${job.id} stopped: ${err.message}`);
-        break;
+        if (!job.stoppedReason) {
+          job.stoppedReason = err.reason;
+          job.stoppedMessage = err.message;
+          console.log(`⚠ AI check job ${job.id} stopped: ${err.message}`);
+        }
+        return true;
       }
       console.error('Batch grading error:', err);
       loaded.forEach(l => setJobItem(job, l.sub.id, 'failed', { error: err.message }));
     } finally {
       loaded.forEach(l => { if (l.isTemp) { try { fs.unlinkSync(l.path); } catch {} } });
     }
-  }
+    return false;
+}
 
+async function runAiCheckChunks(job, chunks) {
+  // A shared cursor rather than a slice per worker: chunks vary wildly in how
+  // long they take (a 503 and its retry against a clean 20s call), so handing
+  // each worker a fixed half would leave one idle while the other still had a
+  // queue. Pulling the next index as they finish keeps both busy and preserves
+  // arrival order in what gets STARTED, which is what the teacher's progress
+  // list is ordered by.
+  let next = 0;
+  let stop = false;
+  const worker = async () => {
+    while (!stop && !job.cancelled) {
+      const i = next++;
+      if (i >= chunks.length) return;
+      if (await runOneChunk(job, chunks[i])) stop = true;
+    }
+  };
+  // Chunks already in flight when a stop is raised are allowed to finish —
+  // their model call is already paid for, so throwing the result away would
+  // spend a paper's quota and record nothing for it.
+  await Promise.all(
+    Array.from({ length: Math.min(AI_JOB_CONCURRENCY, chunks.length) }, worker)
+  );
 }
 
 function serialiseJob(job) {
