@@ -22,6 +22,28 @@ const EVENT_LABEL = {
   ADMIN_PASSWORD_RESET: 'reset the password of',
 };
 
+/**
+ * What to tell the admin when a call fails.
+ *
+ * The naive `d?.error || 'Could not save'` is wrong in the one case that
+ * actually happens during a deploy: a route the running server does not have
+ * yet answers 404 with Express's HTML page, `res.json()` throws, and `d` is
+ * null — so the admin was told their *name* was rejected when the request had
+ * simply not reached a handler. That cost real debugging time. A response with
+ * no JSON body is a broken request, not a rejected value, and says so.
+ */
+function failureMessage(res, body, fallback) {
+  if (body?.error) return body.error;
+  if (res.status === 404) {
+    return 'The server did not recognise this request. It is probably running an '
+      + 'older build — restart or redeploy the API, then try again.';
+  }
+  if (!body) {
+    return `The server returned an unreadable response (HTTP ${res.status}). ${fallback}`;
+  }
+  return fallback;
+}
+
 export default function AdminAdmins() {
   const me = getStoredUser();
   const [data, setData] = useState(null);
@@ -86,7 +108,7 @@ export default function AdminAdmins() {
         setShowForm(false);
         load();
       } else {
-        setError(d?.error || 'Could not create the account.');
+        setError(failureMessage(res, d, 'The account was not created.'));
       }
     } catch {
       setError('Network error. Please try again.');
@@ -112,7 +134,7 @@ export default function AdminAdmins() {
       if (res.ok && d?.success) { setShowPromote(false); load(); }
       // The server names the classes and sections still holding them — that
       // message is the whole point of the guard, so it must not be swallowed.
-      else alert(d?.error || 'Could not promote this teacher. Nothing has been changed.');
+      else alert(failureMessage(res, d, 'Nothing has been changed.'));
     } catch {
       alert('Could not reach the server. Nothing has been changed.');
     } finally {
@@ -131,7 +153,7 @@ export default function AdminAdmins() {
       const res = await apiFetch(`${API_URL}/api/admin/${me.id}/admins/${admin.id}/demote`, { method: 'PUT' });
       const d = await res.json().catch(() => null);
       if (res.ok && d?.success) load();
-      else alert(d?.error || 'Could not change this account. Nothing has been changed.');
+      else alert(failureMessage(res, d, 'Nothing has been changed.'));
     } catch {
       alert('Could not reach the server. Nothing has been changed.');
     } finally {
@@ -151,7 +173,7 @@ export default function AdminAdmins() {
       });
       const d = await res.json().catch(() => null);
       if (res.ok && d?.success) setCredentials({ email: admin.email, password });
-      else alert(d?.error || 'Reset failed. Their existing password still works.');
+      else alert(failureMessage(res, d, 'Their existing password still works.'));
     } catch {
       alert('Could not reach the server. Their password has not been changed.');
     } finally {
@@ -183,7 +205,7 @@ export default function AdminAdmins() {
         setNameDraft(null);
         load();
       } else {
-        setNameError(d?.error || 'Could not save that name.');
+        setNameError(failureMessage(res, d, 'Your name has not been changed.'));
       }
     } catch {
       setNameError('Could not reach the server. Your name has not been changed.');
