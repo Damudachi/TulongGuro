@@ -244,14 +244,23 @@ export default function Analytics() {
           ) : studentData ? (
             <div className="space-y-6">
               {(() => {
-                const graded = studentData.submissions.filter(s => s.status === 'GRADED');
+                // Excused work is out of both totals, the way it is out of the
+                // average. Excusing sets excusedAt and leaves `status` alone, so
+                // a paper marked and then excused is still 'GRADED' and still
+                // carries its score — filtering on status alone counted work
+                // the learner was told not to hand in, and did so in the two
+                // cards printed next to an average that had dropped it.
+                const graded = studentData.submissions.filter(s => s.status === 'GRADED' && !s.excusedAt);
+                const excusedCount = studentData.submissions.filter(s => s.excusedAt).length;
                 const earned = graded.reduce((sum, s) => sum + toPoints(s.hitlScore ?? s.aiScore ?? 0, s.points), 0);
                 const possible = graded.reduce((sum, s) => sum + (s.points || 100), 0);
                 const band = bandFor(studentData.avgScore, passingGrade);
                 // What the raw points total would be if it were a percentage.
                 // Shown next to the average because the gap between the two is
                 // exactly what the component weights do, and a teacher looking
-                // at two unrelated-looking numbers has no way to see that.
+                // at two unrelated-looking numbers has no way to see that. Both
+                // now cover the same set of work, so the weighting is the only
+                // thing left that can explain a difference.
                 const rawPercent = possible > 0 ? Math.round((earned / possible) * 100) : null;
                 return (
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
@@ -282,11 +291,18 @@ export default function Analytics() {
                       <p className="text-[11px] text-slate-500 mt-1.5">
                         Raw total, not weighted{rawPercent !== null && ` · ${rawPercent}%`}
                       </p>
+                      {excusedCount > 0 && (
+                        <p className="text-[11px] text-lilac-700 mt-1">
+                          {excusedCount} excused {excusedCount === 1 ? 'activity is' : 'activities are'} left out
+                        </p>
+                      )}
                     </div>
                     <div className="bg-sun-50 rounded-2xl p-4">
                       <p className="text-[11px] font-bold uppercase tracking-wider text-sun-700 mb-1">Graded</p>
-                      <p className="text-3xl font-extrabold text-sun-700">{graded.length}<span className="text-lg text-sun-400">/{studentData.totalSubmissions}</span></p>
-                      <p className="text-[11px] text-slate-500 mt-1.5">Activities returned</p>
+                      <p className="text-3xl font-extrabold text-sun-700">{graded.length}<span className="text-lg text-sun-400">/{studentData.totalSubmissions - excusedCount}</span></p>
+                      <p className="text-[11px] text-slate-500 mt-1.5">
+                        Activities returned{excusedCount > 0 && `, ${excusedCount} excused`}
+                      </p>
                     </div>
                   </div>
                 );
@@ -373,7 +389,12 @@ export default function Analytics() {
                     <p className="text-sm text-slate-400 py-4 text-center">Nothing submitted yet.</p>
                   ) : studentData.submissions.map(sub => {
                     const percent = sub.hitlScore ?? sub.aiScore;
-                    const isGraded = sub.status === 'GRADED' && percent !== null;
+                    // Excused first. A paper marked and then excused keeps its
+                    // status and its score, so testing status alone drew it as
+                    // an ordinary graded row — a number counting toward nothing,
+                    // with no way to tell from the page that it had been let go.
+                    const isExcused = !!sub.excusedAt;
+                    const isGraded = !isExcused && sub.status === 'GRADED' && percent !== null;
                     const band = isGraded ? bandFor(percent, passingGrade) : null;
                     // Every row here is a real submission, so there is always
                     // something to open — the review screen holds the paper,
@@ -396,7 +417,12 @@ export default function Analytics() {
                           </p>
                         </div>
                         <div className="text-right shrink-0">
-                          {isGraded ? (
+                          {isExcused ? (
+                            <p className="text-[11px] font-semibold text-lilac-800 bg-lilac-100 px-2 py-1 rounded-full"
+                              title={sub.excusedReason || 'Excused — does not count toward the average'}>
+                              Excused
+                            </p>
+                          ) : isGraded ? (
                             <>
                               {/* Points first — that's what goes in the record book */}
                               <p className="text-sm font-extrabold text-navy-800">

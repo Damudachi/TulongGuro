@@ -6500,6 +6500,12 @@ async function generateSubmissionFeedback(imagePaths, activityId, studentId) {
     let activityContext = '';
     let subjectForPrompt = 'English';
     let classLessonContext = '';
+    // How many Learning Competencies the tagged lessons contributed. Read by
+    // the TOPIC FOCUS RULE below, which is the prompt's strongest "stay on
+    // these and nothing else" instruction and used to fire only for the
+    // retired DepEd competency map — so the moment tagging moved to curriculum
+    // lessons, every newly created activity silently stopped getting it.
+    let lessonCompetencyCount = 0;
     let activity = null;
     // A rubric genuinely existed but could not be read — distinct from the
     // activity having none. Surfaced to the teacher via
@@ -6530,6 +6536,7 @@ async function generateSubmissionFeedback(imagePaths, activityId, studentId) {
         // one subject; this covers whatever subject the document is for.
         const lessonBlock = (l, lead) => {
           const competencies = readCompetencies(l.competencies);
+          lessonCompetencyCount += competencies.length;
           let text = `${lead}: "${l.title}"\nLesson Description: ${l.description || 'N/A'}\n`;
           if (competencies.length > 0) {
             text += `Learning Competencies for this lesson:\n`
@@ -6566,8 +6573,15 @@ async function generateSubmissionFeedback(imagePaths, activityId, studentId) {
             orderBy: [{ weekNumber: 'asc' }, { createdAt: 'asc' }],
           });
           if (extraLessons.length > 0) {
-            classLessonContext += `\nALSO COVERS:\n`
-              + extraLessons.map(l => lessonBlock(l, 'Lesson')).join('\n')
+            // Headed as its own section only when there is a primary lesson
+            // above it to be "also" relative to. An activity can carry lesson
+            // tags with no classLessonId — a stale tag, or a save from an older
+            // client — and a prompt opening on a bare "ALSO COVERS:" reads as a
+            // truncated section rather than as the whole of what was set.
+            classLessonContext += classLessonContext
+              ? `\nALSO COVERS:\n`
+              : `\nCURRICULUM LESSON CONTEXT:\n`;
+            classLessonContext += extraLessons.map(l => lessonBlock(l, 'Lesson')).join('\n')
               + `\nEvaluate against these learning objectives as well.\n`;
           }
         }
@@ -6710,6 +6724,30 @@ async function generateSubmissionFeedback(imagePaths, activityId, studentId) {
       topicGuidance = getTopicsAIGuidance(activity.topic);
     }
 
+    /**
+     * The prompt's strongest instruction: mark these and nothing else.
+     *
+     * It used to be gated on topicGuidance alone, which now only ever comes
+     * from the retired DepEd competency map. The moment tagging moved to
+     * curriculum lessons, every newly created activity — every activity in
+     * every subject other than Grade 6 English, and eventually all of them —
+     * stopped receiving this rule, and grading quietly widened back out to
+     * whatever the model thought was worth commenting on.
+     *
+     * So it fires on either source. The lesson competencies are already
+     * written out in classLessonContext above, so this names them rather than
+     * repeating them; the retired map's guidance has no such block and is
+     * still spelled out here.
+     */
+    const focusSource = topicGuidance
+      ? `This activity is mapped to the following topic(s)/lesson(s): ${topicGuidance}`
+      : (lessonCompetencyCount > 0
+          ? 'This activity is mapped to the curriculum lesson(s) and Learning Competencies set out above.'
+          : '');
+    const topicFocusRule = focusSource
+      ? `\nTOPIC FOCUS RULE:\n${focusSource}\nYou MUST focus your feedback STRICTLY on those, and on every one of them. Do NOT introduce or critique concepts outside of them. Evaluate only how well the student demonstrates mastery of these specific skills or lessons.\n`
+      : '';
+
     // ── Do the four AI skill scores mean anything for this paper? ──
     // vocabulary / punctuation / thematicFlow / sentenceStructure are
     // English-composition dimensions, hardcoded in the schema below. They were
@@ -6815,7 +6853,7 @@ LANGUAGE:
 - ${languageDirective}
 ${toneOverride}
 ${activityContext}
-${topicGuidance ? `\nTOPIC FOCUS RULE:\nThis activity is mapped to the following topic(s)/lesson(s): ${topicGuidance}\nYou MUST focus your feedback STRICTLY on the topic(s) listed above, and on every one of them. Do NOT introduce or critique concepts outside of them. Evaluate only how well the student demonstrates mastery of these specific skills or lessons.\n` : ''}
+${topicFocusRule}
 ${additionalMaterialParts.length ? `\nREFERENCE MATERIAL RULE:\nThe teacher has attached ${additionalMaterialParts.length} reference file(s) for this activity — sent after this prompt and before the student's ${paperCount > 1 ? 'papers' : 'paper'}, introduced by a "[TEACHER-PROVIDED REFERENCE MATERIAL]" marker. This may be a source passage, an answer key, a diagram, a worksheet, or a required format/template the student's output must follow.\n- Read it FIRST, before grading, and treat any concrete requirement it states — a required structure, required phrases, a required number of parts, a fact the student's answer must match — as MANDATORY, with the same force as the rubric itself, not as optional background.\n- Check the student's submission against every such requirement explicitly. If the student's work deviates from a stated requirement, you MUST name that specific deviation by number/name in areasForGrowth (e.g. "the assignment sheet requires each paragraph to open with 'X'; paragraph 2 does not") — do not fold it into generic writing-quality commentary where it could be mistaken for an ordinary style note.\n- Do NOT grade, transcribe, or critique the reference material itself as if it were student work — it is the standard the student is held to, not something being scored.\n` : ''}
 ${rubricContext}${fewShotExamples}${sectionContext}
 
@@ -8624,6 +8662,12 @@ app.get('/api/teacher/student/:studentId/analytics', async (req, res) => {
         activityTitle: s.activity?.title, activityType: s.activity?.type,
         component: s.activity?.component || 'WW',
         term: s.activity?.term ?? null,
+        // Excusing sets excusedAt and deliberately leaves `status` alone, so a
+        // paper marked and then excused is still 'GRADED' and still carries its
+        // score. Without this field the screen had no way to tell the two
+        // apart: the average drops excused work (see toGradeEntries) while the
+        // points total beside it counted it, and nothing explained the gap.
+        excusedAt: s.excusedAt, excusedReason: s.excusedReason,
         className: s.activity?.class?.name, points: s.activity?.points,
         aiScore: s.aiScore, hitlScore: s.hitlScore, status: s.status,
         imageUrl: s.imageUrl, aiFeedback: s.aiFeedback, hitlFeedback: s.hitlFeedback,

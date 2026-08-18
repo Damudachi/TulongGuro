@@ -1392,6 +1392,27 @@ export default function ActivityBuilder() {
               sequence. They are printed under the lesson because they are what
               the AI will be held to — a teacher ticking a box should be able to
               see what they are agreeing to mark against. */}
+          {/* No curriculum parsed for this class, so there is nothing to tick.
+              Said out loud rather than by hiding the field. Until the DepEd
+              competency list was retired, a Grade 6 English class with no
+              uploaded curriculum still had that list to fall back on; now the
+              lessons are the only source, and a class without them tags
+              nothing — which means the AI marks this work against its
+              instructions and rubric alone. That is a real reduction in the
+              quality of the feedback, and a teacher is owed the reason and the
+              fix rather than an absent control they never knew existed. */}
+          {!lessonTopicApplies && lessonsLoaded && (
+            <div className="rounded-lg border border-amber-200 bg-amber-50 p-3">
+              <p className="text-xs text-amber-800 leading-relaxed">
+                <span className="font-semibold">No curriculum lessons for this class.</span>{' '}
+                Activities here cannot be tagged to a lesson, so the AI marks them against your
+                instructions and rubric only — without the Learning Competencies it would otherwise
+                be held to. Upload and parse this class&rsquo;s curriculum, or ask your admin to add
+                one for {classMeta?.subject || 'this subject'}, and the lessons will appear here.
+              </p>
+            </div>
+          )}
+
           {lessonTopicApplies && (
             <div className="space-y-3">
               <div>
