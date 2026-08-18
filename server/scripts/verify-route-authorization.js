@@ -95,6 +95,7 @@ const ROUTE_MANIFEST = {
   'PUT /api/teacher/submissions/:id/grade': { needsCheck: true },
   'GET /api/teacher/:teacherId/analytics': { needsCheck: false, note: 'authorizePath: seg[2] is the teacherId itself' },
   'GET /api/teacher/student/:studentId/analytics': { needsCheck: true },
+  'GET /api/teacher/:teacherId/skill-progress': { needsCheck: false, note: 'authorizePath: seg[2] is the teacherId itself' },
   'GET /api/teacher/:teacherId/section/:sectionId/skill-progress': { needsCheck: false, note: 'authorizePath: seg[2] is the teacherId itself' },
   'GET /api/teacher/:teacherId/gradebook': { needsCheck: false, note: 'authorizePath: seg[2] is the teacherId itself' },
   'GET /api/teacher/:teacherId/student/:studentId/gradebook': { needsCheck: false, note: 'authorizePath: seg[2] is the teacherId itself' },

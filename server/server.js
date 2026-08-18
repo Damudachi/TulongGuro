@@ -9091,6 +9091,31 @@ app.get('/api/student/:studentId/skill-progress', async (req, res) => {
   }
 });
 
+// Class Insights version — pools the graded work of every class in scope into
+// one shared timeline, scoped exactly the way that page is: an optional
+// section, an optional subject. Both are optional because the page opens on
+// "All my sections", which the /section/:sectionId route below cannot express,
+// and because a self-contained homeroom teacher needs one subject at a time —
+// averaging Filipino into Mathematics describes neither.
+app.get('/api/teacher/:teacherId/skill-progress', async (req, res) => {
+  try {
+    const { sectionId, subject } = req.query;
+    // Scoped by the activity's own class, deliberately — see the note on the
+    // per-section route below for why enrolment is not re-tested here.
+    const classWhere = { teacherId: req.params.teacherId };
+    if (sectionId) classWhere.sectionId = sectionId;
+    if (subject) classWhere.subject = subject;
+    const submissions = await prisma.submission.findMany({
+      where: { status: 'GRADED', rubricData: { not: null }, activity: { class: classWhere } },
+      include: { activity: { select: SKILL_PROGRESS_ACTIVITY_SELECT } }
+    });
+    const result = computeSkillProgress(submissions);
+    res.json({ success: true, skills: CURRICULUM_SKILLS, ...result });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
 // Section-wide version — pools every student in the section's graded work
 // into one shared timeline, for the Predictive Analytics per-section view.
 app.get('/api/teacher/:teacherId/section/:sectionId/skill-progress', async (req, res) => {

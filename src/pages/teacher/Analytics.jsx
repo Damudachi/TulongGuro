@@ -172,7 +172,7 @@ export default function Analytics() {
 
   const {
     summary = {}, activityBreakdown = [], studentTrends = [],
-    needsSupport = [], classAvgSkills = {}, sections = [],
+    needsSupport = [], sections = [],
   } = data || {};
 
   // The school's threshold drives every band, colour and label below. Falls
@@ -228,6 +228,17 @@ export default function Analytics() {
       .map(c => c.subject)
       .filter(Boolean)
   )].sort();
+
+  // The class skill timeline is scoped to whatever the section and subject
+  // chips have in view, so the line and the numbers above it are describing
+  // the same body of work.
+  const classSkillProgressUrl = (() => {
+    const params = new URLSearchParams();
+    if (selectedSectionId) params.set('sectionId', selectedSectionId);
+    if (selectedSubject) params.set('subject', selectedSubject);
+    const query = params.toString();
+    return `${API_URL}/api/teacher/${getStoredUser().id}/skill-progress${query ? `?${query}` : ''}`;
+  })();
 
   // A filter is only applied while the thing it filters on is still on offer.
   //
@@ -741,44 +752,19 @@ export default function Analytics() {
             </div>
           )}
 
-          {/* ── Writing skills across the class ── */}
-          {Object.values(classAvgSkills).some(v => typeof v === 'number' && v > 0) && (
-            <div className="bg-white border-2 border-navy-700/10 rounded-3xl p-5 shadow-pop">
-              <h2 className="text-sm font-extrabold text-navy-700 flex items-center gap-2 mb-4">
-                <Sparkles className="w-4 h-4 text-lilac-500" /> Writing skills across the class
-              </h2>
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                {Object.entries(SKILL_LABELS).map(([key, label]) => {
-                  // null means no activity in this class measured the skill —
-                  // a set of Maths worksheets has no punctuation average. Said
-                  // rather than drawn as an empty bar, which reads as "the
-                  // class scored nothing" instead of "nothing measured this".
-                  const v = classAvgSkills[key];
-                  const measured = typeof v === 'number';
-                  return (
-                    <div key={key}>
-                      <div className="flex justify-between items-baseline mb-1">
-                        <span className="text-xs font-bold text-slate-600">{label}</span>
-                        {measured
-                          ? <span className="text-xs font-extrabold text-navy-800">{v}<span className="text-slate-400">/25</span></span>
-                          : <span className="text-[10px] font-bold text-slate-400">not measured</span>}
-                      </div>
-                      <div className="h-2 bg-slate-100 rounded-full overflow-hidden">
-                        {measured && (
-                          <div className="h-full bg-lilac-400 rounded-full transition-all"
-                            style={{ width: `${Math.min(100, (v / 25) * 100)}%` }} />
-                        )}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-              <p className="text-[11px] text-slate-400 mt-3">
-                Scored out of 25 by the AI when it reads a submission, for activities whose rubric assesses
-                writing or language. Activities measuring anything else are left out rather than guessed at.
-              </p>
-            </div>
-          )}
+          {/* ── Writing skills across the class ──
+              The same chart the student screens draw, pooled across every class
+              in scope. The bars this replaced only said where the class stands
+              today; a line says which way each skill has been moving, which is
+              the thing a teacher can still act on. */}
+          <SkillProgressChart
+            dataUrl={classSkillProgressUrl}
+            title="Writing skills across the class"
+            subtitle="Cumulative mastery over every graded activity in this view. Hover a point to see which activity it is."
+            showActivityList={false}
+            cardClass="bg-white border-2 border-navy-700/10 rounded-3xl p-5 shadow-pop"
+            emptyMessage="Once a few activities are graded against a rubric that assesses writing or language, the class trend will appear here."
+          />
 
           {/* ── Every student ── */}
           <div className="bg-white border-2 border-navy-700/10 rounded-3xl p-5 shadow-pop">

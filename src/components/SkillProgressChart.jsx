@@ -51,7 +51,16 @@ export default function SkillProgressChart({
   studentId,
   dataUrl,
   title = 'Your Skill Progress',
-  emptyMessage = 'Complete your activities and get them graded to see your skill progress.'
+  subtitle,
+  emptyMessage = 'Complete your activities and get them graded to see your skill progress.',
+  // The numbered list under the chart names the outputs behind each point.
+  // That is the whole point on one learner's chart; on a pooled class timeline
+  // it is one row per submission per student, so a caller can turn it off and
+  // leave the tooltip as the way back from a point to its activity.
+  showActivityList = true,
+  // Lets a screen with its own card language keep the chart in the same set —
+  // Class Insights uses the popped border, the student screens the soft one.
+  cardClass = 'tg-card p-5 mb-6',
 }) {
   const [data, setData] = useState(null);
   const [activeTab, setActiveTab] = useState('summary');
@@ -87,7 +96,7 @@ export default function SkillProgressChart({
 
   if (isLoading) {
     return (
-      <div className="tg-card p-5 mb-6 text-center py-10 text-navy-400">
+      <div className={cn(cardClass, 'text-center py-10 text-navy-400')}>
         <Loader2 className="w-6 h-6 mx-auto animate-spin" />
       </div>
     );
@@ -95,7 +104,7 @@ export default function SkillProgressChart({
 
   if (!data?.hasData) {
     return (
-      <div className="tg-card p-5 mb-6 text-center py-8">
+      <div className={cn(cardClass, 'text-center py-8')}>
         <TrendingUp className="w-8 h-8 mx-auto mb-2 text-navy-300" />
         <p className="text-sm font-bold text-navy-600">No Skill Progress Data Available</p>
         <p className="text-xs mt-1 text-navy-400">{emptyMessage}</p>
@@ -120,13 +129,15 @@ export default function SkillProgressChart({
   const tickInterval = Math.max(0, Math.floor(visibleChartData.length / 8));
 
   return (
-    <div className="tg-card p-5 mb-6">
+    <div className={cardClass}>
       <h2 className="font-display font-extrabold text-navy-700 mb-1 flex items-center gap-2">
         <TrendingUp className="w-4 h-4 text-aqua-600" /> {title}
       </h2>
-      {data.mode === 'activity' && (
+      {(subtitle || data.mode === 'activity') && (
         <p className="text-xs text-navy-400 mb-3 font-semibold">
-          Each point is one graded activity, in order. The numbers match the list below.
+          {subtitle || (showActivityList
+            ? 'Each point is one graded activity, in order. The numbers match the list below.'
+            : 'Each point is one graded activity, in order. Hover a point to see which one.')}
         </p>
       )}
 
@@ -160,7 +171,7 @@ export default function SkillProgressChart({
 
       <div className="w-full h-64">
         <ResponsiveContainer width="100%" height="100%">
-          <LineChart data={visibleChartData} margin={{ top: 5, right: 12, left: -12, bottom: 14 }}>
+          <LineChart data={visibleChartData} margin={{ top: 5, right: 12, left: 0, bottom: 14 }}>
             <CartesianGrid strokeDasharray="3 3" stroke="var(--tg-neutral-100, #EDEFF6)" />
             <XAxis dataKey="label" interval={tickInterval} tickFormatter={tickNumber}
               tick={{ fontSize: 11, fill: 'var(--tg-neutral-500, #5F6B8F)' }} axisLine={{ stroke: 'var(--tg-neutral-200, #DDE1EE)' }} tickLine={false}
@@ -193,7 +204,7 @@ export default function SkillProgressChart({
           that skill — an activity whose rubric never touched Punctuation does
           not belong under the Punctuation chart, even though it is in the
           student's history. */}
-      {(() => {
+      {showActivityList && (() => {
         // Number every activity across the whole chart first, then filter. If
         // the filtered rows were numbered 1..n instead, selecting a skill would
         // renumber them and the list would stop agreeing with the axis — the
