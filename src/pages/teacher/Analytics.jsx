@@ -80,12 +80,6 @@ function ClassSpread({ bands, total, passingGrade }) {
   );
 }
 
-/**
- * Sentinel for the skill filter, kept distinct from `null` (= no filter at
- * all). A curriculum skill id could never collide with it.
- */
-const NO_SKILL = '__no-skill__';
-
 export default function Analytics() {
   const [searchParams, setSearchParams] = useSearchParams();
   const [data, setData] = useState(null);
@@ -110,9 +104,6 @@ export default function Analytics() {
   const [selectedStudent, setSelectedStudent] = useState(null);
   const [studentData, setStudentData] = useState(null);
   const [loadingStudent, setLoadingStudent] = useState(false);
-  // Null means "all skills". Reset whenever the section changes, since the
-  // skills available differ between classes.
-  const [skillFilter, setSkillFilter] = useState(null);
 
   // When the Dashboard warning panel links here with ?sectionId=..., skip the
   // section chooser and jump straight into that section's insights.
@@ -151,7 +142,6 @@ export default function Analytics() {
       .then(d => setData(d.success ? d : null))
       .catch(() => {}) /* a failed read leaves the empty state, which is what renders */
       .finally(() => setIsLoading(false));
-    setSkillFilter(null);
   }, [selectedSectionId, selectedSubject, showSelector]);
 
   const loadStudentDetail = (student) => {
@@ -171,7 +161,7 @@ export default function Analytics() {
   );
 
   const {
-    summary = {}, activityBreakdown = [], studentTrends = [],
+    summary = {}, studentTrends = [],
     needsSupport = [], sections = [],
   } = data || {};
 
@@ -181,27 +171,6 @@ export default function Analytics() {
   // How much graded work stands behind a "needs support" call. Reported by the
   // server so this copy can never claim a bar the rule isn't actually applying.
   const minGradedForRisk = summary.minGradedForRisk ?? 3;
-
-  const curriculumSkills = data?.curriculumSkills || [];
-  const skillById = Object.fromEntries(curriculumSkills.map(s => [s.id, s]));
-
-  // Only offer skills this class actually has activities for, with the count,
-  // so the filter never leads to an empty table.
-  const skillFilterOptions = curriculumSkills
-    .map(s => ({ ...s, count: activityBreakdown.filter(a => a.skills?.includes(s.id)).length }))
-    .filter(s => s.count > 0);
-
-  // ── Activities that carry no skill at all ──
-  // An activity graded straight to a score, with no rubric, has nothing to
-  // classify: skillsForActivity reads the rubric (or, failing that, the
-  // per-criterion scores on a submission) and comes back empty. Those rows
-  // belong in this table — a score is exactly what "how each activity went"
-  // is about — but they used to be unreachable the moment any skill chip was
-  // pressed, and the chip counts never added up to the All count with no
-  // explanation of where the rest went. Given their own filter, they are
-  // countable and findable, which also makes them easy to spot as the ones
-  // that would carry skills if they were given a rubric.
-  const noSkillCount = activityBreakdown.filter(a => !a.skills?.length).length;
 
   // ── What this teacher actually handles ──
   // One entry per section they teach into, carrying the subjects they take
@@ -239,26 +208,6 @@ export default function Analytics() {
     const query = params.toString();
     return `${API_URL}/api/teacher/${getStoredUser().id}/skill-progress${query ? `?${query}` : ''}`;
   })();
-
-  // A filter is only applied while the thing it filters on is still on offer.
-  //
-  // The chip row is rebuilt from whatever the current section/subject view
-  // returned, so a skill that had activities a moment ago can stop being
-  // offered — and the filter stayed applied with nothing on screen still set to
-  // it. That reads as "the filter is broken": an empty table, no highlighted
-  // chip, and no visible way to undo it. Ignoring a filter that no longer
-  // applies keeps the control and the table describing the same thing.
-  const activeSkillFilter =
-    skillFilter === null ? null
-      : skillFilter === NO_SKILL ? (noSkillCount > 0 ? NO_SKILL : null)
-        : skillFilterOptions.some(s => s.id === skillFilter) ? skillFilter
-          : null;
-
-  const visibleActivities = activeSkillFilter === null
-    ? activityBreakdown
-    : activeSkillFilter === NO_SKILL
-      ? activityBreakdown.filter(a => !a.skills?.length)
-      : activityBreakdown.filter(a => a.skills?.includes(activeSkillFilter));
 
   // ── One student's detail ──
   if (selectedStudent) {
@@ -616,141 +565,6 @@ export default function Analytics() {
               </div>
             );
           })()}
-
-          {/* ── Per-activity, in that activity's own points ── */}
-          {activityBreakdown.length > 0 && (
-            <div className="bg-white border-2 border-navy-700/10 rounded-3xl p-5 shadow-pop">
-              <h2 className="text-sm font-extrabold text-navy-700 flex items-center gap-2 mb-1">
-                <ClipboardList className="w-4 h-4 text-royal-500" /> How each activity went
-              </h2>
-              <p className="text-xs text-slate-500 mb-4">Hardest first. Points are out of each activity&apos;s own total.</p>
-
-              {/* ── Skill filter ──
-                  Narrows the list to the activities that assess one curriculum
-                  skill, so "how is their reading comprehension going" is one
-                  click rather than a reading of every row. Only skills actually
-                  present in this class are offered — an empty filter chip is
-                  just a dead end. */}
-              {skillFilterOptions.length > 0 && (
-                <div className="flex flex-wrap items-center gap-2 mb-4">
-                  <span className="text-[11px] font-extrabold uppercase tracking-wider text-slate-400 mr-1">Skill</span>
-                  <button type="button" onClick={() => setSkillFilter(null)}
-                    className={cn('px-3 py-1 rounded-full text-xs font-bold border-2 transition-all',
-                      activeSkillFilter === null
-                        ? 'border-brand-chrome bg-brand-chrome text-white'
-                        : 'border-slate-200 text-slate-500 hover:border-navy-300')}>
-                    All ({activityBreakdown.length})
-                  </button>
-                  {noSkillCount > 0 && (
-                    <button type="button"
-                      onClick={() => setSkillFilter(activeSkillFilter === NO_SKILL ? null : NO_SKILL)}
-                      title="Graded straight to a score, so there is no rubric to read a skill from"
-                      className={cn('px-3 py-1 rounded-full text-xs font-bold border-2 transition-all',
-                        activeSkillFilter === NO_SKILL
-                          ? 'border-brand-chrome bg-brand-chrome text-white'
-                          : 'border-dashed border-slate-300 text-slate-500 hover:border-slate-400')}>
-                      No skill tags ({noSkillCount})
-                    </button>
-                  )}
-                  {skillFilterOptions.map(s => (
-                    <button key={s.id} type="button"
-                      onClick={() => setSkillFilter(activeSkillFilter === s.id ? null : s.id)}
-                      title={s.count === activityBreakdown.length
-                        ? `Every activity in this list assesses ${s.label}`
-                        : `Show only the ${s.count} activities that assess ${s.label}`}
-                      className="px-3 py-1 rounded-full text-xs font-bold border-2 transition-all flex items-center gap-1.5"
-                      style={activeSkillFilter === s.id
-                        ? { borderColor: s.color, backgroundColor: s.color, color: 'white' }
-                        : { borderColor: 'var(--tg-neutral-200, #DDE1EE)', color: 'var(--tg-neutral-500, #5F6B8F)' }}>
-                      <span className="w-2 h-2 rounded-full"
-                        style={{ background: activeSkillFilter === s.id ? 'white' : s.color }} />
-                      {s.label} ({s.count})
-                    </button>
-                  ))}
-
-                  {/* What the press actually did.
-                      An activity is tagged with every skill its rubric covers,
-                      so a class whose activities all use the same rubric has
-                      every chip matching every row — pressing one then changes
-                      nothing on screen, and the filter reads as broken. It
-                      isn't; it has nothing to narrow. Said plainly here rather
-                      than left to be inferred from a table that did not move. */}
-                  {activeSkillFilter !== null && (
-                    <p className="basis-full text-[11px] text-slate-500 mt-1">
-                      Showing <span className="font-bold">{visibleActivities.length}</span> of {activityBreakdown.length} activities
-                      {visibleActivities.length === activityBreakdown.length && activityBreakdown.length > 1 && (
-                        <> — every activity here assesses this skill, so nothing is hidden</>
-                      )}
-                      {visibleActivities.length === 0 && <> — nothing in this view assesses it</>}
-                      {'. '}
-                      <button type="button" onClick={() => setSkillFilter(null)}
-                        className="font-bold text-royal-600 hover:text-royal-800 underline">
-                        Clear filter
-                      </button>
-                    </p>
-                  )}
-                </div>
-              )}
-
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm min-w-[520px]">
-                  <thead>
-                    <tr className="text-slate-400 border-b border-slate-100">
-                      <th className="text-left font-bold py-2">Activity</th>
-                      <th className="text-center font-bold py-2 w-28">Class average</th>
-                      <th className="text-center font-bold py-2 w-24">Range</th>
-                      <th className="text-center font-bold py-2 w-20">Graded</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {visibleActivities.map(a => {
-                      const band = bandFor(a.avgPercent, passingGrade);
-                      return (
-                        <tr key={a.id} className="border-b border-slate-50 last:border-0">
-                          <td className="py-3">
-                            <p className="font-bold text-navy-800">{a.title}</p>
-                            <p className="text-[11px] text-slate-400">{a.type} · {a.points} pts</p>
-                            {a.skills?.length > 0 ? (
-                              <div className="flex flex-wrap gap-1 mt-1">
-                                {a.skills.map(id => {
-                                  const s = skillById[id];
-                                  if (!s) return null;
-                                  return (
-                                    <span key={id} className="text-[10px] font-bold px-1.5 py-0.5 rounded-full"
-                                      style={{ backgroundColor: `${s.color}1A`, color: s.color }}>
-                                      {s.label}
-                                    </span>
-                                  );
-                                })}
-                              </div>
-                            ) : (
-                              // Says why the row is bare rather than leaving it
-                              // looking like a skill that failed to load. The
-                              // average beside it is still real — this activity
-                              // simply has no rubric to read a skill from.
-                              <p className="text-[10px] text-slate-400 mt-1 italic">
-                                Score only — no rubric, so no skill breakdown
-                              </p>
-                            )}
-                          </td>
-                          <td className="py-3 text-center">
-                            <p className="font-extrabold text-navy-800">
-                              {a.avgPoints}<span className="text-slate-400">/{a.points}</span>
-                            </p>
-                            <span className={cn('text-[10px] font-bold px-1.5 py-0.5 rounded-full', band.chip)}>
-                              {pct(a.avgPercent)}%
-                            </span>
-                          </td>
-                          <td className="py-3 text-center text-xs text-slate-500">{pct(a.lowest)}%–{pct(a.highest)}%</td>
-                          <td className="py-3 text-center text-xs font-semibold text-slate-500">{a.gradedCount}</td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
 
           {/* ── Writing skills across the class ──
               The same chart the student screens draw, pooled across every class
