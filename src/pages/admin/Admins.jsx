@@ -34,6 +34,9 @@ export default function AdminAdmins() {
   const [credentials, setCredentials] = useState(null);
   const [copied, setCopied] = useState(false);
   const [busyId, setBusyId] = useState(null);
+  // A failed load is not an empty school. Without this the page rendered
+  // "0 of 5 admins" to an admin who was looking at their own account.
+  const [loadFailed, setLoadFailed] = useState(false);
 
   const load = useCallback(() => {
     if (!me.id) return;
@@ -45,6 +48,7 @@ export default function AdminAdmins() {
       apiFetch(`${API_URL}/api/admin/${me.id}/overview`).then(r => r.json()).catch(() => null),
     ])
       .then(([adminsRes, overviewRes]) => {
+        setLoadFailed(!adminsRes?.success);
         if (adminsRes?.success) setData(adminsRes);
         if (overviewRes?.success) setTeachers(overviewRes.teachers || []);
       })
@@ -207,6 +211,20 @@ export default function AdminAdmins() {
         </div>
       </div>
 
+      {loadFailed && (
+        <div className="bg-red-50 border border-red-200 rounded-2xl p-4 mb-6">
+          <p className="font-bold text-red-800 text-sm mb-1">Could not load the admin list</p>
+          <p className="text-xs text-red-700">
+            The list below is not the state of your school — the server could not be read.
+            Reload the page, and if it keeps happening tell whoever runs the deployment.
+          </p>
+          <button onClick={() => { setIsLoading(true); load(); }}
+            className="mt-3 text-xs font-bold text-red-700 bg-white border border-red-200 px-3 py-1.5 rounded-lg hover:bg-red-100">
+            Try again
+          </button>
+        </div>
+      )}
+
       {atCap && (
         <p className="text-xs font-medium text-amber-800 bg-amber-50 border border-amber-200 rounded-xl p-3 mb-6">
           This school is at the limit of {maxAdmins} admins. Remove one before adding another.
@@ -287,8 +305,17 @@ export default function AdminAdmins() {
       </h2>
       {history.length === 0 ? (
         <div className="text-center py-10 border-2 border-dashed border-slate-200 rounded-2xl text-slate-400">
-          <p className="text-sm font-medium">Nothing recorded yet</p>
-          <p className="text-xs mt-1">Admin accounts added or removed here will be listed.</p>
+          {data?.historyUnavailable ? (
+            <>
+              <p className="text-sm font-medium">History unavailable</p>
+              <p className="text-xs mt-1">Access changes are still being recorded — this feed could not be read.</p>
+            </>
+          ) : (
+            <>
+              <p className="text-sm font-medium">Nothing recorded yet</p>
+              <p className="text-xs mt-1">Admin accounts added or removed here will be listed.</p>
+            </>
+          )}
         </div>
       ) : (
         <ol className="space-y-2">

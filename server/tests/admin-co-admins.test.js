@@ -362,3 +362,34 @@ describe('GET /admins', () => {
     expect(prismaFake.user.findMany.mock.calls[0][0].select.password).toBeUndefined();
   });
 });
+
+// ───────────────────────────────────────────────────────────────────────────
+// 9. The history must not be able to take the list down with it
+// ───────────────────────────────────────────────────────────────────────────
+describe('when the access history cannot be read', () => {
+  it('still returns the admin list', async () => {
+    // How this was found: the first deploy of this feature ran against a
+    // database where AdminAuditLog did not exist yet. The audit query threw,
+    // the whole route 500d, and the page rendered "0 of 5 admins" to an admin
+    // looking at their own account.
+    prismaFake.adminAuditLog.findMany.mockRejectedValue(new Error('relation "AdminAuditLog" does not exist'));
+    prismaFake.user.findMany.mockResolvedValue([
+      { id: ADMIN, name: 'Head Admin', email: 'head@school.ph', createdAt: new Date() },
+      { id: CO_ADMIN, name: 'Registrar', email: 'registrar@school.ph', createdAt: new Date() },
+    ]);
+    const res = await call('GET', `/api/admin/${ADMIN}/admins`);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.admins).toHaveLength(2);
+    expect(body.history).toEqual([]);
+    // Flagged, so the page can say "unavailable" rather than claim the school
+    // has never changed an admin.
+    expect(body.historyUnavailable).toBe(true);
+  });
+
+  it('reports history as available when it simply is empty', async () => {
+    prismaFake.adminAuditLog.findMany.mockResolvedValue([]);
+    const res = await call('GET', `/api/admin/${ADMIN}/admins`);
+    expect((await res.json()).historyUnavailable).toBe(false);
+  });
+});

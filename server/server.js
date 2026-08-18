@@ -2620,23 +2620,46 @@ async function coAdminInSchool(admin, userId) {
   return target;
 }
 
-/** The school's admins, plus the recent record of how they got that way. */
+/**
+ * The school's admins, plus the recent record of how they got that way.
+ *
+ * The history is read separately and tolerates its own failure. logAdminEvent
+ * already treats *writing* history as optional — a failed note must not fail a
+ * legitimate grant — and the read needs the same rule for a stronger reason:
+ * this list is how an admin sees who can reach their school, and it went blank
+ * the first time the audit query threw. That happened on the very first deploy
+ * of this feature, before AdminAuditLog existed, and the page reported it as a
+ * school with zero admins rather than as an error. A missing history is a gap
+ * in a sidebar; a missing list is the screen not working.
+ */
 app.get('/api/admin/:adminId/admins', async (req, res) => {
   try {
     const admin = await requireAdminSchool(req.params.adminId);
-    const [admins, history] = await Promise.all([
-      prisma.user.findMany({
-        where: { schoolId: admin.schoolId, role: 'ADMIN' },
-        select: { id: true, name: true, email: true, createdAt: true },
-        orderBy: { createdAt: 'asc' }
-      }),
-      prisma.adminAuditLog.findMany({
-        where: { schoolId: admin.schoolId },
-        orderBy: { createdAt: 'desc' },
-        take: 20
-      })
-    ]);
-    res.json({ success: true, admins, history, maxAdmins: MAX_ADMINS_PER_SCHOOL });
+    const admins = await prisma.user.findMany({
+      where: { schoolId: admin.schoolId, role: 'ADMIN' },
+      select: { id: true, name: true, email: true, createdAt: true },
+      orderBy: { createdAt: 'asc' }
+    });
+    const history = await prisma.adminAuditLog.findMany({
+      where: { schoolId: admin.schoolId },
+      orderBy: { createdAt: 'desc' },
+      take: 20
+    }).catch((e) => {
+      // Logged rather than swallowed silently: an empty feed is indistinguishable
+      // from a school that has never changed an admin, so the only place this
+      // can be noticed is the server log.
+      console.warn('[admins] access history unavailable:', e.message);
+      return null;
+    });
+    res.json({
+      success: true,
+      admins,
+      history: history || [],
+      // Lets the page say "unavailable" instead of "nothing recorded yet",
+      // which would be a claim it cannot support.
+      historyUnavailable: history === null,
+      maxAdmins: MAX_ADMINS_PER_SCHOOL,
+    });
   } catch (e) { sendAdminError(res, e); }
 });
 
