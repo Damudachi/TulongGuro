@@ -80,9 +80,11 @@ export default function BatchUpload() {
   // mirrors the student's own upload flow (SubmitWork.jsx), which has always
   // done this. Teacher upload used to skip it entirely: a picked photo went
   // straight into stagedByStudentId, and on submit, straight to the third-party
-  // VLM with any name on it still visible. The server's privacy gate can refuse
-  // to grade it afterwards, but by then the image has already left the device —
-  // this stops that at the source instead of catching it after the fact. The
+  // VLM with any name on it still visible. Nothing downstream catches that: the
+  // server-side privacy gate was removed once it was clear it fired only after
+  // the image had already left the device, and cost a paid-for grading to do it.
+  // Redaction here, before the upload, is now the only thing standing in the
+  // way — which is why this pass is forced rather than offered. The
   // existing `redacting` state above still handles re-touching an already
   // staged page; this is the forced first pass over what was just picked.
   const [pendingRedaction, setPendingRedaction] = useState(null); // { studentId, queue: File[], index, objectUrl }
@@ -340,9 +342,9 @@ export default function BatchUpload() {
     // first, so it can go through the exact same redaction canvas as a photo.
     // A file that fails to render (corrupt, password-protected, unusual
     // encoding) is refused rather than staged as-is: staging it un-rendered
-    // would skip ImageRedactor entirely and rely solely on the server's
-    // prompt-based privacy gate, which is exactly the guarantee rasterizing
-    // exists to give every PDF/Word submission in the first place.
+    // would skip ImageRedactor entirely, and there is no server-side
+    // privacy gate behind it — covering the name here is exactly the guarantee
+    // rasterizing exists to give every PDF/Word submission in the first place.
     const images = picked.filter(isImageFile);
     const toRasterize = picked.filter(f => isRasterizable(f));
     const documents = picked.filter(f => !isImageFile(f) && !isRasterizable(f));
@@ -809,8 +811,9 @@ export default function BatchUpload() {
                               {/* Redaction paints on a canvas, so it only applies
                                   to image pages — which, since PDF/Word are now
                                   rasterized before staging, is nearly always what's
-                                  here. The rare fallback (rendering failed) is still
-                                  read by the server's privacy gate before grading. */}
+                                  here. In the rare fallback (rendering failed) the
+                                  page goes up un-redacted — the grader is told to
+                                  ignore any name it sees, but nothing covers it. */}
                               {isImageFile(page.file) ? (
                                 <button type="button" onClick={() => setRedacting({ studentId: student.id, pageIndex: i })}
                                   title={`Cover the name on page ${i + 1}`}

@@ -142,7 +142,7 @@ export default function SubmitWork() {
     // instead of skipping it. A file that fails to render (corrupt,
     // password-protected, unusual encoding) is refused rather than attached
     // as-is — attaching it un-rendered would skip the redaction canvas
-    // entirely and rely solely on the server's prompt-based privacy gate.
+    // entirely, and there is no server-side privacy gate behind it.
     const images = selectedFiles.filter(f => (f.type || '').startsWith('image/'));
     const toRasterize = selectedFiles.filter(f => isRasterizable(f));
     const documents = selectedFiles.filter(f => !(f.type || '').startsWith('image/') && !isRasterizable(f));
