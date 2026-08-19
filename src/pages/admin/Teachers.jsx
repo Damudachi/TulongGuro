@@ -5,6 +5,7 @@ import { API_URL, apiFetch } from '../../config';
 import { GRADE_LEVELS } from '../../constants/school';
 import { TEACHER_EMAIL_DOMAIN, buildAccountEmail } from '../../constants/accountEmails';
 import DomainEmailField from '../../components/DomainEmailField';
+import TeacherHandover from '../../components/TeacherHandover';
 
 import { showAlert, showConfirm } from '../../utils/dialog';
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
@@ -29,6 +30,11 @@ export default function AdminTeachers() {
   const [copied, setCopied] = useState(false);
   const [busyTeacherId, setBusyTeacherId] = useState(null);
   const [teacherQuery, setTeacherQuery] = useState('');
+  // The teacher being removed, once it is clear their work has to go somewhere:
+  // { teacher, reason }. `reason` is the server's own refusal text when it was
+  // the server that raised the question, and null when the roster counts on
+  // screen were enough to know in advance.
+  const [handover, setHandover] = useState(null);
 
   const load = useCallback(() => {
     if (!admin.id) return;
@@ -103,23 +109,66 @@ export default function AdminTeachers() {
     }
   };
 
-  const handleDelete = async (teacher) => {
-    if (!(await showConfirm(`Remove ${teacher.name} from ${data?.school?.name}? This cannot be undone.`,
-      { confirmLabel: 'Remove teacher', danger: true }))) return;
+  /**
+   * The removal request itself, with or without a successor.
+   *
+   * Shared by both entry points below so there is exactly one place that knows
+   * what a refusal means and what a hand-over reports back.
+   */
+  const removeTeacher = async (teacher, successorId = null) => {
     setBusyTeacherId(teacher.id);
     try {
-      const res = await apiFetch(`${API_URL}/api/admin/${admin.id}/teachers/${teacher.id}`, { method: 'DELETE' });
+      const url = `${API_URL}/api/admin/${admin.id}/teachers/${teacher.id}`
+        + (successorId ? `?reassignTo=${encodeURIComponent(successorId)}` : '');
+      const res = await apiFetch(url, { method: 'DELETE' });
       const d = await res.json().catch(() => null);
-      if (res.ok && d?.success) load();
-      // The server refuses when the teacher still has learners in their
-      // sections, and names how many — that message is the whole point of the
-      // guard, so it must not be swallowed.
-      else showAlert(d?.error || 'Could not remove this teacher. Nothing has been changed.');
+      if (res.ok && d?.success) {
+        setHandover(null);
+        load();
+        const moved = d.handedOver;
+        if (moved) {
+          // Named counts rather than "done": the admin has just agreed to move
+          // a year's work between two people and is entitled to see it arrive.
+          showAlert(
+            `${teacher.name} has been removed. ${moved.to.name} now has `
+            + `${moved.classes} class${moved.classes === 1 ? '' : 'es'}, `
+            + `${moved.sections} block section${moved.sections === 1 ? '' : 's'} and `
+            + `${moved.students} learner account${moved.students === 1 ? '' : 's'} from them. `
+            + 'Every activity, score and comment moved with the classes.',
+            { variant: 'success' }
+          );
+        }
+        return;
+      }
+      // The server refuses rather than destroy student work, and says what is in
+      // the way — that message is the whole point of the guard, so it must not
+      // be swallowed. When the work could be handed over instead, the refusal
+      // opens the picker rather than ending the attempt.
+      if (d?.code === 'HANDOVER_REQUIRED') {
+        setHandover({ teacher, reason: d.error });
+        return;
+      }
+      showAlert(d?.error || 'Could not remove this teacher. Nothing has been changed.', { variant: 'error' });
     } catch {
-      showAlert('Could not reach the server. This teacher has not been removed.');
+      showAlert('Could not reach the server. This teacher has not been removed.', { variant: 'error' });
     } finally {
       setBusyTeacherId(null);
     }
+  };
+
+  const handleDelete = async (teacher) => {
+    // Asked here rather than after a round trip whenever the counts already on
+    // screen say the account owns something. The server checks again — these
+    // counts can be minutes stale, and a plain delete is refused on its own
+    // merits — but a teacher with a full timetable should not have to be told
+    // "no" once before being offered the thing they actually wanted.
+    if ((teacher._count?.taughtClasses || 0) > 0 || (teacher._count?.ownedSections || 0) > 0) {
+      setHandover({ teacher, reason: null });
+      return;
+    }
+    if (!(await showConfirm(`Remove ${teacher.name} from ${data?.school?.name}? This cannot be undone.`,
+      { confirmLabel: 'Remove teacher', danger: true }))) return;
+    await removeTeacher(teacher);
   };
 
   const copyCredentials = () => {
@@ -358,6 +407,20 @@ export default function AdminTeachers() {
             </form>
           </div>
         </div>
+      )}
+
+      {/* Asked instead of refusing. See TeacherHandover for why the refusal
+          became a question. Colleagues exclude the account being removed —
+          handing a teacher their own work is the one answer that cannot help. */}
+      {handover && (
+        <TeacherHandover
+          teacher={handover.teacher}
+          reason={handover.reason}
+          colleagues={(data?.teachers || []).filter(t => t.id !== handover.teacher.id)}
+          busy={busyTeacherId === handover.teacher.id}
+          onCancel={() => setHandover(null)}
+          onConfirm={(successorId) => removeTeacher(handover.teacher, successorId)}
+        />
       )}
     </div>
   );

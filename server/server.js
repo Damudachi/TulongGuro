@@ -2651,7 +2651,34 @@ app.put('/api/admin/:adminId/teachers/:teacherId/password', async (req, res) => 
   } catch (e) { sendAdminError(res, e); }
 });
 
-/** Remove a teacher, but only while they still have no classes of their own. */
+/**
+ * Remove a teacher.
+ *
+ * A teacher who has taught cannot simply be deleted: their classes carry every
+ * activity, submission, score and piece of feedback the pupils in them have
+ * produced, and their block sections carry the pupils' accounts. Deleting the
+ * row would take all of that with it. So the route has two modes, and which one
+ * runs is the admin's explicit choice rather than something inferred:
+ *
+ *   - No `reassignTo` - the original behaviour. Deletes only a teacher with
+ *     nothing real attached, and refuses otherwise, naming what is in the way.
+ *     Refusals now carry `code: 'HANDOVER_REQUIRED'` so the console can offer
+ *     the second mode instead of just printing the message.
+ *
+ *   - `?reassignTo=<teacherId>` - hand the work to a named colleague and then
+ *     remove the account, in one transaction. This is what a teacher leaving
+ *     mid-year actually needs: the classes, their whole history, and the block
+ *     sections with their rosters move to the successor, and nothing is
+ *     deleted except the departing account itself.
+ *
+ * What does NOT transfer, deliberately: gradingExamples. Those are "the AI
+ * wrote X and I changed it to Y" - one person's marking style, used as few-shot
+ * calibration for their own checking. Handing them to a colleague would make
+ * the AI imitate a teacher who is no longer there. The rubric library and the
+ * teacher's own badges DO transfer, because the activities that use them are
+ * moving too and a badge cascading away would silently clear `Activity.badgeId`
+ * on work the successor has just inherited.
+ */
 app.delete('/api/admin/:adminId/teachers/:teacherId', async (req, res) => {
   try {
     const admin = await requireAdminSchool(req.params.adminId);
@@ -2662,23 +2689,20 @@ app.delete('/api/admin/:adminId/teachers/:teacherId', async (req, res) => {
     if (!teacher || teacher.schoolId !== admin.schoolId) {
       return res.status(404).json({ success: false, error: 'Teacher not found in your school.' });
     }
+
     // Real classes carry student submissions; a sandbox seeded by the old
     // auto-seed is disposable. The [DEMO] exclusion is legacy-only now that
-    // nothing creates those — it can go once the last sandbox is cleared.
-    const realClasses = await prisma.class.count({
-      where: { teacherId: teacher.id, NOT: { name: { contains: '[DEMO]' } } }
-    });
-    if (realClasses > 0) {
-      return res.status(400).json({ success: false, error: 'This teacher still has classes. Reassign or delete them first.' });
-    }
+    // nothing creates those - it can go once the last sandbox is cleared.
+    const REAL_CLASS = { teacherId: teacher.id, NOT: { name: { contains: '[DEMO]' } } };
+    const realClasses = await prisma.class.count({ where: REAL_CLASS });
 
-    // Below, every student in every section this teacher owns is deleted along
-    // with them. That was survivable while the only such students were seeded
-    // "Demo Student" rows — but a teacher's first real action is now building a
-    // section and its roster, and a roster can exist for weeks before the first
-    // class does. Without this guard, removing a teacher who had got that far
-    // would silently delete real children's accounts, and their grades with
-    // them, while reporting success.
+    // Every student in every section this teacher owns would be deleted along
+    // with them on the no-successor path. That was survivable while the only
+    // such students were seeded "Demo Student" rows - but a teacher's first
+    // real action is now building a section and its roster, and a roster can
+    // exist for weeks before the first class does. Without this guard, removing
+    // a teacher who had got that far would silently delete real children's
+    // accounts, and their grades with them, while reporting success.
     const realStudents = await prisma.user.count({
       where: {
         role: 'STUDENT',
@@ -2686,18 +2710,11 @@ app.delete('/api/admin/:adminId/teachers/:teacherId', async (req, res) => {
         NOT: { username: { startsWith: 'DEMO-' } },
       },
     });
-    if (realStudents > 0) {
-      return res.status(400).json({
-        success: false,
-        error: `This teacher's block sections still hold ${realStudents} student account(s). `
-          + 'Move those students to another section before removing the teacher.',
-      });
-    }
 
     // A section this teacher advises can still be the parent of a course shell
     // that belongs to somebody else. Reassigning a shell (PUT .../classes/:id)
     // moves Class.teacherId and deliberately leaves Class.sectionId alone, so
-    // the two owners come apart as a matter of routine — and the guards above
+    // the two owners come apart as a matter of routine - and the other guards
     // both pass afterwards, because the shell is no longer this teacher's and
     // its roster left with it.
     //
@@ -2710,38 +2727,143 @@ app.delete('/api/admin/:adminId/teachers/:teacherId', async (req, res) => {
       where: { teacherId: teacher.id },
       select: { id: true, name: true },
     });
-    if (ownSections.length > 0) {
-      const foreign = await prisma.class.findFirst({
-        where: { sectionId: { in: ownSections.map(s => s.id) }, NOT: { teacherId: teacher.id } },
-        include: { teacher: { select: { name: true } }, section: { select: { name: true } } },
-      });
-      if (foreign) {
+    const foreignClass = ownSections.length
+      ? await prisma.class.findFirst({
+          where: { sectionId: { in: ownSections.map(s => s.id) }, NOT: { teacherId: teacher.id } },
+          include: { teacher: { select: { name: true } }, section: { select: { name: true } } },
+        })
+      : null;
+
+    // -- Mode 2: hand everything to a named colleague --
+    const successorId = String(req.query.reassignTo || '').trim();
+    let successor = null;
+    if (successorId) {
+      if (successorId === teacher.id) {
         return res.status(400).json({
           success: false,
-          error: `"${foreign.name}", taught by ${foreign.teacher?.name || 'another teacher'}, still uses this `
-            + `teacher's section "${foreign.section?.name}". Reassign that section's adviser first, `
+          error: 'Choose a different teacher to hand this work to - it cannot be handed to the account being removed.',
+        });
+      }
+      successor = await prisma.user.findUnique({ where: { id: successorId } });
+      if (!successor || successor.role !== 'TEACHER' || successor.schoolId !== admin.schoolId) {
+        return res.status(400).json({
+          success: false,
+          error: 'Choose a teacher from your own school to hand this work to.',
+        });
+      }
+      // The successor must not end up holding two shells for the same section,
+      // subject and school year - the same collision PUT /classes/:id refuses
+      // one class at a time. There is no database constraint behind it, so a
+      // bulk move would create the duplicate silently rather than throwing, and
+      // the gradebook would then show the section twice for one subject.
+      const key = (c) => `${c.sectionId}|${c.schoolYear}|${c.subject || ''}|${c.gradeLevel || ''}`;
+      const shellSelect = { id: true, name: true, sectionId: true, schoolYear: true, subject: true, gradeLevel: true };
+      const [moving, alreadyTheirs] = await Promise.all([
+        prisma.class.findMany({ where: REAL_CLASS, select: shellSelect }),
+        prisma.class.findMany({ where: { teacherId: successor.id }, select: shellSelect }),
+      ]);
+      const held = new Set(alreadyTheirs.map(key));
+      const collision = moving.find(c => held.has(key(c)));
+      if (collision) {
+        return res.status(400).json({
+          success: false,
+          error: `${successor.name} already has a class for the same section, subject and school year as `
+            + `"${collision.name}", so it cannot move to them. Reassign that one to somebody else first, `
             + 'then remove this teacher.',
         });
       }
     }
 
+    // -- Mode 1: refuse rather than destroy --
+    // Each refusal names what is in the way AND says the work can be handed
+    // over instead, because "reassign them first" was the whole message before
+    // and it left the admin to move a year's classes one at a time.
+    if (!successor) {
+      const handover = { code: 'HANDOVER_REQUIRED', canReassign: true };
+      if (realClasses > 0) {
+        return res.status(400).json({
+          success: false, ...handover,
+          error: `This teacher still has ${realClasses} class${realClasses === 1 ? '' : 'es'}, and every activity, `
+            + 'score and piece of feedback in them belongs to those classes. Choose a teacher to hand them to, '
+            + 'or reassign them yourself first.',
+        });
+      }
+      if (realStudents > 0) {
+        return res.status(400).json({
+          success: false, ...handover,
+          error: `This teacher's block sections still hold ${realStudents} student account(s). `
+            + 'Choose a teacher to hand those sections to, or move the students to another section first.',
+        });
+      }
+      if (foreignClass) {
+        return res.status(400).json({
+          success: false, ...handover,
+          error: `"${foreignClass.name}", taught by ${foreignClass.teacher?.name || 'another teacher'}, still uses this `
+            + `teacher's section "${foreignClass.section?.name}". Choose a teacher to hand that section to, `
+            + 'or reassign its adviser first.',
+        });
+      }
+    }
+
+    // Counted before the move so the response can tell the admin exactly what
+    // travelled - the same reassurance PUT /classes/:id gives with `retained`.
+    const movedStudents = successor
+      ? await prisma.user.count({ where: { role: 'STUDENT', section: { teacherId: teacher.id } } })
+      : 0;
+
     // One transaction: a constraint that fires late must not be able to leave a
-    // half-deleted teacher — rubric library gone, account still present.
+    // half-deleted teacher - rubric library gone, account still present.
     await prisma.$transaction(async (tx) => {
-      await tx.rubricTemplate.deleteMany({ where: { teacherId: teacher.id } });
+      // Never transferred, on either path. See the note on this route.
       await tx.gradingExample.deleteMany({ where: { teacherId: teacher.id } });
-      const ownClasses = await tx.class.findMany({ where: { teacherId: teacher.id }, select: { id: true } });
-      for (const cls of ownClasses) {
+
+      // Legacy sandbox classes are disposable on both paths: passing a
+      // leftover "[DEMO]" shell to a colleague is noise, not inheritance.
+      const demoClasses = await tx.class.findMany({
+        where: { teacherId: teacher.id, name: { contains: '[DEMO]' } },
+        select: { id: true },
+      });
+      for (const cls of demoClasses) {
         await tx.submission.deleteMany({ where: { activity: { classId: cls.id } } });
         await tx.activity.deleteMany({ where: { classId: cls.id } });
         await tx.classLesson.deleteMany({ where: { classId: cls.id } });
       }
-      await tx.class.deleteMany({ where: { teacherId: teacher.id } });
-      await tx.user.deleteMany({ where: { sectionId: { in: ownSections.map(s => s.id) }, role: 'STUDENT' } });
-      await tx.section.deleteMany({ where: { teacherId: teacher.id } });
+      await tx.class.deleteMany({ where: { id: { in: demoClasses.map(c => c.id) } } });
+
+      if (successor) {
+        // Only the owner changes. Activities, lessons and every submission hang
+        // off the Class row and travel with it untouched; the pupils hang off
+        // the Section row and never move school or classroom at all.
+        await tx.class.updateMany({ where: { teacherId: teacher.id }, data: { teacherId: successor.id } });
+        await tx.section.updateMany({ where: { teacherId: teacher.id }, data: { teacherId: successor.id } });
+        await tx.rubricTemplate.updateMany({ where: { teacherId: teacher.id }, data: { teacherId: successor.id } });
+        // Moved rather than left to cascade: TeacherBadge deletes with its
+        // teacher, and Activity.badgeId is ON DELETE SET NULL, so letting them
+        // go would quietly strip the custom badge off work the successor has
+        // just inherited.
+        await tx.teacherBadge.updateMany({ where: { teacherId: teacher.id }, data: { teacherId: successor.id } });
+      } else {
+        // Nothing real is attached - the guards above established that - so
+        // what is left is the sandbox: seeded demo students and empty sections.
+        await tx.rubricTemplate.deleteMany({ where: { teacherId: teacher.id } });
+        await tx.user.deleteMany({ where: { sectionId: { in: ownSections.map(s => s.id) }, role: 'STUDENT' } });
+        await tx.section.deleteMany({ where: { teacherId: teacher.id } });
+      }
+
       await tx.user.delete({ where: { id: teacher.id } });
     });
-    res.json({ success: true });
+
+    res.json({
+      success: true,
+      handedOver: successor
+        ? {
+            to: { id: successor.id, name: successor.name },
+            classes: realClasses,
+            sections: ownSections.length,
+            students: movedStudents,
+          }
+        : null,
+    });
   } catch (e) { sendAdminError(res, e); }
 });
 
