@@ -914,7 +914,7 @@ export default function ActivityBuilder() {
         setSavedRubrics(prev => [savedTemplate, ...prev]);
         setShowSaveTemplateModal(false);
         setTemplateTitle('');
-        showAlert(`✓ "${savedTemplate.name}" has been saved to cloud templates.`);
+        showAlert(`"${savedTemplate.name}" has been saved to cloud templates.`, { variant: 'success' });
       } else {
         showAlert('Failed to save template: ' + data.error);
       }

@@ -41,6 +41,8 @@ export default function AdminTeacherDetail() {
 
   const [reassignClassId, setReassignClassId] = useState(null);
   const [reassignTo, setReassignTo] = useState('');
+  const [editingClassId, setEditingClassId] = useState(null);
+  const [classNameForm, setClassNameForm] = useState('');
   const [editingSectionId, setEditingSectionId] = useState(null);
   const [sectionForm, setSectionForm] = useState({ name: '', gradeLevel: '' });
   const [addingToSectionId, setAddingToSectionId] = useState(null);
@@ -118,6 +120,12 @@ export default function AdminTeacherDetail() {
       { confirmLabel: 'Delete course shell', danger: true }))) return;
     call(`${API_URL}/api/admin/${admin.id}/classes/${cls.id}`, { method: 'DELETE' });
   };
+
+  const saveClassName = (cls) => call(
+    `${API_URL}/api/admin/${admin.id}/classes/${cls.id}`,
+    { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: classNameForm }) },
+    () => setEditingClassId(null)
+  );
 
   const reassignClass = async (cls) => {
     if (!reassignTo) return setReassignError('Choose a teacher to move this course shell to.');
@@ -406,40 +414,65 @@ export default function AdminTeacherDetail() {
           {classes.map(cls => (
             <div key={cls.id} className="bg-white border border-slate-200 rounded-xl p-4">
               <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0">
+                <div className="min-w-0 flex-1">
                   <div className="flex gap-2 mb-1.5 flex-wrap">
                     {cls.gradeLevel && <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-blue-50 text-blue-600 border border-blue-100">{cls.gradeLevel}</span>}
                     {cls.subject && <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-50 text-amber-600 border border-amber-100">{cls.subject}</span>}
                   </div>
-                  <p className="font-bold text-brand-slate truncate">{cls.name}</p>
-                  <p className="text-xs text-slate-500 mt-0.5">
-                    {cls.schoolYear} · {cls.section?.name || 'No section'} · {cls.section?._count?.students ?? 0} students
-                  </p>
-                  <p className="text-xs text-slate-400 mt-0.5">
-                    {cls.activityCount} activit{cls.activityCount === 1 ? 'y' : 'ies'} ·{' '}
-                    {cls.lessonCount} lesson{cls.lessonCount === 1 ? '' : 's'} ·{' '}
-                    {cls.submissionCount} submission{cls.submissionCount === 1 ? '' : 's'}
-                  </p>
+                  {editingClassId === cls.id ? (
+                    <div className="space-y-2">
+                      <input type="text" value={classNameForm} onChange={e => setClassNameForm(e.target.value)}
+                        className="w-full border border-slate-200 p-2 rounded-lg text-sm outline-none focus:ring-2 focus:ring-brand-navy font-bold" placeholder="Course shell name"
+                        onKeyDown={e => { if (e.key === 'Enter') saveClassName(cls); if (e.key === 'Escape') setEditingClassId(null); }}
+                        autoFocus />
+                      <div className="flex gap-2">
+                        <button onClick={() => saveClassName(cls)} disabled={busy || !classNameForm.trim()}
+                          className="text-xs font-bold text-white bg-brand-navy px-3 py-1.5 rounded-lg hover:bg-blue-900 flex items-center gap-1 disabled:opacity-40">
+                          <Check className="w-3.5 h-3.5" /> Save
+                        </button>
+                        <button onClick={() => setEditingClassId(null)}
+                          className="text-xs font-bold text-slate-500 border border-slate-200 px-3 py-1.5 rounded-lg hover:bg-slate-50">Cancel</button>
+                      </div>
+                    </div>
+                  ) : (
+                    <>
+                      <p className="font-bold text-brand-slate truncate">{cls.name}</p>
+                      <p className="text-xs text-slate-500 mt-0.5">
+                        {cls.schoolYear} · {cls.section?.name || 'No section'} · {cls.section?._count?.students ?? 0} students
+                      </p>
+                      <p className="text-xs text-slate-400 mt-0.5">
+                        {cls.activityCount} activit{cls.activityCount === 1 ? 'y' : 'ies'} ·{' '}
+                        {cls.lessonCount} lesson{cls.lessonCount === 1 ? '' : 's'} ·{' '}
+                        {cls.submissionCount} submission{cls.submissionCount === 1 ? '' : 's'}
+                      </p>
+                    </>
+                  )}
                 </div>
-                <div className="flex gap-1 shrink-0">
-                  <button
-                    onClick={() => {
-                      setReassignClassId(reassignClassId === cls.id ? null : cls.id);
-                      setReassignTo(otherTeachers[0]?.id || '');
-                      setReassignError('');
-                    }}
-                    disabled={otherTeachers.length === 0}
-                    title={otherTeachers.length === 0 ? 'No other teacher in this school to move it to' : 'Move to another teacher'}
-                    className={cn('p-2 rounded-lg disabled:opacity-30',
-                      reassignClassId === cls.id ? 'bg-brand-navy text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200')}>
-                    <UserCog className="w-4 h-4" />
-                  </button>
-                  <button onClick={() => deleteClass(cls)} disabled={busy || cls.submissionCount > 0}
-                    title={cls.submissionCount > 0 ? 'Has student submissions — cannot be deleted' : 'Delete course shell'}
-                    className="p-2 rounded-lg bg-slate-100 text-slate-500 hover:bg-red-100 hover:text-red-600 disabled:opacity-30 disabled:hover:bg-slate-100 disabled:hover:text-slate-500">
-                    <Trash2 className="w-4 h-4" />
-                  </button>
-                </div>
+                {editingClassId !== cls.id && (
+                  <div className="flex gap-1 shrink-0">
+                    <button onClick={() => { setClassNameForm(cls.name); setEditingClassId(cls.id); }}
+                      title="Rename course shell" className="p-2 rounded-lg bg-slate-100 text-slate-600 hover:bg-slate-200">
+                      <Pencil className="w-4 h-4" />
+                    </button>
+                    <button
+                      onClick={() => {
+                        setReassignClassId(reassignClassId === cls.id ? null : cls.id);
+                        setReassignTo(otherTeachers[0]?.id || '');
+                        setReassignError('');
+                      }}
+                      disabled={otherTeachers.length === 0}
+                      title={otherTeachers.length === 0 ? 'No other teacher in this school to move it to' : 'Move to another teacher'}
+                      className={cn('p-2 rounded-lg disabled:opacity-30',
+                        reassignClassId === cls.id ? 'bg-brand-navy text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200')}>
+                      <UserCog className="w-4 h-4" />
+                    </button>
+                    <button onClick={() => deleteClass(cls)} disabled={busy || cls.submissionCount > 0}
+                      title={cls.submissionCount > 0 ? 'Has student submissions — cannot be deleted' : 'Delete course shell'}
+                      className="p-2 rounded-lg bg-slate-100 text-slate-500 hover:bg-red-100 hover:text-red-600 disabled:opacity-30 disabled:hover:bg-slate-100 disabled:hover:text-slate-500">
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </div>
+                )}
               </div>
 
               {reassignClassId === cls.id && (

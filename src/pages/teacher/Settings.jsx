@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { User, Shield, Lock, Eye, EyeOff, Loader2, Palette } from 'lucide-react';
+import { User, Shield, Lock, Eye, EyeOff, Loader2, Palette, CheckCircle2 } from 'lucide-react';
 import PageHeader from '../../components/PageHeader';
 import { API_URL, apiFetch, setSession } from '../../config';
 import ThemeToggle from '../../components/ThemeToggle';
@@ -86,8 +86,8 @@ export default function Settings() {
 
       <div className="tg-page pt-4 md:pt-0 max-w-4xl">
         {saveMsg && (
-          <div role="status" className="mb-4 bg-aqua-100 border-2 border-aqua-200 text-aqua-800 px-4 py-3 rounded-2xl text-sm font-bold">
-            ✓ {saveMsg}
+          <div role="status" className="mb-4 bg-aqua-100 border-2 border-aqua-200 text-aqua-800 px-4 py-3 rounded-2xl text-sm font-bold flex items-center gap-2">
+            <CheckCircle2 className="w-4 h-4 shrink-0" /> {saveMsg}
           </div>
         )}
 

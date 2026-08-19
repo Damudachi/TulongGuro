@@ -91,6 +91,11 @@ export default function BatchUpload() {
   const [pendingRedaction, setPendingRedaction] = useState(null); // { studentId, queue: File[], index, objectUrl }
   const [privacyBlocked, setPrivacyBlocked] = useState(null); // { studentId, message } when the server refused a scan for PII
   const [preparingFiles, setPreparingFiles] = useState(false); // rendering a picked PDF/Word file to page images, before redaction
+  // Tracks students for whom the teacher is adding extra pages to an existing
+  // submission, as opposed to replacing it entirely. When a student ID is in
+  // this set, uploadStaged sends `appendPages: 'true'` so the server stitches
+  // the new pages below the existing composite rather than overwriting it.
+  const [appendingStudentIds, setAppendingStudentIds] = useState(new Set());
   const fileInputRef = useRef(null);
   const cameraInputRef = useRef(null);
   const pendingUploadStudentId = useRef(null);
@@ -341,6 +346,23 @@ export default function BatchUpload() {
     triggerFilePick(studentId, source);
   };
 
+  /**
+   * Add extra pages to work that is already on file, without discarding
+   * what was uploaded before. The new pages go through the same redaction
+   * flow and are then stitched below the existing composite by the server.
+   */
+  const requestAppend = async (studentId, sub, source = 'files') => {
+    if (sub?.releasedAt) {
+      showAlert('This result has already been released to the student, so no more pages can be added.');
+      return;
+    }
+    if (sub?.status === 'GRADED' &&
+      !(await showConfirm('This paper has already been validated. Adding pages will clear that grade so the combined submission can be checked fresh. Continue?',
+        { confirmLabel: 'Add pages', danger: true }))) return;
+    setAppendingStudentIds(prev => new Set(prev).add(studentId));
+    triggerFilePick(studentId, source);
+  };
+
   const handleFilePicked = async (e) => {
     const picked = Array.from(e.target.files || []);
     const targetStudentId = pendingUploadStudentId.current;
@@ -459,6 +481,7 @@ export default function BatchUpload() {
     if (pages.length === 0 || !piiConfirmed) return;
     setPrivacyBlocked(prev => (prev?.studentId === studentId ? null : prev));
     setUploadingStudentId(studentId);
+    const isAppending = appendingStudentIds.has(studentId);
 
     const queueOffline = async () => {
       // All staged pages are queued as one job, carried and flushed together —
@@ -466,13 +489,16 @@ export default function BatchUpload() {
       // request so the server can stitch them into one composite image.
       // Queuing them as separate jobs would flush as separate requests, each
       // overwriting the submission's image instead of being combined.
-      const job = await enqueue(buildJob(`${API_URL}/api/teacher/upload`, { studentId, activityId, skipGrading: 'true' }, pages.map(p => p.file)));
+      const fields = { studentId, activityId, skipGrading: 'true' };
+      if (isAppending) fields.appendPages = 'true';
+      const job = await enqueue(buildJob(`${API_URL}/api/teacher/upload`, fields, pages.map(p => p.file)));
       setQueuedCount(getQueue().length);
       setQueuedStudentIds(queuedStudentsFor(activityId));
       if (!job) {
         showAlert(`Could not save these ${pages.length} page(s) for later — this device has run out of offline storage. Please reconnect and upload now instead.`);
       }
       cancelStaged(studentId);
+      setAppendingStudentIds(prev => { const next = new Set(prev); next.delete(studentId); return next; });
       setUploadingStudentId(null);
     };
 
@@ -484,11 +510,13 @@ export default function BatchUpload() {
       formData.append('studentId', studentId);
       formData.append('activityId', activityId);
       formData.append('skipGrading', 'true');
+      if (isAppending) formData.append('appendPages', 'true');
       const res = await apiFetch(`${API_URL}/api/teacher/upload`, { method: 'POST', body: formData });
       const data = await res.json();
       if (data.success) {
         setActivitySubmissions(prev => [...prev.filter(s => s.studentId !== studentId), data.submission]);
         cancelStaged(studentId);
+        setAppendingStudentIds(prev => { const next = new Set(prev); next.delete(studentId); return next; });
         setUploadingStudentId(null);
       } else if (data.code === 'PRIVACY_VIOLATION') {
         // The server refused the scan and discarded it, so the staged pages are
@@ -880,11 +908,14 @@ export default function BatchUpload() {
                   {staged ? (
                     <div className="flex flex-col items-stretch sm:items-end gap-1.5 shrink-0 w-full sm:w-auto">
                       {sub?.id && (
-                        <span className="text-[10px] font-bold text-blue-700 bg-blue-50 border border-blue-200 px-2 py-0.5 rounded-full">
-                          Replacing
+                        <span className={cn('text-[10px] font-bold px-2 py-0.5 rounded-full',
+                          appendingStudentIds.has(student.id)
+                            ? 'text-green-700 bg-green-50 border border-green-200'
+                            : 'text-blue-700 bg-blue-50 border border-blue-200')}>
+                          {appendingStudentIds.has(student.id) ? 'Adding pages' : 'Replacing'}
                         </span>
                       )}
-                      <button type="button" onClick={() => cancelStaged(student.id)}
+                      <button type="button" onClick={() => { cancelStaged(student.id); setAppendingStudentIds(prev => { const next = new Set(prev); next.delete(student.id); return next; }); }}
                         className="text-xs text-slate-400 hover:text-red-600 font-medium flex items-center gap-1">
                         <X className="w-3.5 h-3.5" /> Discard all
                       </button>
@@ -892,7 +923,7 @@ export default function BatchUpload() {
                         disabled={!piiConfirmed || isUploading}
                         className={cn('text-xs px-3 py-1.5 rounded-md font-medium flex items-center gap-1',
                           piiConfirmed ? 'bg-brand-navy text-white hover:bg-blue-900' : 'bg-slate-200 text-slate-400 cursor-not-allowed')}>
-                        {isUploading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : (sub?.id ? 'Confirm Replace' : 'Confirm Upload')}
+                        {isUploading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : (sub?.id ? (appendingStudentIds.has(student.id) ? 'Confirm Add' : 'Confirm Replace') : 'Confirm Upload')}
                       </button>
                     </div>
                   ) : hasWork ? (
@@ -934,6 +965,16 @@ export default function BatchUpload() {
                             className={cn('text-[11px] font-medium flex items-center gap-1',
                               piiConfirmed ? 'text-slate-500 hover:text-brand-navy' : 'text-slate-300 cursor-not-allowed')}>
                             <Camera className="w-3 h-3" /> Re-take photo
+                          </button>
+                          <div className="w-full border-t border-slate-100 my-0.5" />
+                          <button type="button" onClick={() => requestAppend(student.id, sub)}
+                            disabled={!piiConfirmed}
+                            title={!piiConfirmed ? 'Confirm the privacy checkbox above first' : 'Add an extra page — photo or file — to this submission'}
+                            className={cn('text-xs px-2 py-1.5 rounded-md font-medium flex items-center justify-center gap-1 w-full border',
+                              piiConfirmed
+                                ? 'border-green-200 bg-green-50 text-green-700 hover:border-green-400 hover:bg-green-100'
+                                : 'border-slate-100 bg-slate-50 text-slate-300 cursor-not-allowed')}>
+                            <Plus className="w-3 h-3" /> Add Photo / File
                           </button>
                         </>
                       )}
