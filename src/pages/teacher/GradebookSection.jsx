@@ -5,6 +5,7 @@ import { API_URL, apiFetch } from '../../config';
 import { getStoredUser } from '../../utils/session';
 import PageHeader from '../../components/PageHeader';
 
+import { showAlert } from '../../utils/dialog';
 export default function GradebookSection() {
   const { sectionId } = useParams();
   const navigate = useNavigate();
@@ -43,7 +44,7 @@ export default function GradebookSection() {
       window.URL.revokeObjectURL(url);
     } catch (err) {
       console.error('Export error:', err);
-      alert('Failed to export grades. Please try again.');
+      showAlert('Failed to export grades. Please try again.');
     } finally {
       setExportingClassId(null);
     }

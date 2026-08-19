@@ -11,6 +11,7 @@ import { enqueue, buildJob } from '../../utils/offlineQueue';
 import { saveActivitySnapshot, readActivitySnapshot } from '../../utils/offlineSnapshot';
 import { badgeLook } from '../../constants/badgeLook';
 
+import { showAlert } from '../../utils/dialog';
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
 
 const STATUS_LABEL = {
@@ -163,7 +164,7 @@ export default function SubmitWork() {
     }
 
     if (failedToRender.length > 0) {
-      alert(`Couldn't open ${failedToRender.length > 1 ? 'these files' : 'this file'} to check it for your name before uploading, so ${failedToRender.length > 1 ? "they weren't" : "it wasn't"} added:\n${failedToRender.map(n => `• ${n}`).join('\n')}\n\nThe file may be corrupted or password-protected. Try saving it as a PDF or a photo and try again.`);
+      showAlert(`Couldn't open ${failedToRender.length > 1 ? 'these files' : 'this file'} to check it for your name before uploading, so ${failedToRender.length > 1 ? "they weren't" : "it wasn't"} added:\n${failedToRender.map(n => `• ${n}`).join('\n')}\n\nThe file may be corrupted or password-protected. Try saving it as a PDF or a photo and try again.`);
     }
 
     if (documents.length > 0) {
@@ -226,7 +227,7 @@ export default function SubmitWork() {
       const job = await enqueue(buildJob(`${API_URL}/api/student/submit`, { studentId: user.id, activityId: selected.id }, files));
       setIsSubmitting(false);
       if (!job) {
-        alert('Could not save this for later — this device has run out of offline storage. Please reconnect and submit now instead.');
+        showAlert('Could not save this for later — this device has run out of offline storage. Please reconnect and submit now instead.');
         return;
       }
       setResult({ queued: true });
@@ -248,14 +249,14 @@ export default function SubmitWork() {
         const activitiesData = await activitiesRes.json();
         if (activitiesData.success) setActivities(activitiesData.activities);
       } else {
-        alert('Submission failed: ' + (data.error || 'Unknown error'));
+        showAlert('Submission failed: ' + (data.error || 'Unknown error'));
       }
     } catch {
       // Only a genuine network failure falls back to the offline queue — a
       // server that answered and said no must not be retried behind the
       // student's back.
       if (!navigator.onLine) return queueOffline();
-      alert('Network error. Please try again.');
+      showAlert('Network error. Please try again.');
     } finally {
       setIsSubmitting(false);
     }

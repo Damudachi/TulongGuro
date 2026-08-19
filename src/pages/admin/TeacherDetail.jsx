@@ -11,6 +11,7 @@ import SectionMoveConfirm from '../../components/SectionMoveConfirm';
 import RosterEditor from '../../components/RosterEditor';
 import { rowsFromExtraction, isFilledRow, rosterPayload, emptyRoster, withBlankRow } from '../../utils/roster';
 
+import { showAlert, showConfirm } from '../../utils/dialog';
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
 
 function generatePassword() {
@@ -103,7 +104,8 @@ export default function AdminTeacherDetail() {
 
   const resetPassword = async () => {
     const password = generatePassword();
-    if (!confirm(`Reset ${data.teacher.name}'s password? Their current one stops working immediately.`)) return;
+    if (!(await showConfirm(`Reset ${data.teacher.name}'s password? Their current one stops working immediately.`,
+      { confirmLabel: 'Reset password', danger: true }))) return;
     await call(
       `${API_URL}/api/admin/${admin.id}/teachers/${teacherId}/password`,
       { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password }) },
@@ -111,8 +113,9 @@ export default function AdminTeacherDetail() {
     );
   };
 
-  const deleteClass = (cls) => {
-    if (!confirm(`Delete the course shell "${cls.name}"? This cannot be undone.`)) return;
+  const deleteClass = async (cls) => {
+    if (!(await showConfirm(`Delete the course shell "${cls.name}"? This cannot be undone.`,
+      { confirmLabel: 'Delete course shell', danger: true }))) return;
     call(`${API_URL}/api/admin/${admin.id}/classes/${cls.id}`, { method: 'DELETE' });
   };
 
@@ -166,7 +169,7 @@ export default function AdminTeacherDetail() {
    * thirty learners in it looked like nothing happened at all. Say what is in
    * the way, and what to do about it, before making the call.
    */
-  const deleteSection = (section) => {
+  const deleteSection = async (section) => {
     const students = section.students.length;
     const classes = section._count.classes;
     if (students > 0 || classes > 0) {
@@ -174,7 +177,7 @@ export default function AdminTeacherDetail() {
         students > 0 && `${students} student${students === 1 ? '' : 's'} on its roster`,
         classes > 0 && `${classes} course shell${classes === 1 ? '' : 's'} using it`,
       ].filter(Boolean);
-      return alert(
+      return showAlert(
         `"${section.name}" cannot be deleted yet — it still has ${blockers.join(' and ')}.\n\n` +
         (students > 0
           ? 'Remove the students first (open the section and use the bin beside each name). ' +
@@ -186,7 +189,8 @@ export default function AdminTeacherDetail() {
         '\nNothing has been changed.'
       );
     }
-    if (!confirm(`Delete the empty section "${section.name}"? This cannot be undone.`)) return;
+    if (!(await showConfirm(`Delete the empty section "${section.name}"? This cannot be undone.`,
+      { confirmLabel: 'Delete section', danger: true }))) return;
     call(`${API_URL}/api/admin/${admin.id}/sections/${section.id}`, { method: 'DELETE' },
       () => setNotice(`Section "${section.name}" was deleted.`));
   };
@@ -199,7 +203,7 @@ export default function AdminTeacherDetail() {
   const addStudents = async (section, { allowMove = false, studentsList } = {}) => {
     // Handed back verbatim on a replay; otherwise read off the editor, which
     // returns null when a typed birthday cannot be read.
-    const list = studentsList || rosterPayload(studentRows, alert);
+    const list = studentsList || rosterPayload(studentRows, showAlert);
     if (!list || list.length === 0) return;
     const d = await call(
       `${API_URL}/api/admin/${admin.id}/sections/${section.id}/students`,
@@ -247,8 +251,9 @@ export default function AdminTeacherDetail() {
     }
   };
 
-  const removeStudent = (section, student) => {
-    if (!confirm(`Remove ${student.name} from ${section.name}?`)) return;
+  const removeStudent = async (section, student) => {
+    if (!(await showConfirm(`Remove ${student.name} from ${section.name}?`,
+      { confirmLabel: 'Remove from section', danger: true }))) return;
     call(
       `${API_URL}/api/admin/${admin.id}/sections/${section.id}/students/${student.id}`,
       { method: 'DELETE' },

@@ -4,6 +4,7 @@ import { ArrowLeft, CheckCircle2, Plus, Camera, Users, Upload, FileText, X, Tras
 import { API_URL, apiFetch } from '../../config';
 import { ACTIVITY_TYPES } from '../../constants/activityTypes';
 import { parseTopicIds, formatTopicIds, lessonTopicId, lessonIdFromTopicId, isLessonTopicId, termForWeek, readCompetencies } from '../../utils/topics';
+import { showAlert } from '../../utils/dialog';
 import {
   badgeLook, BADGE_ICON_KEYS, BADGE_COLOR_KEYS,
   DEFAULT_BADGE_ICON, DEFAULT_BADGE_COLOR,
@@ -518,7 +519,7 @@ export default function ActivityBuilder() {
   /** Keep the edits on this activity. The published template is untouched. */
   const finishTemplateEdit = () => {
     if (!rubricCriteria.every(c => c.name?.trim())) {
-      alert('Every rubric criterion needs a name.');
+      showAlert('Every rubric criterion needs a name.');
       return;
     }
     setIsEditingTemplate(false);
@@ -541,6 +542,12 @@ export default function ActivityBuilder() {
   // Said out loud rather than done quietly: the numbers on screen no longer
   // match the paper in the teacher's hand, and they should know why.
   const [weightsScaledFrom, setWeightsScaledFrom] = useState(null);
+  // Set instead of weightsScaledFrom when the criteria came back as equal
+  // shares of this activity's Total Points rather than as percentages of 100.
+  // Two pieces of state rather than one flag, because the two notices say
+  // opposite things about what was kept: one keeps the document's shares, the
+  // other deliberately does not.
+  const [weightsEqualisedTo, setWeightsEqualisedTo] = useState(null);
 
   // Save-as-template modal state
   const [showSaveTemplateModal, setShowSaveTemplateModal] = useState(false);
@@ -827,10 +834,16 @@ export default function ActivityBuilder() {
     setIsExtracting(true);
     setExtractedCriteria(null);
     setWeightsScaledFrom(null);
+    setWeightsEqualisedTo(null);
 
     try {
       const fd = new FormData();
       fd.append('rubricFile', file);
+      // What the criteria are divided into. With it, they come back as equal
+      // shares of this activity's own mark and the rubric total IS the activity
+      // total; without it (an empty Total Points box) the server falls back to
+      // percentage weights, which is what it has always done.
+      if (form.points) fd.append('activityPoints', String(form.points));
       const res = await apiFetch(`${API_URL}/api/teacher/rubric/extract`, { method: 'POST', body: fd });
       const data = await res.json();
       if (data.success && data.criteria) {
@@ -841,9 +854,15 @@ export default function ActivityBuilder() {
         // who had set a 50-point activity and then attached a rubric written out
         // of 20 found their activity silently reworth 20 — a rubric is what the
         // work is judged against, not how much it is worth, and the two are
-        // separate fields for that reason. The weights themselves arrive
-        // already scaled to 100 (scaleCriteriaTo100 on the server).
-        setWeightsScaledFrom(data.weightsScaled ? data.totalPoints : null);
+        // separate fields for that reason. The traffic runs the other way now:
+        // Total Points is what the criteria are divided into.
+        //
+        // Exactly one of these is ever set. divideEqually ran (the criteria are
+        // equal shares of this activity's mark), or scaleCriteriaTo100 did (they
+        // are percentages keeping the document's own shares), or neither did —
+        // a banded rubric is left exactly as the document wrote it.
+        setWeightsEqualisedTo(data.weightsEqualised ? data.equalisedTo : null);
+        setWeightsScaledFrom(!data.weightsEqualised && data.weightsScaled ? data.totalPoints : null);
       } else {
         setExtractionError(data.error || 'Could not extract rubric criteria.');
       }
@@ -859,6 +878,7 @@ export default function ActivityBuilder() {
     setExtractedCriteria(null);
     setExtractionError(null);
     setWeightsScaledFrom(null);
+    setWeightsEqualisedTo(null);
     if (rubricFileRef.current) rubricFileRef.current.value = '';
   };
 
@@ -873,7 +893,7 @@ export default function ActivityBuilder() {
     const criteriaToSave = activeCriteria;
     if (!criteriaToSave.length) return;
     const user = JSON.parse(localStorage.getItem('user') || '{}');
-    if (!user.id) return alert('User not found. Please log in again.');
+    if (!user.id) return showAlert('User not found. Please log in again.');
 
     try {
       const res = await apiFetch(`${API_URL}/api/teacher/rubric-templates`, {
@@ -894,12 +914,12 @@ export default function ActivityBuilder() {
         setSavedRubrics(prev => [savedTemplate, ...prev]);
         setShowSaveTemplateModal(false);
         setTemplateTitle('');
-        alert(`✓ "${savedTemplate.name}" has been saved to cloud templates.`);
+        showAlert(`✓ "${savedTemplate.name}" has been saved to cloud templates.`);
       } else {
-        alert('Failed to save template: ' + data.error);
+        showAlert('Failed to save template: ' + data.error);
       }
     } catch {
-      alert('Network error while saving template.');
+      showAlert('Network error while saving template.');
     }
   };
 
@@ -933,7 +953,7 @@ export default function ActivityBuilder() {
     // Saving a form that never loaded would write blank defaults over a real
     // activity's title, points, deadline and rubric.
     if (isEditMode && (isLoadingEdit || loadError)) {
-      alert(loadError || 'This activity is still loading. Please wait before saving.');
+      showAlert(loadError || 'This activity is still loading. Please wait before saving.');
       return;
     }
     // Work that gets marked has to say what it is marked against, so the rubric
@@ -948,7 +968,7 @@ export default function ActivityBuilder() {
     // nothing for a rubric to be applied to. Its editor is hidden for that mode
     // — asking for one here would be asking for something the form doesn't show.
     if (rubricRequired && !activeCriteria.length) {
-      alert('Add a grading rubric before publishing. Pick one of your school\'s rubrics, reuse a saved template, or write your own — this is what the paper gets marked against.');
+      showAlert('Add a grading rubric before publishing. Pick one of your school\'s rubrics, reuse a saved template, or write your own — this is what the paper gets marked against.');
       setShowRubricEditor(true);
       return;
     }
@@ -962,24 +982,24 @@ export default function ActivityBuilder() {
       // whatever its bands add up to, so holding it to 100 made it unsavable —
       // the points field it would need to fix is hidden in range mode.
       if (rubricType === 'standard' && rubricMode !== 'upload' && totalPercentage !== 100) {
-        alert(`Rubric weight must total 100%. Currently it is ${totalPercentage}%.`);
+        showAlert(`Rubric weight must total 100%. Currently it is ${totalPercentage}%.`);
         return;
       }
       if (!activeCriteria.every(c => c.name?.trim())) {
-        alert('Every rubric criterion needs a name.');
+        showAlert('Every rubric criterion needs a name.');
         setShowRubricEditor(true);
         return;
       }
       // `> 0` rather than `<= 0`: NaN fails both, and the version that asked
       // `<= 0` therefore let a broken total through instead of catching it.
       if (!(totalPercentage > 0)) {
-        alert('The rubric criteria add up to zero, so nothing could be scored against it.');
+        showAlert('The rubric criteria add up to zero, so nothing could be scored against it.');
         setShowRubricEditor(true);
         return;
       }
     }
     if (!form.points || form.points < 1) {
-      alert("Total Points must be greater than 0.");
+      showAlert("Total Points must be greater than 0.");
       return;
     }
     // The lesson and the competencies are two controls answering one required
@@ -989,7 +1009,7 @@ export default function ActivityBuilder() {
     // when that list failed to load, or the teacher is held at a question with
     // no answerable control on the screen.
     if (coverageOptions.length > 0 && selectedTopicIds.length === 0) {
-      alert('Say what this activity covers — tick at least one lesson from the curriculum.');
+      showAlert('Say what this activity covers — tick at least one lesson from the curriculum.');
       return;
     }
     // Required, because the gradebook's term filter and every term-scoped
@@ -997,12 +1017,12 @@ export default function ActivityBuilder() {
     // drops out of the term record a teacher assembles from them. Asked here
     // rather than with `required` on the buttons, so the message can say why.
     if (!form.term) {
-      alert('Choose which term this activity belongs to. The gradebook and its exports are filtered by term, and an activity with none is left out of all of them.');
+      showAlert('Choose which term this activity belongs to. The gradebook and its exports are filtered by term, and an activity with none is left out of all of them.');
       return;
     }
     // Trimmed, because the textarea's own `required` is satisfied by a space.
     if (!form.instructions.trim()) {
-      alert('Write the instructions students will follow. They are what the work is set against, and the AI reads them when it checks the papers.');
+      showAlert('Write the instructions students will follow. They are what the work is set against, and the AI reads them when it checks the papers.');
       return;
     }
     // A badge with no usable bar would be saved as unreachable, which looks
@@ -1011,7 +1031,7 @@ export default function ActivityBuilder() {
     if (form.badgeId) {
       const bar = Number(form.badgePassingScore);
       if (!Number.isInteger(bar) || bar < 1 || bar > 100) {
-        alert('Set the score that earns the badge — a whole number from 1 to 100.');
+        showAlert('Set the score that earns the badge — a whole number from 1 to 100.');
         return;
       }
     }
@@ -1019,7 +1039,7 @@ export default function ActivityBuilder() {
     // string 'mock-class-id', which the database rejected on the foreign key
     // after the teacher had filled the entire form in.
     if (!isEditMode && !classId) {
-      alert(teacherClasses.length === 0
+      showAlert(teacherClasses.length === 0
         ? 'Create a class first — an activity has to belong to one.'
         : 'Please choose which class this activity is for.');
       return;
@@ -1053,7 +1073,7 @@ export default function ActivityBuilder() {
         });
         const data = await res.json();
         if (data.success) navigate(-1);
-        else alert('Error: ' + data.error);
+        else showAlert('Error: ' + data.error);
       } else {
         // CREATE new activity via FormData
         const fd = new FormData();
@@ -1072,9 +1092,9 @@ export default function ActivityBuilder() {
         const res = await apiFetch(`${API_URL}/api/teacher/activities`, { method: 'POST', body: fd });
         const data = await res.json();
         if (data.success) navigate(-1);
-        else alert('Error: ' + data.error);
+        else showAlert('Error: ' + data.error);
       }
-    } catch { alert('Network error'); }
+    } catch { showAlert('Network error'); }
     finally { setIsSaving(false); }
   };
 
@@ -2169,6 +2189,24 @@ export default function ActivityBuilder() {
                     been converted to percentages of 100 — each one keeps exactly the share of the mark it
                     had in your document. Your activity is still worth <strong>{form.points} points</strong>;
                     that is set in Total Points above and a rubric never changes it.
+                  </p>
+                </div>
+              )}
+
+              {/* The criteria were re-pointed as equal shares of this activity's
+                  mark. Said plainly, and said as a change rather than as a
+                  reading, because the numbers on screen are deliberately NOT
+                  the document's: a teacher who uploaded a 40/30/30 rubric and
+                  sees 17/17/16 needs to know that was done on purpose and that
+                  they can put it back. */}
+              {weightsEqualisedTo != null && (
+                <div className="p-3 bg-blue-50 border border-blue-200 rounded-xl">
+                  <p className="text-sm text-blue-800 leading-relaxed">
+                    The criteria below have been divided <strong>equally</strong> into this activity&apos;s{' '}
+                    <strong>{weightsEqualisedTo} points</strong>, so the rubric adds up to exactly what the
+                    activity is worth and each criterion is marked out of real points rather than a
+                    percentage. Any uneven remainder goes to the first criteria, so the total lands exactly.
+                    If your document weighted them differently, edit the points below — they are yours to set.
                   </p>
                 </div>
               )}

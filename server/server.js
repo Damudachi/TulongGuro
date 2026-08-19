@@ -1041,33 +1041,64 @@ function bandRangeOf(bandDescription) {
  * output is not trustworthy on this paper, and picking one of its two answers
  * would be guessing which; the teacher is the one who decides.
  */
-function rubricScoreNoteFor(raw) {
+/**
+ * What this paper's own rubric breakdown adds up to, as a percentage.
+ *
+ * Null when there is no breakdown, or when any row of it is unusable — a
+ * missing maxPoints, a non-numeric score, a criterion out of zero. Null means
+ * "cannot be worked out from the criteria", never "zero": a caller that read it
+ * as a score would hand every unparseable paper a 0.
+ *
+ * Deliberately unrounded, matching the manual score-entry route: the conversion
+ * is exact and any rounding happens at the point of display, because 7 out of
+ * 30 rounded here comes back as 6.9 points on screen.
+ */
+function rubricTotalPercent(raw) {
+  const rows = Array.isArray(raw?.rubricScores) ? raw.rubricScores : [];
+  if (rows.length === 0) return null;
+  let earned = 0, possible = 0;
+  for (const r of rows) {
+    const s = Number(r?.score), max = Number(r?.maxPoints);
+    if (!Number.isFinite(s) || !Number.isFinite(max) || max <= 0) return null;
+    earned += s;
+    possible += max;
+  }
+  if (possible <= 0) return null;
+  return (earned / possible) * 100;
+}
+
+/**
+ * The note a teacher reads next to a paper whose numbers needed attention.
+ *
+ * `correctedFrom` is the model's own headline score when it disagreed with its
+ * criteria and was replaced by them — see normalisePaperResult. Passed in
+ * rather than recomputed so the note can only ever describe a correction that
+ * actually happened.
+ */
+function rubricScoreNoteFor(raw, correctedFrom = null) {
   if (raw?.noTextDetected || raw?.privacyViolationDetected) return null;
   const rows = Array.isArray(raw?.rubricScores) ? raw.rubricScores : [];
   if (rows.length === 0) return null;
 
   const problems = [];
+  const round1 = (n) => Math.round(n * 10) / 10;
 
-  // 1) Headline vs the sum of its parts.
-  let earned = 0, possible = 0, usable = true;
-  for (const r of rows) {
-    const s = Number(r?.score), max = Number(r?.maxPoints);
-    if (!Number.isFinite(s) || !Number.isFinite(max) || max <= 0) { usable = false; break; }
-    earned += s; possible += max;
-  }
-  if (usable && possible > 0) {
-    const expected = (earned / possible) * 100;
-    const reported = Number(raw?.score);
-    // One point of slack: the model is asked to scale and round, and a
-    // half-point of rounding is not a contradiction.
-    if (Number.isFinite(reported) && Math.abs(reported - expected) > 1) {
-      problems.push(
-        `the criteria add up to ${Math.round(expected * 10) / 10}%, but the overall score was reported as ${Math.round(reported * 10) / 10}%`
-      );
-    }
+  // 1) The headline the model wrote, against the criteria it wrote next to it.
+  //    This is now reported as a correction rather than as a question, because
+  //    the score has already been rebuilt from the criteria.
+  if (correctedFrom !== null) {
+    const fromRubric = rubricTotalPercent(raw);
+    problems.push(
+      `the AI reported ${round1(correctedFrom)}% but its own criteria add up to `
+      + `${round1(fromRubric)}%, so the score below has been set to ${round1(fromRubric)}%`
+    );
   }
 
-  // 2) Each score inside the band it claims.
+  // 2) Each score inside the band it claims. NOT auto-corrected, and the reason
+  //    is the difference between this and the check above: which band a piece of
+  //    work sits in is a judgement, and the two numbers here disagree about the
+  //    judgement rather than about arithmetic. Nothing can pick between them
+  //    except a person who has read the paper.
   for (const r of rows) {
     const range = bandRangeOf(r?.bandDescription);
     const s = Number(r?.score);
@@ -1080,25 +1111,58 @@ function rubricScoreNoteFor(raw) {
   }
 
   if (problems.length === 0) return null;
-  return `The AI's own numbers disagree: ${problems.join('; ')}. Check this paper before validating it.`;
+  return `The AI's own numbers disagreed: ${problems.join('; ')}. Check this paper before validating it.`;
 }
 
 function normalisePaperResult(raw, modelId, gradeLevelAssumed = false, rubricParseFailed = false) {
   if (raw?.privacyViolationDetected === true) {
     return { privacyViolation: true, violationType: raw.privacyViolationType || 'name', aiSource: modelId };
   }
-  // The model's headline number, bounded. Nothing checked it before: `score`
-  // was spread straight out of the parsed JSON and written to Submission.aiScore
-  // as a Float, so a 120 — which the prompt invites by making the 0-100 scaling
-  // the model's own job — propagated into the class average, the descriptor
-  // band, three stars and the export, and showed the teacher "120%" with
-  // nothing saying it was impossible. This is the same treatment validateRubric
-  // has always given the rubric that produces the number.
-  const { score, changed: scoreOutOfRange } = grading.clampScore(raw?.score);
+  // ── The criteria are the score; the headline is derived from them ──
+  //
+  // The prompt makes the total the model's own arithmetic ("the sum, scaled to
+  // percentage"), and that is the single thing it gets wrong most often: live
+  // data had a paper whose criteria totalled 65 stored as a 67, and 67 is the
+  // number that became the grade. Nothing about that is a judgement call —
+  // each criterion score is reasoned about and justified against a band, and
+  // the total is then pure addition, which is the half a computer should be
+  // doing.
+  //
+  // So the breakdown wins. This used to be flagged and left alone on the
+  // grounds that picking between the model's two answers would be guessing
+  // which — but they are not two answers of the same kind: one is evidence, the
+  // other is a sum of it. The teacher is still told, and still validates the
+  // paper; they are just no longer asked to do the arithmetic themselves.
+  //
+  // Falls back to the model's own number whenever the breakdown cannot be used
+  // (no rubricScores at all, a missing maxPoints, a criterion out of zero) —
+  // rubricTotalPercent returns null for those rather than 0.
+  const fromRubric = rubricTotalPercent(raw);
+  const reported = Number(raw?.score);
+  // One point of slack before it counts as a disagreement worth telling the
+  // teacher about: the model is asked to round, and half a point of rounding is
+  // not a contradiction. The score is taken from the criteria either way.
+  const correctedFrom = fromRubric !== null && Number.isFinite(reported)
+    && Math.abs(reported - fromRubric) > 1
+    ? reported
+    : null;
+
+  // Still clamped. Nothing checked this before: `score` was spread straight out
+  // of the parsed JSON and written to Submission.aiScore as a Float, so a 120
+  // propagated into the class average, the descriptor band, three stars and the
+  // export, and showed the teacher "120%" with nothing saying it was
+  // impossible. A rubric-derived total can exceed 100 too — a criterion scored
+  // above its own maximum does it — so the clamp guards both paths.
+  const { score, changed: scoreOutOfRange } = grading.clampScore(fromRubric !== null ? fromRubric : raw?.score);
   return {
     ...raw,
     score,
     scoreOutOfRange,
+    // The model's own number, when it was overruled. Not a stored column: the
+    // teacher-facing account of the change is rubricScoreNote below, and this
+    // is the fact about the model call, kept for the grading log so that how
+    // often a model stops being able to add up its own rubric is visible.
+    aiScoreCorrectedFrom: correctedFrom,
     privacyViolation: false,
     aiSource: modelId,
     gradeLevelAssumed,
@@ -1106,7 +1170,7 @@ function normalisePaperResult(raw, modelId, gradeLevelAssumed = false, rubricPar
     scoreFeedbackMismatch: hasScoreFeedbackMismatch(raw),
     // Computed from `raw`, before clampScore — a clamped 120 would otherwise
     // read as agreeing with a set of criteria it never matched.
-    rubricScoreNote: rubricScoreNoteFor(raw)
+    rubricScoreNote: rubricScoreNoteFor(raw, correctedFrom)
   };
 }
 
@@ -3619,9 +3683,17 @@ app.get('/api/admin/:adminId/curriculums', async (req, res) => {
 });
 
 /**
- * Publish a curriculum for one grade level + subject. An uploaded PDF/DOCX is
+ * Publish a curriculum for one grade level + subject. The uploaded PDF/DOCX is
  * parsed by the same extractor the per-class flow uses, so an admin gets the
  * document's lessons read out once for the whole school.
+ *
+ * The document is REQUIRED. It used to be optional, and a curriculum published
+ * without one is an empty shell: no lessons, so no learning competencies, so
+ * every activity tagged to it reaches the AI checker with nothing to mark
+ * against except the rubric — which is the silent widening the TOPIC FOCUS RULE
+ * exists to prevent. The admin also gets no signal that anything is missing,
+ * because an empty curriculum looks exactly like one whose lessons have not
+ * been opened yet.
  *
  * Lessons only. The rubric a school marks this subject against is a separate,
  * optional step the admin takes deliberately (POST /api/admin/:adminId/rubrics),
@@ -3633,6 +3705,12 @@ app.post('/api/admin/:adminId/curriculums', upload.single('curriculumFile'), asy
     const { gradeLevel, subject, title, description } = req.body;
     if (!gradeLevel || !subject || !title?.trim()) {
       return res.status(400).json({ success: false, error: 'Grade level, subject and title are required.' });
+    }
+    if (!req.file) {
+      return res.status(400).json({
+        success: false,
+        error: 'A curriculum guide (PDF or DOCX) is required. Its lessons and competencies are what activities are tagged to and what the AI checker marks against.'
+      });
     }
 
     const duplicate = await prisma.curriculum.findFirst({
@@ -6571,7 +6649,46 @@ function scaleCriteriaTo100(criteria) {
   };
 }
 
-async function extractRubricFromUpload(file) {
+/**
+ * Re-point criteria as EQUAL shares of a total the caller supplies — the
+ * activity's own Total Points.
+ *
+ * scaleCriteriaTo100 above keeps the document's proportions and rebases them to
+ * percentages. This does something different on purpose: every criterion comes
+ * out worth the same, and the criteria add up to exactly what the activity is
+ * worth. Two things follow from that, and both are the point of it:
+ *
+ *   1. The rubric's total IS the activity's total, so a paper's score is the
+ *      sum of its criterion scores with no conversion step in between. That
+ *      conversion was where the AI's arithmetic went wrong most often — see
+ *      the note on rubricScoreNoteFor.
+ *   2. A teacher reading "Content — 13 pts" is reading marks out of the paper
+ *      in front of them, not a percentage weight they have to translate.
+ *
+ * Largest-remainder again, so the integers land on exactly the total: 50 points
+ * over three criteria becomes 17/17/16, never three 16s totalling 48.
+ *
+ * The equal split is deliberate and is what the teacher asked for; the criteria
+ * are editable on the form afterwards, so a school that really does mark
+ * Content at half the paper can still say so. Callers must NOT apply this to a
+ * rubric carrying bands — a band reading "27-30 Excellent" under a criterion
+ * just re-pointed to 13 describes a scale that no longer exists, and both the
+ * criterion maximum and every band are printed to the grader.
+ */
+function divideEqually(criteria, total) {
+  const n = criteria.length;
+  const target = Math.round(Number(total) || 0);
+  if (n === 0 || target <= 0) return { criteria, scaled: false };
+
+  const base = Math.floor(target / n);
+  const remainder = target - base * n;
+  return {
+    criteria: criteria.map((c, i) => ({ ...c, points: base + (i < remainder ? 1 : 0) })),
+    scaled: true,
+  };
+}
+
+async function extractRubricFromUpload(file, { activityPoints = null } = {}) {
     // Read file and convert to base64
     const fileBuffer = fs.readFileSync(file.path);
     const base64Data = fileBuffer.toString('base64');
@@ -6660,12 +6777,29 @@ Rules:
     // opinion. An unscaled rubric is not a broken one: it is stored with
     // source 'upload' and scored as a share of its own total.
     const hasBands = criteria.some(c => c.bands?.length);
-    // Rebased to weights totalling 100 before anyone sees them, so the criteria
-    // that come back are already savable and the teacher is never shown a
-    // rubric the form beside it would refuse. See scaleCriteriaTo100.
-    const weighted = rubricType === 'standard' && !hasBands
-      ? scaleCriteriaTo100(criteria)
-      : { criteria, originalTotal: criteria.reduce((s, c) => s + c.points, 0), scaled: false };
+    const documentTotal = criteria.reduce((s, c) => s + c.points, 0);
+    // Bands are re-pointed by nobody: their ranges are written against the
+    // document's own scale and would describe a scale that no longer exists.
+    const repointable = rubricType === 'standard' && !hasBands;
+    // How many points the activity this rubric is being attached to is worth.
+    // Absent on the admin/curriculum path, which extracts rubric TEMPLATES that
+    // belong to no activity and therefore have no total to divide into.
+    const target = Math.round(Number(activityPoints) || 0);
+
+    let weighted;
+    if (repointable && target > 0) {
+      // Equal shares of the activity's own Total Points — see divideEqually for
+      // why equal, and for why this only ever runs on an unbanded rubric.
+      weighted = { ...divideEqually(criteria, target), equalised: true };
+    } else if (repointable) {
+      // No activity to divide into (a curriculum/rubric-library template), so
+      // fall back to percentage weights: rebased to total 100 before anyone
+      // sees them, so the criteria that come back are already savable and the
+      // teacher is never shown a rubric the form beside it would refuse.
+      weighted = { ...scaleCriteriaTo100(criteria), equalised: false };
+    } else {
+      weighted = { criteria, scaled: false, equalised: false };
+    }
 
     return {
       criteria: weighted.criteria,
@@ -6674,8 +6808,16 @@ Rules:
       // it is emphatically NOT the activity's mark, which is the teacher's to
       // set. Assigning it to that field is the bug this comment exists to stop
       // coming back.
-      totalPoints: weighted.originalTotal,
+      totalPoints: documentTotal,
       weightsScaled: weighted.scaled,
+      // True when the criteria were re-pointed as equal shares of the
+      // activity's total rather than rebased to 100 — a different enough thing
+      // to say differently on screen, since the shares from the document are
+      // not preserved.
+      weightsEqualised: !!weighted.equalised,
+      // What they were divided into, so the notice can name it without the form
+      // having to trust that its own Total Points field is what was sent.
+      equalisedTo: weighted.equalised ? target : null,
       rubricType
     };
 }
@@ -6684,7 +6826,11 @@ Rules:
 async function respondWithExtractedRubric(req, res) {
   try {
     if (!req.file) return res.status(400).json({ success: false, error: 'No rubric file provided' });
-    const extracted = await extractRubricFromUpload(req.file);
+    // Sent by the activity builder, absent on the admin rubric-library path.
+    // A multipart text field, so it arrives as a string — and as garbage if the
+    // form's Total Points box is empty, which divideEqually reads as "no total"
+    // and falls through to percentage weights rather than dividing by zero.
+    const extracted = await extractRubricFromUpload(req.file, { activityPoints: req.body?.activityPoints });
     res.json({ success: true, ...extracted });
   } catch (e) {
     console.error('Rubric extraction error:', e);
@@ -7075,7 +7221,8 @@ async function generateSubmissionFeedback(imagePaths, activityId, studentId) {
         `- Grade each criterion independently within its point range.\n` +
         `- The total score = sum of all criterion scores, scaled to 0-100.\n` +
         `- In your rubricScores array, list each criterion with its name, score, maxPoints, and bandDescription.\n` +
-        `- Your "score" field must equal the sum, scaled to percentage.`;
+        `- Your "score" field must equal the sum, scaled to percentage.\n` +
+        `- The rubricScores array is what counts. The grade is rebuilt from those criterion scores, so spend your care on getting each one right against its band; the "score" field is checked against them, not trusted over them.`;
     }
 
     // 2) Fetch activity + resolve the rubric. See resolveGradingRubric: two
@@ -7611,8 +7758,18 @@ ${skillScoresApply ? `RULES FOR skillExplanations:
     // wrapping a single result in the batch envelope anyway.
     if (paperCount === 1) {
       const only = (Array.isArray(parsed?.results) ? parsed.results[0] : parsed) || {};
-      console.log(`✅ ${modelId} graded: ${only.score} / 100${only.noTextDetected ? ' (NO TEXT DETECTED)' : ''}`);
-      return [normalisePaperResult(only, modelId, gradeLevelAssumed, rubricParseFailed)];
+      const result = normalisePaperResult(only, modelId, gradeLevelAssumed, rubricParseFailed);
+      // The corrected-from figure is logged rather than stored: it is a fact
+      // about this model call, not about the paper, and how often it fires is
+      // the signal worth watching — a model that stops being able to add up its
+      // own rubric shows here first.
+      console.log(
+        `✅ ${modelId} graded: ${result.score} / 100`
+        + (result.aiScoreCorrectedFrom !== null && result.aiScoreCorrectedFrom !== undefined
+            ? ` (rebuilt from its rubric; it reported ${result.aiScoreCorrectedFrom})` : '')
+        + (only.noTextDetected ? ' (NO TEXT DETECTED)' : '')
+      );
+      return [result];
     }
 
     // ── Batch alignment guard ────────────────────────────────────────────────
@@ -12147,8 +12304,8 @@ function startServer() {
 
 module.exports = {
   app, startServer, cleanUpTransferRows, carriedOverForClass, carriedOverPrefetch,
-  resolveGradingRubric, rubricScoreNoteFor, UNGRADED_RESET,
-  rubricIsPresent, isManualScoreMode, scaleCriteriaTo100,
+  resolveGradingRubric, rubricScoreNoteFor, rubricTotalPercent, normalisePaperResult, UNGRADED_RESET,
+  rubricIsPresent, isManualScoreMode, scaleCriteriaTo100, divideEqually,
   logAiRequest, outcomeOf,
   normalizeTerm, normalizeCompetencies, readCompetencies,
   parseAssistantTurn,

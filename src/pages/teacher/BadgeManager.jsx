@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { Medal, Plus, Edit2, Trash2, X, Loader2, Users, FileText, Check } from 'lucide-react';
 import { API_URL, apiFetch } from '../../config';
+import { showAlert, showConfirm } from '../../utils/dialog';
 import {
   badgeLook, BADGE_ICON_KEYS, BADGE_COLOR_KEYS,
   DEFAULT_BADGE_ICON, DEFAULT_BADGE_COLOR,
@@ -96,17 +97,18 @@ export default function BadgeManager() {
   };
 
   const remove = async (badge) => {
-    if (!window.confirm(`Delete the "${badge.name}" badge? Activities using it will simply stop awarding anything.`)) return;
+    if (!(await showConfirm(`Delete the "${badge.name}" badge? Activities using it will simply stop awarding anything.`,
+      { confirmLabel: 'Delete badge', danger: true }))) return;
     setDeletingId(badge.id);
     try {
       const res = await apiFetch(`${API_URL}/api/teacher/badges/${badge.id}`, { method: 'DELETE' });
       const data = await res.json();
       // 409 BADGE_AWARDED is the expected refusal, not a failure: a badge a
       // learner already holds cannot be taken off their shelf.
-      if (!data.success) return alert(data.error || 'That badge could not be deleted.');
+      if (!data.success) return showAlert(data.error || 'That badge could not be deleted.');
       setBadges(prev => prev.filter(b => b.id !== badge.id));
     } catch {
-      alert('Network error while deleting this badge.');
+      showAlert('Network error while deleting this badge.');
     } finally {
       setDeletingId(null);
     }

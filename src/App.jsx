@@ -7,6 +7,7 @@ import TeacherLayout from './layouts/TeacherLayout';
 import StudentLayout from './layouts/StudentLayout';
 import AdminLayout from './layouts/AdminLayout';
 import UpdatePrompt from './components/UpdatePrompt';
+import DialogHost from './components/DialogHost';
 
 // Admin Pages
 import AdminTeachers from './pages/admin/Teachers';
@@ -111,6 +112,10 @@ function App() {
         </Route>
       </Routes>
       <UpdatePrompt />
+      {/* Inside the Router but outside every Route, so a dialog raised by a
+          handler that then navigates ("Section deleted." → back to the list)
+          survives the navigation it is reporting. */}
+      <DialogHost />
     </Router>
   );
 }

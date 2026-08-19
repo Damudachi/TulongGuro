@@ -6,6 +6,7 @@ import { submissionWindow, formatDeadline } from '../../utils/deadlines';
 import { getStoredUser } from '../../utils/session';
 import { saveClassSnapshot, readClassSnapshot } from '../../utils/offlineSnapshot';
 
+import { showAlert, showConfirm } from '../../utils/dialog';
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
 
 /**
@@ -94,7 +95,7 @@ export default function ClassHub() {
     // The textarea's own `required` is satisfied by a single space, and the
     // server is not — it would come back 400 after the save looked accepted.
     if (!editForm.instructions.trim()) {
-      alert('Instructions cannot be left blank — they are what the work is set against, and the AI reads them when it checks the papers.');
+      showAlert('Instructions cannot be left blank — they are what the work is set against, and the AI reads them when it checks the papers.');
       return;
     }
     setIsSavingEdit(true);
@@ -114,10 +115,10 @@ export default function ClassHub() {
         }));
         closeEditModal();
       } else {
-        alert('Failed: ' + data.error);
+        showAlert('Failed: ' + data.error);
       }
     } catch {
-      alert('Network error');
+      showAlert('Network error');
     } finally {
       setIsSavingEdit(false);
     }
@@ -133,10 +134,10 @@ export default function ClassHub() {
         setClassData(prev => ({ ...prev, activities: prev.activities.filter(a => a.id !== editActivity.id) }));
         closeEditModal();
       } else {
-        alert('Failed: ' + data.error);
+        showAlert('Failed: ' + data.error);
       }
     } catch {
-      alert('Network error');
+      showAlert('Network error');
     } finally {
       setIsDeleting(false);
     }
@@ -200,13 +201,14 @@ export default function ClassHub() {
           </div>
           <button
             onClick={async () => {
-              if (!confirm('Delete all demo data? This cannot be undone.')) return;
+              if (!(await showConfirm('Delete all demo data? This cannot be undone.',
+                { confirmLabel: 'Delete demo data', danger: true }))) return;
               try {
                 const res = await apiFetch(`${API_URL}/api/teacher/demo-data/${classId}`, { method: 'DELETE' });
                 const data = await res.json();
                 if (data.success) navigate('/teacher/dashboard');
-                else alert('Error: ' + data.error);
-              } catch { alert('Network error'); }
+                else showAlert('Error: ' + data.error);
+              } catch { showAlert('Network error'); }
             }}
             className="shrink-0 bg-red-500 hover:bg-red-600 text-white text-sm font-bold px-4 py-2 rounded-lg flex items-center gap-2 transition-colors shadow-sm"
           >

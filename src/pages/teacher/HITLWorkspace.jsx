@@ -5,6 +5,7 @@ import { API_URL, apiFetch } from '../../config';
 import SubmissionImage from '../../components/SubmissionImage';
 import { ONBOARDING, hasSeenOnboarding, markOnboardingSeen } from '../../utils/onboarding';
 
+import { showAlert } from '../../utils/dialog';
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
 
 /**
@@ -1051,10 +1052,10 @@ export default function HITLWorkspace() {
         loadReleaseState();
         setQueue(prev => prev.map(q => (q.reviewed ? { ...q, released: true } : q)));
       } else {
-        alert(data.error || 'Could not release the results.');
+        showAlert(data.error || 'Could not release the results.');
       }
     } catch {
-      alert('Could not release the results. Please check your connection.');
+      showAlert('Could not release the results. Please check your connection.');
     } finally {
       setIsReleasing(false);
     }
@@ -1080,10 +1081,10 @@ export default function HITLWorkspace() {
         // Keep the relations already loaded — the route returns the bare row.
         setSubmission(prev => ({ ...prev, releasedAt: data.submission?.releasedAt || new Date().toISOString() }));
       } else {
-        alert(data.error || 'Could not release this result.');
+        showAlert(data.error || 'Could not release this result.');
       }
     } catch {
-      alert('Could not release this result. Please check your connection.');
+      showAlert('Could not release this result. Please check your connection.');
     } finally {
       setIsReleasingOne(false);
     }
@@ -1155,11 +1156,14 @@ export default function HITLWorkspace() {
         // on the page to grade manually — reloading would just hide why.
         setSubmission(prev => ({ ...prev, ...(data.submission || {}), privacyViolation: true }));
       } else {
-        alert('Analysis failed: ' + (data.error || 'Unknown error'));
+        // Awaited: the reload below would otherwise wipe the dialog off the
+        // screen before it could be read. alert() blocked, so this used to be
+        // free.
+        await showAlert('Analysis failed: ' + (data.error || 'Unknown error'), { variant: 'error' });
         window.location.reload();
       }
     } catch {
-      alert('Network error during analysis.');
+      showAlert('Network error during analysis.');
     } finally {
       setIsAnalyzing(false);
     }
@@ -1379,44 +1383,48 @@ export default function HITLWorkspace() {
             </div>
           )}
 
-          {/* The AI's own arithmetic disagrees with itself: the headline score
-              is not the sum of the criteria it is meant to be, or a criterion
-              was scored outside the band the model itself labelled it with.
+          {/* The AI's own arithmetic disagreed with itself. Two different
+              things end up here and they are handled differently on purpose:
+
+                • the headline score not being the sum of the criteria printed
+                  under it — pure addition, so the score is now REBUILT from the
+                  breakdown server-side and this banner reports what changed;
+                • a criterion scored outside the band the model itself named — a
+                  judgement, not arithmetic, so nothing is corrected and the
+                  teacher is the one who decides.
+
               Distinct from the banner above, which asks whether a shortfall was
-              *explained* — this one is about the numbers not adding up, which
-              that check passes straight over. Red rather than amber: the other
-              flags say "this may need a second look", this one says two of the
-              numbers on this page cannot both be right. Deliberately not
-              auto-corrected — picking one of the model's two answers would be
-              guessing which. */}
+              *explained*. Amber rather than red now that the arithmetic case
+              carries its own fix: the note is something to check, not two
+              numbers the teacher has to choose between. */}
           {submission?.rubricScoreNote && (
-            <div className="flex items-start gap-3 p-4 bg-red-50 border-2 border-red-300 rounded-xl text-sm">
-              <AlertTriangle className="w-5 h-5 shrink-0 text-red-600" />
+            <div className="flex items-start gap-3 p-4 bg-amber-50 border-2 border-amber-300 rounded-xl text-sm">
+              <AlertTriangle className="w-5 h-5 shrink-0 text-amber-600" />
               <div>
-                <p className="font-bold text-red-800">The AI&apos;s Numbers Don&apos;t Add Up</p>
-                <p className="text-red-700 text-xs mt-0.5">{submission.rubricScoreNote}</p>
+                <p className="font-bold text-amber-800">The AI&apos;s Numbers Needed Correcting</p>
+                <p className="text-amber-700 text-xs mt-0.5">{submission.rubricScoreNote}</p>
               </div>
             </div>
           )}
 
-          {/* Score Out Of Range Banner — the AI returned a total outside 0-100
-              and it was clamped on the way in. The prompt makes the 0-100
-              scaling the model's own job ("the total score = sum of all
-              criterion scores, scaled to 0-100"), and it gets that arithmetic
-              wrong most often when the rubric's criteria don't themselves sum
-              to 100 — so the rubric breakdown is the thing worth checking, not
-              the total. Flagged rather than hidden: a silent clamp leaves a
-              teacher looking at criteria adding to 120 against a total of 100
-              with nothing explaining the difference. */}
+          {/* Score Out Of Range Banner — the total was outside 0-100 and was
+              clamped on the way in. Rarer than it was: the total is now rebuilt
+              from the rubric breakdown, which can only exceed 100 if a
+              criterion was itself scored above its own maximum. That makes this
+              banner a narrower signal than before — it means a criterion score
+              is impossible, not that the model mis-scaled — so the breakdown is
+              still the thing to check. Flagged rather than hidden: a silent
+              clamp leaves a teacher looking at criteria adding to 120 against a
+              total of 100 with nothing explaining the difference. */}
           {submission?.scoreOutOfRange && (
             <div className="flex items-start gap-3 p-4 bg-amber-50 border-2 border-amber-300 rounded-xl text-sm">
               <AlertTriangle className="w-5 h-5 shrink-0 text-amber-600" />
               <div>
                 <p className="font-bold text-amber-800">Score Was Out Of Range</p>
                 <p className="text-amber-700 text-xs mt-0.5">
-                  The AI returned a total outside 0&ndash;100, so it was capped to fit. Its arithmetic on this paper
-                  can&apos;t be trusted &mdash; work out the score from the rubric breakdown below rather than accepting
-                  the total. If this activity&apos;s criteria don&apos;t add up to 100, fixing that will usually stop it recurring.
+                  The total came out above 100 and was capped to fit. Since the total is worked out from the rubric
+                  breakdown below, that means at least one criterion was scored above its own maximum &mdash; check the
+                  breakdown and correct the criterion rather than accepting the total.
                 </p>
               </div>
             </div>

@@ -5,6 +5,7 @@ import { API_URL, apiFetch } from '../../config';
 import { getStoredUser } from '../../utils/session';
 import PageHeader from '../../components/PageHeader';
 
+import { showAlert, showConfirm, showPrompt } from '../../utils/dialog';
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
 
 const STATUS_STYLES = {
@@ -97,17 +98,19 @@ export default function GradebookStudent() {
     const excusing = row.status !== 'EXCUSED';
     let reason = row.excusedReason || '';
     if (excusing) {
-      const answer = window.prompt(
-        `Excuse this student from "${row.activityTitle}"?
-
-` +
-        'It will stop counting toward their average instead of being marked missing. ' +
-        'Give a short reason — the student sees it.',
-        ''
+      const answer = await showPrompt(
+        'It will stop counting toward their average instead of being marked missing. '
+        + 'Give a short reason — the student sees it.',
+        {
+          title: `Excuse this student from "${row.activityTitle}"?`,
+          placeholder: 'e.g. absent — medical certificate on file',
+          confirmLabel: 'Excuse this activity',
+        }
       );
       if (answer === null) return;          // cancelled
       reason = answer.trim();
-    } else if (!window.confirm(`Remove the excusal from "${row.activityTitle}"? It will count toward their average again.`)) {
+    } else if (!(await showConfirm(`Remove the excusal from "${row.activityTitle}"? It will count toward their average again.`,
+      { confirmLabel: 'Remove the excusal' }))) {
       return;
     }
 
@@ -119,10 +122,10 @@ export default function GradebookStudent() {
         body: JSON.stringify({ activityId: row.activityId, studentId, excused: excusing, reason }),
       });
       const d = await res.json();
-      if (!d.success) { alert(d.error || 'That did not work.'); return; }
+      if (!d.success) { showAlert(d.error || 'That did not work.'); return; }
       await load();
     } catch {
-      alert('Network error. Please try again.');
+      showAlert('Network error. Please try again.');
     } finally {
       setBusyActivityId(null);
     }

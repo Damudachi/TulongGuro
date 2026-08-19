@@ -7,6 +7,7 @@ import PageHeader from '../../components/PageHeader';
 import { gradeTone, toPoints, formatPoints } from '../../utils/grading';
 import { usePassingGrade } from '../../utils/useSchool';
 
+import { showAlert } from '../../utils/dialog';
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
 
 // Score colouring lives in utils/grading and follows the school's passing grade.
@@ -76,7 +77,7 @@ export default function GradebookClass() {
       window.URL.revokeObjectURL(url);
     } catch (err) {
       console.error('Export error:', err);
-      alert('Failed to export grades. Please try again.');
+      showAlert('Failed to export grades. Please try again.');
     } finally {
       setExporting(false);
     }

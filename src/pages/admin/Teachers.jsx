@@ -6,6 +6,7 @@ import { GRADE_LEVELS } from '../../constants/school';
 import { TEACHER_EMAIL_DOMAIN, buildAccountEmail } from '../../constants/accountEmails';
 import DomainEmailField from '../../components/DomainEmailField';
 
+import { showAlert, showConfirm } from '../../utils/dialog';
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
 
 /** Temporary password the admin hands to the teacher on first login. */
@@ -77,7 +78,8 @@ export default function AdminTeachers() {
 
   const handleResetPassword = async (teacher) => {
     const password = generatePassword();
-    if (!confirm(`Reset ${teacher.name}'s password? Their current one stops working immediately.`)) return;
+    if (!(await showConfirm(`Reset ${teacher.name}'s password? Their current one stops working immediately.`,
+      { confirmLabel: 'Reset password', danger: true }))) return;
     setBusyTeacherId(teacher.id);
     try {
       const res = await apiFetch(`${API_URL}/api/admin/${admin.id}/teachers/${teacher.id}/password`, {
@@ -90,19 +92,20 @@ export default function AdminTeachers() {
       // parses to null, which `d.success` alone would read as a plain failure
       // with no message.
       if (res.ok && d?.success) setCreatedCredentials({ email: teacher.email, password });
-      else alert(d?.error || 'Reset failed. Their existing password still works.');
+      else showAlert(d?.error || 'Reset failed. Their existing password still works.');
     } catch {
       // Without this the promise rejected unhandled: the spinner cleared and
       // the admin was told nothing at all, having just been asked to confirm
       // something destructive.
-      alert('Could not reach the server. Their password has not been changed.');
+      showAlert('Could not reach the server. Their password has not been changed.');
     } finally {
       setBusyTeacherId(null);
     }
   };
 
   const handleDelete = async (teacher) => {
-    if (!confirm(`Remove ${teacher.name} from ${data?.school?.name}? This cannot be undone.`)) return;
+    if (!(await showConfirm(`Remove ${teacher.name} from ${data?.school?.name}? This cannot be undone.`,
+      { confirmLabel: 'Remove teacher', danger: true }))) return;
     setBusyTeacherId(teacher.id);
     try {
       const res = await apiFetch(`${API_URL}/api/admin/${admin.id}/teachers/${teacher.id}`, { method: 'DELETE' });
@@ -111,9 +114,9 @@ export default function AdminTeachers() {
       // The server refuses when the teacher still has learners in their
       // sections, and names how many — that message is the whole point of the
       // guard, so it must not be swallowed.
-      else alert(d?.error || 'Could not remove this teacher. Nothing has been changed.');
+      else showAlert(d?.error || 'Could not remove this teacher. Nothing has been changed.');
     } catch {
-      alert('Could not reach the server. This teacher has not been removed.');
+      showAlert('Could not reach the server. This teacher has not been removed.');
     } finally {
       setBusyTeacherId(null);
     }

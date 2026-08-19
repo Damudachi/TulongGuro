@@ -6,6 +6,7 @@ import { ACTIVITY_TYPES } from '../../constants/activityTypes';
 import RubricEditor from '../../components/RubricEditor';
 import { BLANK_CRITERION, totalWeight } from '../../utils/rubric';
 
+import { showAlert, showConfirm } from '../../utils/dialog';
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
 const UNTAGGED = 'Any grade level / subject';
 
@@ -84,7 +85,7 @@ export default function AdminRubrics() {
       });
       const d = await res.json();
       if (d.success) { setRetagId(null); load(); }
-      else alert(d.error);
+      else showAlert(d.error);
     } finally { setBusyId(null); }
   };
 
@@ -123,12 +124,13 @@ export default function AdminRubrics() {
   };
 
   const handleDelete = async (rubric) => {
-    if (!confirm(`Delete "${rubric.name}"? Teachers will no longer see it.`)) return;
+    if (!(await showConfirm(`Delete "${rubric.name}"? Teachers will no longer see it.`,
+      { confirmLabel: 'Delete rubric', danger: true }))) return;
     setBusyId(rubric.id);
     try {
       const res = await apiFetch(`${API_URL}/api/admin/${admin.id}/rubrics/${rubric.id}`, { method: 'DELETE' });
       const d = await res.json();
-      if (d.success) load(); else alert(d.error);
+      if (d.success) load(); else showAlert(d.error);
     } finally { setBusyId(null); }
   };
 

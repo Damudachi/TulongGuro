@@ -9,6 +9,7 @@ import SubmissionImage from '../../components/SubmissionImage';
 import ImageRedactor from '../../components/ImageRedactor';
 import { isRasterizable, rasterizeToPageImages } from '../../utils/fileRasterize';
 
+import { showAlert, showConfirm } from '../../utils/dialog';
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
 
 /** A PDF or Word file is rendered to page images before staging (see
@@ -176,7 +177,8 @@ export default function BatchUpload() {
     if (!activityId) return;
     const count = releaseState?.readyToRelease || 0;
     if (count === 0) return;
-    if (!window.confirm(`Release ${count} validated grade${count > 1 ? 's' : ''} to students? They will be able to see their scores and feedback.`)) return;
+    if (!(await showConfirm(`Release ${count} validated grade${count > 1 ? 's' : ''} to students? They will be able to see their scores and feedback.`,
+      { confirmLabel: 'Release grades' }))) return;
     setIsReleasing(true);
     try {
       const res = await apiFetch(`${API_URL}/api/teacher/activities/${activityId}/release`, { method: 'POST' });
@@ -188,10 +190,10 @@ export default function BatchUpload() {
         if (subsData.success) setActivitySubmissions(subsData.submissions || []);
         loadReleaseState();
       } else {
-        alert(data.error || 'Could not release the results.');
+        showAlert(data.error || 'Could not release the results.');
       }
     } catch {
-      alert('Could not release the results. Please check your connection.');
+      showAlert('Could not release the results. Please check your connection.');
     } finally {
       setIsReleasing(false);
     }
@@ -258,18 +260,19 @@ export default function BatchUpload() {
    */
   const cancelAiCheck = async () => {
     if (!aiJob?.jobId) return;
-    if (!window.confirm('Stop this AI check? Papers already checked keep their results; the rest will not be checked.')) return;
+    if (!(await showConfirm('Stop this AI check? Papers already checked keep their results; the rest will not be checked.',
+      { confirmLabel: 'Stop the check', cancelLabel: 'Keep checking', danger: true }))) return;
     setIsCancellingAi(true);
     try {
       const res = await apiFetch(`${API_URL}/api/teacher/ai-jobs/${aiJob.jobId}`, { method: 'DELETE' });
       const d = await res.json().catch(() => null);
       if (!res.ok || !d?.success) {
-        alert(d?.error || 'Could not stop the check. It is still running.');
+        showAlert(d?.error || 'Could not stop the check. It is still running.');
         return;
       }
       setAiJob(d);
     } catch {
-      alert('Could not reach the server. The check is still running.');
+      showAlert('Could not reach the server. The check is still running.');
     } finally {
       setIsCancellingAi(false);
     }
@@ -286,11 +289,11 @@ export default function BatchUpload() {
         // loaded before it was. Re-read the plan so the panel switches to the
         // "set the rubric" card instead of leaving a button that keeps failing.
         refreshAiPlan();
-        alert(data.error);
+        showAlert(data.error);
       }
-      else alert(data.error || 'Could not start the AI check.');
+      else showAlert(data.error || 'Could not start the AI check.');
     } catch {
-      alert('Could not start the AI check. Please check your connection.');
+      showAlert('Could not start the AI check. Please check your connection.');
     } finally {
       setIsStartingAi(false);
     }
@@ -322,13 +325,19 @@ export default function BatchUpload() {
    * /api/teacher/upload), and replacing a validated paper drops the grade,
    * because that grade was awarded to a different piece of work.
    */
-  const requestReplace = (studentId, sub, source = 'files') => {
+  const requestReplace = async (studentId, sub, source = 'files') => {
     if (sub?.releasedAt) {
-      alert('This result has already been released to the student, so the photo can no longer be replaced.');
+      showAlert('This result has already been released to the student, so the photo can no longer be replaced.');
       return;
     }
     if (sub?.status === 'GRADED' &&
-      !window.confirm('This paper has already been validated. Replacing it will clear that grade so the new photo can be checked fresh. Continue?')) return;
+      !(await showConfirm('This paper has already been validated. Replacing it will clear that grade so the new photo can be checked fresh. Continue?',
+        { confirmLabel: 'Replace the photo', danger: true }))) return;
+    // triggerFilePick calls .click() on a hidden <input type="file">, which a
+    // browser only honours while a user gesture is still active. The await
+    // above resolves inside the dialog button's own click handler, so the
+    // activation is the dialog's rather than this button's — still a real
+    // gesture, and still inside its window.
     triggerFilePick(studentId, source);
   };
 
@@ -366,7 +375,7 @@ export default function BatchUpload() {
     }
 
     if (failedToRender.length > 0) {
-      alert(`Couldn't render ${failedToRender.length > 1 ? 'these files' : 'this file'} for redaction, so ${failedToRender.length > 1 ? "they weren't" : "it wasn't"} added:\n${failedToRender.map(n => `• ${n}`).join('\n')}\n\nThe file may be corrupted or password-protected. Try converting it to a PDF or image and upload again.`);
+      showAlert(`Couldn't render ${failedToRender.length > 1 ? 'these files' : 'this file'} for redaction, so ${failedToRender.length > 1 ? "they weren't" : "it wasn't"} added:\n${failedToRender.map(n => `• ${n}`).join('\n')}\n\nThe file may be corrupted or password-protected. Try converting it to a PDF or image and upload again.`);
     }
 
     if (documents.length > 0) {
@@ -461,7 +470,7 @@ export default function BatchUpload() {
       setQueuedCount(getQueue().length);
       setQueuedStudentIds(queuedStudentsFor(activityId));
       if (!job) {
-        alert(`Could not save these ${pages.length} page(s) for later — this device has run out of offline storage. Please reconnect and upload now instead.`);
+        showAlert(`Could not save these ${pages.length} page(s) for later — this device has run out of offline storage. Please reconnect and upload now instead.`);
       }
       cancelStaged(studentId);
       setUploadingStudentId(null);
@@ -488,7 +497,7 @@ export default function BatchUpload() {
         setPrivacyBlocked({ studentId, message: data.error });
         setUploadingStudentId(null);
       } else {
-        alert(data.error || 'Upload failed. Please try again.');
+        showAlert(data.error || 'Upload failed. Please try again.');
         setUploadingStudentId(null);
       }
     } catch {
@@ -496,7 +505,7 @@ export default function BatchUpload() {
       // a server that answered and said no must not be retried behind the
       // teacher's back.
       if (!navigator.onLine) return queueOffline();
-      alert('Upload failed. Please check your connection and try again.');
+      showAlert('Upload failed. Please check your connection and try again.');
       setUploadingStudentId(null);
     }
   };
@@ -516,7 +525,7 @@ export default function BatchUpload() {
       const reasons = [...new Set(result.droppedReasons.map(d => d.reason))];
       message += `:\n${reasons.map(r => `• ${r}`).join('\n')}`;
     }
-    alert(message);
+    showAlert(message);
   };
 
   return (

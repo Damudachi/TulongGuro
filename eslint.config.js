@@ -43,6 +43,20 @@ export default defineConfig([
       'no-restricted-globals': ['error', {
         name: 'fetch',
         message: 'Use apiFetch from src/config.js — bare fetch() omits the auth token and silently 401s.',
+      }, {
+        // The browser paints these itself, outside the page: on the deployed
+        // build every one of them was headed "tulong-guro.vercel.app says",
+        // in OS chrome, with no way to style or translate it. All ~130 sites
+        // were moved to src/utils/dialog.js; this is what stops the next one
+        // coming back.
+        name: 'alert',
+        message: 'Use showAlert from src/utils/dialog.js — alert() is painted by the browser and titled with the deployment hostname.',
+      }, {
+        name: 'confirm',
+        message: 'Use showConfirm from src/utils/dialog.js (await it) — confirm() is painted by the browser and titled with the deployment hostname.',
+      }, {
+        name: 'prompt',
+        message: 'Use showPrompt from src/utils/dialog.js (await it) — prompt() is painted by the browser and titled with the deployment hostname.',
       }],
     },
   },

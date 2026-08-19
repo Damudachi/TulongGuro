@@ -3,6 +3,7 @@ import { Scale, Loader2, Check, AlertTriangle, RotateCcw, Info } from 'lucide-re
 import { API_URL, apiFetch } from '../../config';
 import { GRADE_LEVELS, SUBJECTS } from '../../constants/school';
 
+import { showConfirm } from '../../utils/dialog';
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
 
 const COMPONENTS = [
@@ -87,7 +88,7 @@ export default function AdminGrading() {
   };
 
   const resetPolicy = async (policyId, label) => {
-    if (!window.confirm(`Reset ${label} to the DepEd default weights?`)) return;
+    if (!(await showConfirm(`Reset ${label} to the DepEd default weights?`, { confirmLabel: 'Reset weights' }))) return;
     setBusy(true); setError('');
     try {
       const res = await apiFetch(`${API_URL}/api/admin/${admin.id}/grading/policy/${policyId}`, { method: 'DELETE' });

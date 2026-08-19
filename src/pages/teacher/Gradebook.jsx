@@ -7,6 +7,7 @@ import PageHeader from '../../components/PageHeader';
 import { gradeChip } from '../../utils/grading';
 import { usePassingGrade } from '../../utils/useSchool';
 
+import { showAlert, showConfirm } from '../../utils/dialog';
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
 
 /** Shared score ramp for cells and averages. */
@@ -55,10 +56,11 @@ export default function Gradebook() {
           .filter(c => c.unreviewedCount > 0)
           .map(c => `  • ${c.name}: ${c.unreviewedCount}`)
           .join('\n');
-        const proceed = window.confirm(
+        const proceed = await showConfirm(
           `${preflight.totalUnreviewed} submission(s) in this section have not been validated yet:\n\n${perClass}\n\n` +
           'Only work you have validated is exported, so these will be blank and will not count toward any average. ' +
-          'The file will say so.\n\nExport anyway?'
+          'The file will say so.',
+          { title: 'Export anyway?', variant: 'warning', confirmLabel: 'Export anyway' }
         );
         if (!proceed) return;
       }
@@ -76,7 +78,7 @@ export default function Gradebook() {
       window.URL.revokeObjectURL(url);
     } catch (err) {
       console.error('Export error:', err);
-      alert('Failed to export grades. Please try again.');
+      showAlert('Failed to export grades. Please try again.');
     } finally {
       setExportingSectionId(null);
     }

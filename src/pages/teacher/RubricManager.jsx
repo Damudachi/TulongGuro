@@ -3,6 +3,7 @@ import { ClipboardList, ChevronDown, ChevronRight, Edit2, Trash2, Plus, X } from
 import { API_URL, apiFetch } from '../../config';
 import { getStoredUser } from '../../utils/session';
 
+import { showAlert, showConfirm } from '../../utils/dialog';
 // Helper for dynamic band colors based on label
 const getBandColor = (label, index, totalBands) => {
   if (!label) return { bg: 'bg-slate-100', text: 'text-slate-700', border: 'border-slate-200' };
@@ -107,14 +108,15 @@ export default function RubricManager() {
 
   const deleteRubric = async (id) => {
     if (!id) return;
-    if(!window.confirm("Are you sure you want to delete this custom rubric?")) return;
+    if (!(await showConfirm('Delete this custom rubric? Activities already built from it keep the copy they were given.',
+      { confirmLabel: 'Delete rubric', danger: true }))) return;
     try {
       const res = await apiFetch(`${API_URL}/api/teacher/rubric-templates/${id}`, { method: 'DELETE' });
       const data = await res.json().catch(() => ({}));
       if (res.ok && data.success) fetchSavedRubrics(teacherId);
-      else alert(data.error || 'Could not delete this rubric.');
+      else showAlert(data.error || 'Could not delete this rubric.');
     } catch {
-      alert('Network error while deleting the rubric.');
+      showAlert('Network error while deleting the rubric.');
     }
   };
 
@@ -128,7 +130,7 @@ export default function RubricManager() {
     if (editType === 'standard') {
       const totalWeight = editingRubric.criteria.reduce((sum, c) => sum + (parseInt(c.points) || 0), 0);
       if(totalWeight !== 100) {
-        alert(`Standard rubric weight must total 100%. Currently it is ${totalWeight}%.`);
+        showAlert(`Standard rubric weight must total 100%. Currently it is ${totalWeight}%.`);
         return;
       }
     }
@@ -169,12 +171,12 @@ export default function RubricManager() {
           setEditingRubric(null);
           fetchSavedRubrics(teacherId);
         } else {
-          alert(data.error || 'Could not save this rubric.');
+          showAlert(data.error || 'Could not save this rubric.');
         }
       }
     } catch (e) {
       console.error(e);
-      alert('Failed to save rubric');
+      showAlert('Failed to save rubric');
     }
   };
 

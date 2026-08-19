@@ -14,6 +14,7 @@ import ExampleFeedback from '../../components/ExampleFeedback';
 import { buildSteps } from '../../utils/setupSteps';
 import { tintForKey } from '../../constants/folderTints';
 
+import { showAlert } from '../../utils/dialog';
 // No curriculum step: the admin publishes the school's curriculum, and the
 // matching one is applied for the teacher in step 1 (see CurriculumSuggestion).
 // Asking a teacher to upload their own guide on their very first screen invited
@@ -435,8 +436,8 @@ export default function TeacherDashboard() {
     // Without this guard a second click (or an impatient double-submit on a
     // slow connection) fires the request twice and creates two course shells.
     if (isCreatingClass) return;
-    if (!form.subject || !form.gradeLevel) return alert('Please choose a subject and grade level.');
-    if (!form.sectionId) return alert('Please select a block section.');
+    if (!form.subject || !form.gradeLevel) return showAlert('Please choose a subject and grade level.');
+    if (!form.sectionId) return showAlert('Please select a block section.');
     setIsCreatingClass(true);
     try {
       const user = JSON.parse(localStorage.getItem('user') || '{}');
@@ -457,18 +458,21 @@ export default function TeacherDashboard() {
       });
       const data = await res.json();
       if (data.success) {
+        // Awaited for the same reason as the HITL workspace's: the reload
+        // below destroys the dialog, and alert() used to block until it was
+        // dismissed.
         if (data.duplicate) {
-          alert('You already have a class for this section, subject and school year. Opening the existing one instead.');
+          await showAlert('You already have a class for this section, subject and school year. Opening the existing one instead.');
         }
         setIsModalOpen(false);
         setForm({ name: '', gradeLevel: '', subject: '', schoolYear: DEFAULT_SCHOOL_YEAR, sectionId: '' });
         window.location.reload();
       } else {
-        alert('Failed: ' + data.error);
+        showAlert('Failed: ' + data.error);
         setIsCreatingClass(false);
       }
     } catch {
-      alert('Network error');
+      showAlert('Network error');
       setIsCreatingClass(false);
     }
   };

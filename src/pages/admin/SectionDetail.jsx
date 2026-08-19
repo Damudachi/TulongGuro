@@ -11,6 +11,7 @@ import SectionMoveConfirm from '../../components/SectionMoveConfirm';
 import RosterEditor from '../../components/RosterEditor';
 import { rowsFromExtraction, isFilledRow, rosterPayload, emptyRoster, withBlankRow, normalizeRosterName } from '../../utils/roster';
 
+import { showAlert, showConfirm, showPrompt } from '../../utils/dialog';
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
 
 /**
@@ -95,7 +96,7 @@ export default function AdminSectionDetail() {
   const addStudents = async ({ allowMove = false, studentsList } = {}) => {
     // On a replay the list is handed back verbatim; otherwise it is read off
     // the editor, which returns null when a typed birthday is unreadable.
-    const list = studentsList || rosterPayload(studentRows, alert);
+    const list = studentsList || rosterPayload(studentRows, showAlert);
     if (!list || list.length === 0) return;
     const d = await call(
       `${API_URL}/api/admin/${admin.id}/sections/${sectionId}/students`,
@@ -144,8 +145,9 @@ export default function AdminSectionDetail() {
     }
   };
 
-  const resetStudentPassword = (student) => {
-    if (!confirm(`Reset ${student.name}'s password to their birthdate? Their current password stops working immediately.`)) return;
+  const resetStudentPassword = async (student) => {
+    if (!(await showConfirm(`Reset ${student.name}'s password to their birthdate? Their current password stops working immediately.`,
+      { confirmLabel: 'Reset password', danger: true }))) return;
     call(
       `${API_URL}/api/admin/${admin.id}/sections/${sectionId}/students/${student.id}/password`,
       { method: 'PUT' },
@@ -161,10 +163,10 @@ export default function AdminSectionDetail() {
    * Fix a misspelt name. The student ID is their login, so it is deliberately
    * left as it is — see the route's comment.
    */
-  const renameStudent = (student) => {
-    const name = prompt(
-      `Correct the spelling of this learner's name.\n\nTheir Student ID (${student.username}) will not change, so they sign in exactly as before.`,
-      student.name
+  const renameStudent = async (student) => {
+    const name = await showPrompt(
+      `Their Student ID (${student.username}) will not change, so they sign in exactly as before.`,
+      { title: 'Correct the spelling', defaultValue: student.name, confirmLabel: 'Save name' }
     );
     if (name === null) return;
     // Match the roster editor — a typed surname comma is kept, since it is
@@ -178,8 +180,9 @@ export default function AdminSectionDetail() {
     );
   };
 
-  const removeStudent = (student) => {
-    if (!confirm(`Remove ${student.name} from ${data.section.name}?`)) return;
+  const removeStudent = async (student) => {
+    if (!(await showConfirm(`Remove ${student.name} from ${data.section.name}?`,
+      { confirmLabel: 'Remove from section', danger: true }))) return;
     call(
       `${API_URL}/api/admin/${admin.id}/sections/${sectionId}/students/${student.id}`,
       { method: 'DELETE' },
@@ -202,7 +205,7 @@ export default function AdminSectionDetail() {
         students > 0 && `${students} student${students === 1 ? '' : 's'} on its roster`,
         classes > 0 && `${classes} course shell${classes === 1 ? '' : 's'} using it`,
       ].filter(Boolean);
-      return alert(
+      return showAlert(
         `"${data.section.name}" cannot be deleted yet — it still has ${blockers.join(' and ')}.\n\n` +
         (students > 0
           ? 'Remove the students first, using the bin beside each name in the roster below. Anyone who has ' +
@@ -215,7 +218,8 @@ export default function AdminSectionDetail() {
         '\nNothing has been changed.'
       );
     }
-    if (!confirm(`Delete the empty section "${data.section.name}"? This cannot be undone.`)) return;
+    if (!(await showConfirm(`Delete the empty section "${data.section.name}"? This cannot be undone.`,
+      { confirmLabel: 'Delete section', danger: true }))) return;
     const d = await call(`${API_URL}/api/admin/${admin.id}/sections/${sectionId}`, { method: 'DELETE' });
     if (d?.success) navigate('/admin/teachers');
   };

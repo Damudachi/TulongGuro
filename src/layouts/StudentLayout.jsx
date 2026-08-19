@@ -9,6 +9,7 @@ import { logout } from '../config';
 import NotificationBell from '../components/NotificationBell';
 import { initOfflineQueueListener, getQueue, QUEUE_CHANGED } from '../utils/offlineQueue';
 
+import { showAlert } from '../utils/dialog';
 function cn(...inputs) {
   return twMerge(clsx(inputs));
 }
@@ -53,7 +54,7 @@ export default function StudentLayout() {
       // for teachers.
       if (dropped > 0) {
         const reasons = [...new Set((droppedReasons || []).map(d => d.reason))];
-        alert(`${dropped} saved submission${dropped > 1 ? 's' : ''} could not be uploaded:\n${reasons.map(r => `• ${r}`).join('\n')}`);
+        showAlert(`${dropped} saved submission${dropped > 1 ? 's' : ''} could not be uploaded:\n${reasons.map(r => `• ${r}`).join('\n')}`);
       }
     });
     return () => {

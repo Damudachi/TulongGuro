@@ -8,6 +8,7 @@ import { getStoredUser, updateStoredUser } from '../../utils/session';
 import { ADMIN_EMAIL_DOMAIN, buildAccountEmail, validateAccountEmail } from '../../constants/accountEmails';
 import DomainEmailField from '../../components/DomainEmailField';
 
+import { showAlert, showConfirm } from '../../utils/dialog';
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
 
 /** Temporary password handed over once, exactly as the teacher screen does it. */
@@ -150,13 +151,12 @@ export default function AdminAdmins() {
     const check = validateAccountEmail(email, 'ADMIN');
     if (!check.ok) { setPromoteError(check.error); return; }
 
-    if (!confirm(
-      `Make ${teacher.name} an admin?
-
-`
-      + `They will sign in as ${email} from now on — their old address stops working — `
-      + 'and they lose access to the teacher console. They are signed out immediately.'
-    )) return;
+    const goAhead = await showConfirm(
+      `They will sign in as ${email} from now on — their old address stops working — `
+      + 'and they lose access to the teacher console. They are signed out immediately.',
+      { title: `Make ${teacher.name} an admin?`, confirmLabel: 'Make them an admin' }
+    );
+    if (!goAhead) return;
 
     setBusyId(teacher.id);
     setPromoteError('');
@@ -184,19 +184,20 @@ export default function AdminAdmins() {
   };
 
   const handleDemote = async (admin) => {
-    if (!confirm(
-      `Remove admin access from ${admin.name}?\n\n`
-      + 'Their account becomes a teacher account — nothing is deleted — and they '
-      + 'are signed out immediately.'
-    )) return;
+    const goAhead = await showConfirm(
+      'Their account becomes a teacher account — nothing is deleted — and they '
+      + 'are signed out immediately.',
+      { title: `Remove admin access from ${admin.name}?`, confirmLabel: 'Remove admin access', danger: true }
+    );
+    if (!goAhead) return;
     setBusyId(admin.id);
     try {
       const res = await apiFetch(`${API_URL}/api/admin/${me.id}/admins/${admin.id}/demote`, { method: 'PUT' });
       const d = await res.json().catch(() => null);
       if (res.ok && d?.success) load();
-      else alert(failureMessage(res, d, 'Nothing has been changed.'));
+      else showAlert(failureMessage(res, d, 'Nothing has been changed.'));
     } catch {
-      alert('Could not reach the server. Nothing has been changed.');
+      showAlert('Could not reach the server. Nothing has been changed.');
     } finally {
       setBusyId(null);
     }
@@ -204,7 +205,8 @@ export default function AdminAdmins() {
 
   const handleResetPassword = async (admin) => {
     const password = generatePassword();
-    if (!confirm(`Reset ${admin.name}'s password? Their current one stops working immediately.`)) return;
+    if (!(await showConfirm(`Reset ${admin.name}'s password? Their current one stops working immediately.`,
+      { confirmLabel: 'Reset password', danger: true }))) return;
     setBusyId(admin.id);
     try {
       const res = await apiFetch(`${API_URL}/api/admin/${me.id}/admins/${admin.id}/password`, {
@@ -214,9 +216,9 @@ export default function AdminAdmins() {
       });
       const d = await res.json().catch(() => null);
       if (res.ok && d?.success) setCredentials({ email: admin.email, password });
-      else alert(failureMessage(res, d, 'Their existing password still works.'));
+      else showAlert(failureMessage(res, d, 'Their existing password still works.'));
     } catch {
-      alert('Could not reach the server. Their password has not been changed.');
+      showAlert('Could not reach the server. Their password has not been changed.');
     } finally {
       setBusyId(null);
     }

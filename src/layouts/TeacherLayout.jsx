@@ -8,6 +8,7 @@ import { useState, useEffect } from 'react';
 import { initOfflineQueueListener, getQueue } from '../utils/offlineQueue';
 import { API_URL, apiFetch, logout } from '../config';
 
+import { showAlert } from '../utils/dialog';
 function cn(...inputs) {
   return twMerge(clsx(inputs));
 }
@@ -47,7 +48,7 @@ export default function TeacherLayout() {
       // queue badge just goes down with no explanation of what happened.
       if (dropped > 0) {
         const reasons = [...new Set((droppedReasons || []).map(d => d.reason))];
-        alert(`${dropped} queued upload${dropped > 1 ? 's' : ''} could not be saved:\n${reasons.map(r => `• ${r}`).join('\n')}`);
+        showAlert(`${dropped} queued upload${dropped > 1 ? 's' : ''} could not be saved:\n${reasons.map(r => `• ${r}`).join('\n')}`);
       }
     });
     return () => {

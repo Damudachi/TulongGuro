@@ -256,12 +256,23 @@ export default function Analytics() {
                 const possible = graded.reduce((sum, s) => sum + (s.points || 100), 0);
                 const band = bandFor(studentData.avgScore, passingGrade);
                 // What the raw points total would be if it were a percentage.
-                // Shown next to the average because the gap between the two is
-                // exactly what the component weights do, and a teacher looking
-                // at two unrelated-looking numbers has no way to see that. Both
-                // now cover the same set of work, so the weighting is the only
-                // thing left that can explain a difference.
                 const rawPercent = possible > 0 ? Math.round((earned / possible) * 100) : null;
+                // ── The points card, weighted ──
+                //
+                // It used to headline the plain sum of marks and say "Raw total,
+                // not weighted" underneath, sitting beside an Average that runs
+                // every mark through its DepEd component weights. Two big
+                // numbers, deliberately different, with a caption explaining
+                // why — and the obvious reading was still that one was the
+                // other as a percentage, so teachers read the raw figure as the
+                // grade and were surprised by the report card.
+                //
+                // So the headline is the weighted figure now: the same
+                // percentage the Average card shows, expressed in this
+                // student's own points. The raw sum has not been thrown away —
+                // it moves to the footnote, where it is still the answer to
+                // "how many marks have they actually banked".
+                const weightedEarned = possible > 0 ? Math.round((studentData.avgScore / 100) * possible) : null;
                 return (
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                     <div className="bg-royal-50 rounded-2xl p-4">
@@ -280,17 +291,21 @@ export default function Analytics() {
                     </div>
                     <div className="bg-aqua-50 rounded-2xl p-4">
                       <p className="text-[11px] font-bold uppercase tracking-wider text-aqua-700 mb-1">Points earned</p>
-                      <p className="text-3xl font-extrabold text-aqua-700">{Math.round(earned)}<span className="text-lg text-aqua-400">/{possible}</span></p>
-                      {/* Said plainly, because the obvious reading of these two
-                          cards is that one is the other as a percentage — and
-                          it is not. This is a straight sum of marks; the
-                          average above runs each component through its weight.
-                          Where they differ, the difference is the weighting,
-                          and a teacher is entitled to see that rather than
-                          wonder which number is wrong. */}
+                      <p className="text-3xl font-extrabold text-aqua-700">{weightedEarned ?? Math.round(earned)}<span className="text-lg text-aqua-400">/{possible}</span></p>
                       <p className="text-[11px] text-slate-500 mt-1.5">
-                        Raw total, not weighted{rawPercent !== null && ` · ${rawPercent}%`}
+                        Weighted by DepEd components{weightedEarned !== null && ` · ${pct(studentData.avgScore)}%`}
                       </p>
+                      {/* The unweighted sum, kept and labelled rather than
+                          dropped: it is the honest answer to "how many marks
+                          has this learner actually banked", and the gap between
+                          it and the line above is exactly what the component
+                          weights do. Shown only when the two actually differ —
+                          a second number saying the same thing is noise. */}
+                      {weightedEarned !== null && rawPercent !== null && weightedEarned !== Math.round(earned) && (
+                        <p className="text-[11px] text-slate-400 mt-1">
+                          Raw total: {Math.round(earned)} ({rawPercent}%)
+                        </p>
+                      )}
                       {excusedCount > 0 && (
                         <p className="text-[11px] text-lilac-700 mt-1">
                           {excusedCount} excused {excusedCount === 1 ? 'activity is' : 'activities are'} left out
@@ -312,8 +327,9 @@ export default function Analytics() {
                   DepEd grades a subject by component, not by pooling marks:
                   each of Written Work, Performance Task and Quarterly
                   Assessment is scored on its own points total, then combined
-                  under weights that differ per subject. That is why the average
-                  above and the raw points beside it disagree. Components with
+                  under weights that differ per subject. That is why the cards
+                  above are weighted rather than pooled, and why the raw total
+                  in the footnote differs from them. Components with
                   nothing graded yet are dropped and the rest renormalised, so
                   the applied weight is shown next to the school's configured
                   one whenever the two differ — a teacher reading "30%" against

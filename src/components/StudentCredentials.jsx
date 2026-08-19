@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { X, Copy, Check, KeyRound, Printer } from 'lucide-react';
 
+import { showAlert } from '../utils/dialog';
 /**
  * The sign-in details for a batch of freshly created student accounts.
  *
@@ -45,7 +46,7 @@ function printSlips(students) {
   // app's layout out of it entirely.
   const w = window.open('', '_blank');
   if (!w) {
-    alert('Your browser blocked the print window. Allow pop-ups for this site and try again.');
+    showAlert('Your browser blocked the print window. Allow pop-ups for this site and try again.');
     return;
   }
   w.document.write(`<!doctype html>

@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { ShieldCheck, Loader2, Check, X, Building2, Mail, RefreshCw, AlertTriangle } from 'lucide-react';
 import { API_URL, apiFetch } from '../config';
 
+import { showAlert } from '../utils/dialog';
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
 
 /**
@@ -78,10 +79,10 @@ export default function PlatformApprovals() {
         setRejectReason('');
         load();
       } else {
-        alert(data.error || 'That did not work.');
+        showAlert(data.error || 'That did not work.');
       }
     } catch {
-      alert('Network error.');
+      showAlert('Network error.');
     } finally {
       setBusyId(null);
     }

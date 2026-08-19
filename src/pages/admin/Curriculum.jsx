@@ -6,6 +6,7 @@ import { ACTIVITY_TYPES } from '../../constants/activityTypes';
 import RubricEditor from '../../components/RubricEditor';
 import { BLANK_CRITERION, totalWeight } from '../../utils/rubric';
 
+import { showAlert, showConfirm } from '../../utils/dialog';
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
 
 
@@ -165,6 +166,14 @@ export default function AdminCurriculum() {
   const handleCreate = async (e) => {
     e.preventDefault();
     if (isSaving) return;
+    // The guide is what a curriculum IS. Without it the record is an empty
+    // shell — no lessons, so no competencies, so every activity tagged to it
+    // reaches the AI checker with nothing to mark against but the rubric. The
+    // server refuses this too; this is what says so before the round trip.
+    if (!file) {
+      setError('Upload the curriculum guide (PDF or DOCX). Its lessons are read out of the document — without it this curriculum would be published empty.');
+      return;
+    }
     if (readingDrafts.length) {
       setError(readingDrafts.length === 1
         ? 'One rubric is still being read from the file you uploaded. Give it a moment — publishing now would leave it behind.'
@@ -252,16 +261,17 @@ export default function AdminCurriculum() {
   };
 
   const handleDelete = async (curriculum) => {
-    if (!confirm(`Delete the ${curriculum.subject} curriculum for ${curriculum.gradeLevel}? Classes already created keep their copied lessons.`)) return;
+    if (!(await showConfirm(`Delete the ${curriculum.subject} curriculum for ${curriculum.gradeLevel}? Classes already created keep their copied lessons.`,
+      { confirmLabel: 'Delete curriculum', danger: true }))) return;
     setBusy(true);
     try {
       const res = await apiFetch(`${API_URL}/api/admin/${admin.id}/curriculums/${curriculum.id}`, { method: 'DELETE' });
       const d = await res.json();
-      if (d.success) load(); else alert(d.error);
+      if (d.success) load(); else showAlert(d.error);
     } catch {
       // finally alone cleared the busy flag and said nothing, so a dropped
       // connection looked identical to a completed delete.
-      alert('Could not reach the server. This curriculum has not been deleted.');
+      showAlert('Could not reach the server. This curriculum has not been deleted.');
     } finally { setBusy(false); }
   };
 
@@ -278,9 +288,9 @@ export default function AdminCurriculum() {
       if (d.success) {
         setLessonDraft({ title: '', outputType: 'Essay', weekNumber: '', description: '' });
         load();
-      } else alert(d.error);
+      } else showAlert(d.error);
     } catch {
-      alert('Could not reach the server. The lesson has not been added.');
+      showAlert('Could not reach the server. The lesson has not been added.');
     } finally { setBusy(false); }
   };
 
@@ -288,14 +298,15 @@ export default function AdminCurriculum() {
     // Confirmed, like every other delete on this page. This one alone removed a
     // lesson on a single click — and a curriculum lesson carries the rubric
     // that new classes are built from.
-    if (!confirm(`Delete the lesson "${lessonTitle || 'this lesson'}"? Classes already created from it keep their own copy.`)) return;
+    if (!(await showConfirm(`Delete the lesson "${lessonTitle || 'this lesson'}"? Classes already created from it keep their own copy.`,
+      { confirmLabel: 'Delete lesson', danger: true }))) return;
     setBusy(true);
     try {
       const res = await apiFetch(`${API_URL}/api/admin/${admin.id}/curriculums/${curriculumId}/lessons/${lessonId}`, { method: 'DELETE' });
       const d = await res.json();
-      if (d.success) load(); else alert(d.error);
+      if (d.success) load(); else showAlert(d.error);
     } catch {
-      alert('Could not reach the server. The lesson has not been deleted.');
+      showAlert('Could not reach the server. The lesson has not been deleted.');
     } finally { setBusy(false); }
   };
 
@@ -457,7 +468,10 @@ export default function AdminCurriculum() {
                   className="w-full border border-slate-200 p-2.5 rounded-lg outline-none focus:ring-2 focus:ring-brand-navy text-sm resize-none" />
               </div>
               <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1">Curriculum file (optional)</label>
+                <label className="block text-sm font-medium text-slate-700 mb-1">Curriculum file *</label>
+                <p className="text-xs text-slate-500 mb-1.5">
+                  The lessons and learning competencies are read out of this document — they are what activities are tagged to, and what the AI checker marks against.
+                </p>
                 {!file ? (
                   <label className="block border-2 border-dashed border-slate-200 rounded-lg p-4 text-center cursor-pointer hover:border-brand-navy hover:bg-blue-50 transition-colors">
                     <UploadCloud className="w-6 h-6 mx-auto mb-1 text-slate-400" />
@@ -607,15 +621,16 @@ export default function AdminCurriculum() {
               <div className="flex gap-2 pt-1">
                 <button type="button" onClick={() => { setShowForm(false); resetRubricDrafts(); }}
                   className="flex-1 py-2.5 rounded-lg border border-slate-200 text-slate-600 font-medium hover:bg-slate-50">Cancel</button>
-                {/* Held while a rubric is being read, as well as while saving —
-                    the guard in handleCreate says why. Greyed rather than
-                    hidden, so the reason is on screen next to the spinner in
-                    the card that is holding it up. */}
-                <button type="submit" disabled={isSaving || readingDrafts.length > 0}
+                {/* Held until the guide is attached, while a rubric is being
+                    read, and while saving — the guards in handleCreate say why.
+                    Greyed rather than hidden, so the reason is on screen next to
+                    the field or the spinner that is holding it up. */}
+                <button type="submit" disabled={isSaving || readingDrafts.length > 0 || !file}
                   className={cn('flex-1 py-2.5 rounded-lg text-white font-bold flex items-center justify-center gap-2',
-                    isSaving || readingDrafts.length > 0 ? 'bg-slate-300 cursor-not-allowed' : 'bg-brand-navy hover:bg-blue-900')}>
+                    isSaving || readingDrafts.length > 0 || !file ? 'bg-slate-300 cursor-not-allowed' : 'bg-brand-navy hover:bg-blue-900')}
+                  title={!file ? 'Attach the curriculum guide first' : undefined}>
                   {isSaving
-                    ? <><Loader2 className="w-4 h-4 animate-spin" /> {file ? 'Parsing...' : 'Saving...'}</>
+                    ? <><Loader2 className="w-4 h-4 animate-spin" /> Parsing...</>
                     : readingDrafts.length > 0
                       ? <><Loader2 className="w-4 h-4 animate-spin" /> Reading rubric...</>
                       : 'Publish'}

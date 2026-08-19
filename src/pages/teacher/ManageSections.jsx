@@ -7,6 +7,7 @@ import SectionMoveConfirm from '../../components/SectionMoveConfirm';
 import RosterEditor from '../../components/RosterEditor';
 import { rowsFromExtraction, isFilledRow, rosterPayload, emptyRoster, withBlankRow, normalizeRosterName } from '../../utils/roster';
 
+import { showAlert, showConfirm, showPrompt } from '../../utils/dialog';
 export default function ManageSections() {
   const [sections, setSections] = useState([]);
   const [searchQuery, setSearchQuery] = useState('');
@@ -43,9 +44,9 @@ export default function ManageSections() {
    * see the route's comment.
    */
   const renameStudent = async (sectionId, student) => {
-    const name = prompt(
-      `Correct the spelling of this learner's name.\n\nTheir Student ID (${student.username}) will not change, so they sign in exactly as before.`,
-      student.name
+    const name = await showPrompt(
+      `Their Student ID (${student.username}) will not change, so they sign in exactly as before.`,
+      { title: 'Correct the spelling', defaultValue: student.name, confirmLabel: 'Save name' }
     );
     if (name === null) return;                       // cancelled
     // Match the roster editor — a typed surname comma is kept, since it is
@@ -64,9 +65,9 @@ export default function ManageSections() {
       );
       const data = await res.json();
       if (data.success) fetchSections();
-      else alert('Could not rename: ' + (data.error || 'unknown error'));
+      else showAlert('Could not rename: ' + (data.error || 'unknown error'));
     } catch {
-      alert('Cannot reach the server. Check your connection and try again.');
+      showAlert('Cannot reach the server. Check your connection and try again.');
     }
   };
 
@@ -78,10 +79,11 @@ export default function ManageSections() {
    * behaviour for a forgotten password and a surprise for anything else.
    */
   const resetStudentPassword = async (sectionId, student) => {
-    if (!confirm(
-      `Give ${student.name} a new password?\n\n`
-      + 'They will be signed out everywhere, and you will need to read the new password to them.'
-    )) return;
+    const goAhead = await showConfirm(
+      'They will be signed out everywhere, and you will need to read the new password to them.',
+      { title: `Give ${student.name} a new password?`, confirmLabel: 'Give a new password', danger: true }
+    );
+    if (!goAhead) return;
 
     setResettingId(student.id);
     setResetResult(null);
@@ -94,10 +96,10 @@ export default function ManageSections() {
       if (data.success) {
         setResetResult({ id: student.id, password: data.password, source: data.passwordSource });
       } else {
-        alert('Could not reset the password: ' + (data.error || 'unknown error'));
+        showAlert('Could not reset the password: ' + (data.error || 'unknown error'));
       }
     } catch {
-      alert('Cannot reach the server. Check your connection and try again.');
+      showAlert('Cannot reach the server. Check your connection and try again.');
     } finally {
       setResettingId(null);
     }
@@ -120,7 +122,7 @@ export default function ManageSections() {
   useEffect(() => { fetchSections(); }, []);
 
   /** Rows to send, or null once the teacher has been asked to fix a date. */
-  const payloadFrom = (rows) => rosterPayload(rows, alert);
+  const payloadFrom = (rows) => rosterPayload(rows, showAlert);
 
   /**
    * The one call both "create a section" and "add students" make.
@@ -137,7 +139,7 @@ export default function ManageSections() {
       body: JSON.stringify({ name: sectionName, gradeLevel: grade, teacherId: user.id, studentsList, allowMove })
     });
     const data = await res.json();
-    if (!data.success) { alert('Error: ' + data.error); return null; }
+    if (!data.success) { showAlert('Error: ' + data.error); return null; }
 
     fetchSections();
     // Appended, not replaced: the confirm-and-replay path runs this twice, and
@@ -170,10 +172,10 @@ export default function ManageSections() {
     // to '' and created a section with no name at all. The server refuses that
     // now; this only saves the round trip and keeps the typed roster in place.
     const sectionName = name.trim();
-    if (!sectionName) return alert('Please give this section a name — for example "Grade 6 - Sampaguita".');
+    if (!sectionName) return showAlert('Please give this section a name — for example "Grade 6 - Sampaguita".');
     const studentsList = payloadFrom(studentRows);
     if (!studentsList) return;
-    if (!studentsList.length) return alert('Please add at least one learner.');
+    if (!studentsList.length) return showAlert('Please add at least one learner.');
     setIsLoading(true);
     setNewAccounts([]);
     try {
@@ -181,7 +183,7 @@ export default function ManageSections() {
         sectionName, grade: gradeLevel, studentsList, allowMove: false,
         onDone: () => { setName(''); setGradeLevel(''); setStudentRows(emptyRoster()); setShowForm(false); }
       });
-    } catch { alert('Network error.'); }
+    } catch { showAlert('Network error.'); }
     finally { setIsLoading(false); }
   };
 
@@ -194,7 +196,7 @@ export default function ManageSections() {
       // submitRoster runs onDone itself once nothing is left pending.
       await submitRoster({ ...req, allowMove: true });
       setMoveRequest(null);
-    } catch { alert('Network error.'); }
+    } catch { showAlert('Network error.'); }
     finally { setIsLoading(false); }
   };
 
@@ -218,10 +220,10 @@ export default function ManageSections() {
         // list rather than replacing work the teacher has already done.
         setStudentRows(prev => withBlankRow([...prev.filter(isFilledRow), ...extracted]));
       } else {
-        alert("Extraction failed: " + (data.error || 'No learners were found in that file.'));
+        showAlert("Extraction failed: " + (data.error || 'No learners were found in that file.'));
       }
     } catch {
-      alert("Network error during extraction.");
+      showAlert("Network error during extraction.");
     } finally {
       setIsExtracting(false);
       if (fileInputRef.current) fileInputRef.current.value = '';
@@ -233,7 +235,7 @@ export default function ManageSections() {
   const handleAddStudents = async (section) => {
     const studentsList = payloadFrom(addStudentRows);
     if (!studentsList) return;
-    if (!studentsList.length) return alert('Please enter at least one student name.');
+    if (!studentsList.length) return showAlert('Please enter at least one student name.');
     setIsAddingStudents(true);
     setNewAccounts([]);
     try {
@@ -241,7 +243,7 @@ export default function ManageSections() {
         sectionName: section.name, grade: section.gradeLevel, studentsList, allowMove: false,
         onDone: () => { setAddStudentRows(emptyRoster()); setEditingSectionId(null); }
       });
-    } catch { alert('Network error.'); }
+    } catch { showAlert('Network error.'); }
     finally { setIsAddingStudents(false); }
   };
 
@@ -257,8 +259,8 @@ export default function ManageSections() {
       const extracted = data.success ? rowsFromExtraction(data) : [];
       if (extracted.length) {
         setAddStudentRows(prev => withBlankRow([...prev.filter(isFilledRow), ...extracted]));
-      } else { alert('Extraction failed: ' + (data.error || 'No learners were found in that file.')); }
-    } catch { alert('Network error during extraction.'); }
+      } else { showAlert('Extraction failed: ' + (data.error || 'No learners were found in that file.')); }
+    } catch { showAlert('Network error during extraction.'); }
     finally {
       setIsExtractingEdit(false);
       if (editFileRef.current) editFileRef.current.value = '';
