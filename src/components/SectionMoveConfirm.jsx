@@ -1,4 +1,4 @@
-import { AlertTriangle, Loader2 } from 'lucide-react';
+import { AlertTriangle, Loader2, Check } from 'lucide-react';
 
 /**
  * Asks before taking learners off another section's roster.
@@ -44,7 +44,7 @@ export default function SectionMoveConfirm({ moves, targetSection, onConfirm, on
                       a unique — or a distinguishable — identity for these rows. */}
                   {m.preview.carries.map((c, i) => (
                     <li key={`c-${c.subject}-${c.gradeLevel}-${i}`} className="text-emerald-700">
-                      ✓ {c.subject} ({c.gradeLevel}) — <span className="font-bold">{c.gradeCount} grade{c.gradeCount === 1 ? '' : 's'} carry over</span>
+                      <Check className="w-3 h-3 inline" /> {c.subject} ({c.gradeLevel}) — <span className="font-bold">{c.gradeCount} grade{c.gradeCount === 1 ? '' : 's'} carry over</span>
                     </li>
                   ))}
                   {m.preview.unmatched.map((u, i) => (

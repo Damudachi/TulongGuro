@@ -106,6 +106,16 @@ export default function ActivityBuilder() {
   const [teacherClasses, setTeacherClasses] = useState([]);
   const [isLoadingClasses, setIsLoadingClasses] = useState(false);
   const classId = classIdFromUrl || pickedClassId;
+  /**
+   * Where leaving this screen goes — saving, cancelling and the back link all.
+   *
+   * navigate(-1) was used for all three, which made "leave" mean "retrace one
+   * step". Saving an activity then landed wherever the teacher happened to come
+   * from, and on the ordinary dashboard -> class -> activity path the class
+   * screen's own back button would afterwards walk forward into the activity
+   * again, because that was genuinely the previous entry.
+   */
+  const exitTo = classId ? `/teacher/class/${classId}` : '/teacher/dashboard';
   const needsClassPicker = !isEditMode && !classIdFromUrl;
   const fileInputRef = useRef(null);
   const rubricFileRef = useRef(null);
@@ -139,7 +149,13 @@ export default function ActivityBuilder() {
   // Declared before the rubric resolver below, which reads form.type and form.topic.
   const [form, setForm] = useState({
     title: '',
-    type: 'Essay',
+    // Blank, not 'Essay'. A pre-filled Type is a decision the form made and the
+    // teacher never did — and it is the field the gradebook groups columns by,
+    // so a quiz left on the default kept getting averaged in with the essays
+    // with nothing on screen looking wrong. Nothing fills this in any more:
+    // ticking a lesson used to overwrite it from the curriculum file's
+    // extracted output type, and that is gone too (see toggleTopic).
+    type: '',
     topic: '',
     // Which grading term this activity belongs to: '1' | '2' | '3', or '' for
     // not yet chosen. A string because it rides through FormData on create,
@@ -352,10 +368,16 @@ export default function ActivityBuilder() {
    * term, so its term is inferred (see termForWeek); a lesson with no week at
    * all is placed in every term rather than hidden from all of them.
    */
+  // `detail` no longer carries the lesson's output type. The curriculum
+  // document's idea of what a week produces is a suggestion extracted by the
+  // AI, and printing it here beside a checkbox read as an instruction — while
+  // the teacher setting the activity is the one who decides whether this piece
+  // of work is an essay, a summary or a short answer. The Type field above is
+  // where that decision is made and it is theirs alone; see toggleTopic.
   const coverageOptions = classLessons.map(l => ({
     id: lessonTopicId(l.id),
     name: l.weekNumber ? `Week ${l.weekNumber}: ${l.title}` : l.title,
-    detail: l.outputType ? `Output: ${l.outputType}` : null,
+    detail: null,
     term: termForWeek(l.weekNumber),
     competencies: readCompetencies(l.competencies),
     lesson: l,
@@ -443,17 +465,24 @@ export default function ActivityBuilder() {
   /**
    * Tick or untick one lesson this activity covers.
    *
-   * Ticking one also applies its output type, as the old single-select lesson
-   * dropdown did. There is no longer a second list to keep in step: the
-   * competencies come with the lesson.
+   * Ticking one used to also overwrite the activity's Type with the lesson's
+   * outputType, carried over from the old single-select lesson dropdown. That
+   * is gone. Two reasons, and the second is the one that matters:
+   *
+   *   - outputType is not the school's word. It is inferred by the AI when the
+   *     curriculum document is parsed, so what it silently applied was a guess
+   *     about a week's intended output, not a decision anybody made.
+   *   - it overwrote a field the teacher had already filled in. Set the Type to
+   *     Short Answer, then tick the week whose extracted output says Summary,
+   *     and the Type changed underneath — a control moving on its own while
+   *     they were looking somewhere else, with the gradebook column and the
+   *     grading prompt both following it.
+   *
+   * Type is now only ever what the teacher chose. Ticking a lesson does what it
+   * says on the label: it records the competencies this work is marked against.
    */
   const toggleTopic = (id) => {
-    const option = coverageById.get(id);
     const removing = selectedTopicIds.includes(id);
-
-    if (!removing && option?.lesson?.outputType) {
-      setForm(prev => ({ ...prev, type: option.lesson.outputType }));
-    }
 
     setForm(prev => {
       const current = parseTopicIds(prev.topic);
@@ -622,7 +651,11 @@ export default function ActivityBuilder() {
         if (data.gradedCount > 0) setShowRubricEditor(false);
         setForm({
           title: activity.title || '',
-          type: activity.type || 'Essay',
+          // Empty, not 'Essay'. Same reason as the blank default above: an
+          // activity saved without a type is one nobody chose a type for, and
+          // filling it in on open would put an answer in front of the teacher
+          // that the record does not actually contain.
+          type: activity.type || '',
           // A legacy activity carries its lesson only in classLessonId, and the
           // checklist below reads lessons out of `topic`. Folding it in on
           // open is what makes that lesson appear ticked rather than missing —
@@ -914,7 +947,7 @@ export default function ActivityBuilder() {
         setSavedRubrics(prev => [savedTemplate, ...prev]);
         setShowSaveTemplateModal(false);
         setTemplateTitle('');
-        showAlert(`✓ "${savedTemplate.name}" has been saved to cloud templates.`);
+        showAlert(`"${savedTemplate.name}" has been saved to cloud templates.`, { variant: 'success' });
       } else {
         showAlert('Failed to save template: ' + data.error);
       }
@@ -1020,6 +1053,13 @@ export default function ActivityBuilder() {
       showAlert('Choose which term this activity belongs to. The gradebook and its exports are filtered by term, and an activity with none is left out of all of them.');
       return;
     }
+    // Same shape as the term check above, and asked for the same reason: the
+    // gradebook shows one column per type, so an activity without one has no
+    // column to sit in.
+    if (!form.type) {
+      showAlert('Choose what kind of work this is. The gradebook shows one column per type, so an activity without one has nowhere to sit.');
+      return;
+    }
     // Trimmed, because the textarea's own `required` is satisfied by a space.
     if (!form.instructions.trim()) {
       showAlert('Write the instructions students will follow. They are what the work is set against, and the AI reads them when it checks the papers.');
@@ -1072,7 +1112,7 @@ export default function ActivityBuilder() {
           })
         });
         const data = await res.json();
-        if (data.success) navigate(-1);
+        if (data.success) navigate(exitTo);
         else showAlert('Error: ' + data.error);
       } else {
         // CREATE new activity via FormData
@@ -1091,7 +1131,7 @@ export default function ActivityBuilder() {
 
         const res = await apiFetch(`${API_URL}/api/teacher/activities`, { method: 'POST', body: fd });
         const data = await res.json();
-        if (data.success) navigate(-1);
+        if (data.success) navigate(exitTo);
         else showAlert('Error: ' + data.error);
       }
     } catch { showAlert('Network error'); }
@@ -1177,8 +1217,13 @@ export default function ActivityBuilder() {
 
   return (
     <div className="p-4 md:p-8 max-w-3xl mx-auto pb-24">
-      <button onClick={() => navigate(-1)} className="flex items-center text-sm text-slate-500 hover:text-brand-slate mb-6">
-        <ArrowLeft className="w-4 h-4 mr-1" /> Back to Class
+      {/* Same rule as ClassHub's: the link names a place, so it goes to that
+          place rather than to whatever the previous history entry happens to
+          be. Falls back to the dashboard only when there is no class to go
+          back to — /teacher/activity/new is reachable without one. */}
+      <button onClick={() => navigate(exitTo)}
+        className="flex items-center text-sm text-slate-500 hover:text-brand-slate mb-6">
+        <ArrowLeft className="w-4 h-4 mr-1" /> {classId ? 'Back to Class' : 'Back to Dashboard'}
       </button>
       <h1 className="text-2xl font-bold text-brand-slate mb-6">{isEditMode ? 'Edit Activity' : 'Create New Activity'}</h1>
 
@@ -1327,12 +1372,18 @@ export default function ActivityBuilder() {
 
           <div className="grid grid-cols-2 gap-4">
             <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">Type</label>
+              <label className="block text-sm font-medium text-slate-700 mb-1">
+                Type <span className="text-red-500">*</span>
+              </label>
               <select value={form.type} onChange={e => setForm({ ...form, type: e.target.value })}
                 className="w-full px-4 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-brand-navy outline-none">
+                <option value="">-- Select --</option>
                 {ACTIVITY_TYPES.map(t => <option key={t}>{t}</option>)}
-                {/* A lesson's outputType (or an older activity) may use a type not in the
-                    list — keep it selectable so it isn't silently rewritten to Essay. */}
+                {/* An activity saved before the Type field became the
+                    teacher's alone can carry a type this list never had (it
+                    came from a lesson's extracted outputType). Keep it
+                    selectable so opening such an activity does not silently
+                    rewrite it to Essay. */}
                 {form.type && !ACTIVITY_TYPES.includes(form.type) && <option key={form.type}>{form.type}</option>}
               </select>
               <p className="text-xs text-slate-400 mt-1">The gradebook shows one column per type.</p>
@@ -2286,7 +2337,7 @@ export default function ActivityBuilder() {
         )}
 
         <div className="flex justify-end pt-2">
-          <button type="button" onClick={() => navigate(-1)}
+          <button type="button" onClick={() => navigate(exitTo)}
             className="px-6 py-2 rounded-lg text-slate-600 font-medium hover:bg-slate-100 mr-4 transition-colors">Cancel</button>
           <button type="submit" disabled={isSaving || (!isEditMode && !classId) || rubricMissing}
             title={

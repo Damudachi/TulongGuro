@@ -1,9 +1,12 @@
 import { useState, useEffect } from 'react';
-import { ClipboardList, ChevronDown, ChevronRight, Edit2, Trash2, Plus, X } from 'lucide-react';
+import { ClipboardList, ChevronDown, ChevronRight, Edit2, Trash2, Plus, X, UploadCloud, Loader2, AlertTriangle, Percent, ListOrdered } from 'lucide-react';
 import { API_URL, apiFetch } from '../../config';
 import { getStoredUser } from '../../utils/session';
 
 import { showAlert, showConfirm } from '../../utils/dialog';
+
+function cn(...cls) { return cls.filter(Boolean).join(' '); }
+
 // Helper for dynamic band colors based on label
 const getBandColor = (label, index, totalBands) => {
   if (!label) return { bg: 'bg-slate-100', text: 'text-slate-700', border: 'border-slate-200' };
@@ -66,6 +69,13 @@ export default function RubricManager() {
 
   // Edit State
   const [editingRubric, setEditingRubric] = useState(null);
+  // Which shape a brand-new rubric will have, asked before the editor opens.
+  // The two are marked in genuinely different units — percentage weights versus
+  // banded points — and the editor renders differently for each, so it is a
+  // choice rather than something to infer from an empty rubric.
+  const [newRubricType, setNewRubricType] = useState(null);
+  const [isUploading, setIsUploading] = useState(false);
+  const [uploadError, setUploadError] = useState('');
 
   useEffect(() => {
     apiFetch(`${API_URL}/api/rubric-templates/builtin`)
@@ -120,6 +130,91 @@ export default function RubricManager() {
     }
   };
 
+  /**
+   * ── Making a rubric of your own ──
+   *
+   * This screen could only ever show rubrics and copy one. Everything that
+   * actually *creates* a teacher rubric lived inside the activity builder, so a
+   * teacher who wanted one had to start an activity they might not want in
+   * order to write it, and the page called "Grading Rubrics" — the obvious
+   * place to go — had no way to make one. Both routes it needs already existed
+   * on the server; only the buttons were missing.
+   *
+   * Two ways in, because teachers arrive with two different things in hand:
+   * a blank sheet, or the rubric their department already wrote in a Word or
+   * PDF file.
+   */
+
+  /** A blank rubric of the chosen shape, opened straight into the editor. */
+  const startCreating = (type) => {
+    setNewRubricType(null);
+    setEditingRubric({
+      // No id and no _id: saveEditedRubric reads isNew to know this is a
+      // create rather than an edit of something that already exists.
+      isNew: true,
+      type,
+      name: '',
+      description: '',
+      gradeRange: '',
+      criteria: [{
+        name: '', points: type === 'standard' ? 100 : 5, description: '',
+        ...(type === 'range' ? { bands: JSON.parse(JSON.stringify(DEFAULT_RANGE_BANDS)) } : {}),
+      }],
+    });
+  };
+
+  /**
+   * Read a rubric out of an uploaded document and open it in the editor.
+   *
+   * Deliberately lands in the editor rather than saving straight off. What
+   * comes back is an extraction, not a transcription — criterion weights get
+   * rescaled, band descriptions get condensed — and a rubric is what every
+   * paper in the class is then marked against. It is reviewed before it is
+   * kept, the same way the activity builder shows the extracted criteria
+   * before the activity is published.
+   */
+  const handleRubricUpload = async (e) => {
+    const file = e.target.files?.[0];
+    // Cleared immediately so picking the same file twice still fires a change
+    // event — otherwise a failed extraction cannot be retried without choosing
+    // a different file first.
+    e.target.value = '';
+    if (!file) return;
+
+    setUploadError('');
+    setIsUploading(true);
+    try {
+      const fd = new FormData();
+      fd.append('rubricFile', file);
+      // No activityPoints: this rubric is not being written for one activity,
+      // so there is no total to divide the criteria into. The server falls back
+      // to percentage weights, which is the right shape for a reusable template.
+      const res = await apiFetch(`${API_URL}/api/teacher/rubric/extract`, { method: 'POST', body: fd });
+      const data = await res.json().catch(() => null);
+
+      if (!res.ok || !data?.success || !Array.isArray(data.criteria) || data.criteria.length === 0) {
+        setUploadError(data?.error
+          || 'No criteria could be read from that file. A rubric table in Word, PDF or an image works best.');
+        return;
+      }
+
+      setEditingRubric({
+        isNew: true,
+        type: data.rubricType || (data.criteria.some(c => c.bands?.length) ? 'range' : 'standard'),
+        // The filename with its extension dropped: it is almost always what the
+        // teacher calls this rubric, and it is editable in the very next field.
+        name: file.name.replace(/\.[^.]+$/, '').slice(0, 80),
+        description: '',
+        gradeRange: '',
+        criteria: data.criteria,
+      });
+    } catch {
+      setUploadError('Network error while reading that file. Please try again.');
+    } finally {
+      setIsUploading(false);
+    }
+  };
+
   const startEditing = (rubric) => {
     setEditingRubric(JSON.parse(JSON.stringify(rubric))); // Deep copy
   };
@@ -135,29 +230,48 @@ export default function RubricManager() {
       }
     }
 
+    if (!editingRubric.name?.trim()) {
+      showAlert('Give this rubric a name so you can find it in the picker later.');
+      return;
+    }
+    if (editingRubric.criteria.some(c => !c.name?.trim())) {
+      showAlert('Every criterion needs a name — an unnamed one tells neither the AI nor the student what was marked.');
+      return;
+    }
+
     // Built-ins and the school's own rubrics aren't the teacher's to change, so
-    // editing one saves a private copy instead of rewriting the original.
-    const isBorrowed = prebuiltRubrics.some(r => r.id === editingRubric.id)
-      || schoolRubrics.some(r => r.id === editingRubric.id);
+    // editing one saves a private copy instead of rewriting the original. A
+    // rubric created or uploaded here is new outright and keeps the name it was
+    // given — there is no original for it to be a copy of.
+    const isBorrowed = !editingRubric.isNew && (
+      prebuiltRubrics.some(r => r.id === editingRubric.id)
+      || schoolRubrics.some(r => r.id === editingRubric.id)
+    );
 
     try {
-      if (isBorrowed) {
+      if (isBorrowed || editingRubric.isNew) {
         // Create new
         const res = await apiFetch(`${API_URL}/api/teacher/rubric-templates`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             teacherId,
-            name: `${editingRubric.name} (Customized)`,
+            name: editingRubric.isNew ? editingRubric.name.trim() : `${editingRubric.name} (Customized)`,
             description: editingRubric.description,
             gradeRange: editingRubric.gradeRange,
             criteria: editingRubric.criteria,
             isPublic: false
           })
         });
-        if (res.ok) {
+        const data = await res.json().catch(() => ({}));
+        if (res.ok && data.success !== false) {
           setEditingRubric(null);
           fetchSavedRubrics(teacherId);
+        } else {
+          // The duplicate-name refusal names the rubric already using it, which
+          // is the whole point of that guard — swallowing it left the teacher
+          // pressing Save on a form that silently did nothing.
+          showAlert(data.error || 'Could not save this rubric.');
         }
       } else {
         // Update existing
@@ -281,12 +395,45 @@ export default function RubricManager() {
 
   return (
     <div className="p-4 md:p-8 max-w-5xl mx-auto pb-24">
-      <div className="mb-8">
-        <h1 className="text-2xl font-bold text-brand-slate flex items-center gap-2">
-          <ClipboardList className="w-6 h-6 text-brand-navy" /> Grading Rubrics
-        </h1>
-        <p className="text-slate-500 text-sm mt-1">Manage standard and custom grading rubrics for your activities</p>
+      <div className="mb-8 flex flex-col md:flex-row md:items-start justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-bold text-brand-slate flex items-center gap-2">
+            <ClipboardList className="w-6 h-6 text-brand-navy" /> Grading Rubrics
+          </h1>
+          <p className="text-slate-500 text-sm mt-1">Write, upload and manage the rubrics your activities are graded against</p>
+        </div>
+        <div className="flex gap-2 shrink-0">
+          {/* A label wrapping a hidden input: a <button> cannot open a file
+              picker without reaching for a ref, and the label already is the
+              control the browser wants here. */}
+          <label className={cn('border border-slate-200 bg-white text-brand-slate px-4 py-2.5 rounded-lg text-sm font-bold hover:border-brand-navy flex items-center gap-2',
+            isUploading ? 'opacity-50 pointer-events-none' : 'cursor-pointer')}>
+            {isUploading
+              ? <><Loader2 className="w-4 h-4 animate-spin" /> Reading file…</>
+              : <><UploadCloud className="w-4 h-4" /> Upload Rubric</>}
+            <input type="file" className="hidden" disabled={isUploading}
+              accept=".pdf,.doc,.docx,.png,.jpg,.jpeg,.webp"
+              onChange={handleRubricUpload} />
+          </label>
+          <button onClick={() => { setNewRubricType('choose'); setUploadError(''); }}
+            className="bg-brand-navy text-white px-4 py-2.5 rounded-lg text-sm font-bold hover:bg-blue-900 shadow-md flex items-center gap-2">
+            <Plus className="w-4 h-4" /> Create Rubric
+          </button>
+        </div>
       </div>
+
+      {uploadError && (
+        <div role="alert" className="mb-6 bg-amber-50 border border-amber-200 rounded-xl p-4 flex items-start gap-3">
+          <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+          <div className="min-w-0">
+            <p className="text-sm font-bold text-amber-800">Could not read that rubric</p>
+            <p className="text-xs text-amber-700 mt-0.5 leading-relaxed">{uploadError}</p>
+          </div>
+          <button onClick={() => setUploadError('')} className="text-amber-500 hover:text-amber-700 shrink-0">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
 
       {/* Ordered by authority: what the school published, then the teacher's
           own, then generic samples. */}
@@ -317,6 +464,54 @@ export default function RubricManager() {
         </div>
       </div>
 
+      {/* ── Which shape, before the blank editor opens ──
+          Standard and Range are not two skins of one thing: one splits 100% of
+          the mark between criteria, the other scores each criterion on its own
+          band ladder, and the editor and the grader both branch on it. Asking
+          once here is cheaper than a teacher filling in five criteria and then
+          finding the columns are the wrong units. */}
+      {newRubricType === 'choose' && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl p-6 w-full max-w-lg shadow-xl">
+            <h2 className="text-xl font-bold text-brand-slate mb-1">Create a rubric</h2>
+            <p className="text-slate-500 text-sm mb-5">How is this one marked?</p>
+
+            <button onClick={() => startCreating('standard')}
+              className="w-full text-left border-2 border-slate-200 rounded-xl p-4 mb-3 hover:border-brand-navy hover:bg-slate-50 transition-colors flex gap-3">
+              <span className="w-10 h-10 rounded-xl bg-green-100 text-green-700 grid place-items-center shrink-0">
+                <Percent className="w-5 h-5" />
+              </span>
+              <span className="min-w-0">
+                <span className="block font-bold text-brand-slate">Standard — percentage weights</span>
+                <span className="block text-xs text-slate-500 mt-0.5 leading-relaxed">
+                  Each criterion takes a share of the mark, and the shares add up to 100%.
+                  Content 40%, Organisation 30%, Grammar 30%.
+                </span>
+              </span>
+            </button>
+
+            <button onClick={() => startCreating('range')}
+              className="w-full text-left border-2 border-slate-200 rounded-xl p-4 hover:border-brand-navy hover:bg-slate-50 transition-colors flex gap-3">
+              <span className="w-10 h-10 rounded-xl bg-purple-100 text-purple-700 grid place-items-center shrink-0">
+                <ListOrdered className="w-5 h-5" />
+              </span>
+              <span className="min-w-0">
+                <span className="block font-bold text-brand-slate">Range — scoring bands</span>
+                <span className="block text-xs text-slate-500 mt-0.5 leading-relaxed">
+                  Each criterion is scored on its own ladder, with a description per level.
+                  Excellent 5, Very Good 4, Good 3, and so on.
+                </span>
+              </span>
+            </button>
+
+            <button onClick={() => setNewRubricType(null)}
+              className="mt-4 w-full py-2.5 rounded-lg border border-slate-200 text-slate-600 font-medium hover:bg-slate-50">
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Full-Screen Edit Modal */}
       {editingRubric && (() => {
         const type = detectRubricType(editingRubric);
@@ -326,7 +521,15 @@ export default function RubricManager() {
               <div className="sticky top-0 bg-white border-b border-slate-200 p-4 flex items-center justify-between z-10">
                 <h2 className="font-bold text-lg text-brand-slate flex items-center gap-2">
                   <Edit2 className="w-5 h-5 text-brand-navy" />
-                  Edit Rubric {(prebuiltRubrics.some(r => r.id === editingRubric.id) || schoolRubrics.some(r => r.id === editingRubric.id)) && <span className="text-xs font-normal text-slate-500">(Will save as your own copy)</span>}
+                  {editingRubric.isNew ? 'New Rubric' : 'Edit Rubric'}
+                  {editingRubric.isNew && (
+                    <span className="text-xs font-normal text-slate-500">
+                      ({type === 'standard' ? 'percentage weights' : 'scoring bands'})
+                    </span>
+                  )}
+                  {!editingRubric.isNew
+                    && (prebuiltRubrics.some(r => r.id === editingRubric.id) || schoolRubrics.some(r => r.id === editingRubric.id))
+                    && <span className="text-xs font-normal text-slate-500">(Will save as your own copy)</span>}
                 </h2>
                 <button onClick={() => setEditingRubric(null)} className="p-2 hover:bg-slate-100 rounded-full text-slate-500">
                   <X className="w-5 h-5" />
@@ -336,8 +539,11 @@ export default function RubricManager() {
               <div className="p-6 flex-1">
                 <div className="mb-6">
                   <label className="block text-sm font-medium text-slate-700 mb-1">Rubric Name</label>
-                  <input type="text" value={editingRubric.name} onChange={e => setEditingRubric({...editingRubric, name: e.target.value})}
+                  <input type="text" value={editingRubric.name} autoFocus={!!editingRubric.isNew}
+                    onChange={e => setEditingRubric({...editingRubric, name: e.target.value})}
+                    placeholder="e.g. Narrative Essay Rubric"
                     className="w-full border border-slate-200 p-2.5 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand-navy" />
+                  <p className="text-xs text-slate-400 mt-1">This is the name you'll pick from when building an activity.</p>
                 </div>
 
                 <div className="space-y-3 mb-6">

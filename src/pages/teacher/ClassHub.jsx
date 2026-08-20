@@ -7,6 +7,7 @@ import { getStoredUser } from '../../utils/session';
 import { saveClassSnapshot, readClassSnapshot } from '../../utils/offlineSnapshot';
 
 import { showAlert, showConfirm } from '../../utils/dialog';
+import { ACTIVITY_TYPES } from '../../constants/activityTypes';
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
 
 /**
@@ -44,7 +45,7 @@ export default function ClassHub() {
   // No `points` — see the read-only field in the edit modal below.
   // No `topic`: the quick edit does not ask for one, and sending it would post
   // whatever was loaded back over a value Advanced Edit may have since set.
-  const [editForm, setEditForm] = useState({ title: '', type: 'Essay', deadline: '', instructions: '' });
+  const [editForm, setEditForm] = useState({ title: '', type: '', deadline: '', instructions: '' });
   const [deleteConfirmText, setDeleteConfirmText] = useState('');
   const [isDeleting, setIsDeleting] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
@@ -75,7 +76,10 @@ export default function ClassHub() {
     setEditActivity(activity);
     setEditForm({
       title: activity.title || '',
-      type: activity.type || 'Essay',
+      // The activity's own type, or blank. Never 'Essay': this modal saves
+      // every field it holds, so a default here is not a placeholder — it is
+      // a value about to be written over whatever the activity really was.
+      type: activity.type || '',
       deadline: activity.deadline ? String(activity.deadline).split('T')[0] : '',
       instructions: activity.instructions || ''
     });
@@ -162,7 +166,13 @@ export default function ClassHub() {
 
   return (
     <div className="p-4 md:p-8 max-w-6xl mx-auto relative min-h-full">
-      <button onClick={() => navigate(-1)} className="flex items-center text-sm text-slate-500 hover:text-brand-slate mb-4">
+      {/* A destination, not history. navigate(-1) meant "wherever you came
+          from", and the ordinary path through this screen is dashboard -> class
+          -> activity -> back -> class: at that point the previous entry IS the
+          activity, so a button labelled "Back to Dashboard" walked forward into
+          the activity again. A back link that names where it goes has to go
+          there whatever route the teacher took to arrive. */}
+      <button onClick={() => navigate('/teacher/dashboard')} className="flex items-center text-sm text-slate-500 hover:text-brand-slate mb-4">
         <ArrowLeft className="w-4 h-4 mr-1" /> Back to Dashboard
       </button>
 
@@ -447,15 +457,27 @@ export default function ClassHub() {
               <div className="flex gap-4">
                 <div className="flex-1">
                   <label className="block text-sm font-medium text-slate-700 mb-1">Type</label>
+                  {/* The shared ACTIVITY_TYPES list, not a hand-written four.
+                      This dropdown offered Essay, Journal, Reflection and Short
+                      Story — one of which ("Short Story") is not a real type at
+                      all, while ten that are (Short Answer, Survey/Form, Quiz,
+                      Summary and the rest) were missing. Opening a Survey/Form
+                      activity here therefore showed a select with nothing
+                      matching, and picking any option to get out of it retyped
+                      the activity — which moves the column it sits in in the
+                      gradebook. */}
                   <select
                     value={editForm.type}
                     onChange={(e) => setEditForm((prev) => ({ ...prev, type: e.target.value }))}
                     className="w-full border border-slate-200 p-2 rounded-lg outline-none focus:ring-2 focus:ring-brand-navy"
                   >
-                    <option value="Essay">Essay</option>
-                    <option value="Journal">Journal</option>
-                    <option value="Reflection">Reflection</option>
-                    <option value="Short Story">Short Story</option>
+                    <option value="">-- Select --</option>
+                    {ACTIVITY_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+                    {/* An activity saved with a type the list never had stays
+                        selectable, so opening it does not quietly rewrite it. */}
+                    {editForm.type && !ACTIVITY_TYPES.includes(editForm.type) && (
+                      <option key={editForm.type} value={editForm.type}>{editForm.type}</option>
+                    )}
                   </select>
                 </div>
                 {/* Read-only, and left out of the save entirely.

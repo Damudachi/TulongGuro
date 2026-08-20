@@ -9161,6 +9161,69 @@ function feedbackSubstantivelyChanged(hitlFeedbackRaw, aiFeedbackRaw) {
   return hitlFeedbackRaw !== aiFeedbackRaw;
 }
 
+/**
+ * Delete a submission outright — the photo and everything derived from it.
+ *
+ * Until now the only way to change work already on file was to replace it or
+ * append to it, and both keep a row. There was no way back to "nothing handed
+ * in". That gap is not theoretical: a teacher who scans a paper against the
+ * wrong learner, or uploads to the wrong activity, or has an AI check run on a
+ * photo they then meant to discard, had a row they could edit forever and never
+ * remove — and on the roster it kept reading as work that exists.
+ *
+ * What goes with it:
+ *   - the stored image, deleted from object storage on a best effort. A failure
+ *     there must not fail the request: the row is the thing the app reads, and
+ *     an orphaned blob is cheaper than a submission that cannot be deleted.
+ *   - every grading result on the row — AI score, validated score, feedback,
+ *     rubric breakdown. That is the point of the action, and the confirm on the
+ *     client says so in those words.
+ *
+ * What survives: GradingAuditLog. Its submissionId is nullable and SetNull on
+ * delete precisely so the record of who marked what, and how it changed, is not
+ * erasable by deleting the paper it was about. The row keeps its denormalized
+ * studentId/activityId/activityTitle and stays readable.
+ *
+ * Refused once the result has been released, exactly as replacing is. The
+ * student has already seen the mark; making it vanish is worse than leaving a
+ * wrong one visible, and un-releasing is a deliberate act with its own route.
+ */
+app.delete('/api/teacher/submissions/:submissionId', async (req, res) => {
+  try {
+    const submission = await prisma.submission.findUnique({
+      where: { id: req.params.submissionId },
+      select: { id: true, activityId: true, imageUrl: true, releasedAt: true },
+    });
+    if (!submission) return res.status(404).json({ success: false, error: 'This submission no longer exists.' });
+
+    // Ownership through the activity's class, the same ladder upload and
+    // grading use. Never trust an id in the path to belong to the caller.
+    const owned = await teacherOwnsActivity(submission.activityId, req.auth.sub);
+    if (!owned.ok) return res.status(owned.code).json({ success: false, error: owned.error });
+
+    if (submission.releasedAt) {
+      return res.status(400).json({
+        success: false,
+        error: 'This result has already been released to the student, so it can no longer be removed.',
+      });
+    }
+
+    await prisma.submission.delete({ where: { id: submission.id } });
+
+    // After the row is gone, not before. Deleting the file first and then
+    // failing the row delete would leave a submission pointing at nothing,
+    // which renders as a broken image the teacher still cannot remove.
+    if (submission.imageUrl) {
+      deleteFromCloud(submission.imageUrl).catch(err =>
+        console.warn('[submission delete] could not remove stored file:', err.message));
+    }
+
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
 app.put('/api/teacher/submissions/:id/grade', async (req, res) => {
   try {
     // The acting teacher comes from the session. authorizePath already
@@ -11195,7 +11258,7 @@ app.post('/api/teacher/upload', submissionUpload.fields([{ name: 'image', maxCou
   // Tracked outside the try so the privacy-rejection path can un-persist it.
   let storedUrl = null;
   try {
-    const { studentId, activityId, skipGrading } = req.body;
+    const { studentId, activityId, skipGrading, appendPages } = req.body;
     const imageFiles = [...(req.files?.images || []), ...(req.files?.image || [])];
     if (imageFiles.length === 0) return res.status(400).json({ error: 'No image provided' });
     // Require a real student to be assigned before AI grading
@@ -11211,17 +11274,42 @@ app.post('/api/teacher/upload', submissionUpload.fields([{ name: 'image', maxCou
     // desync what the student sees from what is now on file. Caught here
     // instead of spending an upload and a grading request on a request that
     // was always going to be refused.
-    const existingForRelease = await prisma.submission.findFirst({ where: { studentId, activityId }, select: { releasedAt: true } });
+    const existingForRelease = await prisma.submission.findFirst({ where: { studentId, activityId }, select: { releasedAt: true, imageUrl: true } });
     if (existingForRelease?.releasedAt) {
       return res.status(400).json({ success: false, error: 'This submission has already been released to the student, so the photo can\'t be replaced here.' });
     }
 
+    // ── Append pages to existing submission ──
+    // When appendPages is set, the new images are stitched below the existing
+    // composite image rather than replacing it. This lets a teacher add a
+    // missed page without losing what was already scanned. The combined image
+    // then goes through the same grading flow as a fresh upload.
+    let filesToProcess = imageFiles;
+    let existingTempPath = null;
+    if (appendPages === 'true' && existingForRelease?.imageUrl) {
+      try {
+        const resolved = await resolveLocalImagePath(existingForRelease.imageUrl);
+        existingTempPath = resolved.isTemp ? resolved.path : null;
+        // Prepend the existing image as the first "page" so it appears above
+        // the newly added pages when stitched vertically.
+        filesToProcess = [
+          { path: resolved.path, filename: path.basename(resolved.path), mimetype: 'image/jpeg' },
+          ...imageFiles
+        ];
+      } catch (dlErr) {
+        console.error('⚠ Could not download existing image for appending:', dlErr.message);
+        // Fall back to treating this as a replacement rather than failing entirely.
+      }
+    }
+
     // 1) Photos are stitched and optimised; a PDF or Word file is stored as-is.
-    const prepared = await prepareSubmissionUpload(imageFiles);
+    const prepared = await prepareSubmissionUpload(filesToProcess);
     const processedPath = prepared.path;
     const processedUrl = await uploadToCloud(processedPath, prepared.filename, { contentType: prepared.contentType });
     storedUrl = processedUrl;
     prepared.extraToDelete.forEach(f => { try { fs.unlinkSync(f); } catch {} });
+    // Clean up the temp copy of the existing image (only created for remote storage).
+    if (existingTempPath) { try { fs.unlinkSync(existingTempPath); } catch {} }
     let submissionData;
     // Set when the photo was stored but the AI could not be reached, so the
     // response can say so without pretending the paper was graded.
