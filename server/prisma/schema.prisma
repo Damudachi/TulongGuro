@@ -603,6 +603,25 @@ model Submission {
   /// teacher entered. Nullable, so every existing row is "not created by a
   /// transfer" without a backfill.
   transferId            String?
+  /// Where each page ends inside the stitched composite `imageUrl`, as a JSON
+  /// array of ascending fractions of its total height, the last one exactly 1.
+  /// Null for a single page, and for a PDF or Word file — neither has
+  /// boundaries anything here can see.
+  ///
+  /// Multi-page work is flattened into one tall image on upload, which is what
+  /// the AI reads and what the review pane shows. Nothing recorded where one
+  /// page stopped, so a teacher who scanned page 3 twice, or shot a neighbour's
+  /// paper by mistake, could only delete the whole submission — grade, feedback
+  /// and all — and scan every page again. This is what makes one page
+  /// removable on its own: the composite is re-cropped around the boundaries
+  /// recorded here (see DELETE /api/teacher/submissions/:id/pages/:pageIndex).
+  ///
+  /// Fractions rather than pixels because the composite is rescaled after it is
+  /// stitched (and could be again); a proportion survives that, an offset does
+  /// not. Nullable and additive, so submissions uploaded before this existed
+  /// read as "page boundaries unknown" and keep the old all-or-nothing Remove
+  /// rather than being wrongly described as single-page.
+  pageBreaks            String?
   status                String            @default("PENDING")
   /// When the teacher published this result to the student.
   ///

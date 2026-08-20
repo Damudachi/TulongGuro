@@ -7745,7 +7745,10 @@ async function prepareSubmissionUpload(files) {
     throw err;
   }
   if (docs.length === 1) {
-    return { path: docs[0].path, filename: docs[0].filename, contentType: docs[0].mimetype, extraToDelete: [] };
+    // A PDF or Word file keeps its own pagination, which nothing here can see
+    // or crop — so no page boundaries are recorded and per-page removal is not
+    // offered for one.
+    return { path: docs[0].path, filename: docs[0].filename, contentType: docs[0].mimetype, extraToDelete: [], pageBreaks: null };
   }
 
   const combined = await stitchPages(images);
@@ -7754,6 +7757,10 @@ async function prepareSubmissionUpload(files) {
     path: processedPath,
     filename: path.basename(processedPath),
     contentType: 'image/jpeg',
+    // Where one page ends and the next begins, as a fraction of the finished
+    // image's height. preprocessImage only ever scales it uniformly, so the
+    // fractions stitchPages measured still hold here.
+    pageBreaks: combined.pageBreaks,
     // preprocessImage writes a *new* file and leaves its input behind; without
     // this the pre-processing original accumulates on every upload. Guarded on
     // inequality because preprocessImage returns its input unchanged when sharp
@@ -7799,32 +7806,89 @@ async function preprocessImage(inputPath) {
 }
 
 /**
+ * Widest a stitched page is rendered at. preprocessImage caps the finished
+ * composite at the same width, so normalising to anything larger here would be
+ * scaled straight back down — it would only cost memory on the way through.
+ */
+const STITCH_PAGE_WIDTH = 1920;
+
+/**
  * Combine one or more uploaded page images into a single local image file.
  * A single file is returned as-is; multiple files are stitched vertically so
  * multi-page outputs reach the AI as one continuous document.
- * Returns { path, filename, isStitched }.
+ * Returns { path, filename, isStitched, pageBreaks }.
+ *
+ * Every page is scaled to one common width first. The old version composited
+ * each photo at its own pixel width onto a canvas as wide as the widest one,
+ * so a page shot from further back — or in portrait next to a landscape one —
+ * sat in the top-left of its band with a white margin running down the right
+ * of the whole document. That is the "empty space beside the pages" a teacher
+ * sees in the review pane, and the model sees it too: the page it is reading
+ * suddenly changes scale halfway down.
+ *
+ * `pageBreaks` records where each page ends as a fraction of the total height
+ * (ascending, last entry exactly 1). Fractions rather than pixels because
+ * preprocessImage rescales this image afterwards, and a proportion survives
+ * that where a pixel offset would not. It is what lets a single page be pulled
+ * back out later — see DELETE /api/teacher/submissions/:id/pages/:pageIndex.
+ * Null for a lone page: there is no boundary to record.
  */
 async function stitchPages(imageFiles) {
   if (imageFiles.length === 1) {
-    return { path: imageFiles[0].path, filename: imageFiles[0].filename, isStitched: false };
+    return { path: imageFiles[0].path, filename: imageFiles[0].filename, isStitched: false, pageBreaks: null };
   }
 
-  const metadataList = await Promise.all(imageFiles.map(f => sharp(f.path).metadata()));
-  const totalHeight = metadataList.reduce((sum, m) => sum + (m.height || 0), 0);
-  const maxWidth = Math.max(...metadataList.map(m => m.width || 0));
+  // `.rotate()` before measuring, not after. EXIF orientation is not applied to
+  // a composite's inputs, and metadata() reports the stored dimensions, so a
+  // portrait phone photo tagged "rotate 90" was measured landscape and pasted
+  // in sideways — with a band the wrong shape reserved for it.
+  const upright = [];
+  for (const f of imageFiles) {
+    const buffer = await sharp(f.path).rotate().toBuffer();
+    upright.push({ buffer, meta: await sharp(buffer).metadata() });
+  }
+
+  // The widest page decides, capped at the width the finished image is served
+  // at anyway. Levelling down to the *narrowest* would throw away detail on the
+  // best-shot page in the set, and these are handwritten answers being read by
+  // a model — enlarging a small scan costs nothing but bytes, shrinking a good
+  // one costs legibility.
+  const targetWidth = Math.min(
+    STITCH_PAGE_WIDTH,
+    Math.max(...upright.map(u => u.meta.width || 0)) || STITCH_PAGE_WIDTH
+  );
+
+  const pages = [];
+  for (const u of upright) {
+    if ((u.meta.width || 0) === targetWidth) {
+      pages.push({ buffer: u.buffer, height: u.meta.height || 0 });
+      continue;
+    }
+    const resized = await sharp(u.buffer).resize({ width: targetWidth }).toBuffer();
+    const meta = await sharp(resized).metadata();
+    pages.push({ buffer: resized, height: meta.height || 0 });
+  }
+
+  const totalHeight = pages.reduce((sum, p) => sum + p.height, 0);
 
   let currentTop = 0;
-  const compositeOps = imageFiles.map((f, i) => {
-    const op = { input: f.path, top: currentTop, left: 0 };
-    currentTop += metadataList[i].height || 0;
-    return op;
-  });
+  const compositeOps = [];
+  const pageBreaks = [];
+  for (const page of pages) {
+    compositeOps.push({ input: page.buffer, top: currentTop, left: 0 });
+    currentTop += page.height;
+    pageBreaks.push(totalHeight ? currentTop / totalHeight : 0);
+  }
+  // The composite is exactly as tall as its pages, but rounding on the way
+  // through leaves the last boundary a hair short of the bottom edge, and a
+  // crop derived from it would clip the final line of the last page.
+  if (pageBreaks.length) pageBreaks[pageBreaks.length - 1] = 1;
 
   const outFilename = `stitched-${Date.now()}-${Math.floor(Math.random() * 1000)}.jpg`;
   const outPath = path.join(__dirname, 'uploads', outFilename);
 
   await sharp({
-    create: { width: maxWidth, height: totalHeight, channels: 3, background: { r: 255, g: 255, b: 255 } }
+    create: { width: targetWidth, height: totalHeight, channels: 3, background: { r: 255, g: 255, b: 255 } }
   })
     .composite(compositeOps)
     .jpeg({ quality: 85 })
@@ -7833,7 +7897,39 @@ async function stitchPages(imageFiles) {
   // Cleanup the individual uploaded parts
   imageFiles.forEach(f => { try { fs.unlinkSync(f.path); } catch {} });
 
-  return { path: outPath, filename: outFilename, isStitched: true };
+  return { path: outPath, filename: outFilename, isStitched: true, pageBreaks };
+}
+
+/**
+ * Fold a submission's existing page boundaries into a fresh stitch that had
+ * that whole submission as its first page.
+ *
+ * The append flow hands stitchPages the composite already on file plus the new
+ * photos, so the stitch counts what may be four pages as one. Without this, a
+ * teacher who added a page to a three-page paper would find the first three
+ * fused into a single un-removable block.
+ */
+function mergePageBreaks(stitchBreaks, priorBreaks) {
+  if (!Array.isArray(stitchBreaks) || stitchBreaks.length === 0) return stitchBreaks;
+  if (!Array.isArray(priorBreaks) || priorBreaks.length === 0) return stitchBreaks;
+  const firstBand = stitchBreaks[0];
+  return [...priorBreaks.map(b => b * firstBand), ...stitchBreaks.slice(1)];
+}
+
+/** How `pageBreaks` is stored: a JSON array, or null when there is one page. */
+function serializePageBreaks(breaks) {
+  return Array.isArray(breaks) && breaks.length > 1 ? JSON.stringify(breaks) : null;
+}
+
+/** A stored `pageBreaks` string back as ascending fractions, or null. */
+function parsePageBreaks(raw) {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed) || parsed.length === 0) return null;
+    if (!parsed.every(n => typeof n === 'number' && n > 0 && n <= 1)) return null;
+    return parsed;
+  } catch { return null; }
 }
 
 // ─────────────────────────────────────────
@@ -9808,6 +9904,154 @@ app.delete('/api/teacher/submissions/:submissionId', async (req, res) => {
     res.json({ success: true });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+/**
+ * Remove ONE page from a multi-page submission, keeping the rest.
+ *
+ * Multi-page work is stitched into a single tall image on upload, so until now
+ * "remove" could only mean the whole thing: a teacher who photographed page 3
+ * twice, caught a neighbour's paper in the stack, or shot one page unreadably
+ * had to delete the submission — its grade and its feedback with it — and
+ * re-scan every page. The composite records where its pages start and end
+ * (Submission.pageBreaks), which is what makes this possible: the image is
+ * re-cropped around the bands that are being kept and re-stitched.
+ *
+ * The grade goes. Not incidental — it is the point: a score and a written
+ * comment produced by reading four pages are not a judgement of the three that
+ * remain. The row lands back in the "ready for AI checking" queue exactly as a
+ * replaced photo does, and the client's confirm says so before anything moves.
+ *
+ * Refused when there is one page left to remove: that is a delete, and DELETE
+ * /api/teacher/submissions/:submissionId is where deleting lives — it also
+ * clears up the stored file and is the only path the released-work guard, the
+ * audit trail and the roster's "not handed in" state are written for.
+ *
+ * Also refused for a submission uploaded before pageBreaks existed, or one
+ * handed in as a PDF or Word file: nothing here can see where their pages are,
+ * and guessing at a crop would destroy work.
+ */
+app.delete('/api/teacher/submissions/:submissionId/pages/:pageIndex', async (req, res) => {
+  const scratch = [];
+  try {
+    const submission = await prisma.submission.findUnique({
+      where: { id: req.params.submissionId },
+      select: { id: true, activityId: true, imageUrl: true, releasedAt: true, pageBreaks: true },
+    });
+    if (!submission) return res.status(404).json({ success: false, error: 'This submission no longer exists.' });
+
+    const owned = await teacherOwnsActivity(submission.activityId, req.auth.sub);
+    if (!owned.ok) return res.status(owned.code).json({ success: false, error: owned.error });
+
+    if (submission.releasedAt) {
+      return res.status(400).json({
+        success: false,
+        error: 'This result has already been released to the student, so its pages can no longer be changed.',
+      });
+    }
+
+    const breaks = parsePageBreaks(submission.pageBreaks);
+    if (!submission.imageUrl || !breaks || breaks.length < 2) {
+      return res.status(400).json({
+        success: false,
+        error: 'The pages of this submission were not recorded separately, so a single page cannot be taken out of it. Replace the whole submission instead.',
+      });
+    }
+
+    const pageIndex = Number(req.params.pageIndex);
+    if (!Number.isInteger(pageIndex) || pageIndex < 0 || pageIndex >= breaks.length) {
+      return res.status(400).json({ success: false, error: 'That page is not part of this submission.' });
+    }
+
+    const resolved = await resolveLocalImagePath(submission.imageUrl);
+    if (resolved.isTemp) scratch.push(resolved.path);
+    const meta = await sharp(resolved.path).metadata();
+    const width = meta.width || 0;
+    const height = meta.height || 0;
+    if (!width || !height) throw new Error('The stored image could not be read.');
+
+    // Fractions back to pixels. Each band runs from the previous boundary to
+    // its own, and the last one is pinned to the bottom edge so rounding can
+    // never leave a sliver of the final page behind.
+    const bands = breaks.map((end, i) => {
+      const top = i === 0 ? 0 : Math.round(breaks[i - 1] * height);
+      const bottom = i === breaks.length - 1 ? height : Math.round(end * height);
+      return { top, height: Math.max(1, Math.min(bottom, height) - top) };
+    });
+
+    const kept = bands.filter((_, i) => i !== pageIndex);
+    if (kept.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'That is the only page. Use Remove to delete the whole submission.',
+      });
+    }
+
+    const keptImages = [];
+    for (const band of kept) {
+      const bandHeight = Math.max(1, Math.min(band.height, height - band.top));
+      keptImages.push({
+        buffer: await sharp(resolved.path).extract({ left: 0, top: band.top, width, height: bandHeight }).toBuffer(),
+        height: bandHeight,
+      });
+    }
+
+    const totalHeight = keptImages.reduce((sum, k) => sum + k.height, 0);
+    const outFilename = `pages-${Date.now()}-${Math.floor(Math.random() * 1000)}.jpg`;
+    // Not added to `scratch`. With no object storage configured uploadToCloud
+    // stores by *serving this file from disk*, so deleting it after the upload
+    // would leave the row pointing at nothing — the same reason the upload
+    // routes leave their processed image in place.
+    const outPath = path.join(uploadsDir, outFilename);
+
+    let currentTop = 0;
+    const compositeOps = [];
+    const newBreaks = [];
+    for (const image of keptImages) {
+      compositeOps.push({ input: image.buffer, top: currentTop, left: 0 });
+      currentTop += image.height;
+      newBreaks.push(totalHeight ? currentTop / totalHeight : 0);
+    }
+    if (newBreaks.length) newBreaks[newBreaks.length - 1] = 1;
+
+    await sharp({ create: { width, height: totalHeight, channels: 3, background: { r: 255, g: 255, b: 255 } } })
+      .composite(compositeOps)
+      .jpeg({ quality: 88 })
+      .toFile(outPath);
+
+    // A new name every time rather than overwriting in place: the old image may
+    // still be in a browser cache or a CDN, and a teacher who removed the wrong
+    // page and looked again should not be shown the stale copy of a document
+    // that has changed underneath it.
+    const newUrl = await uploadToCloud(outPath, outFilename, { contentType: 'image/jpeg' });
+
+    const updated = await prisma.submission.update({
+      where: { id: submission.id },
+      data: {
+        ...UNGRADED_RESET,
+        imageUrl: newUrl,
+        pageBreaks: serializePageBreaks(newBreaks),
+        // Same reasoning as a replaced photo: a validated mark was a judgement
+        // of a document that no longer exists.
+        hitlScore: null,
+        hitlFeedback: null,
+      },
+      include: { student: { select: { id: true, name: true, username: true } } },
+    });
+
+    // After the row points at the new file, never before — the reverse order
+    // leaves a submission showing a broken image if the update fails.
+    if (submission.imageUrl !== newUrl) {
+      deleteFromCloud(submission.imageUrl).catch(err =>
+        console.warn('[page remove] could not remove the previous file:', err.message));
+    }
+
+    res.json({ success: true, submission: updated, pagesRemaining: kept.length });
+  } catch (e) {
+    res.status(e.status || 500).json({ success: false, error: e.message });
+  } finally {
+    scratch.forEach(f => { try { fs.unlinkSync(f); } catch {} });
   }
 });
 
@@ -11825,11 +12069,11 @@ app.post('/api/student/submit', submissionUpload.array('images', MAX_SUBMISSION_
         where: { id: existing.id },
         // isLate reflects this attempt, not the first one: re-submitting after
         // the due date is late work even if the original arrived on time.
-        data: { imageUrl: finalImageUrl, status: 'PENDING', aiScore: null, hitlScore: null, aiFeedback: null, hitlFeedback: null, attemptCount: existing.attemptCount + 1, isLate, retainUntil: existing.retainUntil ?? await retainUntilForActivity(activityId) }
+        data: { imageUrl: finalImageUrl, pageBreaks: serializePageBreaks(prepared.pageBreaks), status: 'PENDING', aiScore: null, hitlScore: null, aiFeedback: null, hitlFeedback: null, attemptCount: existing.attemptCount + 1, isLate, retainUntil: existing.retainUntil ?? await retainUntilForActivity(activityId) }
       });
     } else {
       submission = await prisma.submission.create({
-        data: { studentId, activityId, imageUrl: finalImageUrl, status: 'PENDING', attemptCount: 1, isLate, retainUntil: await retainUntilForActivity(activityId) }
+        data: { studentId, activityId, imageUrl: finalImageUrl, pageBreaks: serializePageBreaks(prepared.pageBreaks), status: 'PENDING', attemptCount: 1, isLate, retainUntil: await retainUntilForActivity(activityId) }
       });
     }
 
@@ -11861,7 +12105,7 @@ app.post('/api/teacher/upload', submissionUpload.fields([{ name: 'image', maxCou
     // desync what the student sees from what is now on file. Caught here
     // instead of spending an upload and a grading request on a request that
     // was always going to be refused.
-    const existingForRelease = await prisma.submission.findFirst({ where: { studentId, activityId }, select: { releasedAt: true, imageUrl: true } });
+    const existingForRelease = await prisma.submission.findFirst({ where: { studentId, activityId }, select: { releasedAt: true, imageUrl: true, pageBreaks: true } });
     if (existingForRelease?.releasedAt) {
       return res.status(400).json({ success: false, error: 'This submission has already been released to the student, so the photo can\'t be replaced here.' });
     }
@@ -11873,6 +12117,10 @@ app.post('/api/teacher/upload', submissionUpload.fields([{ name: 'image', maxCou
     // then goes through the same grading flow as a fresh upload.
     let filesToProcess = imageFiles;
     let existingTempPath = null;
+    // Set only once the existing image is actually in hand, so the fallback
+    // below — which quietly turns an append into a replacement — does not leave
+    // the old paper's page boundaries describing a document it is no longer in.
+    let appendedToPriorBreaks = null;
     if (appendPages === 'true' && existingForRelease?.imageUrl) {
       try {
         const resolved = await resolveLocalImagePath(existingForRelease.imageUrl);
@@ -11883,6 +12131,10 @@ app.post('/api/teacher/upload', submissionUpload.fields([{ name: 'image', maxCou
           { path: resolved.path, filename: path.basename(resolved.path), mimetype: 'image/jpeg' },
           ...imageFiles
         ];
+        // A three-page paper going in as one "page" of the new stitch. Its own
+        // boundaries are folded back in below so the pages it already had stay
+        // separately removable.
+        appendedToPriorBreaks = parsePageBreaks(existingForRelease.pageBreaks) || [];
       } catch (dlErr) {
         console.error('⚠ Could not download existing image for appending:', dlErr.message);
         // Fall back to treating this as a replacement rather than failing entirely.
@@ -11891,6 +12143,9 @@ app.post('/api/teacher/upload', submissionUpload.fields([{ name: 'image', maxCou
 
     // 1) Photos are stitched and optimised; a PDF or Word file is stored as-is.
     const prepared = await prepareSubmissionUpload(filesToProcess);
+    const finalPageBreaks = appendedToPriorBreaks
+      ? mergePageBreaks(prepared.pageBreaks, appendedToPriorBreaks)
+      : prepared.pageBreaks;
     const processedPath = prepared.path;
     const processedUrl = await uploadToCloud(processedPath, prepared.filename, { contentType: prepared.contentType });
     storedUrl = processedUrl;
@@ -11953,6 +12208,12 @@ app.post('/api/teacher/upload', submissionUpload.fields([{ name: 'image', maxCou
         submissionData = { ...UNGRADED_RESET, imageUrl: processedUrl };
       }
     }
+
+    // Written once for every branch above rather than in each. The boundaries
+    // belong to the image, not to whether it happened to be graded on the way
+    // in, and a branch that forgot them would leave the row claiming page
+    // counts from the photo it replaced.
+    submissionData.pageBreaks = serializePageBreaks(finalPageBreaks);
 
     // Whether this scan is a late one — which, on a teacher-upload activity, it
     // never is. submissionWindow() returns isLate: false for any mode but

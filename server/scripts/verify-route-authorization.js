@@ -102,6 +102,7 @@ const ROUTE_MANIFEST = {
   // Destroys a paper and every grading result on it, so ownership is proved
   // through the activity's class exactly as upload and grading do.
   'DELETE /api/teacher/submissions/:submissionId': { needsCheck: true },
+  'DELETE /api/teacher/submissions/:submissionId/pages/:pageIndex': { needsCheck: true },
   'GET /api/teacher/:teacherId/analytics': { needsCheck: false, note: 'authorizePath: seg[2] is the teacherId itself' },
   'GET /api/teacher/student/:studentId/analytics': { needsCheck: true },
   'GET /api/teacher/:teacherId/skill-progress': { needsCheck: false, note: 'authorizePath: seg[2] is the teacherId itself' },

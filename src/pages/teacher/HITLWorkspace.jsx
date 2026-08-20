@@ -1186,10 +1186,10 @@ export default function HITLWorkspace() {
   const hasSkillExplanations = isStructured && Object.keys(structuredFeedback.skillExplanations).length > 0;
 
   return (
-    <div className="min-h-[calc(100vh-4rem)] flex flex-col md:flex-row bg-slate-100 relative overflow-hidden">
+    <div className="min-h-[calc(100vh-4rem)] md:h-[100dvh] md:min-h-0 flex flex-col md:flex-row bg-slate-100 relative overflow-hidden">
 
       {/* Left: Essay Image */}
-      <div className="w-full md:w-5/12 lg:w-1/2 p-4 flex flex-col border-r border-slate-200 bg-slate-50">
+      <div className="w-full md:w-5/12 lg:w-1/2 p-4 flex flex-col md:min-h-0 border-r border-slate-200 bg-slate-50">
         <button onClick={() => navigate(rosterLink)} className="flex items-center text-sm text-slate-500 hover:text-brand-slate mb-4 shrink-0">
           <ArrowLeft className="w-4 h-4 mr-1" /> Back to Queue
         </button>
@@ -1231,8 +1231,16 @@ export default function HITLWorkspace() {
             legible at the size the paper was scanned at. */}
         {/* Taller on a phone, where this column stacks above the review panel
             and `flex-1` has no leftover height to claim — a 300px window is
-            not enough of a page to read a paragraph in. */}
-        <div className="flex-1 bg-slate-200 rounded-xl border border-slate-300 overflow-auto relative min-h-[70vh] md:min-h-[300px]">
+            not enough of a page to read a paragraph in.
+            On a desktop the column is exactly one viewport tall (see the two
+            wrappers above), so `flex-1` here is a real height and this box
+            scrolls the scan on its own. It used to have no bound at all: the
+            pane grew to whatever the stitched image was, the row grew with it,
+            and the review panel beside it inherited that height — which is why
+            scrolling down to read page three left the rubric and the Done
+            button stranded above a screen of empty white. The two sides scroll
+            independently now. */}
+        <div className="flex-1 bg-slate-200 rounded-xl border border-slate-300 overflow-auto relative min-h-[70vh] md:min-h-0">
           {submission?.imageUrl ? (
             <SubmissionImage
               url={submission.imageUrl}
@@ -1268,7 +1276,7 @@ export default function HITLWorkspace() {
       </div>
 
       {/* Right: Review Panel */}
-      <div className="w-full md:w-7/12 lg:w-1/2 flex flex-col bg-white max-h-screen overflow-y-auto">
+      <div className="w-full md:w-7/12 lg:w-1/2 flex flex-col bg-white max-h-screen md:max-h-none md:h-full md:min-h-0 overflow-y-auto">
         <div className="p-6 md:p-8 flex-1 space-y-6">
 
           {/* AI Failure Banner — shows when AI grading failed (score 0 + error feedback) */}

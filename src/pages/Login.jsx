@@ -22,7 +22,6 @@ const ROLES = {
     // copying it off a printed slip does not get "Invalid credentials" for
     // punctuation.
     idLabel: 'Student ID', idPlaceholder: 'e.g. AS-26-0001', idType: 'text',
-    idHint: 'Capital letters and dashes do not matter — as-26-0001 works too.',
     home: '/student/dashboard',
     blurb: 'Check your feedback, awards, and what’s due next.',
   },
@@ -190,9 +189,6 @@ export default function Login() {
                 value={identifier}
                 onChange={(e) => setIdentifier(e.target.value)}
               />
-              {cfg.idHint && (
-                <p className="mt-1.5 text-xs text-navy-400 font-semibold">{cfg.idHint}</p>
-              )}
             </div>
 
             <div>

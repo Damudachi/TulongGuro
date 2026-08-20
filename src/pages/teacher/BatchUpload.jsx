@@ -18,6 +18,23 @@ function cn(...cls) { return cls.filter(Boolean).join(' '); }
  *  failed to render and fell back to being staged as-is. */
 const isImageFile = (file) => (file?.type || '').startsWith('image/');
 
+/**
+ * How many pages the work already on file is made of.
+ *
+ * Multi-page work is stitched into one image on upload; `pageBreaks` is where
+ * the server recorded the seams. 1 covers every case where it did not — a
+ * single photo, a PDF or Word file whose pagination nothing here can see, and
+ * anything uploaded before the column existed — and those keep the
+ * all-or-nothing Remove, because taking "page 2" out of a document whose page 2
+ * was never located would delete the wrong part of a child's work.
+ */
+const pageCountOf = (sub) => {
+  try {
+    const breaks = JSON.parse(sub?.pageBreaks || 'null');
+    return Array.isArray(breaks) && breaks.length > 1 ? breaks.length : 1;
+  } catch { return 1; }
+};
+
 /** Which learners on this activity have an upload sitting in the offline queue.
  *  Queued jobs carry the studentId and activityId they were built with, so the
  *  queue is the source of truth and nothing has to be mirrored beside it. */
@@ -98,6 +115,9 @@ export default function BatchUpload() {
   const [appendingStudentIds, setAppendingStudentIds] = useState(new Set());
   /** Rows with a delete in flight, so the row's controls can't be pressed twice. */
   const [removingStudentIds, setRemovingStudentIds] = useState(new Set());
+  /** The one submission whose Remove has been opened into its page list, if any.
+   *  Only offered for work with more than one page — see pageCountOf. */
+  const [pageMenuSubmissionId, setPageMenuSubmissionId] = useState(null);
   const fileInputRef = useRef(null);
   const cameraInputRef = useRef(null);
   const pendingUploadStudentId = useRef(null);
@@ -407,6 +427,54 @@ export default function BatchUpload() {
       }
     } catch {
       showAlert('Could not reach the server. Nothing has been deleted.');
+    } finally {
+      setRemovingStudentIds(prev => { const next = new Set(prev); next.delete(studentId); return next; });
+    }
+  };
+
+  /**
+   * Take one page out of multi-page work, leaving the rest on file.
+   *
+   * The whole-submission Remove above was the only way to undo anything about
+   * an upload, which made a duplicated or unreadable page cost the entire
+   * paper: the grade, the feedback and every other page went with it, and all
+   * of them had to be scanned again. The server re-crops the composite around
+   * the pages being kept.
+   *
+   * The grade does not survive, and the confirm says so plainly rather than
+   * letting a teacher discover it afterwards: a score and a comment written
+   * about four pages are not a judgement of the three that are left, so the
+   * paper goes back into the queue to be checked again.
+   */
+  const removeSubmissionPage = async (studentId, sub, pageIndex) => {
+    if (!sub?.id) return;
+    const total = pageCountOf(sub);
+    const remaining = total - 1;
+    const hasGrade = sub.hitlScore != null || sub.aiScore != null;
+    if (!(await showConfirm(
+      `Remove page ${pageIndex + 1} of ${total}? ` +
+      `The other ${remaining} page${remaining === 1 ? '' : 's'} stay${remaining === 1 ? 's' : ''} on file` +
+      (hasGrade
+        ? ', but the grade and feedback go — they were given for the whole paper, so this work needs checking again.'
+        : '.'),
+      { confirmLabel: `Remove page ${pageIndex + 1}`, danger: true }))) return;
+
+    setRemovingStudentIds(prev => new Set(prev).add(studentId));
+    try {
+      const res = await apiFetch(`${API_URL}/api/teacher/submissions/${sub.id}/pages/${pageIndex}`, { method: 'DELETE' });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.success && data.submission) {
+        // Merged over the row rather than refetching the class set: the
+        // response is the updated submission, and a reload of every row to
+        // change one of them is a second round trip on school wifi.
+        setActivitySubmissions(prev => prev.map(x => (x.id === sub.id ? { ...x, ...data.submission } : x)));
+        setPageMenuSubmissionId(null);
+        loadReleaseState();
+      } else {
+        showAlert(data.error || 'Could not remove that page. Nothing has been changed.');
+      }
+    } catch {
+      showAlert('Could not reach the server. Nothing has been changed.');
     } finally {
       setRemovingStudentIds(prev => { const next = new Set(prev); next.delete(studentId); return next; });
     }
@@ -1039,15 +1107,62 @@ export default function BatchUpload() {
                               which left a paper scanned against the wrong name
                               with no way off the roster. Not gated on the
                               privacy checkbox: that confirms what is being sent
-                              up, and this only deletes. */}
-                          <button type="button" onClick={() => removeSubmission(student.id, sub)}
-                            disabled={removingStudentIds.has(student.id)}
-                            title="Delete this work and its grade — the learner goes back to not handed in"
-                            className="text-[11px] font-medium flex items-center gap-1 text-slate-400 hover:text-red-600 disabled:opacity-40 disabled:hover:text-slate-400">
-                            {removingStudentIds.has(student.id)
-                              ? <><Loader2 className="w-3 h-3 animate-spin" /> Removing…</>
-                              : <><Trash2 className="w-3 h-3" /> Remove</>}
-                          </button>
+                              up, and this only deletes.
+
+                              On multi-page work it asks which pages first. One
+                              bad page — the same sheet shot twice, a photo too
+                              blurred to read, a neighbour's paper caught in the
+                              stack — used to cost the whole submission and every
+                              good page in it, because a stitched image had no
+                              seams anyone could point at. Single-page work, and
+                              anything whose seams were never recorded, keeps the
+                              plain button: there is nothing to choose between. */}
+                          {pageCountOf(sub) > 1 ? (
+                            pageMenuSubmissionId === sub.id ? (
+                              <div className="w-full rounded-md border border-slate-200 bg-white p-1.5 space-y-1">
+                                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wide px-1">
+                                  Remove which?
+                                </p>
+                                {Array.from({ length: pageCountOf(sub) }, (_, i) => (
+                                  <button key={i} type="button"
+                                    onClick={() => removeSubmissionPage(student.id, sub, i)}
+                                    disabled={removingStudentIds.has(student.id)}
+                                    title={`Take page ${i + 1} out and keep the rest`}
+                                    className="w-full text-[11px] font-medium px-2 py-1 rounded border border-slate-200 text-slate-600 hover:border-red-300 hover:text-red-600 disabled:opacity-40">
+                                    Page {i + 1} only
+                                  </button>
+                                ))}
+                                <button type="button" onClick={() => removeSubmission(student.id, sub)}
+                                  disabled={removingStudentIds.has(student.id)}
+                                  title="Delete this work and its grade — the learner goes back to not handed in"
+                                  className="w-full text-[11px] font-bold px-2 py-1 rounded border border-red-200 bg-red-50 text-red-600 hover:bg-red-100 disabled:opacity-40">
+                                  All {pageCountOf(sub)} pages
+                                </button>
+                                <button type="button" onClick={() => setPageMenuSubmissionId(null)}
+                                  className="w-full text-[11px] font-medium px-2 py-1 text-slate-400 hover:text-brand-slate">
+                                  Cancel
+                                </button>
+                              </div>
+                            ) : (
+                              <button type="button" onClick={() => setPageMenuSubmissionId(sub.id)}
+                                disabled={removingStudentIds.has(student.id)}
+                                title={`This work has ${pageCountOf(sub)} pages — remove one of them, or all of it`}
+                                className="text-[11px] font-medium flex items-center gap-1 text-slate-400 hover:text-red-600 disabled:opacity-40 disabled:hover:text-slate-400">
+                                {removingStudentIds.has(student.id)
+                                  ? <><Loader2 className="w-3 h-3 animate-spin" /> Removing…</>
+                                  : <><Trash2 className="w-3 h-3" /> Remove ({pageCountOf(sub)} pages)</>}
+                              </button>
+                            )
+                          ) : (
+                            <button type="button" onClick={() => removeSubmission(student.id, sub)}
+                              disabled={removingStudentIds.has(student.id)}
+                              title="Delete this work and its grade — the learner goes back to not handed in"
+                              className="text-[11px] font-medium flex items-center gap-1 text-slate-400 hover:text-red-600 disabled:opacity-40 disabled:hover:text-slate-400">
+                              {removingStudentIds.has(student.id)
+                                ? <><Loader2 className="w-3 h-3 animate-spin" /> Removing…</>
+                                : <><Trash2 className="w-3 h-3" /> Remove</>}
+                            </button>
+                          )}
                         </>
                       )}
                     </div>
