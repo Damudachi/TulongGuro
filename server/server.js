@@ -9151,6 +9151,69 @@ function feedbackSubstantivelyChanged(hitlFeedbackRaw, aiFeedbackRaw) {
   return hitlFeedbackRaw !== aiFeedbackRaw;
 }
 
+/**
+ * Delete a submission outright — the photo and everything derived from it.
+ *
+ * Until now the only way to change work already on file was to replace it or
+ * append to it, and both keep a row. There was no way back to "nothing handed
+ * in". That gap is not theoretical: a teacher who scans a paper against the
+ * wrong learner, or uploads to the wrong activity, or has an AI check run on a
+ * photo they then meant to discard, had a row they could edit forever and never
+ * remove — and on the roster it kept reading as work that exists.
+ *
+ * What goes with it:
+ *   - the stored image, deleted from object storage on a best effort. A failure
+ *     there must not fail the request: the row is the thing the app reads, and
+ *     an orphaned blob is cheaper than a submission that cannot be deleted.
+ *   - every grading result on the row — AI score, validated score, feedback,
+ *     rubric breakdown. That is the point of the action, and the confirm on the
+ *     client says so in those words.
+ *
+ * What survives: GradingAuditLog. Its submissionId is nullable and SetNull on
+ * delete precisely so the record of who marked what, and how it changed, is not
+ * erasable by deleting the paper it was about. The row keeps its denormalized
+ * studentId/activityId/activityTitle and stays readable.
+ *
+ * Refused once the result has been released, exactly as replacing is. The
+ * student has already seen the mark; making it vanish is worse than leaving a
+ * wrong one visible, and un-releasing is a deliberate act with its own route.
+ */
+app.delete('/api/teacher/submissions/:submissionId', async (req, res) => {
+  try {
+    const submission = await prisma.submission.findUnique({
+      where: { id: req.params.submissionId },
+      select: { id: true, activityId: true, imageUrl: true, releasedAt: true },
+    });
+    if (!submission) return res.status(404).json({ success: false, error: 'This submission no longer exists.' });
+
+    // Ownership through the activity's class, the same ladder upload and
+    // grading use. Never trust an id in the path to belong to the caller.
+    const owned = await teacherOwnsActivity(submission.activityId, req.auth.sub);
+    if (!owned.ok) return res.status(owned.code).json({ success: false, error: owned.error });
+
+    if (submission.releasedAt) {
+      return res.status(400).json({
+        success: false,
+        error: 'This result has already been released to the student, so it can no longer be removed.',
+      });
+    }
+
+    await prisma.submission.delete({ where: { id: submission.id } });
+
+    // After the row is gone, not before. Deleting the file first and then
+    // failing the row delete would leave a submission pointing at nothing,
+    // which renders as a broken image the teacher still cannot remove.
+    if (submission.imageUrl) {
+      deleteFromCloud(submission.imageUrl).catch(err =>
+        console.warn('[submission delete] could not remove stored file:', err.message));
+    }
+
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
 app.put('/api/teacher/submissions/:id/grade', async (req, res) => {
   try {
     // The acting teacher comes from the session. authorizePath already

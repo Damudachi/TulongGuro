@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
-import { ArrowLeft, UploadCloud, X, Loader2, Wifi, WifiOff, ShieldCheck, Info, FileText, Camera, Sparkles, Plus, CheckCircle2, AlertTriangle, ClipboardCheck, RefreshCw, Send } from 'lucide-react';
+import { ArrowLeft, UploadCloud, X, Loader2, Wifi, WifiOff, ShieldCheck, Info, FileText, Camera, Sparkles, Plus, CheckCircle2, AlertTriangle, ClipboardCheck, Send, Trash2 } from 'lucide-react';
 import { getQueue, buildJob, enqueue, flushQueue, QUEUE_CHANGED } from '../../utils/offlineQueue';
 import { API_URL, apiFetch, MAX_SUBMISSION_PAGES } from '../../config';
 import { getStoredUser } from '../../utils/session';
@@ -96,6 +96,8 @@ export default function BatchUpload() {
   // this set, uploadStaged sends `appendPages: 'true'` so the server stitches
   // the new pages below the existing composite rather than overwriting it.
   const [appendingStudentIds, setAppendingStudentIds] = useState(new Set());
+  /** Rows with a delete in flight, so the row's controls can't be pressed twice. */
+  const [removingStudentIds, setRemovingStudentIds] = useState(new Set());
   const fileInputRef = useRef(null);
   const cameraInputRef = useRef(null);
   const pendingUploadStudentId = useRef(null);
@@ -361,6 +363,53 @@ export default function BatchUpload() {
         { confirmLabel: 'Add pages', danger: true }))) return;
     setAppendingStudentIds(prev => new Set(prev).add(studentId));
     triggerFilePick(studentId, source);
+  };
+
+  /**
+   * Take the work off the activity entirely, putting the learner back to "not
+   * handed in".
+   *
+   * The gap this closes: Replace swaps the photo and Add Photo/File stitches
+   * another page under it, so every route through this screen ended in a
+   * submission existing. Scan a paper against the wrong name, run an AI check on
+   * it, and there was no way back — the row stayed, the mark stayed with it, and
+   * the roster kept reading as though that learner had submitted.
+   *
+   * The confirm names what goes, because it is more than a photo: the AI score,
+   * a validated grade if there is one, and the feedback all live on that row and
+   * all go with it. The record of who marked what survives in the audit log by
+   * design (GradingAuditLog.submissionId is SetNull, not Cascade).
+   */
+  const removeSubmission = async (studentId, sub) => {
+    if (!sub?.id) return;
+    if (sub.releasedAt) {
+      showAlert('This result has already been released to the student, so it can no longer be removed.');
+      return;
+    }
+    const hasGrade = sub.hitlScore != null || sub.aiScore != null;
+    if (!(await showConfirm(
+      hasGrade
+        ? 'Remove this submission? The photo and the grade and feedback on it are deleted, and this learner goes back to "not handed in". This cannot be undone.'
+        : 'Remove this submission? The photo is deleted and this learner goes back to "not handed in". This cannot be undone.',
+      { confirmLabel: 'Remove submission', danger: true }))) return;
+
+    setRemovingStudentIds(prev => new Set(prev).add(studentId));
+    try {
+      const res = await apiFetch(`${API_URL}/api/teacher/submissions/${sub.id}`, { method: 'DELETE' });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.success) {
+        // Dropped from local state rather than refetched: the row is gone, and
+        // a reload would flash the old one back for as long as the request took.
+        setActivitySubmissions(prev => prev.filter(x => x.id !== sub.id));
+        loadReleaseState();
+      } else {
+        showAlert(data.error || 'Could not remove this submission. Nothing has been deleted.');
+      }
+    } catch {
+      showAlert('Could not reach the server. Nothing has been deleted.');
+    } finally {
+      setRemovingStudentIds(prev => { const next = new Set(prev); next.delete(studentId); return next; });
+    }
   };
 
   const handleFilePicked = async (e) => {
@@ -946,35 +995,58 @@ export default function BatchUpload() {
                         </span>
                       ) : (
                         <>
+                          {/* "Replace File" and "Re-take Photo" both replace
+                              what is on file — they differ only in where the
+                              new copy comes from, and the old labels ("Replace"
+                              against "Re-take photo") did not say that, which
+                              read as two buttons doing the same thing. Named
+                              for the source now: one opens the file picker, the
+                              other opens the camera. */}
                           <button type="button" onClick={() => requestReplace(student.id, sub)}
-                            disabled={!piiConfirmed}
-                            title={!piiConfirmed ? 'Confirm the privacy checkbox above first' : 'Wrong file, or too blurry to read? Upload a replacement.'}
+                            disabled={!piiConfirmed || removingStudentIds.has(student.id)}
+                            title={!piiConfirmed ? 'Confirm the privacy checkbox above first' : 'Swap this work for a file from your device — the current one is discarded'}
                             className={cn('text-xs px-2 py-1.5 rounded-md font-medium flex items-center justify-center gap-1 w-full border',
                               piiConfirmed
                                 ? 'border-slate-200 bg-white text-slate-600 hover:border-brand-navy hover:text-brand-navy'
                                 : 'border-slate-100 bg-slate-50 text-slate-300 cursor-not-allowed')}>
-                            <RefreshCw className="w-3 h-3" /> Replace
+                            <UploadCloud className="w-3 h-3" /> Replace File
                           </button>
                           {/* The camera is the way most replacements are taken —
                               the paper is in the teacher's hand. On a phone the
                               file picker offers it too, but only after a detour
                               through the gallery. */}
                           <button type="button" onClick={() => requestReplace(student.id, sub, 'camera')}
-                            disabled={!piiConfirmed}
-                            title={!piiConfirmed ? 'Confirm the privacy checkbox above first' : 'Take a new photo to replace this one'}
-                            className={cn('text-[11px] font-medium flex items-center gap-1',
-                              piiConfirmed ? 'text-slate-500 hover:text-brand-navy' : 'text-slate-300 cursor-not-allowed')}>
-                            <Camera className="w-3 h-3" /> Re-take photo
+                            disabled={!piiConfirmed || removingStudentIds.has(student.id)}
+                            title={!piiConfirmed ? 'Confirm the privacy checkbox above first' : 'Swap this work for a new photo from the camera — the current one is discarded'}
+                            className={cn('text-xs px-2 py-1.5 rounded-md font-medium flex items-center justify-center gap-1 w-full border',
+                              piiConfirmed
+                                ? 'border-slate-200 bg-white text-slate-600 hover:border-brand-navy hover:text-brand-navy'
+                                : 'border-slate-100 bg-slate-50 text-slate-300 cursor-not-allowed')}>
+                            <Camera className="w-3 h-3" /> Re-take Photo
                           </button>
                           <div className="w-full border-t border-slate-100 my-0.5" />
                           <button type="button" onClick={() => requestAppend(student.id, sub)}
-                            disabled={!piiConfirmed}
-                            title={!piiConfirmed ? 'Confirm the privacy checkbox above first' : 'Add an extra page — photo or file — to this submission'}
+                            disabled={!piiConfirmed || removingStudentIds.has(student.id)}
+                            title={!piiConfirmed ? 'Confirm the privacy checkbox above first' : 'Add an extra page below what is already here. Nothing is replaced.'}
                             className={cn('text-xs px-2 py-1.5 rounded-md font-medium flex items-center justify-center gap-1 w-full border',
                               piiConfirmed
                                 ? 'border-green-200 bg-green-50 text-green-700 hover:border-green-400 hover:bg-green-100'
                                 : 'border-slate-100 bg-slate-50 text-slate-300 cursor-not-allowed')}>
-                            <Plus className="w-3 h-3" /> Add Photo / File
+                            <Plus className="w-3 h-3" /> Add Page
+                          </button>
+                          {/* The way back to "nothing handed in". Every other
+                              control here ends with a submission still on file,
+                              which left a paper scanned against the wrong name
+                              with no way off the roster. Not gated on the
+                              privacy checkbox: that confirms what is being sent
+                              up, and this only deletes. */}
+                          <button type="button" onClick={() => removeSubmission(student.id, sub)}
+                            disabled={removingStudentIds.has(student.id)}
+                            title="Delete this work and its grade — the learner goes back to not handed in"
+                            className="text-[11px] font-medium flex items-center gap-1 text-slate-400 hover:text-red-600 disabled:opacity-40 disabled:hover:text-slate-400">
+                            {removingStudentIds.has(student.id)
+                              ? <><Loader2 className="w-3 h-3 animate-spin" /> Removing…</>
+                              : <><Trash2 className="w-3 h-3" /> Remove</>}
                           </button>
                         </>
                       )}

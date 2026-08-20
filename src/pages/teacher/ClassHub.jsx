@@ -162,7 +162,13 @@ export default function ClassHub() {
 
   return (
     <div className="p-4 md:p-8 max-w-6xl mx-auto relative min-h-full">
-      <button onClick={() => navigate(-1)} className="flex items-center text-sm text-slate-500 hover:text-brand-slate mb-4">
+      {/* A destination, not history. navigate(-1) meant "wherever you came
+          from", and the ordinary path through this screen is dashboard -> class
+          -> activity -> back -> class: at that point the previous entry IS the
+          activity, so a button labelled "Back to Dashboard" walked forward into
+          the activity again. A back link that names where it goes has to go
+          there whatever route the teacher took to arrive. */}
+      <button onClick={() => navigate('/teacher/dashboard')} className="flex items-center text-sm text-slate-500 hover:text-brand-slate mb-4">
         <ArrowLeft className="w-4 h-4 mr-1" /> Back to Dashboard
       </button>
 
