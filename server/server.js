@@ -3805,7 +3805,13 @@ app.get('/api/admin/:adminId/curriculums', async (req, res) => {
     const admin = await requireAdminSchool(req.params.adminId);
     const curriculums = await prisma.curriculum.findMany({
       where: { schoolId: admin.schoolId },
-      include: { lessons: { orderBy: [{ weekNumber: 'asc' }, { createdAt: 'asc' }] } },
+      include: {
+        lessons: { orderBy: [{ weekNumber: 'asc' }, { createdAt: 'asc' }] },
+        // The school's own rubrics for this subject, so they are listed under
+        // the curriculum they were written for rather than only in the
+        // school-wide list on the Rubrics page.
+        rubrics: { orderBy: { createdAt: 'asc' } }
+      },
       orderBy: [{ gradeLevel: 'asc' }, { subject: 'asc' }]
     });
     res.json({ success: true, curriculums });
@@ -3849,7 +3855,12 @@ app.post('/api/admin/:adminId/curriculums', upload.single('curriculumFile'), asy
     if (duplicate) {
       return res.status(400).json({
         success: false,
-        error: `${subject} for ${gradeLevel} already has a curriculum. Delete it first to replace it.`
+        // Points at Edit rather than at Delete. Deleting and republishing was
+        // the only way to change a curriculum before, and it is now the worst
+        // one: it drops the lessons every class was built from, and the rubrics
+        // written against it, to swap a document that Edit will read in and
+        // reconcile with what is already there.
+        error: `${subject} for ${gradeLevel} already has a curriculum. Open it and use Edit to upload the revised guide — that keeps the lessons your classes are built from.`
       });
     }
 
@@ -3961,6 +3972,504 @@ app.delete('/api/admin/:adminId/curriculums/:curriculumId/lessons/:lessonId', as
   } catch (e) { sendAdminError(res, e); }
 });
 
+// ── Revising a published curriculum ──
+//
+// A curriculum is not written once and then left alone. A school revises its
+// scope and sequence mid-year, DepEd reissues a guide, or the document uploaded
+// in June turns out to have been last year's. The only route back used to be
+// Delete → publish again, which is what the duplicate guard on POST literally
+// told the admin to do — and it threw away every lesson the school's classes
+// had been built from in order to change one week's wording.
+
+/**
+ * Why a school-wide rubric may not be saved, or null when it may be.
+ *
+ * Lifted out of POST /rubrics so the curriculum route below enforces the same
+ * three rules rather than a second, drifting copy of them: a name and criteria,
+ * weights totalling 100, and a name no other rubric in the school already uses.
+ * Returns the refusal instead of sending it, so each caller keeps its own
+ * response shape.
+ */
+async function schoolRubricRefusal({ name, criteria }, schoolId) {
+  if (!name?.trim() || !Array.isArray(criteria) || criteria.length === 0) {
+    return { status: 400, body: { success: false, error: 'A name and at least one criterion are required.' } };
+  }
+  const total = criteria.reduce((sum, c) => sum + (parseInt(c.points) || 0), 0);
+  if (total !== 100) {
+    return { status: 400, body: { success: false, error: `Criteria weights must total 100%. They currently total ${total}%.` } };
+  }
+  // School-wide names must be unique within the school — the rubric picker
+  // shows names, so two identical ones cannot be told apart when choosing.
+  // See the matching guard on the teacher route.
+  const clash = await prisma.rubricTemplate.findFirst({
+    where: { schoolId, name: { equals: name.trim(), mode: 'insensitive' } },
+    select: { id: true, name: true },
+  });
+  if (clash) {
+    return {
+      status: 409,
+      body: {
+        success: false,
+        code: 'DUPLICATE_RUBRIC_NAME',
+        error: `This school already has a rubric called "${clash.name}". Give this one a different name, or edit the existing one.`,
+      }
+    };
+  }
+  return null;
+}
+
+/**
+ * Two lessons are "the same lesson" when their titles match once case,
+ * punctuation and spacing are taken out of the comparison.
+ *
+ * Title alone, deliberately, rather than title + week: a revision that moves
+ * "Elements of a Short Story" from Week 3 to Week 2 has moved a lesson, not
+ * introduced one, and matching on the pair would report that as an addition and
+ * a removal at once — the two outcomes an admin most needs told apart.
+ */
+function lessonMatchKey(lesson) {
+  return String(lesson?.title || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+}
+
+/**
+ * The competency list as it arrives from a client, in either shape it can take.
+ *
+ * The extractor already stores competencies as a JSON string, and that is what
+ * the preview hands the browser and the browser hands back. Passing that string
+ * straight to normalizeCompetencies would wrap it — ["a","b"] becoming a single
+ * competency reading literally ["a","b"], written verbatim into a grading
+ * prompt as something a pupil is then marked against.
+ */
+function incomingCompetencies(value) {
+  if (Array.isArray(value)) return normalizeCompetencies(value);
+  if (typeof value !== 'string') return null;
+  const text = value.trim();
+  if (!text) return null;
+  if (text.startsWith('[')) {
+    const parsed = readCompetencies(text);
+    return parsed.length ? normalizeCompetencies(parsed) : null;
+  }
+  return normalizeCompetencies([text]);
+}
+
+/**
+ * Lessons as they arrive from a preview the admin has just accepted, reduced to
+ * exactly the fields a row is made of.
+ *
+ * Everything is re-derived here rather than trusted: the browser is holding the
+ * preview's own output, but nothing about this route can assume that, and a
+ * weekNumber of "Week 3" or a title of {} must not reach the database.
+ * Same-titled duplicates are dropped, because a guide that lists a lesson twice
+ * would otherwise produce two rows no later revision could tell apart.
+ */
+function sanitiseIncomingLessons(raw) {
+  if (!Array.isArray(raw)) return [];
+  const seen = new Set();
+  const out = [];
+  for (const lesson of raw) {
+    const title = String(lesson?.title || '').trim();
+    if (!title) continue;
+    const key = lessonMatchKey({ title });
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    const week = parseInt(lesson?.weekNumber, 10);
+    const description = typeof lesson?.description === 'string' ? lesson.description.trim() : '';
+    out.push({
+      title,
+      description: description || null,
+      outputType: typeof lesson?.outputType === 'string' && lesson.outputType.trim() ? lesson.outputType.trim() : 'Essay',
+      weekNumber: Number.isFinite(week) && week > 0 ? week : null,
+      competencies: incomingCompetencies(lesson?.competencies)
+    });
+  }
+  return out;
+}
+
+/** One ClassLesson worth of data, copied off a curriculum lesson. */
+function classLessonDataFrom(lesson, classId) {
+  return {
+    classId,
+    title: lesson.title,
+    description: lesson.description,
+    outputType: lesson.outputType,
+    weekNumber: lesson.weekNumber,
+    competencies: lesson.competencies,
+    defaultRubric: lesson.defaultRubric,
+    rubricTemplateId: lesson.rubricTemplateId
+  };
+}
+
+/**
+ * The classes a revised curriculum should reach.
+ *
+ * A class carries no curriculumId — copy-on-apply (HANDOFF §4) leaves it
+ * holding its own ClassLesson rows — so the link back is the same one the
+ * teacher's suggestion uses: same school, same grade level, same subject.
+ *
+ * Current school year only. Last year's gradebook is a record of what was
+ * actually taught, and this year's guide has no business rewriting it.
+ */
+async function classesFollowingCurriculum(curriculum) {
+  const classes = await prisma.class.findMany({
+    where: {
+      gradeLevel: curriculum.gradeLevel,
+      subject: curriculum.subject,
+      teacher: { schoolId: curriculum.schoolId }
+    },
+    include: { lessons: { include: { _count: { select: { activities: true } } } } }
+  });
+  return classes.filter(c => isCurrentSchoolYear(c.schoolYear));
+}
+
+/**
+ * Carry one revision out to the classes already built from this curriculum.
+ *
+ * Only what the revision actually changed is carried — the lessons it added,
+ * the ones it rewrote, and the ones it dropped. Not the curriculum's whole
+ * lesson list: a teacher who deleted a lesson from their own class deleted it
+ * on purpose, and "the curriculum still has it" is not a reason to put it back.
+ *
+ * A lesson with activities on it is never touched. Rewriting its title or its
+ * competencies would change what already-submitted work is marked against,
+ * after the fact; deleting it would cut those activities loose from their
+ * lesson altogether, since Activity.classLessonId is optional and the row
+ * survives with a dangling null rather than the delete being refused. Those
+ * lessons are counted and reported instead, so the admin can see what stayed
+ * behind and why.
+ */
+async function propagateCurriculumRevision(curriculum, { additions, updates, removedKeys }) {
+  const summary = { classes: 0, added: 0, refreshed: 0, removed: 0, keptInUse: 0 };
+  if (!additions.length && !updates.length && !removedKeys.length) return summary;
+
+  const classes = await classesFollowingCurriculum(curriculum);
+  const updateByKey = new Map(updates.map(l => [lessonMatchKey(l), l]));
+  const dropped = new Set(removedKeys);
+
+  for (const klass of classes) {
+    const lessons = klass.lessons || [];
+    const presentKeys = new Set(lessons.map(lessonMatchKey));
+    let touched = false;
+
+    for (const lesson of additions) {
+      if (presentKeys.has(lessonMatchKey(lesson))) continue;
+      await prisma.classLesson.create({ data: classLessonDataFrom(lesson, klass.id) });
+      summary.added++;
+      touched = true;
+    }
+
+    for (const lesson of lessons) {
+      const key = lessonMatchKey(lesson);
+      const inUse = (lesson._count?.activities || 0) > 0;
+      const replacement = updateByKey.get(key);
+      if (replacement) {
+        const changed = lesson.title !== replacement.title
+          || (lesson.description || null) !== (replacement.description || null)
+          || lesson.outputType !== replacement.outputType
+          || (lesson.weekNumber ?? null) !== (replacement.weekNumber ?? null)
+          || (lesson.competencies || null) !== (replacement.competencies || null);
+        if (!changed) continue;
+        if (inUse) { summary.keptInUse++; continue; }
+        await prisma.classLesson.update({
+          where: { id: lesson.id },
+          data: {
+            title: replacement.title,
+            description: replacement.description,
+            outputType: replacement.outputType,
+            weekNumber: replacement.weekNumber,
+            competencies: replacement.competencies
+          }
+        });
+        summary.refreshed++;
+        touched = true;
+      } else if (dropped.has(key)) {
+        if (inUse) { summary.keptInUse++; continue; }
+        await prisma.classLesson.delete({ where: { id: lesson.id } });
+        summary.removed++;
+        touched = true;
+      }
+    }
+
+    if (touched) summary.classes++;
+  }
+  return summary;
+}
+
+/** Rename a curriculum, or reword its description. */
+app.put('/api/admin/:adminId/curriculums/:curriculumId', async (req, res) => {
+  try {
+    const admin = await requireAdminSchool(req.params.adminId);
+    const curriculum = await prisma.curriculum.findUnique({ where: { id: req.params.curriculumId } });
+    if (!curriculum || curriculum.schoolId !== admin.schoolId) {
+      return res.status(404).json({ success: false, error: 'Curriculum not found in your school.' });
+    }
+    const { title, description } = req.body;
+    const data = {};
+    if (title !== undefined) {
+      if (!String(title).trim()) return res.status(400).json({ success: false, error: 'Title cannot be empty.' });
+      data.title = String(title).trim();
+    }
+    if (description !== undefined) {
+      const text = String(description ?? '').trim();
+      data.description = text || null;
+    }
+    // Grade level and subject are deliberately not editable here. They are the
+    // curriculum's identity — its unique key, and what decides which classes it
+    // is suggested to — so retagging one is closer to publishing a different
+    // curriculum than to correcting this one.
+    if (!Object.keys(data).length) {
+      return res.status(400).json({ success: false, error: 'Nothing to change.' });
+    }
+    const updated = await prisma.curriculum.update({
+      where: { id: curriculum.id },
+      data,
+      include: {
+        lessons: { orderBy: [{ weekNumber: 'asc' }, { createdAt: 'asc' }] },
+        rubrics: { orderBy: { createdAt: 'asc' } }
+      }
+    });
+    res.json({ success: true, curriculum: updated });
+  } catch (e) { sendAdminError(res, e); }
+});
+
+/**
+ * Read a revised guide and report what it would change — writing nothing.
+ *
+ * The admin sees the new document's lessons against the ones already stored,
+ * each marked new or already present, and decides from there. A re-upload is
+ * not a re-publish: some revisions add a week, some rewrite the whole sequence,
+ * and only the person holding both documents can say which this one is.
+ */
+app.post('/api/admin/:adminId/curriculums/:curriculumId/guide/preview', upload.single('curriculumFile'), async (req, res) => {
+  try {
+    const admin = await requireAdminSchool(req.params.adminId);
+    const curriculum = await prisma.curriculum.findUnique({
+      where: { id: req.params.curriculumId },
+      include: { lessons: { orderBy: [{ weekNumber: 'asc' }, { createdAt: 'asc' }] } }
+    });
+    if (!curriculum || curriculum.schoolId !== admin.schoolId) {
+      // Multer has already written the upload by the time any of this runs, so
+      // a refusal has a file to clean up as surely as a success does.
+      if (req.file) { try { fs.unlinkSync(req.file.path); } catch { /* already gone */ } }
+      return res.status(404).json({ success: false, error: 'Curriculum not found in your school.' });
+    }
+    if (!req.file) {
+      return res.status(400).json({ success: false, error: 'Attach the revised curriculum guide (PDF or DOCX).' });
+    }
+
+    let lessons = [];
+    try {
+      lessons = sanitiseIncomingLessons(
+        await extractLessonsFromCurriculum(req.file.path, curriculum.subject, curriculum.gradeLevel)
+      );
+    } catch (parseErr) {
+      return res.status(422).json({ success: false, error: 'That file could not be read: ' + parseErr.message });
+    } finally {
+      // Nothing here goes to storage — the file is uploaded only once the admin
+      // accepts what the preview showed — so the temp copy is this route's to
+      // clean up. Left behind, every previewed and abandoned guide would sit on
+      // the server's disk until a redeploy wiped it.
+      try { fs.unlinkSync(req.file.path); } catch { /* already gone */ }
+    }
+    if (!lessons.length) {
+      return res.status(422).json({
+        success: false,
+        error: 'No lessons could be read out of that file. The curriculum has not been changed.'
+      });
+    }
+
+    const existingKeys = new Set(curriculum.lessons.map(lessonMatchKey));
+    const incomingKeys = new Set(lessons.map(lessonMatchKey));
+    const classes = await classesFollowingCurriculum(curriculum);
+
+    res.json({
+      success: true,
+      lessons: lessons.map(l => ({ ...l, isNew: !existingKeys.has(lessonMatchKey(l)) })),
+      current: curriculum.lessons.map(l => ({
+        id: l.id,
+        title: l.title,
+        weekNumber: l.weekNumber,
+        outputType: l.outputType,
+        // Whether this lesson survives a full replace, i.e. whether the revised
+        // document still has it.
+        inRevision: incomingKeys.has(lessonMatchKey(l))
+      })),
+      // How far this reaches beyond the curriculum page, said before the admin
+      // commits rather than after.
+      classCount: classes.length,
+      lessonsInUse: classes.reduce(
+        (n, c) => n + (c.lessons || []).filter(l => (l._count?.activities || 0) > 0).length, 0
+      )
+    });
+  } catch (e) { sendAdminError(res, e); }
+});
+
+/**
+ * Apply a revised guide the admin has previewed.
+ *
+ * mode is their answer to what the preview showed:
+ *   • replace   — the document is the curriculum now: lessons it no longer
+ *                 lists are dropped, and the rest are rewritten from it.
+ *   • append    — keep everything, add only the lessons that are new.
+ *   • file-only — store the new document and leave every lesson alone (a
+ *                 clearer scan of the same guide, or a file that never uploaded
+ *                 properly the first time).
+ *
+ * The lessons come back from the preview rather than being re-read here: the
+ * extraction is an AI call taking tens of seconds, and re-running it would mean
+ * the admin approved one reading of the document while a second, possibly
+ * different, one was saved.
+ */
+app.put('/api/admin/:adminId/curriculums/:curriculumId/guide', upload.single('curriculumFile'), async (req, res) => {
+  try {
+    const admin = await requireAdminSchool(req.params.adminId);
+    const curriculum = await prisma.curriculum.findUnique({
+      where: { id: req.params.curriculumId },
+      include: { lessons: true }
+    });
+    if (!curriculum || curriculum.schoolId !== admin.schoolId) {
+      return res.status(404).json({ success: false, error: 'Curriculum not found in your school.' });
+    }
+    const mode = String(req.body?.mode || '').trim();
+    if (!['replace', 'append', 'file-only'].includes(mode)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Choose whether to replace the lessons, add only the new ones, or keep them as they are.'
+      });
+    }
+    if (!req.file) {
+      return res.status(400).json({ success: false, error: 'Attach the revised curriculum guide (PDF or DOCX).' });
+    }
+
+    let incoming = [];
+    if (mode !== 'file-only') {
+      let raw = req.body?.lessons;
+      if (typeof raw === 'string') {
+        try { raw = JSON.parse(raw); } catch { raw = null; }
+      }
+      incoming = sanitiseIncomingLessons(raw);
+      if (!incoming.length) {
+        return res.status(400).json({
+          success: false,
+          error: 'No lessons came through with that request. Upload the guide again so it can be read.'
+        });
+      }
+    }
+
+    const sourceFile = await uploadToCloud(req.file.path, req.file.filename, {
+      folder: 'curriculum',
+      contentType: req.file.mimetype
+    });
+
+    const existing = curriculum.lessons;
+    const byKey = new Map(existing.map(l => [lessonMatchKey(l), l]));
+    const incomingKeys = new Set(incoming.map(lessonMatchKey));
+    const additions = [];
+    const updates = [];
+    const removedKeys = [];
+
+    if (mode === 'replace') {
+      const stale = existing.filter(l => !incomingKeys.has(lessonMatchKey(l)));
+      if (stale.length) {
+        // Safe in a way the class-level delete below is not: nothing points at
+        // a CurriculumLesson. Activities hang off the ClassLesson copies, so
+        // dropping a template cannot orphan a pupil's work — it only changes
+        // what the next class built from this curriculum starts with.
+        await prisma.curriculumLesson.deleteMany({ where: { id: { in: stale.map(l => l.id) } } });
+        removedKeys.push(...stale.map(lessonMatchKey));
+      }
+      for (const lesson of incoming) {
+        const match = byKey.get(lessonMatchKey(lesson));
+        if (match) {
+          // Updated in place rather than deleted and recreated, so a lesson
+          // already carrying the school's rubric keeps it through the revision
+          // — defaultRubric and rubricTemplateId are not in the document and
+          // could not be restored from it.
+          updates.push(await prisma.curriculumLesson.update({
+            where: { id: match.id },
+            data: {
+              title: lesson.title,
+              description: lesson.description,
+              outputType: lesson.outputType,
+              weekNumber: lesson.weekNumber,
+              competencies: lesson.competencies
+            }
+          }));
+        } else {
+          additions.push(await prisma.curriculumLesson.create({
+            data: { curriculumId: curriculum.id, ...lesson, defaultRubric: null, rubricTemplateId: null }
+          }));
+        }
+      }
+    } else if (mode === 'append') {
+      for (const lesson of incoming) {
+        if (byKey.has(lessonMatchKey(lesson))) continue;
+        additions.push(await prisma.curriculumLesson.create({
+          data: { curriculumId: curriculum.id, ...lesson, defaultRubric: null, rubricTemplateId: null }
+        }));
+      }
+    }
+
+    await prisma.curriculum.update({ where: { id: curriculum.id }, data: { sourceFile } });
+
+    const propagation = await propagateCurriculumRevision(curriculum, { additions, updates, removedKeys });
+
+    const saved = await prisma.curriculum.findUnique({
+      where: { id: curriculum.id },
+      include: {
+        lessons: { orderBy: [{ weekNumber: 'asc' }, { createdAt: 'asc' }] },
+        rubrics: { orderBy: { createdAt: 'asc' } }
+      }
+    });
+    res.json({
+      success: true,
+      curriculum: saved,
+      applied: { mode, added: additions.length, refreshed: updates.length, removed: removedKeys.length },
+      propagation
+    });
+  } catch (e) { sendAdminError(res, e); }
+});
+
+/**
+ * Attach a rubric to a curriculum that is already published.
+ *
+ * The same rubric the publish form takes, reachable afterwards — a school that
+ * writes its performance-task rubric in August had to create it on the School
+ * Rubrics page, detached from the curriculum it belongs to, because the only
+ * moment a rubric could be attached to one was the moment the curriculum was
+ * created. Linking it (curriculumId, which until now only the old generated
+ * rubrics ever carried) is what lets it be listed under the curriculum instead
+ * of only in a school-wide list.
+ *
+ * Still a school-wide template: grade level and subject come off the
+ * curriculum, and teachers pick it exactly as they pick any other.
+ */
+app.post('/api/admin/:adminId/curriculums/:curriculumId/rubrics', async (req, res) => {
+  try {
+    const admin = await requireAdminSchool(req.params.adminId);
+    const curriculum = await prisma.curriculum.findUnique({ where: { id: req.params.curriculumId } });
+    if (!curriculum || curriculum.schoolId !== admin.schoolId) {
+      return res.status(404).json({ success: false, error: 'Curriculum not found in your school.' });
+    }
+    const { name, criteria, outputType } = req.body;
+    const refusal = await schoolRubricRefusal({ name, criteria }, admin.schoolId);
+    if (refusal) return res.status(refusal.status).json(refusal.body);
+
+    const rubric = await prisma.rubricTemplate.create({
+      data: {
+        name: name.trim(),
+        criteria: JSON.stringify(criteria),
+        schoolId: admin.schoolId,
+        teacherId: null,
+        curriculumId: curriculum.id,
+        gradeLevel: curriculum.gradeLevel,
+        subject: curriculum.subject,
+        outputType: outputType || null
+      }
+    });
+    res.json({ success: true, rubric });
+  } catch (e) { sendAdminError(res, e); }
+});
+
 app.delete('/api/admin/:adminId/curriculums/:curriculumId', async (req, res) => {
   try {
     const admin = await requireAdminSchool(req.params.adminId);
@@ -4011,27 +4520,8 @@ app.post('/api/admin/:adminId/rubrics', async (req, res) => {
   try {
     const admin = await requireAdminSchool(req.params.adminId);
     const { name, criteria, gradeLevel, subject, outputType } = req.body;
-    if (!name?.trim() || !Array.isArray(criteria) || criteria.length === 0) {
-      return res.status(400).json({ success: false, error: 'A name and at least one criterion are required.' });
-    }
-    const total = criteria.reduce((sum, c) => sum + (parseInt(c.points) || 0), 0);
-    if (total !== 100) {
-      return res.status(400).json({ success: false, error: `Criteria weights must total 100%. They currently total ${total}%.` });
-    }
-    // School-wide names must be unique within the school — the rubric picker
-    // shows names, so two identical ones cannot be told apart when choosing.
-    // See the matching guard on the teacher route.
-    const clash = await prisma.rubricTemplate.findFirst({
-      where: { schoolId: admin.schoolId, name: { equals: name.trim(), mode: 'insensitive' } },
-      select: { id: true, name: true },
-    });
-    if (clash) {
-      return res.status(409).json({
-        success: false,
-        code: 'DUPLICATE_RUBRIC_NAME',
-        error: `This school already has a rubric called "${clash.name}". Give this one a different name, or edit the existing one.`,
-      });
-    }
+    const refusal = await schoolRubricRefusal({ name, criteria }, admin.schoolId);
+    if (refusal) return res.status(refusal.status).json(refusal.body);
 
     const rubric = await prisma.rubricTemplate.create({
       data: {

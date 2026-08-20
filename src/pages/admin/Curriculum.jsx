@@ -1,10 +1,11 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { BookOpen, Plus, Loader2, Trash2, UploadCloud, FileText, X, ChevronDown, ClipboardList, PenLine } from 'lucide-react';
 import { API_URL, apiFetch } from '../../config';
 import { GRADE_LEVELS, SUBJECTS } from '../../constants/school';
 import { ACTIVITY_TYPES } from '../../constants/activityTypes';
-import RubricEditor from '../../components/RubricEditor';
-import { BLANK_CRITERION, totalWeight } from '../../utils/rubric';
+import { useRubricDrafts } from '../../utils/useRubricDrafts';
+import { RubricDraftCard, RubricDraftButtons } from '../../components/RubricDrafts';
+import CurriculumEditor from '../../components/CurriculumEditor';
 
 import { showAlert, showConfirm } from '../../utils/dialog';
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
@@ -35,13 +36,14 @@ export default function AdminCurriculum() {
   // page, away from the curriculum they belong to. Each card is independent:
   // one that fails to save says so on its own without touching the others.
   //
-  // Empty until the admin adds a card. Nothing is saved from a card unless it
-  // has a name, criteria, and weights totalling 100.
-  const [rubricDrafts, setRubricDrafts] = useState([]);
-  // Card identity has to survive reordering and removal — an array index would
-  // hand a half-read upload's result to whichever card slid into its place.
-  const draftSeq = useRef(0);
+  // The cards and their rules live in useRubricDrafts, because the editor for
+  // an already-published curriculum takes rubrics exactly the same way.
+  const drafts = useRubricDrafts(admin.id);
   const [expandedId, setExpandedId] = useState(null);
+  // Which curriculum the editor is open on. An id rather than the row itself,
+  // so that a reload after each save re-renders the editor from the fresh list
+  // instead of a snapshot taken when it opened.
+  const [editingId, setEditingId] = useState(null);
   const [lessonDraft, setLessonDraft] = useState({ title: '', outputType: 'Essay', weekNumber: '', description: '' });
   const [busy, setBusy] = useState(false);
 
@@ -56,113 +58,6 @@ export default function AdminCurriculum() {
 
   useEffect(() => { load(); }, [load]);
 
-  /** Add an empty rubric card and hand back its id. */
-  const addRubricDraft = (mode) => {
-    const id = ++draftSeq.current;
-    setRubricDrafts(prev => [...prev, {
-      id, mode, name: '', criteria: [{ ...BLANK_CRITERION }],
-      // scaledFrom: the document's own total, when the weights had to be
-      // rebased off it to reach 100. null when they already totalled 100.
-      fileName: '', isReading: false, error: '', scaledFrom: null
-    }]);
-    return id;
-  };
-
-  /** Change one card, addressed by id — see the note on draftSeq. */
-  const updateRubricDraft = (id, patch) =>
-    setRubricDrafts(prev => prev.map(d => (d.id === id ? { ...d, ...patch } : d)));
-
-  const removeRubricDraft = (id) =>
-    setRubricDrafts(prev => prev.filter(d => d.id !== id));
-
-  /** Transcribe an uploaded rubric into one card for the admin to check. */
-  const readRubricFile = async (id, picked) => {
-    updateRubricDraft(id, { fileName: picked.name, isReading: true, error: '' });
-    try {
-      const fd = new FormData();
-      fd.append('rubricFile', picked);
-      const res = await apiFetch(`${API_URL}/api/admin/${admin.id}/rubrics/extract`, { method: 'POST', body: fd });
-      const d = await res.json();
-      if (d.success && d.criteria?.length) {
-        // The name is only filled in if the admin hasn't typed one — read from
-        // the live card rather than a captured copy, because the upload takes
-        // seconds and they may well have typed a name while it ran.
-        setRubricDrafts(prev => prev.map(draft => draft.id === id ? {
-          ...draft,
-          isReading: false,
-          error: '',
-          criteria: d.criteria.map(c => ({
-            name: c.name || '',
-            points: c.points || 0,
-            description: c.description || ''
-          })),
-          // Already rebased to total 100 by the server (scaleCriteriaTo100), so
-          // a rubric written out of 16 or 40 points arrives publishable instead
-          // of as a card the 100% rule would refuse until it was retyped by
-          // hand. Recorded so the card can say the numbers were converted.
-          scaledFrom: d.weightsScaled ? d.totalPoints : null,
-          name: draft.name.trim() ? draft.name : picked.name.replace(/\.[^.]+$/, '')
-        } : draft));
-      } else {
-        updateRubricDraft(id, {
-          isReading: false,
-          error: d.error || 'Nothing could be read from that file. You can type the criteria in below.'
-        });
-      }
-    } catch {
-      updateRubricDraft(id, {
-        isReading: false,
-        error: 'Could not reach the server. You can type the criteria in below.'
-      });
-    }
-  };
-
-  const resetRubricDrafts = () => setRubricDrafts([]);
-
-  /**
-   * Whether one card is filled in enough to save.
-   *
-   * Deliberately all-or-nothing per card: an admin who added a card and typed
-   * nothing gets a curriculum without that rubric, which is a supported
-   * outcome, not an error. A half-filled one is refused rather than saved
-   * incomplete — and refused on its own, without blocking the cards beside it.
-   */
-  const draftReady = (d) =>
-    !!d.name.trim() && d.criteria.some(c => c.name.trim()) && totalWeight(d.criteria) === 100;
-
-  const draftStarted = (d) => !!d.name.trim() || d.criteria.some(c => c.name.trim());
-
-  const readyDrafts = rubricDrafts.filter(draftReady);
-  /**
-   * Cards still having their uploaded file read.
-   *
-   * They have to be counted separately, because for the few seconds an
-   * extraction takes a card looks exactly like one nobody typed in: no name, no
-   * criteria. That made it neither ready (so never sent) nor started (so never
-   * objected to), and publishing in that window dropped the rubric with the
-   * success notice saying nothing about it — the admin had picked a file and
-   * watched it disappear. Publishing waits for the read instead.
-   */
-  const readingDrafts = rubricDrafts.filter(d => d.isReading);
-  const unfinishedDrafts = rubricDrafts.filter(d => !d.isReading && draftStarted(d) && !draftReady(d));
-
-  /**
-   * Two cards with the same name, caught here rather than at the server.
-   *
-   * Rubric names are unique within a school, so the second POST would come back
-   * 409 with the curriculum already published — a confusing half-success for
-   * something visible on screen before anything is sent.
-   */
-  const duplicateDraftName = (() => {
-    const seen = new Set();
-    for (const d of readyDrafts) {
-      const key = d.name.trim().toLowerCase();
-      if (seen.has(key)) return d.name.trim();
-      seen.add(key);
-    }
-    return '';
-  })();
-
   const handleCreate = async (e) => {
     e.preventDefault();
     if (isSaving) return;
@@ -174,20 +69,9 @@ export default function AdminCurriculum() {
       setError('Upload the curriculum guide (PDF or DOCX). Its lessons are read out of the document — without it this curriculum would be published empty.');
       return;
     }
-    if (readingDrafts.length) {
-      setError(readingDrafts.length === 1
-        ? 'One rubric is still being read from the file you uploaded. Give it a moment — publishing now would leave it behind.'
-        : `${readingDrafts.length} rubrics are still being read from the files you uploaded. Give them a moment — publishing now would leave them behind.`);
-      return;
-    }
-    if (unfinishedDrafts.length) {
-      setError(unfinishedDrafts.length === 1
-        ? 'One rubric still needs a name and criteria weights totalling 100%. Finish it, or remove it and add it later.'
-        : `${unfinishedDrafts.length} rubrics still need a name and criteria weights totalling 100%. Finish them, or remove them and add them later.`);
-      return;
-    }
-    if (duplicateDraftName) {
-      setError(`Two rubrics here are both called "${duplicateDraftName}". Rubric names have to be different — it is how your teachers tell them apart when picking one.`);
+    const blocked = drafts.blockingMessage();
+    if (blocked) {
+      setError(blocked);
       return;
     }
     setIsSaving(true);
@@ -209,19 +93,22 @@ export default function AdminCurriculum() {
       // with it, and the admin needs to be told exactly which of them happened.
       // Sequential rather than Promise.all so that a failure is attributable to
       // a named rubric and the rest still go.
+      //
+      // Posted against the curriculum rather than to the school-wide rubric
+      // route, so each one is linked to the curriculum it was written for and
+      // is listed under it afterwards — the link the editor needs in order to
+      // show them at all.
       const saved = [];
       const failed = [];
-      for (const draft of readyDrafts) {
+      for (const draft of drafts.ready) {
         const name = draft.name.trim();
         try {
-          const rubricRes = await apiFetch(`${API_URL}/api/admin/${admin.id}/rubrics`, {
+          const rubricRes = await apiFetch(`${API_URL}/api/admin/${admin.id}/curriculums/${d.curriculum.id}/rubrics`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               name,
-              criteria: draft.criteria.filter(c => c.name.trim()),
-              gradeLevel: form.gradeLevel,
-              subject: form.subject
+              criteria: draft.criteria.filter(c => c.name.trim())
             })
           });
           const rd = await rubricRes.json();
@@ -241,13 +128,13 @@ export default function AdminCurriculum() {
         // the curriculum published, so re-submitting it is not the way back and
         // the typed criteria are gone. The commonest reason is a name the
         // school already uses, where the rubric itself already exists.
-        rubricNotice += ` The curriculum was published, but ${failed.length} rubric${failed.length === 1 ? ' was' : 's were'} not saved: ${failed.join('; ')}. Add ${failed.length === 1 ? 'it' : 'them'} from School Rubrics.`;
+        rubricNotice += ` The curriculum was published, but ${failed.length} rubric${failed.length === 1 ? ' was' : 's were'} not saved: ${failed.join('; ')}. Add ${failed.length === 1 ? 'it' : 'them'} from Edit on this curriculum.`;
       }
 
       setShowForm(false);
       setForm({ gradeLevel: '', subject: '', title: '', description: '' });
       setFile(null);
-      resetRubricDrafts();
+      drafts.reset();
       const lessons = d.curriculum.lessons?.length || 0;
       setNotice(
         (d.warning || `Published "${d.curriculum.title}" with ${lessons} lesson(s).`) + rubricNotice
@@ -261,7 +148,7 @@ export default function AdminCurriculum() {
   };
 
   const handleDelete = async (curriculum) => {
-    if (!(await showConfirm(`Delete the ${curriculum.subject} curriculum for ${curriculum.gradeLevel}? Classes already created keep their copied lessons.`,
+    if (!(await showConfirm(`Delete the ${curriculum.subject} curriculum for ${curriculum.gradeLevel}? Classes already created keep their copied lessons, and its rubrics stay in your School Rubrics.`,
       { confirmLabel: 'Delete curriculum', danger: true }))) return;
     setBusy(true);
     try {
@@ -314,6 +201,8 @@ export default function AdminCurriculum() {
     return <div className="flex items-center justify-center h-64 text-slate-400"><Loader2 className="w-6 h-6 animate-spin mr-2" />Loading curriculum...</div>;
   }
 
+  const editing = curriculums.find(c => c.id === editingId) || null;
+
   return (
     <div className="p-4 md:p-8 max-w-5xl mx-auto pb-24">
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6">
@@ -346,6 +235,7 @@ export default function AdminCurriculum() {
         <div className="space-y-3">
           {curriculums.map(c => {
             const isOpen = expandedId === c.id;
+            const rubrics = c.rubrics || [];
             return (
               <div key={c.id} className="bg-white border border-slate-200 rounded-2xl overflow-hidden">
                 <div className="flex items-center gap-3 p-4">
@@ -355,9 +245,17 @@ export default function AdminCurriculum() {
                       <p className="font-bold text-brand-slate truncate">{c.title}</p>
                       <p className="text-xs text-slate-500">
                         {c.gradeLevel} · {c.subject} · {c.lessons.length} lesson{c.lessons.length === 1 ? '' : 's'}
+                        {rubrics.length > 0 && ` · ${rubrics.length} rubric${rubrics.length === 1 ? '' : 's'}`}
                       </p>
                     </div>
                     <ChevronDown className={cn('w-4 h-4 text-slate-400 ml-auto shrink-0 transition-transform', isOpen && 'rotate-180')} />
+                  </button>
+                  {/* A curriculum is revised, not republished — see
+                      CurriculumEditor. Before this, changing one word of the
+                      title meant deleting the whole thing. */}
+                  <button onClick={() => setEditingId(c.id)} disabled={busy} title="Edit curriculum"
+                    className="p-2 rounded-lg bg-slate-100 text-slate-500 hover:bg-blue-100 hover:text-brand-navy shrink-0 disabled:opacity-40">
+                    <PenLine className="w-4 h-4" />
                   </button>
                   <button onClick={() => handleDelete(c)} disabled={busy} title="Delete curriculum"
                     className="p-2 rounded-lg bg-slate-100 text-slate-500 hover:bg-red-100 hover:text-red-600 shrink-0 disabled:opacity-40">
@@ -368,6 +266,16 @@ export default function AdminCurriculum() {
                 {isOpen && (
                   <div className="border-t border-slate-100 p-4 space-y-3">
                     {c.description && <p className="text-sm text-slate-600">{c.description}</p>}
+
+                    {rubrics.length > 0 && (
+                      <div className="flex flex-wrap gap-1.5">
+                        {rubrics.map(r => (
+                          <span key={r.id} className="text-[11px] font-medium text-slate-600 bg-slate-100 px-2 py-0.5 rounded-full flex items-center gap-1">
+                            <ClipboardList className="w-3 h-3" /> {r.name}
+                          </span>
+                        ))}
+                      </div>
+                    )}
 
                     {c.lessons.length === 0 ? (
                       <p className="text-sm text-slate-400 italic">No lessons yet — add them below.</p>
@@ -429,6 +337,11 @@ export default function AdminCurriculum() {
         </div>
       )}
 
+      {editing && (
+        <CurriculumEditor adminId={admin.id} curriculum={editing}
+          onClose={() => setEditingId(null)} onSaved={load} />
+      )}
+
       {/* Add curriculum modal */}
       {showForm && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4 overflow-y-auto">
@@ -488,6 +401,10 @@ export default function AdminCurriculum() {
                     </button>
                   </div>
                 )}
+                <p className="text-xs text-slate-400 mt-1.5">
+                  A revised guide can be uploaded later from Edit — the lessons are read out again and you
+                  choose what happens to the ones already here.
+                </p>
               </div>
               {/* ── The school's rubrics for this subject ──
                   Optional and deliberately separate from the lesson upload: a
@@ -504,8 +421,8 @@ export default function AdminCurriculum() {
                   <label className="block text-sm font-medium text-slate-700">
                     School rubrics for this subject <span className="text-slate-400 font-normal">(optional)</span>
                   </label>
-                  {rubricDrafts.length > 0 && (
-                    <button type="button" onClick={resetRubricDrafts}
+                  {drafts.drafts.length > 0 && (
+                    <button type="button" onClick={drafts.reset}
                       className="text-xs font-medium text-slate-500 hover:text-slate-700 shrink-0">Clear all</button>
                   )}
                 </div>
@@ -515,123 +432,34 @@ export default function AdminCurriculum() {
                 </p>
 
                 <div className="space-y-3">
-                  {rubricDrafts.map((draft, index) => (
-                    <div key={draft.id} className="border border-slate-200 rounded-xl p-3 space-y-3">
-                      <div className="flex items-center justify-between gap-2">
-                        <p className="text-xs font-bold text-slate-400 uppercase tracking-wider">
-                          Rubric {index + 1}
-                          {draftReady(draft) && <span className="ml-2 text-emerald-600 normal-case tracking-normal">Ready</span>}
-                        </p>
-                        <button type="button" onClick={() => removeRubricDraft(draft.id)}
-                          className="text-xs font-medium text-slate-400 hover:text-red-600 flex items-center gap-1 shrink-0">
-                          <Trash2 className="w-3.5 h-3.5" /> Remove
-                        </button>
-                      </div>
-
-                      {draft.fileName && (
-                        <div className="flex items-center gap-2 p-2 bg-slate-50 border border-slate-200 rounded-lg">
-                          <FileText className="w-4 h-4 text-slate-400 shrink-0" />
-                          <span className="text-xs font-medium text-slate-600 truncate flex-1">{draft.fileName}</span>
-                          {draft.isReading && <Loader2 className="w-3.5 h-3.5 animate-spin text-slate-400" />}
-                        </div>
-                      )}
-
-                      {draft.isReading ? (
-                        <p className="text-xs text-slate-500">Reading the rubric…</p>
-                      ) : (
-                        <>
-                          {draft.mode === 'upload' && !draft.error && (
-                            <p className="text-xs text-slate-500 bg-blue-50 border border-blue-100 rounded-lg p-2.5 leading-relaxed">
-                              Check these against your document before publishing — correct anything
-                              that came out wrong.
-                            </p>
-                          )}
-                          {draft.error && (
-                            <p className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg p-2.5">{draft.error}</p>
-                          )}
-                          {/* Said where the changed numbers are. The criteria
-                              below no longer read the way the uploaded document
-                              does, and an unexplained 25 where the paper says 4
-                              looks like a misreading rather than a conversion. */}
-                          {draft.scaledFrom != null && (
-                            <p className="text-xs text-blue-800 bg-blue-50 border border-blue-200 rounded-lg p-2.5 leading-relaxed">
-                              Your rubric adds up to <strong>{draft.scaledFrom}</strong>, so these have been
-                              converted to percentages of 100 — each criterion keeps exactly the share of the
-                              mark it had in your document. Teachers apply this as weights; the points an
-                              activity is worth stay theirs to set.
-                            </p>
-                          )}
-                          <div>
-                            <label className="block text-xs font-medium text-slate-500 mb-1">Rubric name</label>
-                            {/* Deliberately not `required`. A card the admin
-                                added and then thought better of is meant to be
-                                publishable — it is simply not saved — and the
-                                browser's own validation refused that, popping
-                                "Please fill out this field" on an input that
-                                may be scrolled out of the modal. It also took
-                                the nameless case away from the message below,
-                                which explains the choice in words. A card with
-                                criteria but no name is still caught there. */}
-                            <input type="text" value={draft.name}
-                              onChange={e => updateRubricDraft(draft.id, { name: e.target.value })}
-                              placeholder="e.g. Grade 6 English — Written Output"
-                              className="w-full border border-slate-200 p-2 rounded-lg outline-none focus:ring-2 focus:ring-brand-navy text-sm" />
-                          </div>
-                          <RubricEditor criteria={draft.criteria}
-                            onChange={next => updateRubricDraft(draft.id, { criteria: next })} />
-                        </>
-                      )}
-                    </div>
+                  {drafts.drafts.map((draft, index) => (
+                    <RubricDraftCard key={draft.id} draft={draft} index={index}
+                      onChange={patch => drafts.update(draft.id, patch)}
+                      onRemove={() => drafts.remove(draft.id)} />
                   ))}
                 </div>
 
-                {/* Both entry points stay on screen whatever is already added —
-                    the second rubric is added exactly the way the first was. */}
-                <div className={cn('grid grid-cols-2 gap-2', rubricDrafts.length > 0 && 'mt-3')}>
-                  <label className="border-2 border-dashed border-slate-200 rounded-lg p-3 text-center cursor-pointer hover:border-brand-navy hover:bg-blue-50 transition-colors">
-                    <UploadCloud className="w-5 h-5 mx-auto mb-1 text-slate-400" />
-                    <span className="block text-xs font-medium text-slate-600">
-                      {rubricDrafts.length ? 'Upload another' : 'Upload our rubric'}
-                    </span>
-                    <span className="block text-[11px] text-slate-400 mt-0.5">Read out for you to check</span>
-                    <input type="file" accept=".pdf,.docx,image/*" className="hidden"
-                      onChange={e => {
-                        const input = e.target;
-                        const picked = input.files?.[0];
-                        if (!picked) return;
-                        // Cleared straight away so picking the same file again
-                        // still fires a change event. `picked` is already a File
-                        // reference and survives this.
-                        input.value = '';
-                        readRubricFile(addRubricDraft('upload'), picked);
-                      }} />
-                  </label>
-                  <button type="button" onClick={() => addRubricDraft('manual')}
-                    className="border-2 border-dashed border-slate-200 rounded-lg p-3 text-center hover:border-brand-navy hover:bg-blue-50 transition-colors">
-                    <PenLine className="w-5 h-5 mx-auto mb-1 text-slate-400" />
-                    <span className="block text-xs font-medium text-slate-600">
-                      {rubricDrafts.length ? 'Type another in' : 'Type it in'}
-                    </span>
-                    <span className="block text-[11px] text-slate-400 mt-0.5">Name and criteria</span>
-                  </button>
-                </div>
+                <RubricDraftButtons count={drafts.drafts.length}
+                  className={drafts.drafts.length > 0 ? 'mt-3' : ''}
+                  onUpload={picked => drafts.readFile(drafts.add('upload'), picked)}
+                  onManual={() => drafts.add('manual')} />
               </div>
 
               {error && <p className="text-xs text-red-600 bg-red-50 border border-red-200 rounded-lg p-2.5">{error}</p>}
               <div className="flex gap-2 pt-1">
-                <button type="button" onClick={() => { setShowForm(false); resetRubricDrafts(); }}
+                <button type="button" onClick={() => { setShowForm(false); drafts.reset(); }}
                   className="flex-1 py-2.5 rounded-lg border border-slate-200 text-slate-600 font-medium hover:bg-slate-50">Cancel</button>
                 {/* Held until the guide is attached, while a rubric is being
                     read, and while saving — the guards in handleCreate say why.
                     Greyed rather than hidden, so the reason is on screen next to
                     the field or the spinner that is holding it up. */}
-                <button type="submit" disabled={isSaving || readingDrafts.length > 0 || !file}
+                <button type="submit" disabled={isSaving || drafts.reading.length > 0 || !file}
                   className={cn('flex-1 py-2.5 rounded-lg text-white font-bold flex items-center justify-center gap-2',
-                    isSaving || readingDrafts.length > 0 || !file ? 'bg-slate-300 cursor-not-allowed' : 'bg-brand-navy hover:bg-blue-900')}
+                    isSaving || drafts.reading.length > 0 || !file ? 'bg-slate-300 cursor-not-allowed' : 'bg-brand-navy hover:bg-blue-900')}
                   title={!file ? 'Attach the curriculum guide first' : undefined}>
                   {isSaving
                     ? <><Loader2 className="w-4 h-4 animate-spin" /> Parsing...</>
-                    : readingDrafts.length > 0
+                    : drafts.reading.length > 0
                       ? <><Loader2 className="w-4 h-4 animate-spin" /> Reading rubric...</>
                       : 'Publish'}
                 </button>
