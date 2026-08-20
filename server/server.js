@@ -747,9 +747,17 @@ SCORE/FEEDBACK CONSISTENCY — the number and the narrative must never contradic
   generic, non-corrective step ("keep up the good work", "review it once more") when points were
   actually deducted — a teacher reading a step like that next to a sub-maximum score has no way to
   tell why the paper didn't score higher.
-- If you genuinely cannot identify any concrete weakness anywhere in the paper, no criterion may be
-  scored below its band's maximum for that reason — do not withhold points you cannot point to a
-  specific, real cause for in the student's own writing.
+- Do not withhold points you cannot point to a specific, real cause for in the student's own
+  writing. A deduction you cannot quote the reason for is a phantom deduction — if you cannot show
+  what cost the point, do not take it.
+- The reverse rule is exactly as binding, and it is the one more often broken: a criterion's TOP
+  band must be EARNED by evidence, never awarded by default. Before you score any criterion at its
+  maximum, you must be able to name the specific thing in THIS paper that meets that band's own
+  wording. "I found nothing wrong" is not evidence for a top band — absence of error is not the
+  same as presence of what the band describes, and a clean paper that simply does what was asked
+  belongs one band below the top, not at it.
+- Inventing a flaw to justify a lower score and awarding the maximum because you found no flaw are
+  the same failure in opposite directions. Avoid both.
 - Do not describe a paper as strong, well-developed, or well-organized in "strengths" while also
   scoring the criterion that word applies to in a low or middle band — the two statements must agree
   with each other, not just each be individually plausible.
@@ -7725,6 +7733,8 @@ SCORE CALIBRATION FOR ${gradeLevelForPrompt} — read this before you assign any
 - 75-79: does most of what the task asked, with a gap or a recurring error that a specific next step would fix.
 - 65-74: several parts of the task are missing or misunderstood.
 - Below 65: only when the work does not attempt the task, or is largely off-topic or unreadable.
+- 90-100 is NOT the default for a paper with no visible errors. It requires the "something extra" named above to be actually present and quotable — if you cannot point to the richer detail, the better-chosen word or the idea beyond the prompt, the paper is an 80-89 however clean it is.
+- Full or near-full marks (97-100, or every criterion sitting at its band maximum) are a strong claim about this paper specifically. Award that only when you can name what lifts it above a solid on-target paper. An error-free paper that does exactly what was asked and no more is 85-89, not 100.
 - Do NOT deduct for skills that are not taught until a higher grade level, and do NOT deduct twice for the same mistake across several criteria.
 - Errors that are normal and expected at this age (a few spelling slips, a run-on sentence, simple vocabulary) cost a few points inside the band — they do not drop a paper out of it.
 `;

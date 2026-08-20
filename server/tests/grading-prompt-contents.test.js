@@ -381,6 +381,22 @@ describe('what the AI checker sends to Gemini', () => {
     expect(system).toContain('ITS OWN grade level');
   });
 
+  it('makes the top rubric band something to be earned, not the default', async () => {
+    // The 11-paper teacher trial came back near-perfect on almost every paper.
+    // The cause was an unbalanced pair of rules: the prompt forbade deductions
+    // the model could not name, but said nothing about awards it could not
+    // name, so "I found nothing wrong" resolved to full marks every time. Both
+    // directions are constrained now, and the asymmetry is the regression.
+    const system = JSON.stringify((await runCheck()).systemInstruction || {});
+    expect(system).toContain('must be EARNED by evidence, never awarded by default');
+    expect(system).toContain('absence of error is not the');
+    // The phantom-deduction guard this replaced must survive — the fix for
+    // over-awarding must not walk the model back into over-deducting.
+    expect(system).toContain('Do not withhold points you cannot point to a specific, real cause');
+    // The old absolute form said the quiet part outright.
+    expect(system).not.toContain('no criterion may be');
+  });
+
   it('no longer asks the model to refuse a paper that has a name on it', async () => {
     // The gate never kept a name off Gemini — the page was uploaded before the
     // model could report seeing one — so all it did was discard a paid-for
@@ -461,6 +477,18 @@ describe('age calibration of the feedback it asks for', () => {
     expect(prompt).toContain('Do NOT deduct for skills that are not taught until a higher grade level');
     // The old single line anchored every good paper below 85.
     expect(prompt).not.toContain('should score 75-85');
+  });
+
+  it('gates the 90-100 band and full marks behind nameable evidence', async () => {
+    // Counterweight to the anti-over-deduction rules directly above them in
+    // the same block: without these, a clean but unremarkable paper walked
+    // into the top band purely because nothing in it was wrong.
+    const prompt = promptTextOf(await runCheck());
+    expect(prompt).toContain('90-100 is NOT the default for a paper with no visible errors');
+    expect(prompt).toContain('the paper is an 80-89 however clean it is');
+    expect(prompt).toContain('An error-free paper that does exactly what was asked and no more is 85-89, not 100');
+    // The floor-protecting rules stay — this is a rebalance, not a reversal.
+    expect(prompt).toContain('they do not drop a paper out of it');
   });
 
   it('asks for at least two growth points and three action steps', async () => {
