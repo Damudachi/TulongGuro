@@ -149,7 +149,13 @@ export default function ActivityBuilder() {
   // Declared before the rubric resolver below, which reads form.type and form.topic.
   const [form, setForm] = useState({
     title: '',
-    type: 'Essay',
+    // Blank, not 'Essay'. A pre-filled Type is a decision the form made and the
+    // teacher never did — and it is the field the gradebook groups columns by,
+    // so a quiz left on the default kept getting averaged in with the essays
+    // with nothing on screen looking wrong. Nothing fills this in any more:
+    // ticking a lesson used to overwrite it from the curriculum file's
+    // extracted output type, and that is gone too (see toggleTopic).
+    type: '',
     topic: '',
     // Which grading term this activity belongs to: '1' | '2' | '3', or '' for
     // not yet chosen. A string because it rides through FormData on create,
@@ -645,7 +651,11 @@ export default function ActivityBuilder() {
         if (data.gradedCount > 0) setShowRubricEditor(false);
         setForm({
           title: activity.title || '',
-          type: activity.type || 'Essay',
+          // Empty, not 'Essay'. Same reason as the blank default above: an
+          // activity saved without a type is one nobody chose a type for, and
+          // filling it in on open would put an answer in front of the teacher
+          // that the record does not actually contain.
+          type: activity.type || '',
           // A legacy activity carries its lesson only in classLessonId, and the
           // checklist below reads lessons out of `topic`. Folding it in on
           // open is what makes that lesson appear ticked rather than missing —
@@ -1043,6 +1053,13 @@ export default function ActivityBuilder() {
       showAlert('Choose which term this activity belongs to. The gradebook and its exports are filtered by term, and an activity with none is left out of all of them.');
       return;
     }
+    // Same shape as the term check above, and asked for the same reason: the
+    // gradebook shows one column per type, so an activity without one has no
+    // column to sit in.
+    if (!form.type) {
+      showAlert('Choose what kind of work this is. The gradebook shows one column per type, so an activity without one has nowhere to sit.');
+      return;
+    }
     // Trimmed, because the textarea's own `required` is satisfied by a space.
     if (!form.instructions.trim()) {
       showAlert('Write the instructions students will follow. They are what the work is set against, and the AI reads them when it checks the papers.');
@@ -1355,9 +1372,12 @@ export default function ActivityBuilder() {
 
           <div className="grid grid-cols-2 gap-4">
             <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">Type</label>
+              <label className="block text-sm font-medium text-slate-700 mb-1">
+                Type <span className="text-red-500">*</span>
+              </label>
               <select value={form.type} onChange={e => setForm({ ...form, type: e.target.value })}
                 className="w-full px-4 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-brand-navy outline-none">
+                <option value="">-- Select --</option>
                 {ACTIVITY_TYPES.map(t => <option key={t}>{t}</option>)}
                 {/* An activity saved before the Type field became the
                     teacher's alone can carry a type this list never had (it
