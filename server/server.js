@@ -7829,8 +7829,9 @@ const STITCH_PAGE_WIDTH = 1920;
  * `pageBreaks` records where each page ends as a fraction of the total height
  * (ascending, last entry exactly 1). Fractions rather than pixels because
  * preprocessImage rescales this image afterwards, and a proportion survives
- * that where a pixel offset would not. It is what lets a single page be pulled
- * back out later — see DELETE /api/teacher/submissions/:id/pages/:pageIndex.
+ * that where a pixel offset would not. It is what lets the upload be taken back
+ * apart later: Edit Upload cuts the composite at these fractions to put each
+ * page back in the teacher's staging tray (src/utils/submissionPages.js).
  * Null for a lone page: there is no boundary to record.
  */
 async function stitchPages(imageFiles) {
@@ -9904,154 +9905,6 @@ app.delete('/api/teacher/submissions/:submissionId', async (req, res) => {
     res.json({ success: true });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
-  }
-});
-
-/**
- * Remove ONE page from a multi-page submission, keeping the rest.
- *
- * Multi-page work is stitched into a single tall image on upload, so until now
- * "remove" could only mean the whole thing: a teacher who photographed page 3
- * twice, caught a neighbour's paper in the stack, or shot one page unreadably
- * had to delete the submission — its grade and its feedback with it — and
- * re-scan every page. The composite records where its pages start and end
- * (Submission.pageBreaks), which is what makes this possible: the image is
- * re-cropped around the bands that are being kept and re-stitched.
- *
- * The grade goes. Not incidental — it is the point: a score and a written
- * comment produced by reading four pages are not a judgement of the three that
- * remain. The row lands back in the "ready for AI checking" queue exactly as a
- * replaced photo does, and the client's confirm says so before anything moves.
- *
- * Refused when there is one page left to remove: that is a delete, and DELETE
- * /api/teacher/submissions/:submissionId is where deleting lives — it also
- * clears up the stored file and is the only path the released-work guard, the
- * audit trail and the roster's "not handed in" state are written for.
- *
- * Also refused for a submission uploaded before pageBreaks existed, or one
- * handed in as a PDF or Word file: nothing here can see where their pages are,
- * and guessing at a crop would destroy work.
- */
-app.delete('/api/teacher/submissions/:submissionId/pages/:pageIndex', async (req, res) => {
-  const scratch = [];
-  try {
-    const submission = await prisma.submission.findUnique({
-      where: { id: req.params.submissionId },
-      select: { id: true, activityId: true, imageUrl: true, releasedAt: true, pageBreaks: true },
-    });
-    if (!submission) return res.status(404).json({ success: false, error: 'This submission no longer exists.' });
-
-    const owned = await teacherOwnsActivity(submission.activityId, req.auth.sub);
-    if (!owned.ok) return res.status(owned.code).json({ success: false, error: owned.error });
-
-    if (submission.releasedAt) {
-      return res.status(400).json({
-        success: false,
-        error: 'This result has already been released to the student, so its pages can no longer be changed.',
-      });
-    }
-
-    const breaks = parsePageBreaks(submission.pageBreaks);
-    if (!submission.imageUrl || !breaks || breaks.length < 2) {
-      return res.status(400).json({
-        success: false,
-        error: 'The pages of this submission were not recorded separately, so a single page cannot be taken out of it. Replace the whole submission instead.',
-      });
-    }
-
-    const pageIndex = Number(req.params.pageIndex);
-    if (!Number.isInteger(pageIndex) || pageIndex < 0 || pageIndex >= breaks.length) {
-      return res.status(400).json({ success: false, error: 'That page is not part of this submission.' });
-    }
-
-    const resolved = await resolveLocalImagePath(submission.imageUrl);
-    if (resolved.isTemp) scratch.push(resolved.path);
-    const meta = await sharp(resolved.path).metadata();
-    const width = meta.width || 0;
-    const height = meta.height || 0;
-    if (!width || !height) throw new Error('The stored image could not be read.');
-
-    // Fractions back to pixels. Each band runs from the previous boundary to
-    // its own, and the last one is pinned to the bottom edge so rounding can
-    // never leave a sliver of the final page behind.
-    const bands = breaks.map((end, i) => {
-      const top = i === 0 ? 0 : Math.round(breaks[i - 1] * height);
-      const bottom = i === breaks.length - 1 ? height : Math.round(end * height);
-      return { top, height: Math.max(1, Math.min(bottom, height) - top) };
-    });
-
-    const kept = bands.filter((_, i) => i !== pageIndex);
-    if (kept.length === 0) {
-      return res.status(400).json({
-        success: false,
-        error: 'That is the only page. Use Remove to delete the whole submission.',
-      });
-    }
-
-    const keptImages = [];
-    for (const band of kept) {
-      const bandHeight = Math.max(1, Math.min(band.height, height - band.top));
-      keptImages.push({
-        buffer: await sharp(resolved.path).extract({ left: 0, top: band.top, width, height: bandHeight }).toBuffer(),
-        height: bandHeight,
-      });
-    }
-
-    const totalHeight = keptImages.reduce((sum, k) => sum + k.height, 0);
-    const outFilename = `pages-${Date.now()}-${Math.floor(Math.random() * 1000)}.jpg`;
-    // Not added to `scratch`. With no object storage configured uploadToCloud
-    // stores by *serving this file from disk*, so deleting it after the upload
-    // would leave the row pointing at nothing — the same reason the upload
-    // routes leave their processed image in place.
-    const outPath = path.join(uploadsDir, outFilename);
-
-    let currentTop = 0;
-    const compositeOps = [];
-    const newBreaks = [];
-    for (const image of keptImages) {
-      compositeOps.push({ input: image.buffer, top: currentTop, left: 0 });
-      currentTop += image.height;
-      newBreaks.push(totalHeight ? currentTop / totalHeight : 0);
-    }
-    if (newBreaks.length) newBreaks[newBreaks.length - 1] = 1;
-
-    await sharp({ create: { width, height: totalHeight, channels: 3, background: { r: 255, g: 255, b: 255 } } })
-      .composite(compositeOps)
-      .jpeg({ quality: 88 })
-      .toFile(outPath);
-
-    // A new name every time rather than overwriting in place: the old image may
-    // still be in a browser cache or a CDN, and a teacher who removed the wrong
-    // page and looked again should not be shown the stale copy of a document
-    // that has changed underneath it.
-    const newUrl = await uploadToCloud(outPath, outFilename, { contentType: 'image/jpeg' });
-
-    const updated = await prisma.submission.update({
-      where: { id: submission.id },
-      data: {
-        ...UNGRADED_RESET,
-        imageUrl: newUrl,
-        pageBreaks: serializePageBreaks(newBreaks),
-        // Same reasoning as a replaced photo: a validated mark was a judgement
-        // of a document that no longer exists.
-        hitlScore: null,
-        hitlFeedback: null,
-      },
-      include: { student: { select: { id: true, name: true, username: true } } },
-    });
-
-    // After the row points at the new file, never before — the reverse order
-    // leaves a submission showing a broken image if the update fails.
-    if (submission.imageUrl !== newUrl) {
-      deleteFromCloud(submission.imageUrl).catch(err =>
-        console.warn('[page remove] could not remove the previous file:', err.message));
-    }
-
-    res.json({ success: true, submission: updated, pagesRemaining: kept.length });
-  } catch (e) {
-    res.status(e.status || 500).json({ success: false, error: e.message });
-  } finally {
-    scratch.forEach(f => { try { fs.unlinkSync(f); } catch {} });
   }
 });
 

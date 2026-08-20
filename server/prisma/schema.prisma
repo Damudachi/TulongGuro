@@ -613,8 +613,9 @@ model Submission {
   /// page stopped, so a teacher who scanned page 3 twice, or shot a neighbour's
   /// paper by mistake, could only delete the whole submission — grade, feedback
   /// and all — and scan every page again. This is what makes one page
-  /// removable on its own: the composite is re-cropped around the boundaries
-  /// recorded here (see DELETE /api/teacher/submissions/:id/pages/:pageIndex).
+  /// removable on its own: Edit Upload cuts the stored composite back into
+  /// pages at these boundaries, drops the one the teacher picked, and
+  /// re-uploads the rest (see src/utils/submissionPages.js).
   ///
   /// Fractions rather than pixels because the composite is rescaled after it is
   /// stitched (and could be again); a proportion survives that, an offset does

@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
-import { ArrowLeft, UploadCloud, X, Loader2, Wifi, WifiOff, ShieldCheck, Info, FileText, Camera, Sparkles, Plus, CheckCircle2, AlertTriangle, ClipboardCheck, Send, Trash2 } from 'lucide-react';
+import { ArrowLeft, UploadCloud, X, Loader2, Wifi, WifiOff, ShieldCheck, Info, FileText, Camera, Sparkles, Plus, CheckCircle2, AlertTriangle, ClipboardCheck, Send, Pencil } from 'lucide-react';
 import { getQueue, buildJob, enqueue, flushQueue, QUEUE_CHANGED } from '../../utils/offlineQueue';
 import { API_URL, apiFetch, MAX_SUBMISSION_PAGES } from '../../config';
 import { getStoredUser } from '../../utils/session';
@@ -8,6 +8,7 @@ import { saveClassSnapshot, readClassSnapshot } from '../../utils/offlineSnapsho
 import SubmissionImage from '../../components/SubmissionImage';
 import ImageRedactor from '../../components/ImageRedactor';
 import { isRasterizable, rasterizeToPageImages } from '../../utils/fileRasterize';
+import { pageCountOf, isFileSubmission, splitSubmissionIntoPages } from '../../utils/submissionPages';
 
 import { showAlert, showConfirm } from '../../utils/dialog';
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
@@ -17,23 +18,6 @@ function cn(...cls) { return cls.filter(Boolean).join(' '); }
  *  always already an image. This only still applies to the rare file that
  *  failed to render and fell back to being staged as-is. */
 const isImageFile = (file) => (file?.type || '').startsWith('image/');
-
-/**
- * How many pages the work already on file is made of.
- *
- * Multi-page work is stitched into one image on upload; `pageBreaks` is where
- * the server recorded the seams. 1 covers every case where it did not — a
- * single photo, a PDF or Word file whose pagination nothing here can see, and
- * anything uploaded before the column existed — and those keep the
- * all-or-nothing Remove, because taking "page 2" out of a document whose page 2
- * was never located would delete the wrong part of a child's work.
- */
-const pageCountOf = (sub) => {
-  try {
-    const breaks = JSON.parse(sub?.pageBreaks || 'null');
-    return Array.isArray(breaks) && breaks.length > 1 ? breaks.length : 1;
-  } catch { return 1; }
-};
 
 /** Which learners on this activity have an upload sitting in the offline queue.
  *  Queued jobs carry the studentId and activityId they were built with, so the
@@ -108,16 +92,14 @@ export default function BatchUpload() {
   const [pendingRedaction, setPendingRedaction] = useState(null); // { studentId, queue: File[], index, objectUrl }
   const [privacyBlocked, setPrivacyBlocked] = useState(null); // { studentId, message } when the server refused a scan for PII
   const [preparingFiles, setPreparingFiles] = useState(false); // rendering a picked PDF/Word file to page images, before redaction
-  // Tracks students for whom the teacher is adding extra pages to an existing
-  // submission, as opposed to replacing it entirely. When a student ID is in
-  // this set, uploadStaged sends `appendPages: 'true'` so the server stitches
-  // the new pages below the existing composite rather than overwriting it.
-  const [appendingStudentIds, setAppendingStudentIds] = useState(new Set());
   /** Rows with a delete in flight, so the row's controls can't be pressed twice. */
   const [removingStudentIds, setRemovingStudentIds] = useState(new Set());
-  /** The one submission whose Remove has been opened into its page list, if any.
-   *  Only offered for work with more than one page — see pageCountOf. */
-  const [pageMenuSubmissionId, setPageMenuSubmissionId] = useState(null);
+  /** Rows whose staged pages came out of a submission already on file, rather
+   *  than off the camera — i.e. an Edit Upload in progress. Confirming one is a
+   *  replacement, and dropping its last page means deleting the submission. */
+  const [editingStudentIds, setEditingStudentIds] = useState(new Set());
+  /** Rows whose stored image is being fetched and cut back into pages. */
+  const [openingEditStudentId, setOpeningEditStudentId] = useState(null);
   const fileInputRef = useRef(null);
   const cameraInputRef = useRef(null);
   const pendingUploadStudentId = useRef(null);
@@ -369,23 +351,6 @@ export default function BatchUpload() {
   };
 
   /**
-   * Add extra pages to work that is already on file, without discarding
-   * what was uploaded before. The new pages go through the same redaction
-   * flow and are then stitched below the existing composite by the server.
-   */
-  const requestAppend = async (studentId, sub, source = 'files') => {
-    if (sub?.releasedAt) {
-      showAlert('This result has already been released to the student, so no more pages can be added.');
-      return;
-    }
-    if (sub?.status === 'GRADED' &&
-      !(await showConfirm('This paper has already been validated. Adding pages will clear that grade so the combined submission can be checked fresh. Continue?',
-        { confirmLabel: 'Add pages', danger: true }))) return;
-    setAppendingStudentIds(prev => new Set(prev).add(studentId));
-    triggerFilePick(studentId, source);
-  };
-
-  /**
    * Take the work off the activity entirely, putting the learner back to "not
    * handed in".
    *
@@ -421,6 +386,9 @@ export default function BatchUpload() {
         // Dropped from local state rather than refetched: the row is gone, and
         // a reload would flash the old one back for as long as the request took.
         setActivitySubmissions(prev => prev.filter(x => x.id !== sub.id));
+        // Ends any Edit Upload open on this row: the submission its pages were
+        // read out of no longer exists, so a Save would re-create it.
+        cancelStaged(studentId);
         loadReleaseState();
       } else {
         showAlert(data.error || 'Could not remove this submission. Nothing has been deleted.');
@@ -433,50 +401,53 @@ export default function BatchUpload() {
   };
 
   /**
-   * Take one page out of multi-page work, leaving the rest on file.
+   * Open work that is already on file back into the staging tray.
    *
-   * The whole-submission Remove above was the only way to undo anything about
-   * an upload, which made a duplicated or unreadable page cost the entire
-   * paper: the grade, the feedback and every other page went with it, and all
-   * of them had to be scanned again. The server re-crops the composite around
-   * the pages being kept.
+   * "Add Page" and "Remove" used to sit here as two separate one-way doors, and
+   * neither could do what a teacher opening them usually wants: look at what
+   * went up and fix it. Add Page could only append, Remove could only delete
+   * the lot, and picking one page out of a stitched image was not possible at
+   * all — a duplicated or unreadable page cost the whole submission and every
+   * good page in it.
    *
-   * The grade does not survive, and the confirm says so plainly rather than
-   * letting a teacher discover it afterwards: a score and a comment written
-   * about four pages are not a judgement of the three that are left, so the
-   * paper goes back into the queue to be checked again.
+   * So this puts the upload back into the same tray a fresh one is staged in:
+   * the stored image is fetched and cut at the page boundaries the server
+   * recorded, and each page becomes a thumbnail again — with its X to drop it,
+   * its Cover button to redact it, and the + Page tile to add another. Confirm
+   * Replace sends the whole set back, which is a path that already existed and
+   * is already tested.
+   *
+   * Work uploaded before those boundaries were recorded, and work handed in as
+   * a PDF or Word file, opens as a single page: pages can still be added, but
+   * nothing here knows where to cut a document whose seams were never written
+   * down, and guessing would delete part of a child's answer.
    */
-  const removeSubmissionPage = async (studentId, sub, pageIndex) => {
+  const editUpload = async (studentId, sub) => {
     if (!sub?.id) return;
-    const total = pageCountOf(sub);
-    const remaining = total - 1;
-    const hasGrade = sub.hitlScore != null || sub.aiScore != null;
-    if (!(await showConfirm(
-      `Remove page ${pageIndex + 1} of ${total}? ` +
-      `The other ${remaining} page${remaining === 1 ? '' : 's'} stay${remaining === 1 ? 's' : ''} on file` +
-      (hasGrade
-        ? ', but the grade and feedback go — they were given for the whole paper, so this work needs checking again.'
-        : '.'),
-      { confirmLabel: `Remove page ${pageIndex + 1}`, danger: true }))) return;
+    if (sub.releasedAt) {
+      showAlert('This result has already been released to the student, so the pages can no longer be changed.');
+      return;
+    }
+    if (isFileSubmission(sub.imageUrl)) {
+      showAlert('This was handed in as a PDF or Word file, so its pages cannot be edited here. Use Replace File to swap it for another one.');
+      return;
+    }
+    if (sub.status === 'GRADED' &&
+      !(await showConfirm('This paper has already been validated. Editing its pages will clear that grade so the new set can be checked fresh. Continue?',
+        { confirmLabel: 'Edit the pages', danger: true }))) return;
 
-    setRemovingStudentIds(prev => new Set(prev).add(studentId));
+    setOpeningEditStudentId(studentId);
     try {
-      const res = await apiFetch(`${API_URL}/api/teacher/submissions/${sub.id}/pages/${pageIndex}`, { method: 'DELETE' });
-      const data = await res.json().catch(() => ({}));
-      if (res.ok && data.success && data.submission) {
-        // Merged over the row rather than refetching the class set: the
-        // response is the updated submission, and a reload of every row to
-        // change one of them is a second round trip on school wifi.
-        setActivitySubmissions(prev => prev.map(x => (x.id === sub.id ? { ...x, ...data.submission } : x)));
-        setPageMenuSubmissionId(null);
-        loadReleaseState();
-      } else {
-        showAlert(data.error || 'Could not remove that page. Nothing has been changed.');
-      }
+      const files = await splitSubmissionIntoPages(sub);
+      setStagedByStudentId(prev => ({
+        ...prev,
+        [studentId]: { pages: files.map(file => ({ file, preview: URL.createObjectURL(file) })) },
+      }));
+      setEditingStudentIds(prev => new Set(prev).add(studentId));
     } catch {
-      showAlert('Could not reach the server. Nothing has been changed.');
+      showAlert('Could not open this upload for editing — the stored photo could not be read. You can still use Replace File or Re-take Photo to send a new copy.');
     } finally {
-      setRemovingStudentIds(prev => { const next = new Set(prev); next.delete(studentId); return next; });
+      setOpeningEditStudentId(null);
     }
   };
 
@@ -559,17 +530,40 @@ export default function BatchUpload() {
       delete next[studentId];
       return next;
     });
+    setEditingStudentIds(prev => {
+      if (!prev.has(studentId)) return prev;
+      const next = new Set(prev);
+      next.delete(studentId);
+      return next;
+    });
   };
 
-  const removePage = (studentId, pageIndex) => {
+  /**
+   * Drop one staged page.
+   *
+   * On an Edit Upload, taking the last page out is how a whole submission is
+   * deleted — there is no separate Remove button on the row any more, and a
+   * submission with no pages is not a thing that can be saved. It goes through
+   * removeSubmission, so it asks first and says what goes with it; declining
+   * leaves the page where it was.
+   */
+  const removePage = async (studentId, pageIndex) => {
+    const pages = stagedByStudentId[studentId]?.pages || [];
+    if (pages.length <= 1 && editingStudentIds.has(studentId)) {
+      const sub = submissionsByStudentId[studentId];
+      if (sub?.id) {
+        await removeSubmission(studentId, sub);
+        return;
+      }
+    }
     setStagedByStudentId(prev => {
-      const pages = (prev[studentId]?.pages || []).filter((_, i) => i !== pageIndex);
-      if (pages.length === 0) {
+      const remaining = (prev[studentId]?.pages || []).filter((_, i) => i !== pageIndex);
+      if (remaining.length === 0) {
         const next = { ...prev };
         delete next[studentId];
         return next;
       }
-      return { ...prev, [studentId]: { pages } };
+      return { ...prev, [studentId]: { pages: remaining } };
     });
   };
 
@@ -598,7 +592,6 @@ export default function BatchUpload() {
     if (pages.length === 0 || !piiConfirmed) return;
     setPrivacyBlocked(prev => (prev?.studentId === studentId ? null : prev));
     setUploadingStudentId(studentId);
-    const isAppending = appendingStudentIds.has(studentId);
 
     const queueOffline = async () => {
       // All staged pages are queued as one job, carried and flushed together —
@@ -606,8 +599,11 @@ export default function BatchUpload() {
       // request so the server can stitch them into one composite image.
       // Queuing them as separate jobs would flush as separate requests, each
       // overwriting the submission's image instead of being combined.
+      // No appendPages flag: what is in the tray is the whole document, on a
+      // first upload and on an Edit Upload alike, so the server always takes
+      // the staged pages as the submission rather than stitching them under a
+      // copy of themselves.
       const fields = { studentId, activityId, skipGrading: 'true' };
-      if (isAppending) fields.appendPages = 'true';
       const job = await enqueue(buildJob(`${API_URL}/api/teacher/upload`, fields, pages.map(p => p.file)));
       setQueuedCount(getQueue().length);
       setQueuedStudentIds(queuedStudentsFor(activityId));
@@ -615,7 +611,6 @@ export default function BatchUpload() {
         showAlert(`Could not save these ${pages.length} page(s) for later — this device has run out of offline storage. Please reconnect and upload now instead.`);
       }
       cancelStaged(studentId);
-      setAppendingStudentIds(prev => { const next = new Set(prev); next.delete(studentId); return next; });
       setUploadingStudentId(null);
     };
 
@@ -627,13 +622,11 @@ export default function BatchUpload() {
       formData.append('studentId', studentId);
       formData.append('activityId', activityId);
       formData.append('skipGrading', 'true');
-      if (isAppending) formData.append('appendPages', 'true');
       const res = await apiFetch(`${API_URL}/api/teacher/upload`, { method: 'POST', body: formData });
       const data = await res.json();
       if (data.success) {
         setActivitySubmissions(prev => [...prev.filter(s => s.studentId !== studentId), data.submission]);
         cancelStaged(studentId);
-        setAppendingStudentIds(prev => { const next = new Set(prev); next.delete(studentId); return next; });
         setUploadingStudentId(null);
       } else if (data.code === 'PRIVACY_VIOLATION') {
         // The server refused the scan and discarded it, so the staged pages are
@@ -933,12 +926,21 @@ export default function BatchUpload() {
                     )}
                     {staged ? (
                       <>
-                        <span className="inline-flex mt-2 text-[11px] font-bold px-2 py-0.5 rounded-full bg-blue-100 text-blue-700">
-                          Ready to {hasWork ? 'replace' : 'upload'} — {stagedPages.length} page{stagedPages.length > 1 ? 's' : ''}
+                        {/* An edit is described as an edit. It ends in the same
+                            replacement upload, but "Ready to replace" in front
+                            of the pages a teacher just opened reads as though
+                            their work is about to be thrown away. */}
+                        <span className={cn('inline-flex mt-2 text-[11px] font-bold px-2 py-0.5 rounded-full',
+                          editingStudentIds.has(student.id) ? 'bg-green-100 text-green-700' : 'bg-blue-100 text-blue-700')}>
+                          {editingStudentIds.has(student.id)
+                            ? `Editing — ${stagedPages.length} page${stagedPages.length > 1 ? 's' : ''}`
+                            : `Ready to ${hasWork ? 'replace' : 'upload'} — ${stagedPages.length} page${stagedPages.length > 1 ? 's' : ''}`}
                         </span>
                         {hasWork && (
                           <p className="text-[11px] text-slate-500 mt-1">
-                            This will take the place of the work already on file
+                            {editingStudentIds.has(student.id)
+                              ? 'Add or remove pages, then Save changes. Nothing on file changes until you do'
+                              : 'This will take the place of the work already on file'}
                             {sub?.status === 'GRADED' ? ', and clears its grade so the new pages can be checked fresh' : ''}.
                           </p>
                         )}
@@ -1026,21 +1028,30 @@ export default function BatchUpload() {
                     <div className="flex flex-col items-stretch sm:items-end gap-1.5 shrink-0 w-full sm:w-auto">
                       {sub?.id && (
                         <span className={cn('text-[10px] font-bold px-2 py-0.5 rounded-full',
-                          appendingStudentIds.has(student.id)
+                          editingStudentIds.has(student.id)
                             ? 'text-green-700 bg-green-50 border border-green-200'
                             : 'text-blue-700 bg-blue-50 border border-blue-200')}>
-                          {appendingStudentIds.has(student.id) ? 'Adding pages' : 'Replacing'}
+                          {editingStudentIds.has(student.id) ? 'Editing pages' : 'Replacing'}
                         </span>
                       )}
-                      <button type="button" onClick={() => { cancelStaged(student.id); setAppendingStudentIds(prev => { const next = new Set(prev); next.delete(student.id); return next; }); }}
+                      {/* "Discard" on an edit throws away the changes, not the
+                          work — the submission is untouched until Save. Saying
+                          "Discard all" there read as though it would take the
+                          upload with it. */}
+                      <button type="button" onClick={() => cancelStaged(student.id)}
                         className="text-xs text-slate-400 hover:text-red-600 font-medium flex items-center gap-1">
-                        <X className="w-3.5 h-3.5" /> Discard all
+                        <X className="w-3.5 h-3.5" />
+                        {editingStudentIds.has(student.id) ? 'Cancel edit' : 'Discard all'}
                       </button>
                       <button type="button" onClick={() => uploadStaged(student.id)}
                         disabled={!piiConfirmed || isUploading}
                         className={cn('text-xs px-3 py-1.5 rounded-md font-medium flex items-center gap-1',
                           piiConfirmed ? 'bg-brand-navy text-white hover:bg-blue-900' : 'bg-slate-200 text-slate-400 cursor-not-allowed')}>
-                        {isUploading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : (sub?.id ? (appendingStudentIds.has(student.id) ? 'Confirm Add' : 'Confirm Replace') : 'Confirm Upload')}
+                        {isUploading
+                          ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                          : !sub?.id ? 'Confirm Upload'
+                            : editingStudentIds.has(student.id) ? 'Save changes'
+                              : 'Confirm Replace'}
                       </button>
                     </div>
                   ) : hasWork ? (
@@ -1093,76 +1104,30 @@ export default function BatchUpload() {
                             <Camera className="w-3 h-3" /> Re-take Photo
                           </button>
                           <div className="w-full border-t border-slate-100 my-0.5" />
-                          <button type="button" onClick={() => requestAppend(student.id, sub)}
-                            disabled={!piiConfirmed || removingStudentIds.has(student.id)}
-                            title={!piiConfirmed ? 'Confirm the privacy checkbox above first' : 'Add an extra page below what is already here. Nothing is replaced.'}
+                          {/* One door instead of two one-way ones. "Add Page"
+                              could only append and "Remove" could only delete
+                              the whole submission, so the ordinary thing a
+                              teacher wants here — look at what went up and fix
+                              the one page that is wrong — was the one thing
+                              neither could do. This opens the upload back into
+                              the staging tray it was sent from: every page as a
+                              thumbnail with its own X, the + Page tile beside
+                              them, and Save changes at the end. Deleting the
+                              whole thing is still here — it is what taking the
+                              last page out means, and it still asks first. */}
+                          <button type="button" onClick={() => editUpload(student.id, sub)}
+                            disabled={!piiConfirmed || removingStudentIds.has(student.id) || openingEditStudentId === student.id}
+                            title={!piiConfirmed
+                              ? 'Confirm the privacy checkbox above first'
+                              : 'Open the pages of this upload — remove one, add another, or cover a name'}
                             className={cn('text-xs px-2 py-1.5 rounded-md font-medium flex items-center justify-center gap-1 w-full border',
                               piiConfirmed
                                 ? 'border-green-200 bg-green-50 text-green-700 hover:border-green-400 hover:bg-green-100'
                                 : 'border-slate-100 bg-slate-50 text-slate-300 cursor-not-allowed')}>
-                            <Plus className="w-3 h-3" /> Add Page
+                            {openingEditStudentId === student.id
+                              ? <><Loader2 className="w-3 h-3 animate-spin" /> Opening…</>
+                              : <><Pencil className="w-3 h-3" /> Edit Upload{pageCountOf(sub) > 1 ? ` (${pageCountOf(sub)} pages)` : ''}</>}
                           </button>
-                          {/* The way back to "nothing handed in". Every other
-                              control here ends with a submission still on file,
-                              which left a paper scanned against the wrong name
-                              with no way off the roster. Not gated on the
-                              privacy checkbox: that confirms what is being sent
-                              up, and this only deletes.
-
-                              On multi-page work it asks which pages first. One
-                              bad page — the same sheet shot twice, a photo too
-                              blurred to read, a neighbour's paper caught in the
-                              stack — used to cost the whole submission and every
-                              good page in it, because a stitched image had no
-                              seams anyone could point at. Single-page work, and
-                              anything whose seams were never recorded, keeps the
-                              plain button: there is nothing to choose between. */}
-                          {pageCountOf(sub) > 1 ? (
-                            pageMenuSubmissionId === sub.id ? (
-                              <div className="w-full rounded-md border border-slate-200 bg-white p-1.5 space-y-1">
-                                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wide px-1">
-                                  Remove which?
-                                </p>
-                                {Array.from({ length: pageCountOf(sub) }, (_, i) => (
-                                  <button key={i} type="button"
-                                    onClick={() => removeSubmissionPage(student.id, sub, i)}
-                                    disabled={removingStudentIds.has(student.id)}
-                                    title={`Take page ${i + 1} out and keep the rest`}
-                                    className="w-full text-[11px] font-medium px-2 py-1 rounded border border-slate-200 text-slate-600 hover:border-red-300 hover:text-red-600 disabled:opacity-40">
-                                    Page {i + 1} only
-                                  </button>
-                                ))}
-                                <button type="button" onClick={() => removeSubmission(student.id, sub)}
-                                  disabled={removingStudentIds.has(student.id)}
-                                  title="Delete this work and its grade — the learner goes back to not handed in"
-                                  className="w-full text-[11px] font-bold px-2 py-1 rounded border border-red-200 bg-red-50 text-red-600 hover:bg-red-100 disabled:opacity-40">
-                                  All {pageCountOf(sub)} pages
-                                </button>
-                                <button type="button" onClick={() => setPageMenuSubmissionId(null)}
-                                  className="w-full text-[11px] font-medium px-2 py-1 text-slate-400 hover:text-brand-slate">
-                                  Cancel
-                                </button>
-                              </div>
-                            ) : (
-                              <button type="button" onClick={() => setPageMenuSubmissionId(sub.id)}
-                                disabled={removingStudentIds.has(student.id)}
-                                title={`This work has ${pageCountOf(sub)} pages — remove one of them, or all of it`}
-                                className="text-[11px] font-medium flex items-center gap-1 text-slate-400 hover:text-red-600 disabled:opacity-40 disabled:hover:text-slate-400">
-                                {removingStudentIds.has(student.id)
-                                  ? <><Loader2 className="w-3 h-3 animate-spin" /> Removing…</>
-                                  : <><Trash2 className="w-3 h-3" /> Remove ({pageCountOf(sub)} pages)</>}
-                              </button>
-                            )
-                          ) : (
-                            <button type="button" onClick={() => removeSubmission(student.id, sub)}
-                              disabled={removingStudentIds.has(student.id)}
-                              title="Delete this work and its grade — the learner goes back to not handed in"
-                              className="text-[11px] font-medium flex items-center gap-1 text-slate-400 hover:text-red-600 disabled:opacity-40 disabled:hover:text-slate-400">
-                              {removingStudentIds.has(student.id)
-                                ? <><Loader2 className="w-3 h-3 animate-spin" /> Removing…</>
-                                : <><Trash2 className="w-3 h-3" /> Remove</>}
-                            </button>
-                          )}
                         </>
                       )}
                     </div>
