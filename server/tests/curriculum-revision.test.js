@@ -390,15 +390,33 @@ describe('carrying the revision into classes already built from it', () => {
     expect(createdClassLessonTitles()).toEqual(['Week 3: Persuasive Writing']);
   });
 
-  it('leaves a lesson that already has activities exactly as it is', async () => {
-    // Week 1 is reworded by the revision and this class has two activities on
-    // it. Rewriting it would change what work already submitted against that
-    // lesson is marked against.
+  it('updates a lesson that already has activities, rather than skipping it', async () => {
+    // The reason the feature exists. Grading reads competencies off the
+    // ClassLesson at the moment it marks, so a lesson imported before
+    // competencies were extracted has none for every activity built on it —
+    // and only an update to that row can fix it. Updating cannot disturb what
+    // points at the row; only deleting could, and that is guarded separately.
     prismaFake.class.findMany.mockResolvedValue([followingClass({ usedActivities: 2 })]);
     const res = await applyGuide(guideBody({ mode: 'replace', lessons: revisedLessons() }));
     const d = await res.json();
-    expect(prismaFake.classLesson.update).not.toHaveBeenCalled();
-    expect(d.propagation.keptInUse).toBe(1);
+    expect(prismaFake.classLesson.update).toHaveBeenCalledWith(expect.objectContaining({
+      where: { id: 'class-1-cl1' },
+      data: expect.objectContaining({ description: 'What the November revision says.' }),
+    }));
+    expect(d.propagation.refreshed).toBe(1);
+  });
+
+  it('writes competencies into a lesson that never had any, with work already built on it', async () => {
+    // The exact case the re-upload is for: the class was created from an import
+    // that predates competency extraction, and its lessons carry activities.
+    const klass = followingClass({ usedActivities: 4 });
+    klass.lessons[0].competencies = null;
+    prismaFake.class.findMany.mockResolvedValue([klass]);
+    await applyGuide(guideBody({ mode: 'replace', lessons: revisedLessons() }));
+    const call = prismaFake.classLesson.update.mock.calls.find(([a]) => a.where.id === 'class-1-cl1');
+    expect(call).toBeDefined();
+    expect(JSON.parse(call[0].data.competencies))
+      .toEqual(['Identify the elements of a short story', 'Compare two short stories']);
   });
 
   it('refreshes the same lesson when nothing has been built on it yet', async () => {
@@ -426,7 +444,10 @@ describe('carrying the revision into classes already built from it', () => {
     const res = await applyGuide(guideBody({ mode: 'replace', lessons: revisedLessons() }));
     const d = await res.json();
     expect(prismaFake.classLesson.delete).not.toHaveBeenCalled();
-    expect(d.propagation.keptInUse).toBe(2);
+    // Only the dropped one is "kept": week 1 is in use as well, and it was
+    // updated like any other lesson rather than held back.
+    expect(d.propagation.keptInUse).toBe(1);
+    expect(d.propagation.refreshed).toBe(1);
   });
 
   it('never deletes a class lesson on an append, even one the document dropped', async () => {
@@ -469,6 +490,56 @@ describe('carrying the revision into classes already built from it', () => {
     prismaFake.class.findMany.mockResolvedValue([klass]);
     await applyGuide(guideBody({ mode: 'replace', lessons: revisedLessons() }));
     expect(prismaFake.classLesson.create).not.toHaveBeenCalled();
+  });
+});
+
+describe('recognising a lesson the second reading worded differently', () => {
+  /**
+   * The document is read by a model, not diffed as text, so uploading the very
+   * same guide twice — which is what a school does to backfill competencies an
+   * older import never captured — does not reliably produce the same wording.
+   * Treated as different lessons, the stored one is reported as dropped, a
+   * duplicate is added beside it, and the competencies land on the copy that
+   * none of the teacher's activities point at.
+   */
+  const oneLesson = (title, weekNumber) => ([{
+    title, description: 'Second reading of the same document.', outputType: 'Essay',
+    weekNumber, competencies: JSON.stringify(['Identify the elements of a short story']),
+  }]);
+
+  it('matches it when the "Week 1:" prefix was dropped the second time', async () => {
+    await applyGuide(guideBody({ mode: 'replace', lessons: oneLesson('Elements of a Short Story', 1) }));
+    expect(prismaFake.curriculumLesson.update).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: 'lesson-1' } })
+    );
+    expect(prismaFake.curriculumLesson.create).not.toHaveBeenCalled();
+  });
+
+  it('matches it when the wording drifted but it is the same week and mostly the same words', async () => {
+    await applyGuide(guideBody({ mode: 'replace', lessons: oneLesson('Week 1: Elements of Short Stories', 1) }));
+    expect(prismaFake.curriculumLesson.update).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: 'lesson-1' } })
+    );
+    expect(prismaFake.curriculumLesson.create).not.toHaveBeenCalled();
+  });
+
+  it('refuses to match a week that genuinely changed topic', async () => {
+    // Sharing a week number is not sharing a lesson. Matching these would
+    // rewrite the stored lesson in place, and an activity built on "Elements of
+    // a Short Story" would end up hanging off a lesson about something else.
+    await applyGuide(guideBody({ mode: 'replace', lessons: oneLesson('Week 1: Persuasive Letter Writing', 1) }));
+    expect(prismaFake.curriculumLesson.update).not.toHaveBeenCalled();
+    const created = prismaFake.curriculumLesson.create.mock.calls.map(([a]) => a.data.title);
+    expect(created).toEqual(['Week 1: Persuasive Letter Writing']);
+  });
+
+  it('carries the same recognition into the class copies, instead of duplicating them', async () => {
+    prismaFake.class.findMany.mockResolvedValue([followingClass({ usedActivities: 2 })]);
+    await applyGuide(guideBody({ mode: 'replace', lessons: oneLesson('Elements of a Short Story', 1) }));
+    expect(prismaFake.classLesson.create).not.toHaveBeenCalled();
+    expect(prismaFake.classLesson.update).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: 'class-1-cl1' } })
+    );
   });
 });
 

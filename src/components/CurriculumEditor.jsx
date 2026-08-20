@@ -140,11 +140,11 @@ export default function CurriculumEditor({ adminId, curriculum, onClose, onSaved
         text += ` Carried into ${p.classes} class${p.classes === 1 ? '' : 'es'} this school year: ${carried.join(', ')}.`;
       }
       if (p.keptInUse) {
-        // Written without leaning on the sentence before it: when every change
-        // to a class was blocked by a lesson in use, that sentence is not there
-        // at all and "those classes" would refer to nothing.
+        // Written without leaning on the sentence before it: when nothing else
+        // about a class changed, that sentence is not there at all and "those
+        // classes" would refer to nothing.
         const one = p.keptInUse === 1;
-        text += ` ${p.keptInUse} lesson${one ? '' : 's'} in the classes following this curriculum already ha${one ? 's' : 've'} activities on ${one ? 'it' : 'them'}, so ${one ? 'it was' : 'they were'} left exactly as ${one ? 'it is' : 'they are'} — work already marked against a lesson keeps that lesson.`;
+        text += ` ${p.keptInUse} lesson${one ? '' : 's'} the document no longer lists already ha${one ? 's' : 've'} activities on ${one ? 'it' : 'them'}, so ${one ? 'it was kept' : 'they were kept'} rather than removed — work already marked against a lesson keeps that lesson.`;
       }
       setGuideResult(text);
       setPreview(null);
@@ -378,9 +378,15 @@ export default function CurriculumEditor({ adminId, curriculum, onClose, onSaved
                     {preview.classCount === 1 ? ' it' : ' them'} too.
                     {preview.lessonsInUse > 0 && (
                       <> {preview.lessonsInUse} of their lesson{preview.lessonsInUse === 1 ? '' : 's'} already
-                      ha{preview.lessonsInUse === 1 ? 's' : 've'} activities on {preview.lessonsInUse === 1 ? 'it' : 'them'} —
-                      {preview.lessonsInUse === 1 ? ' that one is' : ' those are'} left exactly as {preview.lessonsInUse === 1 ? 'it is' : 'they are'},
-                      so work already marked against a lesson keeps that lesson.</>
+                      ha{preview.lessonsInUse === 1 ? 's' : 've'} activities on {preview.lessonsInUse === 1 ? 'it' : 'them'}.
+                      {preview.lessonsInUse === 1 ? ' It is' : ' Those are'} updated in place, so the learning
+                      competencies in this document reach the work that already exists — the activities keep the
+                      lesson they are on.</>
+                    )}
+                    {preview.lessonsKeptFromRemoval > 0 && (
+                      <> {preview.lessonsKeptFromRemoval} of {preview.lessonsInUse === 1 ? 'them' : 'those'} {preview.lessonsKeptFromRemoval === 1 ? 'is' : 'are'} not
+                      in the new document; {preview.lessonsKeptFromRemoval === 1 ? 'it is kept' : 'they are kept'} rather than removed,
+                      because deleting {preview.lessonsKeptFromRemoval === 1 ? 'it' : 'them'} would cut that work loose from its lesson.</>
                     )}
                   </p>
                 )}

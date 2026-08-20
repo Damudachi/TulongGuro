@@ -4031,6 +4031,108 @@ function lessonMatchKey(lesson) {
   return String(lesson?.title || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 }
 
+/** The same key with a leading "Week 3:" taken off, since the week is its own column. */
+function lessonKeyWithoutWeek(lesson) {
+  return lessonMatchKey({
+    title: String(lesson?.title || '').replace(/^\s*week\s*\d+\s*[:.)\-\u2013\u2014]*\s*/i, '')
+  });
+}
+
+/** How much of the shorter title the two share, 0 to 1. */
+function titleSimilarity(a, b) {
+  const words = (l) => new Set(lessonKeyWithoutWeek(l).split(' ').filter(Boolean));
+  const left = words(a);
+  const right = words(b);
+  if (!left.size || !right.size) return 0;
+  let shared = 0;
+  for (const word of left) if (right.has(word)) shared++;
+  return shared / Math.min(left.size, right.size);
+}
+
+/**
+ * Work out which stored lesson each lesson in a re-read document IS.
+ *
+ * This is the whole feature in one function, and it exists because the document
+ * is read by a model, not diffed as text. Uploading the very same guide twice —
+ * which is exactly what a school does to backfill the competencies an older
+ * import never captured — does not reliably produce the same wording both
+ * times. "Week 1: Elements of a Short Story" comes back as "Elements of a Short
+ * Story", and on a plain title comparison that is not the same lesson: the
+ * stored one is reported as dropped, a duplicate is added beside it, and the
+ * competencies land on the copy nobody's activities point at.
+ *
+ * So three passes, each narrower than a guess and each unable to claim a lesson
+ * an earlier pass already took:
+ *
+ *   1. the normalised title, which is the ordinary case;
+ *   2. the title with a leading "Week N" removed — the week has its own column,
+ *      and only when exactly one candidate is left to claim;
+ *   3. the same week number, one candidate on each side, and titles that still
+ *      share most of their words. This catches "Elements of a Short Story" ↔
+ *      "Elements of Short Stories" while refusing "Persuasive Writing" ↔
+ *      "Descriptive Writing", which share only the word every title in the
+ *      subject shares. Without the similarity floor, a week that genuinely
+ *      changed topic would be rewritten in place instead of replaced, and an
+ *      activity would end up hanging off a lesson about something else.
+ *
+ * Returns the pairs by incoming index, and the stored lessons nothing claimed.
+ */
+function pairLessons(existing, incoming) {
+  const pairs = new Map();
+  const taken = new Set();
+  const claim = (index, lesson) => { pairs.set(index, lesson); taken.add(lesson.id); };
+  const free = () => existing.filter(l => !taken.has(l.id));
+
+  const byTitle = new Map();
+  for (const lesson of existing) {
+    const key = lessonMatchKey(lesson);
+    if (key && !byTitle.has(key)) byTitle.set(key, lesson);
+  }
+  incoming.forEach((lesson, i) => {
+    const match = byTitle.get(lessonMatchKey(lesson));
+    if (match && !taken.has(match.id)) claim(i, match);
+  });
+
+  incoming.forEach((lesson, i) => {
+    if (pairs.has(i)) return;
+    const key = lessonKeyWithoutWeek(lesson);
+    if (!key) return;
+    const candidates = free().filter(l => lessonKeyWithoutWeek(l) === key);
+    if (candidates.length === 1) claim(i, candidates[0]);
+  });
+
+  incoming.forEach((lesson, i) => {
+    if (pairs.has(i) || lesson.weekNumber == null) return;
+    const candidates = free().filter(l => (l.weekNumber ?? null) === lesson.weekNumber);
+    const rivals = incoming.filter((other, j) => j !== i && !pairs.has(j) && other.weekNumber === lesson.weekNumber);
+    if (candidates.length !== 1 || rivals.length) return;
+    if (titleSimilarity(candidates[0], lesson) < 0.6) return;
+    claim(i, candidates[0]);
+  });
+
+  return { pairs, gone: free() };
+}
+
+/** Whether the revision actually says anything different about this lesson. */
+function lessonDiffers(stored, revised) {
+  return stored.title !== revised.title
+    || (stored.description || null) !== (revised.description || null)
+    || stored.outputType !== revised.outputType
+    || (stored.weekNumber ?? null) !== (revised.weekNumber ?? null)
+    || (stored.competencies || null) !== (revised.competencies || null);
+}
+
+/** The fields a revision is allowed to rewrite on a lesson it matched. */
+function revisedLessonData(revised) {
+  return {
+    title: revised.title,
+    description: revised.description,
+    outputType: revised.outputType,
+    weekNumber: revised.weekNumber,
+    competencies: revised.competencies
+  };
+}
+
 /**
  * The competency list as it arrives from a client, in either shape it can take.
  *
@@ -4129,64 +4231,66 @@ async function classesFollowingCurriculum(curriculum) {
  * lesson list: a teacher who deleted a lesson from their own class deleted it
  * on purpose, and "the curriculum still has it" is not a reason to put it back.
  *
- * A lesson with activities on it is never touched. Rewriting its title or its
- * competencies would change what already-submitted work is marked against,
- * after the fact; deleting it would cut those activities loose from their
- * lesson altogether, since Activity.classLessonId is optional and the row
- * survives with a dangling null rather than the delete being refused. Those
- * lessons are counted and reported instead, so the admin can see what stayed
- * behind and why.
+ * A lesson that activities are already built on IS rewritten, and is never
+ * deleted. Those are two different things and only the second one is dangerous.
+ * Rewriting is how a revision reaches work that already exists at all: grading
+ * reads the competencies off the ClassLesson row at the moment it marks, so a
+ * lesson imported before competencies were extracted has none for every
+ * activity hanging off it — which is the reason a school re-uploads the same
+ * guide in the first place — and an update fixes that without disturbing a
+ * single link. Deleting is the one that cannot be allowed: Activity.
+ * classLessonId is optional, so it would succeed and leave that work pointing
+ * at nothing. Those lessons are kept and reported instead.
  */
-async function propagateCurriculumRevision(curriculum, { additions, updates, removedKeys }) {
+async function propagateCurriculumRevision(curriculum, { additions, updates, gone }) {
   const summary = { classes: 0, added: 0, refreshed: 0, removed: 0, keptInUse: 0 };
-  if (!additions.length && !updates.length && !removedKeys.length) return summary;
+  if (!additions.length && !updates.length && !gone.length) return summary;
 
   const classes = await classesFollowingCurriculum(curriculum);
-  const updateByKey = new Map(updates.map(l => [lessonMatchKey(l), l]));
-  const dropped = new Set(removedKeys);
 
   for (const klass of classes) {
     const lessons = klass.lessons || [];
-    const presentKeys = new Set(lessons.map(lessonMatchKey));
+    const claimed = new Set();
     let touched = false;
 
-    for (const lesson of additions) {
-      if (presentKeys.has(lessonMatchKey(lesson))) continue;
-      await prisma.classLesson.create({ data: classLessonDataFrom(lesson, klass.id) });
-      summary.added++;
+    // 1. Rewrite the class's own copy of every lesson the revision rewrote —
+    //    including the lessons activities are already built on. That is the
+    //    point of the exercise: grading reads competencies off the ClassLesson
+    //    at the moment it marks (see the CURRICULUM LESSON CONTEXT block), so a
+    //    lesson imported before competencies were extracted stays empty for
+    //    every activity on it until this writes them in. Updating a row cannot
+    //    disturb what points at it.
+    const rewritten = pairLessons(lessons, updates);
+    for (const [index, lesson] of rewritten.pairs) {
+      claimed.add(lesson.id);
+      const replacement = updates[index];
+      if (!lessonDiffers(lesson, replacement)) continue;
+      await prisma.classLesson.update({ where: { id: lesson.id }, data: revisedLessonData(replacement) });
+      summary.refreshed++;
       touched = true;
     }
 
-    for (const lesson of lessons) {
-      const key = lessonMatchKey(lesson);
-      const inUse = (lesson._count?.activities || 0) > 0;
-      const replacement = updateByKey.get(key);
-      if (replacement) {
-        const changed = lesson.title !== replacement.title
-          || (lesson.description || null) !== (replacement.description || null)
-          || lesson.outputType !== replacement.outputType
-          || (lesson.weekNumber ?? null) !== (replacement.weekNumber ?? null)
-          || (lesson.competencies || null) !== (replacement.competencies || null);
-        if (!changed) continue;
-        if (inUse) { summary.keptInUse++; continue; }
-        await prisma.classLesson.update({
-          where: { id: lesson.id },
-          data: {
-            title: replacement.title,
-            description: replacement.description,
-            outputType: replacement.outputType,
-            weekNumber: replacement.weekNumber,
-            competencies: replacement.competencies
-          }
-        });
-        summary.refreshed++;
-        touched = true;
-      } else if (dropped.has(key)) {
-        if (inUse) { summary.keptInUse++; continue; }
-        await prisma.classLesson.delete({ where: { id: lesson.id } });
-        summary.removed++;
-        touched = true;
-      }
+    // 2. Drop the class's copy of a lesson the document no longer lists —
+    //    unless activities are built on it. THIS is what has to be held back:
+    //    Activity.classLessonId is optional, so the delete would succeed and
+    //    quietly leave that work pointing at nothing, with the lesson it was
+    //    marked against gone from the class.
+    const dropped = pairLessons(lessons.filter(l => !claimed.has(l.id)), gone);
+    for (const [, lesson] of dropped.pairs) {
+      claimed.add(lesson.id);
+      if ((lesson._count?.activities || 0) > 0) { summary.keptInUse++; continue; }
+      await prisma.classLesson.delete({ where: { id: lesson.id } });
+      summary.removed++;
+      touched = true;
+    }
+
+    // 3. Add what the class has no version of at all.
+    const fresh = pairLessons(lessons.filter(l => !claimed.has(l.id)), additions);
+    for (let index = 0; index < additions.length; index++) {
+      if (fresh.pairs.has(index)) continue;
+      await prisma.classLesson.create({ data: classLessonDataFrom(additions[index], klass.id) });
+      summary.added++;
+      touched = true;
     }
 
     if (touched) summary.classes++;
@@ -4277,13 +4381,17 @@ app.post('/api/admin/:adminId/curriculums/:curriculumId/guide/preview', upload.s
       });
     }
 
-    const existingKeys = new Set(curriculum.lessons.map(lessonMatchKey));
-    const incomingKeys = new Set(lessons.map(lessonMatchKey));
+    // Paired the same way applying it will pair them, so what is shown here is
+    // what will actually happen rather than a second, simpler guess at it.
+    const { pairs, gone } = pairLessons(curriculum.lessons, lessons);
+    const goneIds = new Set(gone.map(l => l.id));
     const classes = await classesFollowingCurriculum(curriculum);
+    const classLessons = classes.flatMap(c => c.lessons || []);
+    const inUse = classLessons.filter(l => (l._count?.activities || 0) > 0);
 
     res.json({
       success: true,
-      lessons: lessons.map(l => ({ ...l, isNew: !existingKeys.has(lessonMatchKey(l)) })),
+      lessons: lessons.map((l, index) => ({ ...l, isNew: !pairs.has(index) })),
       current: curriculum.lessons.map(l => ({
         id: l.id,
         title: l.title,
@@ -4291,14 +4399,15 @@ app.post('/api/admin/:adminId/curriculums/:curriculumId/guide/preview', upload.s
         outputType: l.outputType,
         // Whether this lesson survives a full replace, i.e. whether the revised
         // document still has it.
-        inRevision: incomingKeys.has(lessonMatchKey(l))
+        inRevision: !goneIds.has(l.id)
       })),
       // How far this reaches beyond the curriculum page, said before the admin
       // commits rather than after.
       classCount: classes.length,
-      lessonsInUse: classes.reduce(
-        (n, c) => n + (c.lessons || []).filter(l => (l._count?.activities || 0) > 0).length, 0
-      )
+      lessonsInUse: inUse.length,
+      // Of those, the ones this document no longer lists: the lessons that will
+      // be kept rather than removed, because work is already built on them.
+      lessonsKeptFromRemoval: pairLessons(inUse, gone).pairs.size
     });
   } catch (e) { sendAdminError(res, e); }
 });
@@ -4361,48 +4470,36 @@ app.put('/api/admin/:adminId/curriculums/:curriculumId/guide', upload.single('cu
     });
 
     const existing = curriculum.lessons;
-    const byKey = new Map(existing.map(l => [lessonMatchKey(l), l]));
-    const incomingKeys = new Set(incoming.map(lessonMatchKey));
+    const { pairs, gone } = pairLessons(existing, incoming);
     const additions = [];
     const updates = [];
-    const removedKeys = [];
+    const removed = mode === 'replace' ? gone : [];
 
     if (mode === 'replace') {
-      const stale = existing.filter(l => !incomingKeys.has(lessonMatchKey(l)));
-      if (stale.length) {
-        // Safe in a way the class-level delete below is not: nothing points at
-        // a CurriculumLesson. Activities hang off the ClassLesson copies, so
+      if (gone.length) {
+        // Safe in a way the class-level delete is not: nothing points at a
+        // CurriculumLesson. Activities hang off the ClassLesson copies, so
         // dropping a template cannot orphan a pupil's work — it only changes
         // what the next class built from this curriculum starts with.
-        await prisma.curriculumLesson.deleteMany({ where: { id: { in: stale.map(l => l.id) } } });
-        removedKeys.push(...stale.map(lessonMatchKey));
+        await prisma.curriculumLesson.deleteMany({ where: { id: { in: gone.map(l => l.id) } } });
       }
-      for (const lesson of incoming) {
-        const match = byKey.get(lessonMatchKey(lesson));
-        if (match) {
-          // Updated in place rather than deleted and recreated, so a lesson
-          // already carrying the school's rubric keeps it through the revision
-          // — defaultRubric and rubricTemplateId are not in the document and
-          // could not be restored from it.
-          updates.push(await prisma.curriculumLesson.update({
-            where: { id: match.id },
-            data: {
-              title: lesson.title,
-              description: lesson.description,
-              outputType: lesson.outputType,
-              weekNumber: lesson.weekNumber,
-              competencies: lesson.competencies
-            }
-          }));
-        } else {
-          additions.push(await prisma.curriculumLesson.create({
-            data: { curriculumId: curriculum.id, ...lesson, defaultRubric: null, rubricTemplateId: null }
-          }));
-        }
-      }
-    } else if (mode === 'append') {
-      for (const lesson of incoming) {
-        if (byKey.has(lessonMatchKey(lesson))) continue;
+    }
+    for (let index = 0; index < incoming.length; index++) {
+      const lesson = incoming[index];
+      const match = pairs.get(index);
+      if (match) {
+        // An append leaves a matched lesson alone — the admin asked for the new
+        // weeks, not for this one to be rewritten.
+        if (mode !== 'replace') continue;
+        // Updated in place rather than deleted and recreated, so a lesson
+        // already carrying the school's rubric keeps it through the revision —
+        // defaultRubric and rubricTemplateId are not in the document and could
+        // not be restored from it.
+        updates.push(await prisma.curriculumLesson.update({
+          where: { id: match.id },
+          data: revisedLessonData(lesson)
+        }));
+      } else {
         additions.push(await prisma.curriculumLesson.create({
           data: { curriculumId: curriculum.id, ...lesson, defaultRubric: null, rubricTemplateId: null }
         }));
@@ -4411,7 +4508,7 @@ app.put('/api/admin/:adminId/curriculums/:curriculumId/guide', upload.single('cu
 
     await prisma.curriculum.update({ where: { id: curriculum.id }, data: { sourceFile } });
 
-    const propagation = await propagateCurriculumRevision(curriculum, { additions, updates, removedKeys });
+    const propagation = await propagateCurriculumRevision(curriculum, { additions, updates, gone: removed });
 
     const saved = await prisma.curriculum.findUnique({
       where: { id: curriculum.id },
@@ -4423,7 +4520,7 @@ app.put('/api/admin/:adminId/curriculums/:curriculumId/guide', upload.single('cu
     res.json({
       success: true,
       curriculum: saved,
-      applied: { mode, added: additions.length, refreshed: updates.length, removed: removedKeys.length },
+      applied: { mode, added: additions.length, refreshed: updates.length, removed: removed.length },
       propagation
     });
   } catch (e) { sendAdminError(res, e); }
