@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
-import { ArrowLeft, UploadCloud, X, Loader2, Wifi, WifiOff, ShieldCheck, Info, FileText, Camera, Sparkles, Plus, CheckCircle2, AlertTriangle, ClipboardCheck, Send, Pencil } from 'lucide-react';
+import { ArrowLeft, UploadCloud, X, Loader2, Wifi, WifiOff, ShieldCheck, Info, FileText, Camera, Sparkles, Plus, CheckCircle2, AlertTriangle, ClipboardCheck, Send, Pencil, Trash2 } from 'lucide-react';
 import { getQueue, buildJob, enqueue, flushQueue, QUEUE_CHANGED } from '../../utils/offlineQueue';
 import { API_URL, apiFetch, MAX_SUBMISSION_PAGES } from '../../config';
 import { getStoredUser } from '../../utils/session';
@@ -1053,6 +1053,25 @@ export default function BatchUpload() {
                             : editingStudentIds.has(student.id) ? 'Save changes'
                               : 'Confirm Replace'}
                       </button>
+                      {/* The way out of an upload entirely, kept inside the
+                          edit rather than on the row — where it sat next to
+                          Review and was pressed by teachers meaning to change
+                          one page. Dropping the last page still lands here, but
+                          only as a consequence; a teacher who opened this to
+                          get rid of the whole thing should not have to work out
+                          that deleting pages one at a time is how. Not gated on
+                          the privacy checkbox: that confirms what is being sent
+                          up, and this only deletes. */}
+                      {editingStudentIds.has(student.id) && sub?.id && (
+                        <button type="button" onClick={() => removeSubmission(student.id, sub)}
+                          disabled={removingStudentIds.has(student.id)}
+                          title="Delete this work and its grade — the learner goes back to not handed in"
+                          className="text-[11px] font-medium flex items-center gap-1 text-red-500 hover:text-red-700 disabled:opacity-40">
+                          {removingStudentIds.has(student.id)
+                            ? <><Loader2 className="w-3 h-3 animate-spin" /> Removing…</>
+                            : <><Trash2 className="w-3 h-3" /> Remove all pages</>}
+                        </button>
+                      )}
                     </div>
                   ) : hasWork ? (
                     /* Work is already on file, however it got here — a pupil
