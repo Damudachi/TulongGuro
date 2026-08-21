@@ -111,6 +111,10 @@ export default function Register() {
   const [showPassword, setShowPassword] = useState(false);
   // Set once the school is registered and awaiting operator approval.
   const [submitted, setSubmitted] = useState(null);
+  // Whether the school name currently in the form came from the DepEd lookup
+  // rather than from typing. Drives the "filled from DepEd records" note, and
+  // is cleared the moment the registrant edits it themselves.
+  const [nameFromLookup, setNameFromLookup] = useState(false);
 
   useEffect(() => () => { if (logoPreview) URL.revokeObjectURL(logoPreview); }, [logoPreview]);
   useEffect(() => () => { if (registrantIdPreview) URL.revokeObjectURL(registrantIdPreview); },
@@ -131,8 +135,16 @@ export default function Register() {
         if (cancelled) return;
         if (!data.success) return setLookup(null);
         if (data.verdict === 'NO_MASTERLIST') setLookup({ state: 'unchecked' });
-        else if (data.verdict === 'FOUND') setLookup({ state: data.alreadyRegistered ? 'taken' : 'found', school: data.school });
-        else setLookup({ state: 'missing' });
+        else if (data.verdict === 'FOUND') {
+          setLookup({ state: data.alreadyRegistered ? 'taken' : 'found', school: data.school });
+          // Filled in rather than offered. The masterlist's spelling is the one
+          // an operator compares against, so anything the registrant typed by
+          // hand is at best the same and at worst a mismatch they would have to
+          // be asked about. The field stays editable — a school whose DepEd
+          // record is out of date has to be able to say so.
+          setFormData(prev => ({ ...prev, schoolName: data.school.name }));
+          setNameFromLookup(true);
+        } else setLookup({ state: 'missing' });
       } catch {
         // A lookup that could not run must not read as "your school isn't
         // real" — the server checks again on submit, so silence is correct.
@@ -149,6 +161,10 @@ export default function Register() {
     setSchoolId(digits);
     if (digits.length < 5) setLookup(null);
     setProofRequired(false);
+    // The name stays — deleting what someone can see would be startling — but
+    // it is no longer attributable to DepEd until a new lookup says so, and a
+    // note claiming otherwise over a stale name is the wrong kind of wrong.
+    setNameFromLookup(false);
   };
 
   const handleProofPick = (e) => {
@@ -406,8 +422,21 @@ export default function Register() {
                   className="tg-input"
                   placeholder="Manila Science High School"
                   value={formData.schoolName}
-                  onChange={(e) => setFormData({...formData, schoolName: e.target.value})}
+                  onChange={(e) => {
+                    setFormData({ ...formData, schoolName: e.target.value });
+                    setNameFromLookup(false);
+                  }}
                 />
+                {/* Says where the value came from, because a field that fills
+                    itself is otherwise indistinguishable from one the browser
+                    autocompleted — and this one is the name an operator will
+                    check against DepEd's records. */}
+                {nameFromLookup && (
+                  <p className="flex items-center gap-1.5 text-xs font-semibold text-emerald-700 mt-1.5">
+                    <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+                    Filled from DepEd records — edit it if your school's name has changed.
+                  </p>
+                )}
               </div>
 
               {/* ── DepEd School ID ──
@@ -421,7 +450,12 @@ export default function Register() {
                   required
                   inputMode="numeric"
                   className="tg-input tracking-[0.2em] font-mono"
-                  placeholder="136353"
+                  /* No placeholder. It used to show 136353, which is a real
+                     school's ID (Tanulong Elementary School) — a live value
+                     sitting in the one field on this form that is supposed to
+                     be proof, greyed out and one autofill away from being
+                     submitted as someone's answer. The hint below says what
+                     belongs here without naming anybody's school. */
                   value={schoolId}
                   aria-describedby="school-id-hint"
                   onChange={(e) => handleSchoolIdChange(e.target.value)}
@@ -443,12 +477,16 @@ export default function Register() {
                           {[lookup.school.division, lookup.school.region].filter(Boolean).join(' · ')}
                         </p>
                       )}
-                      {/* The masterlist's spelling is the one an operator will
-                          compare against, so make taking it a single tap
-                          rather than something to retype. */}
+                      {/* Now a way back rather than a way in: the name is
+                          filled automatically on a match, so this only appears
+                          once the registrant has edited it away from DepEd's
+                          spelling, and its job is to undo that in one tap. */}
                       {formData.schoolName.trim() !== lookup.school.name && (
                         <button type="button"
-                          onClick={() => setFormData({ ...formData, schoolName: lookup.school.name })}
+                          onClick={() => {
+                            setFormData({ ...formData, schoolName: lookup.school.name });
+                            setNameFromLookup(true);
+                          }}
                           className="mt-1 font-extrabold text-emerald-700 underline hover:text-emerald-900">
                           Use this name
                         </button>
