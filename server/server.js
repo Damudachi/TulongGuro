@@ -1759,6 +1759,43 @@ const registrationUpload = upload.fields([
  *  registration form states, which until now only the form enforced. */
 const MAX_LOGO_BYTES = 2 * 1024 * 1024;
 
+/**
+ * The registering admin's own name, in the form DepEd records use:
+ * "Lastname, First Name MI".
+ *
+ * Mirrors sanitizeName/fullNameProblem in the registration page. Repeated here
+ * rather than trusted from there for the usual reason — the form is a
+ * convenience, this is the rule — and because this name is written into a
+ * User row that teachers and report cards will display for years.
+ *
+ * Letters here means letters in names, not A-Z: ñ, accents, hyphens,
+ * apostrophes and full stops all belong in Philippine names, and the comma is
+ * what the format is built on. Digits and everything else are stripped.
+ */
+const NAME_DISALLOWED = /[^A-Za-zÀ-ÖØ-öø-ÿÑñ ,.'-]/g;
+
+function validateFullName(raw) {
+  const cleaned = String(raw || '')
+    .replace(NAME_DISALLOWED, '')
+    .replace(/\s{2,}/g, ' ')
+    .replace(/,{2,}/g, ',')
+    .trim();
+  if (!cleaned) return { ok: false, error: 'Please enter your full name.' };
+
+  const parts = cleaned.split(',');
+  if (parts.length !== 2) {
+    return { ok: false, error: 'Write your name as "Lastname, First Name MI" — for example "Dela Cruz, Juan A."' };
+  }
+  const [last, given] = parts.map(s => s.trim());
+  const hasLetters = (s) => /[A-Za-zÀ-ÖØ-öø-ÿÑñ]{2}/.test(s);
+  if (!hasLetters(last) || !hasLetters(given)) {
+    return { ok: false, error: 'Write your name as "Lastname, First Name MI" — for example "Dela Cruz, Juan A."' };
+  }
+  // Stored as cleaned, not as sent: the row that gets displayed for years
+  // should not carry whatever whitespace the form happened to submit.
+  return { ok: true, name: `${last}, ${given}` };
+}
+
 /** An ID card photographed on a phone. Generous enough not to refuse a modern
  *  camera, small enough that the endpoint cannot be used as free storage. */
 const MAX_REGISTRANT_ID_BYTES = 8 * 1024 * 1024;
@@ -1807,6 +1844,11 @@ app.post('/api/auth/register', registerRateLimit, registerDailyRateLimit, (req, 
     if (!name || !email || !password || !schoolName) {
       return refuse(400, { error: 'Name, email, password and school name are all required.' });
     }
+    const nameCheck = validateFullName(name);
+    if (!nameCheck.ok) {
+      return refuse(400, { code: 'NAME_FORMAT', error: nameCheck.error });
+    }
+    const adminName = nameCheck.name;
     // This form creates an ADMIN, so the admin domain rule binds here too —
     // otherwise the one admin every school is guaranteed to have would be the
     // one account exempt from it, and the rule would mean nothing.
@@ -1989,7 +2031,7 @@ app.post('/api/auth/register', registerRateLimit, registerDailyRateLimit, (req, 
     const hashedPassword = await bcrypt.hash(password, BCRYPT_SALT_ROUNDS);
     const user = await prisma.user.create({
       data: {
-        name, email: adminEmail, username: adminEmail, password: hashedPassword,
+        name: adminName, email: adminEmail, username: adminEmail, password: hashedPassword,
         role: 'ADMIN', schoolName: trimmedSchool, schoolId: school.id
       }
     });

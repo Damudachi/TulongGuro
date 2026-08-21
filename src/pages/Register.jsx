@@ -38,6 +38,48 @@ const DEFAULT_BRAND = '#2B59C3';
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
 
 /**
+ * ── How a person's name is written here ──
+ *
+ * "Lastname, First Name MI" — the form every DepEd record uses, so the admin
+ * this creates is filed the same way as the paperwork it will sit beside.
+ *
+ * Characters are filtered as they are typed rather than complained about
+ * afterwards: a digit in a name is always a mistake, and refusing the keystroke
+ * says so at the moment it happens instead of at the bottom of a long form.
+ *
+ * What survives the filter is deliberately wider than A-Z. Philippine names
+ * carry ñ (Santo Niño), hyphens (Dela Cruz-Reyes), apostrophes (D'Souza) and
+ * full stops (Jr., A.) — and the comma the format itself depends on. Stripping
+ * those in the name of "no special characters" would misspell real people,
+ * which is a worse failure than the one being prevented.
+ */
+const NAME_DISALLOWED = /[^A-Za-zÀ-ÖØ-öø-ÿÑñ ,.'-]/g;
+
+const sanitizeName = (value) =>
+  value.replace(NAME_DISALLOWED, '').replace(/\s{2,}/g, ' ').replace(/,{2,}/g, ',');
+
+/**
+ * What is wrong with this name, or null if nothing is. Returns the sentence to
+ * show rather than a boolean, so the field can say which half is missing
+ * instead of "invalid".
+ */
+function fullNameProblem(value) {
+  const v = (value || '').trim().replace(/\s+/g, ' ');
+  if (!v) return 'Please enter your full name.';
+  const parts = v.split(',');
+  if (parts.length < 2) return 'Add a comma after your last name — for example "Dela Cruz, Juan A."';
+  if (parts.length > 2) return 'Use one comma only — "Lastname, First Name MI".';
+  const [last, given] = parts.map(s => s.trim());
+  if (last.length < 2) return 'Please write your last name before the comma.';
+  if (given.length < 2) return 'Please write your first name after the comma.';
+  // A name made only of punctuation passes every check above.
+  if (!/[A-Za-zÀ-ÖØ-öø-ÿÑñ]{2}/.test(last) || !/[A-Za-zÀ-ÖØ-öø-ÿÑñ]{2}/.test(given)) {
+    return 'Please write your name in letters.';
+  }
+  return null;
+}
+
+/**
  * A permission the registrant grants before the thing it permits can happen.
  *
  * Both uses gate an upload behind it, and the gating is the point: a tick box
@@ -115,6 +157,9 @@ export default function Register() {
   // rather than from typing. Drives the "filled from DepEd records" note, and
   // is cleared the moment the registrant edits it themselves.
   const [nameFromLookup, setNameFromLookup] = useState(false);
+  // The name field's own complaint, shown under it rather than in the form-wide
+  // error banner at the bottom — it belongs next to the field it is about.
+  const [nameError, setNameError] = useState(null);
 
   useEffect(() => () => { if (logoPreview) URL.revokeObjectURL(logoPreview); }, [logoPreview]);
   useEffect(() => () => { if (registrantIdPreview) URL.revokeObjectURL(registrantIdPreview); },
@@ -229,6 +274,14 @@ export default function Register() {
     // form that "you missed one" is worth saying without a round trip. Ordered
     // the way the form reads, so the message points at the first gap rather
     // than the last.
+    // Runs before the consent checks so the form is corrected top to bottom,
+    // and marks the field itself rather than only the banner — otherwise the
+    // message names a problem the reader has to go hunting for.
+    const nameProblem = fullNameProblem(formData.name);
+    if (nameProblem) {
+      setNameError(nameProblem);
+      return setError(nameProblem);
+    }
     if (!idConsent) {
       return setError('Please tick the box agreeing to upload your ID, then attach it.');
     }
@@ -381,9 +434,27 @@ export default function Register() {
                   type="text"
                   required
                   className="tg-input"
-                  placeholder="Juan Dela Cruz"
-                  onChange={(e) => setFormData({...formData, name: e.target.value})}
+                  placeholder="Dela Cruz, Juan A."
+                  aria-describedby="full-name-hint"
+                  // Controlled, which it was not before — without `value` the
+                  // filtered string never made it back to the field, so a typed
+                  // digit would have stayed on screen.
+                  value={formData.name}
+                  onChange={(e) => setFormData({ ...formData, name: sanitizeName(e.target.value) })}
+                  // Checked on blur, not per keystroke: "Dela" is an incomplete
+                  // name, not a wrong one, and saying so while someone is still
+                  // typing it is nagging rather than helping.
+                  onBlur={() => setNameError(fullNameProblem(formData.name))}
                 />
+                {nameError ? (
+                  <p className="flex items-start gap-1.5 text-xs font-semibold text-red-600 mt-1.5">
+                    <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" /> {nameError}
+                  </p>
+                ) : (
+                  <p id="full-name-hint" className="text-xs text-navy-400 mt-1.5 font-semibold">
+                    Lastname, First Name MI — as it appears on your DepEd records.
+                  </p>
+                )}
               </div>
 
               <div>
