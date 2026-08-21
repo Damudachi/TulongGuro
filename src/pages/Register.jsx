@@ -35,6 +35,37 @@ const COLOR_PRESETS = [
 /** Fallback swatch when the school picks no colour of its own. */
 const DEFAULT_BRAND = '#2B59C3';
 
+function cn(...cls) { return cls.filter(Boolean).join(' '); }
+
+/**
+ * A permission the registrant grants before the thing it permits can happen.
+ *
+ * Both uses gate an upload behind it, and the gating is the point: a tick box
+ * sitting next to an already-filled file field is a formality, because the file
+ * is handed over either way. Asked first, and with the control it unlocks
+ * visibly inert until it is ticked, the answer is a decision rather than a
+ * rubber stamp.
+ *
+ * The label says what will happen to the file, not "I agree to the terms" —
+ * consent to something unread is not consent.
+ */
+function ConsentCheck({ checked, onChange, children }) {
+  return (
+    <label className="flex items-start gap-2.5 cursor-pointer group mb-3">
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={(e) => onChange(e.target.checked)}
+        className="mt-0.5 w-4 h-4 shrink-0 rounded border-2 border-navy-300 text-royal-500
+                   focus:ring-2 focus:ring-royal-400 focus:ring-offset-0 cursor-pointer accent-royal-500"
+      />
+      <span className="text-xs text-navy-600 font-semibold leading-relaxed group-hover:text-navy-700">
+        {children}
+      </span>
+    </label>
+  );
+}
+
 export default function Register() {
   // `email` holds only the part before the @. The domain is fixed and rendered
   // as a suffix on the field rather than left to be typed: an admin account has
@@ -67,6 +98,9 @@ export default function Register() {
   // the form suggesting the person filling it in belongs to that school.
   const [registrantId, setRegistrantId] = useState(null);
   const [registrantIdPreview, setRegistrantIdPreview] = useState(null);
+  // Consent, asked before the upload rather than alongside it — see ConsentCheck.
+  const [idConsent, setIdConsent] = useState(false);
+  const [logoConsent, setLogoConsent] = useState(false);
   // Branding is optional — a school with neither falls back to the initials
   // placeholder and the default palette.
   const [logo, setLogo] = useState(null);
@@ -175,10 +209,21 @@ export default function Register() {
   const handleRegister = async (e) => {
     e.preventDefault();
     if (isSubmitting) return;
-    // Checked here as well as on the server: the field sits far enough down a
-    // long form that "you missed one" is worth saying without a round trip.
+    // Checked here as well as on the server: these sit far enough down a long
+    // form that "you missed one" is worth saying without a round trip. Ordered
+    // the way the form reads, so the message points at the first gap rather
+    // than the last.
+    if (!idConsent) {
+      return setError('Please tick the box agreeing to upload your ID, then attach it.');
+    }
     if (!registrantId) {
       return setError('Please attach a photo of your school or employee ID before submitting.');
+    }
+    if (!logoConsent) {
+      return setError('Please tick the box allowing us to display your school logo, then upload it.');
+    }
+    if (!logo) {
+      return setError('Please upload your school logo.');
     }
     setError('');
     setIsSubmitting(true);
@@ -191,6 +236,10 @@ export default function Register() {
       if (logo) body.append('logo', logo);
       if (proof) body.append('proof', proof);
       body.append('registrantId', registrantId);
+      // Sent so the server records *that* permission was given, not merely that
+      // a file arrived. A consent nobody can produce afterwards is not one.
+      body.append('idConsent', String(idConsent));
+      body.append('logoConsent', String(logoConsent));
 
       const response = await apiFetch(`${API_URL}/api/auth/register`, { method: 'POST', body });
       const data = await response.json();
@@ -480,6 +529,15 @@ export default function Register() {
                   so we can check you work at the school you're registering.
                 </p>
 
+                <ConsentCheck checked={idConsent} onChange={(v) => {
+                  setIdConsent(v);
+                  // Withdrawing consent has to take the file with it, or the
+                  // upload outlives the permission that allowed it.
+                  if (!v) clearRegistrantId();
+                }}>
+                  I agree to upload a photo of my ID so TulongGuro can verify I work at this school.
+                </ConsentCheck>
+
                 {registrantId ? (
                   <div className="flex items-center gap-3 p-3 rounded-xl bg-white border-2 border-navy-700/10">
                     {registrantIdPreview ? (
@@ -497,13 +555,25 @@ export default function Register() {
                     </button>
                   </div>
                 ) : (
-                  <label className="flex items-center justify-center gap-2 p-4 border-2 border-dashed border-navy-300 rounded-xl cursor-pointer hover:border-royal-400 hover:bg-royal-50 transition-colors">
-                    <UploadCloud className="w-4 h-4 text-navy-400" />
-                    <span className="text-xs font-bold text-navy-500">Attach your ID</span>
+                  /* Inert until consent is given — `cursor-not-allowed` and the
+                     muted palette say so before it is clicked, and the disabled
+                     input means clicking it does nothing rather than opening a
+                     picker whose result would be refused. */
+                  <label className={cn(
+                    'flex items-center justify-center gap-2 p-4 border-2 border-dashed rounded-xl transition-colors',
+                    idConsent
+                      ? 'border-navy-300 cursor-pointer hover:border-royal-400 hover:bg-royal-50'
+                      : 'border-navy-200 bg-navy-50/40 cursor-not-allowed',
+                  )}>
+                    <UploadCloud className={cn('w-4 h-4', idConsent ? 'text-navy-400' : 'text-navy-300')} />
+                    <span className={cn('text-xs font-bold', idConsent ? 'text-navy-500' : 'text-navy-300')}>
+                      {idConsent ? 'Attach your ID' : 'Tick the box above first'}
+                    </span>
                     {/* `capture` is a hint, not a restriction — on a phone it
                         opens the camera, on a laptop it is ignored and the
                         normal file picker appears. */}
                     <input type="file" accept="image/*,.pdf" capture="environment"
+                      disabled={!idConsent}
                       className="hidden" onChange={handleRegistrantIdPick} />
                   </label>
                 )}
@@ -560,12 +630,24 @@ export default function Register() {
                 </div>
               </div>
 
-              {/* ── Optional branding ── */}
+              {/* ── Branding ──
+                  The logo is required; the colour is not. They are shown
+                  together because they are the same decision to a school, but
+                  only one of them is a file we would be storing and displaying
+                  on their behalf, and only that one needs permission. */}
               <div className="pt-5 border-t-2 border-cream-200">
                 <div className="flex items-baseline justify-between mb-4">
                   <span className="text-sm font-bold text-navy-700">School Branding</span>
-                  <span className="text-xs text-navy-400 font-semibold">Optional — you can skip this</span>
+                  <span className="text-xs text-navy-400 font-semibold">Logo required · colour optional</span>
                 </div>
+
+                <ConsentCheck checked={logoConsent} onChange={(v) => {
+                  setLogoConsent(v);
+                  if (!v) clearLogo();
+                }}>
+                  I allow TulongGuro to display our school logo across our school's pages —
+                  dashboards, report cards and printed records.
+                </ConsentCheck>
 
                 <div className="flex items-start gap-5">
                   {/* Logo picker with live preview */}
@@ -581,10 +663,19 @@ export default function Register() {
                         </button>
                       </div>
                     ) : (
-                      <label className="w-20 h-20 border-2 border-dashed border-slate-300 rounded-2xl flex flex-col items-center justify-center cursor-pointer hover:border-royal-400 hover:bg-royal-50 transition-colors">
-                        <UploadCloud className="w-5 h-5 text-navy-400" />
-                        <span className="text-[10px] text-navy-400 mt-1 font-bold">Upload</span>
-                        <input type="file" accept="image/*" className="hidden" onChange={handleLogoPick} />
+                      <label className={cn(
+                        'w-20 h-20 border-2 border-dashed rounded-2xl flex flex-col items-center justify-center transition-colors',
+                        logoConsent
+                          ? 'border-slate-300 cursor-pointer hover:border-royal-400 hover:bg-royal-50'
+                          : 'border-slate-200 bg-navy-50/40 cursor-not-allowed',
+                      )}>
+                        <UploadCloud className={cn('w-5 h-5', logoConsent ? 'text-navy-400' : 'text-navy-300')} />
+                        <span className={cn('text-[10px] mt-1 font-bold text-center leading-tight px-1',
+                          logoConsent ? 'text-navy-400' : 'text-navy-300')}>
+                          {logoConsent ? 'Upload' : 'Tick above'}
+                        </span>
+                        <input type="file" accept="image/*" disabled={!logoConsent}
+                          className="hidden" onChange={handleLogoPick} />
                       </label>
                     )}
                     <p className="text-[10px] text-navy-400 mt-1.5 font-semibold">PNG/JPG, max 2MB</p>

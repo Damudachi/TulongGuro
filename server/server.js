@@ -1799,7 +1799,11 @@ app.post('/api/auth/register', registerRateLimit, registerDailyRateLimit, (req, 
   };
 
   try {
-    const { name, email, password, schoolName, brandColor, depedSchoolId, contactEmail } = req.body;
+    const { name, email, password, schoolName, brandColor, depedSchoolId, contactEmail,
+      idConsent, logoConsent } = req.body;
+    // Multipart form fields arrive as strings, so the checkbox states come over
+    // as "true"/"false" rather than booleans.
+    const consented = (v) => v === true || v === 'true';
     if (!name || !email || !password || !schoolName) {
       return refuse(400, { error: 'Name, email, password and school name are all required.' });
     }
@@ -1836,7 +1840,26 @@ app.post('/api/auth/register', registerRateLimit, registerDailyRateLimit, (req, 
     if (brandColor && !/^#[0-9a-fA-F]{6}$/.test(brandColor)) {
       return refuse(400, { error: 'School colour must be a hex value like #1E3A8A.' });
     }
-    if (logoFile && logoFile.size > MAX_LOGO_BYTES) {
+    // ── The logo ──
+    //
+    // Required, and gated behind its own permission. It is the one file here
+    // that gets *displayed* rather than filed away — it ends up on dashboards,
+    // report cards and printed records — so a school agreeing to hand it over
+    // and a school agreeing to have it shown are two different agreements, and
+    // only the second one covers what we actually do with it.
+    if (!logoFile) {
+      return refuse(400, {
+        code: 'LOGO_REQUIRED',
+        error: 'Please upload your school logo.',
+      });
+    }
+    if (!consented(logoConsent)) {
+      return refuse(400, {
+        code: 'LOGO_CONSENT_REQUIRED',
+        error: 'Please confirm you allow us to display your school logo on your school\'s pages.',
+      });
+    }
+    if (logoFile.size > MAX_LOGO_BYTES) {
       return refuse(400, { error: 'The school logo must be under 2MB.' });
     }
 
@@ -1852,6 +1875,15 @@ app.post('/api/auth/register', registerRateLimit, registerDailyRateLimit, (req, 
     // path. A matched school is exactly what someone impersonating a school
     // would choose, so making the check conditional on a clean match would
     // have exempted the case it most needs to cover.
+    // Consent is checked before the file, so someone who ticked nothing is told
+    // about the permission rather than about the missing attachment they were
+    // never allowed to make.
+    if (!consented(idConsent)) {
+      return refuse(400, {
+        code: 'ID_CONSENT_REQUIRED',
+        error: 'Please confirm you agree to upload your ID so we can verify you work at this school.',
+      });
+    }
     if (!registrantIdFile) {
       return refuse(400, {
         code: 'REGISTRANT_ID_REQUIRED',
@@ -1946,6 +1978,11 @@ app.post('/api/auth/register', registerRateLimit, registerDailyRateLimit, (req, 
         contactEmail: contactCheck.email,
         proofUrl,
         registrantIdPath,
+        // Stamped from the server clock at the moment the registration was
+        // accepted, not from anything the form sent — a consent time a client
+        // can choose is not evidence of anything.
+        idConsentAt: new Date(),
+        logoConsentAt: new Date(),
         registeredIp: req.ip || req.socket?.remoteAddress || null,
       }
     });

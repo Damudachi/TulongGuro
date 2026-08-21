@@ -76,6 +76,15 @@ model School {
   /// holding PLATFORM_ADMIN_KEY. Storing a permanent URL would have made that
   /// impossible to walk back.
   registrantIdPath String?
+  /// When the registrant ticked the box agreeing to hand over their ID, and
+  /// when they agreed we may display the school logo.
+  ///
+  /// Timestamps rather than booleans, because the question a consent record has
+  /// to answer later is "when was this given", and a boolean cannot answer it.
+  /// Null on every school registered before the boxes existed — which is the
+  /// honest answer for them, not a default of "yes".
+  idConsentAt      DateTime?
+  logoConsentAt    DateTime?
   /// Where the registration came from. Triage only — one address submitting
   /// twenty schools is the signature this whole column set exists to surface.
   registeredIp     String?
