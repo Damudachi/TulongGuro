@@ -27,13 +27,19 @@ const mammoth = require('mammoth');
 const {
   signToken, authenticate, authorizePath,
   configureRevocation, markRevoked,
-  loginRateLimit, registerRateLimit, platformRateLimit, changePasswordRateLimit,
+  loginRateLimit, registerRateLimit, registerDailyRateLimit, schoolLookupRateLimit,
+  platformRateLimit, changePasswordRateLimit,
   RENEWED_TOKEN_HEADER,
 } = require('./auth');
 const { classSchoolId, staffMayAccess, staffMayReadStudent, REAL_WORK } = require('./access');
 const {
-  TEACHER_EMAIL_DOMAIN, ADMIN_EMAIL_DOMAIN, validateAccountEmail,
+  TEACHER_EMAIL_DOMAIN, ADMIN_EMAIL_DOMAIN, validateAccountEmail, validateContactEmail,
 } = require('./accountEmails');
+const {
+  NOT_FOUND: SCHOOL_NOT_FOUND, NO_MASTERLIST,
+  normalizeSchoolId, verifySchool, describeVerification, nearDuplicateNames,
+  loadMasterlist,
+} = require('./depedMasterlist');
 const { currentSchoolYear, isCurrentSchoolYear, compareSchoolYearsDesc } = require('./schoolYear');
 const {
   cellToText, extractRoster, readBirthday,
@@ -1623,32 +1629,89 @@ async function runDailyQuotaSelfCheck() {
 // Public sign-up now registers a SCHOOL and its first ADMIN. Teacher accounts
 // are created by that admin (see /api/admin/:adminId/teachers) and student
 // accounts by teachers (see /api/teacher/sections) — neither can self-register.
-// Accepts JSON, or multipart/form-data when the admin attaches a school logo.
-app.post('/api/auth/register', registerRateLimit, (req, res, next) => {
+// Accepts JSON, or multipart/form-data when the admin attaches a school logo or
+// a proof-of-existence document.
+//
+// ── Ordering matters in this handler ──
+// Every check that can refuse a registration runs before anything is written to
+// cloud storage. Registration is the only door on this platform that anyone can
+// walk up to, so it is the only place we can be flooded, and the only resource
+// a single request can consume that outlives it is a stored file. Putting the
+// uploads last means reaching that resource costs an unregistered DepEd School
+// ID that really exists — a supply an attacker cannot manufacture — instead of
+// costing one POST.
+const registrationUpload = upload.fields([
+  { name: 'logo', maxCount: 1 },
+  { name: 'proof', maxCount: 1 },
+]);
+
+/** A logo is a seal on a dashboard, not a document. Matches the cap the
+ *  registration form states, which until now only the form enforced. */
+const MAX_LOGO_BYTES = 2 * 1024 * 1024;
+
+app.post('/api/auth/register', registerRateLimit, registerDailyRateLimit, (req, res, next) => {
   const ct = req.headers['content-type'] || '';
   if (ct.includes('multipart/form-data')) {
-    upload.single('logo')(req, res, next);
+    registrationUpload(req, res, next);
   } else {
     next();
   }
 }, async (req, res) => {
+  // Multer writes attachments to local disk before this handler runs, so every
+  // exit has to take them with it or a refused registration still leaves a file
+  // behind — which is the leak this endpoint is trying not to have.
+  const logoFile = req.files?.logo?.[0] || null;
+  const proofFile = req.files?.proof?.[0] || null;
+  const dropTempFiles = () => {
+    for (const f of [logoFile, proofFile]) {
+      if (f?.path) { try { fs.unlinkSync(f.path); } catch { /* already gone */ } }
+    }
+  };
+  const refuse = (status, payload) => {
+    dropTempFiles();
+    return res.status(status).json({ success: false, ...payload });
+  };
+
   try {
-    const { name, email, password, schoolName, brandColor } = req.body;
+    const { name, email, password, schoolName, brandColor, depedSchoolId, contactEmail } = req.body;
     if (!name || !email || !password || !schoolName) {
-      return res.status(400).json({ success: false, error: 'Name, email, password and school name are all required.' });
+      return refuse(400, { error: 'Name, email, password and school name are all required.' });
     }
     // This form creates an ADMIN, so the admin domain rule binds here too —
     // otherwise the one admin every school is guaranteed to have would be the
     // one account exempt from it, and the rule would mean nothing.
     const emailCheck = validateAccountEmail(email, 'ADMIN');
     if (!emailCheck.ok) {
-      return res.status(400).json({ success: false, error: emailCheck.error });
+      return refuse(400, { error: emailCheck.error });
     }
     const adminEmail = emailCheck.email;
+
+    // A second address, and the only one on the record that can receive mail —
+    // the login above sits on a synthetic domain with nothing behind it. See
+    // validateContactEmail for why the two rules are separate.
+    const contactCheck = validateContactEmail(contactEmail);
+    if (!contactCheck.ok) {
+      return refuse(400, { error: contactCheck.error });
+    }
+
+    // The School ID is checked for shape here and for existence below. Refusing
+    // a malformed one early keeps a stray "N/A" out of the unique column that
+    // is now this platform's real duplicate guard.
+    const schoolId = normalizeSchoolId(depedSchoolId);
+    if (!schoolId) {
+      return refuse(400, {
+        code: 'SCHOOL_ID_INVALID',
+        error: 'Please enter your DepEd School ID — the six-digit number on your school\'s DepEd records.',
+      });
+    }
+
     // Branding is optional; reject only a malformed colour rather than silently
     // storing something the UI can't render.
     if (brandColor && !/^#[0-9a-fA-F]{6}$/.test(brandColor)) {
-      return res.status(400).json({ success: false, error: 'School colour must be a hex value like #1E3A8A.' });
+      return refuse(400, { error: 'School colour must be a hex value like #1E3A8A.' });
+    }
+    if (logoFile && logoFile.size > MAX_LOGO_BYTES) {
+      return refuse(400, { error: 'The school logo must be under 2MB.' });
     }
 
     // Normalized, not as typed. `email` and `username` are both unique columns
@@ -1659,27 +1722,71 @@ app.post('/api/auth/register', registerRateLimit, (req, res, next) => {
       where: { OR: [{ email: adminEmail }, { username: adminEmail }] },
     });
     if (existing) {
-      return res.status(400).json({ success: false, error: 'An account with this email already exists. Please log in instead.' });
+      return refuse(400, { error: 'An account with this email already exists. Please log in instead.' });
     }
 
     const trimmedSchool = schoolName.trim();
     const existingSchool = await prisma.school.findUnique({ where: { name: trimmedSchool } });
     if (existingSchool) {
-      return res.status(400).json({
-        success: false,
+      return refuse(400, {
         error: `"${trimmedSchool}" is already registered. Ask your school's admin to create a teacher account for you.`
       });
     }
 
-    const logoUrl = req.file
-      ? await uploadToCloud(req.file.path, req.file.filename, { folder: 'school-logos', contentType: req.file.mimetype })
+    // The stronger of the two duplicate guards. School *names* repeat across
+    // divisions — there are many "San Jose Elementary School" — so the unique
+    // constraint on name is the loose one; an ID belongs to exactly one school.
+    const idTaken = await prisma.school.findUnique({ where: { depedSchoolId: schoolId } });
+    if (idTaken) {
+      return refuse(400, {
+        error: `A school is already registered under DepEd School ID ${schoolId} ("${idTaken.name}"). `
+          + `If that is your school, ask its admin to create your account instead.`,
+      });
+    }
+
+    const check = verifySchool({ schoolId, schoolName: trimmedSchool }, loadMasterlist());
+
+    // The only refusal the lookup itself produces, and it asks for a document
+    // rather than turning the school away: an ID our copy of the masterlist has
+    // never seen usually means new, renamed, or private, not invented, and the
+    // permit is what lets a human tell those apart. It deliberately cannot fire
+    // on NO_MASTERLIST — a school must not be charged for our missing config.
+    if (check.verdict === SCHOOL_NOT_FOUND && !proofFile) {
+      return refuse(400, {
+        code: 'PROOF_REQUIRED',
+        error: `DepEd School ID ${schoolId} is not in our copy of the DepEd Masterlist of Schools. `
+          + `If your school is new, was recently renamed, or is a private school, attach your DepEd Government `
+          + `Permit, Certificate of Recognition, or a similar document and we will review it by hand.`,
+      });
+    }
+
+    // Everything that can refuse this registration has now run — see the
+    // ordering note above the route. Only past this line does a request get to
+    // consume storage.
+    const logoUrl = logoFile
+      ? await uploadToCloud(logoFile.path, logoFile.filename, { folder: 'school-logos', contentType: logoFile.mimetype })
+      : null;
+    const proofUrl = proofFile
+      ? await uploadToCloud(proofFile.path, proofFile.filename, { folder: 'school-proof', contentType: proofFile.mimetype })
       : null;
 
     // PENDING is set here rather than in the column default on purpose — see
     // the note on School.status. A platform operator approves it before anyone
     // at the school can log in.
     const school = await prisma.school.create({
-      data: { name: trimmedSchool, logoUrl, brandColor: brandColor || null, status: 'PENDING' }
+      data: {
+        name: trimmedSchool, logoUrl, brandColor: brandColor || null, status: 'PENDING',
+        depedSchoolId: schoolId,
+        // The masterlist's own name and verdict, frozen as they were at
+        // registration — describeVerification explains why they are not
+        // recomputed when the queue is read.
+        officialName: check.official?.name || null,
+        verification: check.verdict,
+        verificationNote: describeVerification(check, trimmedSchool),
+        contactEmail: contactCheck.email,
+        proofUrl,
+        registeredIp: req.ip || req.socket?.remoteAddress || null,
+      }
     });
     const hashedPassword = await bcrypt.hash(password, BCRYPT_SALT_ROUNDS);
     const user = await prisma.user.create({
@@ -1706,10 +1813,66 @@ app.post('/api/auth/register', registerRateLimit, (req, res, next) => {
       success: true,
       pendingApproval: true,
       user: { name: safeAdmin.name, email: safeAdmin.email },
-      school: { name: school.name, status: school.status }
+      school: {
+        name: school.name,
+        status: school.status,
+        // Returned so the confirmation screen can tell a school whose ID matched
+        // that the automatic check already passed, rather than leaving every
+        // registrant with the same unqualified "we'll be in touch".
+        verification: school.verification,
+        officialName: school.officialName,
+      },
     });
   } catch (e) {
-    return res.status(400).json({ success: false, error: e.message });
+    return refuse(400, { error: e.message });
+  }
+});
+
+/**
+ * Confirm a DepEd School ID while the registration form is still being filled.
+ *
+ * Exists so the form can say "✓ Manila Science High School, Division of Manila"
+ * under the ID field instead of letting someone discover on submit that they
+ * transposed two digits — and so a school that is genuinely not in the list is
+ * shown the proof-of-existence upload before it submits, rather than being
+ * bounced back to find it.
+ *
+ * Public and unauthenticated, which is fine: this reads a list DepEd itself
+ * publishes, so there is nothing here an enumerator could not download whole.
+ * The rate limit on it is about CPU, not secrecy.
+ */
+app.get('/api/auth/school-lookup', schoolLookupRateLimit, async (req, res) => {
+  try {
+    const schoolId = normalizeSchoolId(req.query.schoolId);
+    if (!schoolId) {
+      return res.status(400).json({ success: false, error: 'A DepEd School ID is required.' });
+    }
+    const masterlist = loadMasterlist();
+    if (!masterlist) {
+      // Not an error, and deliberately not reported as "not found": the form
+      // must not tell a real school it does not exist because we failed to
+      // install a data file.
+      return res.json({ success: true, verdict: NO_MASTERLIST, school: null, alreadyRegistered: false });
+    }
+    const official = masterlist.get(schoolId) || null;
+    const taken = official
+      ? await prisma.school.findUnique({ where: { depedSchoolId: schoolId }, select: { name: true, status: true } })
+      : null;
+    return res.json({
+      success: true,
+      verdict: official ? 'FOUND' : SCHOOL_NOT_FOUND,
+      school: official && {
+        name: official.name,
+        division: official.division || null,
+        region: official.region || null,
+      },
+      // Answered here rather than left to the submit, so someone whose school
+      // is already on the platform is told to ask their admin before they have
+      // typed a password.
+      alreadyRegistered: Boolean(taken),
+    });
+  } catch (e) {
+    return res.status(500).json({ success: false, error: e.message });
   }
 });
 
@@ -1790,7 +1953,27 @@ app.get('/api/platform/schools', platformRateLimit, async (req, res) => {
         _count: { select: { users: true, sections: true, curriculums: true } }
       }
     });
-    res.json({ success: true, schools });
+
+    // Names of every *other* school, so each row can carry a "this looks like
+    // one we already have" flag. Reported, never enforced — Philippine school
+    // names repeat legitimately across divisions, so a close match is a
+    // sentence for an operator ("check the division first"), not a refusal.
+    const allNames = await prisma.school.findMany({ select: { id: true, name: true } });
+    const flagged = schools.map(s => ({
+      ...s,
+      similarSchools: nearDuplicateNames(
+        s.name,
+        allNames.filter(o => o.id !== s.id).map(o => o.name),
+      ).slice(0, 3),
+    }));
+
+    res.json({
+      success: true,
+      schools: flagged,
+      // So the screen can say the automatic check is off rather than letting
+      // "not verified" on every row read as a verdict about the schools.
+      masterlistLoaded: Boolean(loadMasterlist()),
+    });
   } catch (e) {
     res.status(e.status || 500).json({ success: false, error: e.message });
   }

@@ -61,6 +61,38 @@ export function validateAccountEmail(raw, role) {
 }
 
 /**
+ * `{ ok, email, error }` for the school's *contact* address at registration.
+ *
+ * A different question from validateAccountEmail: that one governs logins,
+ * which sit on synthetic domains nothing can be delivered to. This one has to
+ * be a real mailbox, so the rule is mostly "not one of ours". Mirrors
+ * validateContactEmail in server/accountEmails.js, which decides.
+ */
+export function validateContactEmail(raw) {
+  const email = normalizeEmail(raw);
+  if (!email) return { ok: false, email: '', error: 'A contact email address is required.' };
+
+  const at = email.indexOf('@');
+  if (at < 1 || at !== email.lastIndexOf('@') || at === email.length - 1 || !LOCAL_PART.test(email.slice(0, at))) {
+    return { ok: false, email, error: 'That is not a valid email address.' };
+  }
+
+  const domain = email.slice(at + 1);
+  if (!/^[^\s@.]+(\.[^\s@.]+)+$/.test(domain)) {
+    return { ok: false, email, error: 'That is not a valid email address.' };
+  }
+  if (domain === ADMIN_EMAIL_DOMAIN || domain === TEACHER_EMAIL_DOMAIN) {
+    return {
+      ok: false,
+      email,
+      error: `@${domain} is a sign-in name, not a mailbox. Please give a real school email we can reach you on.`,
+    };
+  }
+
+  return { ok: true, email, error: null };
+}
+
+/**
  * The local part of an address, for the split "name + fixed @domain" fields
  * below. Anything already carrying an @ is cut at it, so pasting a whole
  * address into the box does the obvious thing rather than producing

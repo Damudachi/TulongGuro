@@ -28,6 +28,43 @@ model School {
   /// When a platform operator approved it, and who/why if it was refused.
   approvedAt       DateTime?
   rejectedReason   String?
+  /// ── Proof that the school exists ──
+  ///
+  /// Registration is the only door anyone can walk up to, so it is the only
+  /// place the platform can be flooded. The DepEd School ID is what makes that
+  /// expensive: Philippine schools are a published, finite set, so a
+  /// registration now has to name one that exists rather than any string.
+  ///
+  /// Unique, which is the real duplicate protection here. School *names* repeat
+  /// legitimately across divisions — there are many "San Jose Elementary
+  /// School" — so the name-unique constraint above is the weaker guard and this
+  /// is the one that means something. Nullable because every school registered
+  /// before this column existed has no ID, and locking them out to backfill a
+  /// field would be a worse failure than the one it prevents.
+  depedSchoolId    String?          @unique
+  /// The masterlist's own name for that ID, stored as it was at registration.
+  /// Kept so an operator sees what DepEd calls the school next to what the
+  /// registrant typed, without a second lookup and without depending on the
+  /// masterlist file still being the same one months later.
+  officialName     String?
+  /// MATCHED | NAME_MISMATCH | NOT_FOUND | NO_MASTERLIST — see depedMasterlist.js.
+  /// Never blocks approval on its own; it decides what the operator is shown.
+  verification     String?
+  /// One line of human-readable detail behind the verdict — the division the
+  /// matched record sits in, or why the names disagree.
+  verificationNote String?
+  /// A real, deliverable address for the school, distinct from the admin's
+  /// @admin.com login (which is a synthetic domain with no mailbox behind it).
+  /// Without this there was no way to contact a registering school at all,
+  /// which left an operator with nothing to verify against but a typed name.
+  contactEmail     String?
+  /// Government permit / recognition document, required only when the School ID
+  /// is not in the masterlist. That path exists for schools that are real but
+  /// newer than our copy of the list; the document is what a human judges.
+  proofUrl         String?
+  /// Where the registration came from. Triage only — one address submitting
+  /// twenty schools is the signature this whole column set exists to surface.
+  registeredIp     String?
   /// The admin who registered this school — its super admin.
   ///
   /// Every admin already has total authority over their school's data, so this

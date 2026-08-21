@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
-import { ShieldCheck, Loader2, Check, X, Building2, Mail, RefreshCw, AlertTriangle } from 'lucide-react';
+import { ShieldCheck, Loader2, Check, X, Building2, Mail, RefreshCw, AlertTriangle,
+  BadgeCheck, HelpCircle, FileText, Copy, Globe } from 'lucide-react';
 import { API_URL, apiFetch } from '../config';
 
 import { showAlert } from '../utils/dialog';
@@ -24,10 +25,28 @@ const STATUS_STYLES = {
   REJECTED: 'bg-red-100 text-red-700',
 };
 
+/**
+ * How each DepEd-masterlist verdict is shown. The wording is doing real work
+ * here: none of these approve or refuse anything by itself, so each label has
+ * to say what was checked rather than deliver a judgement an operator might
+ * mistake for a decision already made.
+ *
+ * NOT_FOUND and NOT CHECKED look similar and mean opposite things — one is
+ * about the school, the other about this server missing its data file — so
+ * they are deliberately given different colours and different icons.
+ */
+const VERIFICATION_STYLES = {
+  MATCHED: { label: 'DepEd ID matched', cls: 'bg-emerald-100 text-emerald-800', Icon: BadgeCheck },
+  NAME_MISMATCH: { label: 'Name differs', cls: 'bg-amber-100 text-amber-800', Icon: AlertTriangle },
+  NOT_FOUND: { label: 'ID not in masterlist', cls: 'bg-red-100 text-red-700', Icon: AlertTriangle },
+  NO_MASTERLIST: { label: 'Not checked', cls: 'bg-slate-200 text-slate-600', Icon: HelpCircle },
+};
+
 export default function PlatformApprovals() {
   const [key, setKey] = useState(() => sessionStorage.getItem(KEY_STORAGE) || '');
   const [keyInput, setKeyInput] = useState('');
   const [schools, setSchools] = useState([]);
+  const [masterlistLoaded, setMasterlistLoaded] = useState(true);
   const [status, setStatus] = useState('PENDING');
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
@@ -46,6 +65,7 @@ export default function PlatformApprovals() {
       const data = await res.json();
       if (data.success) {
         setSchools(data.schools || []);
+        setMasterlistLoaded(data.masterlistLoaded !== false);
       } else {
         setError(data.error || 'Could not load schools.');
         // A bad key is worth forgetting immediately, so the form comes back
@@ -166,6 +186,22 @@ export default function PlatformApprovals() {
           </div>
         )}
 
+        {/* Without this, every row reading "Not checked" looks like a finding
+            about the schools rather than about the server. */}
+        {!masterlistLoaded && (
+          <div className="mb-4 flex items-start gap-2 bg-amber-50 border border-amber-200 text-amber-800 rounded-xl p-3 text-sm">
+            <HelpCircle className="w-4 h-4 shrink-0 mt-0.5" />
+            <div>
+              <p className="font-bold">No DepEd masterlist installed — nothing below was verified automatically.</p>
+              <p className="text-xs mt-0.5">
+                Import it on the server with{' '}
+                <code className="font-mono bg-amber-100 px-1 rounded">node scripts/import-deped-masterlist.js &lt;masterlist.xlsx&gt;</code>{' '}
+                and restart, then new registrations get checked against it.
+              </p>
+            </div>
+          </div>
+        )}
+
         {isLoading && schools.length === 0 ? (
           <div className="flex items-center justify-center h-40 text-slate-400">
             <Loader2 className="w-5 h-5 animate-spin mr-2" /> Loading...
@@ -179,6 +215,7 @@ export default function PlatformApprovals() {
           <div className="space-y-3">
             {schools.map(s => {
               const admin = s.users?.[0];
+              const verdict = VERIFICATION_STYLES[s.verification];
               return (
                 <div key={s.id} className="bg-white border border-slate-200 rounded-2xl p-4">
                   <div className="flex items-start justify-between gap-3">
@@ -188,23 +225,81 @@ export default function PlatformApprovals() {
                         <span className={cn('text-[10px] font-bold px-2 py-0.5 rounded-full', STATUS_STYLES[s.status])}>
                           {s.status}
                         </span>
+                        {verdict && (
+                          <span className={cn('inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full', verdict.cls)}>
+                            <verdict.Icon className="w-3 h-3" /> {verdict.label}
+                          </span>
+                        )}
                       </div>
-                      {/* The contact to verify the school against before approving. */}
-                      {admin && (
-                        <p className="text-sm text-slate-600 mt-1">
-                          {admin.name}
-                          {admin.email && (
-                            <a href={`mailto:${admin.email}`} className="inline-flex items-center gap-1 ml-2 text-slate-500 hover:text-slate-900 underline">
-                              <Mail className="w-3 h-3" /> {admin.email}
+
+                      {/* ── What was checked ──
+                          The note is what the lookup found at the moment this
+                          school registered, not a re-check now: the masterlist
+                          file is replaced whenever DepEd publishes a new one. */}
+                      {s.depedSchoolId && (
+                        <div className="mt-2 text-xs text-slate-600 space-y-0.5">
+                          <p className="font-mono font-bold text-slate-800">
+                            DepEd ID {s.depedSchoolId}
+                          </p>
+                          {/* Shown whenever it differs, which is exactly when an
+                              operator needs to compare the two spellings. */}
+                          {s.officialName && s.officialName !== s.name && (
+                            <p>Masterlist says: <span className="font-bold text-slate-800">{s.officialName}</span></p>
+                          )}
+                          {s.verificationNote && <p className="text-slate-500">{s.verificationNote}</p>}
+                        </div>
+                      )}
+
+                      {s.proofUrl && (
+                        <a href={s.proofUrl} target="_blank" rel="noreferrer"
+                          className="inline-flex items-center gap-1.5 mt-2 px-2.5 py-1 rounded-lg bg-slate-100 text-xs font-bold text-slate-700 hover:bg-slate-200">
+                          <FileText className="w-3.5 h-3.5" /> Proof document
+                        </a>
+                      )}
+
+                      {/* Names repeat legitimately across divisions, so this is
+                          a prompt to check the division — never a reason on its
+                          own to refuse. */}
+                      {s.similarSchools?.length > 0 && (
+                        <div className="flex items-start gap-1.5 mt-2 text-xs text-amber-700">
+                          <Copy className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                          <p>
+                            Similar to {s.similarSchools.map(d => `"${d.name}"`).join(', ')} — check the
+                            division before approving, or this may be a duplicate.
+                          </p>
+                        </div>
+                      )}
+
+                      {/* The two contacts, doing different jobs: the mailbox to
+                          reach out on, and the login it will sign in with. */}
+                      {(admin || s.contactEmail) && (
+                        <div className="text-sm text-slate-600 mt-2">
+                          {s.contactEmail && (
+                            <a href={`mailto:${s.contactEmail}`} className="inline-flex items-center gap-1 text-slate-700 font-semibold hover:text-slate-900 underline">
+                              <Mail className="w-3 h-3" /> {s.contactEmail}
                             </a>
                           )}
-                        </p>
+                          {admin && (
+                            <p className="text-xs text-slate-500 mt-0.5">
+                              {admin.name}
+                              {admin.email && <span className="ml-1.5 text-slate-400">signs in as {admin.email}</span>}
+                            </p>
+                          )}
+                        </div>
                       )}
-                      <p className="text-xs text-slate-400 mt-1">
+
+                      <p className="text-xs text-slate-400 mt-1.5">
                         Registered {new Date(s.createdAt).toLocaleDateString('en-PH', { day: 'numeric', month: 'short', year: 'numeric' })}
                         {' · '}{s._count?.users ?? 0} account(s)
                         {' · '}{s._count?.sections ?? 0} section(s)
                         {' · '}{s._count?.curriculums ?? 0} curriculum(s)
+                        {/* One address submitting many schools is the signature
+                            this whole screen exists to make visible. */}
+                        {s.registeredIp && (
+                          <span className="inline-flex items-center gap-1 ml-1.5 font-mono">
+                            <Globe className="w-3 h-3" />{s.registeredIp}
+                          </span>
+                        )}
                       </p>
                       {s.status === 'REJECTED' && s.rejectedReason && (
                         <p className="text-xs text-red-600 mt-1.5">Reason: {s.rejectedReason}</p>

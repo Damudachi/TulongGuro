@@ -139,6 +139,7 @@ const PUBLIC_PATHS = [
   /^\/$/,                                  // health probe for the host
   /^\/api\/auth\/login$/,
   /^\/api\/auth\/register$/,
+  /^\/api\/auth\/school-lookup$/,           // reads DepEd's own published list
   /^\/api\/health(\/|$)/,
   /^\/api\/topics$/,                       // static DepEd reference data
   /^\/api\/rubric-templates\/builtin$/,    // static sample rubrics
@@ -253,9 +254,16 @@ async function authenticate(req, res, next) {
  */
 const rateBuckets = new Map();   // key -> { count, resetAt }
 
-function rateLimit({ windowMs, max, key }) {
+/**
+ * `name` separates two limiters that guard the same path with the same key.
+ * Without it the bucket is `path|key`, so stacking an hourly and a daily limit
+ * on one route keyed by IP would have them share one counter and quietly
+ * enforce whichever is tighter. Defaults to the path, which is what every
+ * limiter that does not stack already relies on.
+ */
+function rateLimit({ windowMs, max, key, name }) {
   return (req, res, next) => {
-    const bucketKey = `${req.path}|${key(req)}`;
+    const bucketKey = `${name || req.path}|${key(req)}`;
     const now = Date.now();
     let bucket = rateBuckets.get(bucketKey);
     if (!bucket || now > bucket.resetAt) {
@@ -298,8 +306,25 @@ const loginRateLimit = [
   rateLimit({ windowMs: 15 * 60_000, max: 10, key: r => `${clientIp(r)}:${String(r.body?.username || '').toLowerCase()}` }),
   rateLimit({ windowMs: 15 * 60_000, max: 50, key: r => clientIp(r) }),
 ];
-/** Registration creates a School and an admin, so it is worth throttling harder. */
-const registerRateLimit = rateLimit({ windowMs: 60 * 60_000, max: 5, key: clientIp });
+/**
+ * Registration creates a School and an admin, so it is worth throttling harder.
+ *
+ * Two windows, because one cannot do both jobs. The hourly limit is generous on
+ * purpose — a principal who mistypes their School ID three times is not an
+ * attacker and must not be locked out for a day — and every rejected attempt
+ * counts against it, so it has to leave room to fumble. That generosity is
+ * exactly what makes it useless as a flood limit: five an hour is a hundred and
+ * twenty a day. The daily window is the one that caps the damage.
+ */
+const registerRateLimit = rateLimit({ windowMs: 60 * 60_000, max: 5, key: clientIp, name: 'register:hour' });
+const registerDailyRateLimit = rateLimit({ windowMs: 24 * 60 * 60_000, max: 10, key: clientIp, name: 'register:day' });
+
+/**
+ * Confirming a School ID is a read against a list DepEd publishes, so there is
+ * nothing to keep secret here. The limit is about cost, not confidentiality:
+ * without it the lookup is free CPU over a 60,000-row map.
+ */
+const schoolLookupRateLimit = rateLimit({ windowMs: 15 * 60_000, max: 60, key: clientIp, name: 'school-lookup' });
 /**
  * Changing a password takes the current one, so it is a second place a password
  * can be guessed at. Keyed on the account rather than the address: the caller is
@@ -415,6 +440,8 @@ module.exports = {
   markRevoked,
   loginRateLimit,
   registerRateLimit,
+  registerDailyRateLimit,
+  schoolLookupRateLimit,
   platformRateLimit,
   changePasswordRateLimit,
   // Exported so scripts/verify-route-authorization.js can check every
