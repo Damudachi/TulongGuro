@@ -53,8 +53,8 @@ export default function PlatformApprovals() {
   const [busyId, setBusyId] = useState(null);
   const [rejectingId, setRejectingId] = useState(null);
   const [rejectReason, setRejectReason] = useState('');
-  // Ids ticked for deletion. Only ever populated on the Rejected tab — see the
-  // toolbar below for why deletion is not offered anywhere else.
+  // Ids ticked for deletion. Only ever populated on the Pending and Rejected
+  // tabs — see canDelete below for why deletion is not offered anywhere else.
   const [selected, setSelected] = useState(() => new Set());
   const [isDeleting, setIsDeleting] = useState(false);
 
@@ -89,11 +89,19 @@ export default function PlatformApprovals() {
   // eslint-disable-next-line react-hooks/set-state-in-effect -- flipping the loading flag ahead of an async read; the rule's alternative is a data-fetching library this app doesn't use
   useEffect(() => { load(); }, [load]);
 
-  // Deletion is offered only where it is safe to offer: a rejected
-  // registration has no sections, no curriculums and nobody who can sign in.
-  // Showing the same controls on Approved would put "delete all" one mis-click
-  // from a live school, so the tab itself is the first guard.
-  const canDelete = status === 'REJECTED';
+  // Deletion is offered on Pending and Rejected — the two states where nobody
+  // has ever been able to sign in, so there is no teaching data to lose.
+  //
+  // Not on Approved, which would put "delete all" one mis-click from a live
+  // school, and not on All, where a single list mixes the two cases and
+  // "select all" would mean something different for each row. The tab is the
+  // first guard; the server checks the status again regardless.
+  const canDelete = status === 'REJECTED' || status === 'PENDING';
+
+  /** "3 pending registrations" / "1 rejected registration", so the dialog names
+   *  what is going rather than saying "items". */
+  const deletableNoun = (n) =>
+    `${status === 'PENDING' ? 'pending' : 'rejected'} registration${n === 1 ? '' : 's'}`;
 
   const toggleSelected = (id) => setSelected(prev => {
     const next = new Set(prev);
@@ -102,7 +110,7 @@ export default function PlatformApprovals() {
   });
 
   /**
-   * Delete rejected registrations, one or many.
+   * Delete pending or rejected registrations, one or many.
    *
    * The confirmation names what is about to happen rather than asking "are you
    * sure": the count, the fact that the admin accounts go with it, and that the
@@ -113,7 +121,17 @@ export default function PlatformApprovals() {
     if (!ids.length) return;
     const many = ids.length !== 1;
     const ok = await showConfirm(
-      `This also deletes their admin account${many ? 's' : ''} and the uploaded ID `
+      // Said first, and only on Pending: everything else in this dialog is
+      // true of both tabs, but "nobody has looked at this yet" is the fact
+      // that makes deleting from Pending a different decision. A real school
+      // waiting on approval looks exactly like a junk registration until
+      // someone reads it.
+      (status === 'PENDING'
+        ? `${many ? 'These have' : 'This has'} not been reviewed yet — if any of `
+          + `${many ? 'them are' : 'it is'} a real school waiting for approval, `
+          + `${many ? 'they' : 'it'} will have to register again from scratch.\n\n`
+        : '')
+      + `This also deletes their admin account${many ? 's' : ''} and the uploaded ID `
       + `photo${many ? 's' : ''}. It cannot be undone.`,
       {
         title: `Permanently delete ${ids.length} ${label}?`,
@@ -318,16 +336,14 @@ export default function PlatformApprovals() {
             <div className="ml-auto flex items-center gap-2">
               <button type="button"
                 disabled={isDeleting || selected.size === 0}
-                onClick={() => deleteSchools([...selected],
-                  selected.size === 1 ? 'rejected registration' : 'rejected registrations')}
+                onClick={() => deleteSchools([...selected], deletableNoun(selected.size))}
                 className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-red-600 text-white text-xs font-bold hover:bg-red-700 disabled:opacity-40 disabled:cursor-not-allowed">
                 {isDeleting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
                 Delete selected
               </button>
 
               <button type="button" disabled={isDeleting}
-                onClick={() => deleteSchools(schools.map(s => s.id),
-                  schools.length === 1 ? 'rejected registration' : 'rejected registrations')}
+                onClick={() => deleteSchools(schools.map(s => s.id), deletableNoun(schools.length))}
                 className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-red-300 text-red-700 text-xs font-bold hover:bg-red-50 disabled:opacity-40">
                 <Trash2 className="w-3.5 h-3.5" /> Delete all {schools.length}
               </button>

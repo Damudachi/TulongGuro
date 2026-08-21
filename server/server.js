@@ -2185,22 +2185,35 @@ app.get('/api/platform/schools', platformRateLimit, async (req, res) => {
 });
 
 /**
- * Permanently delete rejected school registrations.
+ * Permanently delete pending or rejected school registrations.
  *
  * Rejection deliberately *keeps* the rows — see the note on the reject route:
  * a refusal is often "we couldn't verify you yet", and that gets reversed. This
  * is the other case, the one rejection cannot absorb: registrations that were
- * never a school at all. Those accumulate in the queue forever, and each one
- * holds a contact email, an IP, and a photograph of somebody's ID.
+ * never a school at all. Those accumulate forever, and each one holds a contact
+ * email, an IP, and a photograph of somebody's ID — so leaving them is not a
+ * neutral act either.
+ *
+ * Pending is included because that is where a flood of junk registrations
+ * actually lands, and making an operator reject each one first only to delete
+ * it afterwards is two irreversible-feeling steps to remove something obviously
+ * fake.
  *
  * ── The rules this refuses to break ──
- * Only REJECTED schools, and only ones with no sections and no curriculums.
- * The status check is the obvious one. The emptiness check is the load-bearing
- * one: it means this route can never be the thing that destroys a real school's
- * data, no matter what id it is handed or how the caller assembled the list.
- * A rejected school has always had zero of both, because nobody can sign in
- * until approval — so the rail costs nothing and removes the whole class of
- * catastrophic mistake.
+ * Only PENDING or REJECTED schools, and only ones with no sections and no
+ * curriculums. APPROVED is never deletable here.
+ *
+ * The status check is the obvious one, and it admits exactly the two states in
+ * which nobody has ever been able to sign in. The emptiness check is the
+ * load-bearing one: it means this route can never be the thing that destroys a
+ * real school's data, no matter what id it is handed or how the caller
+ * assembled the list. Both allowed states have always had zero of both, so the
+ * rail costs nothing and removes the whole class of catastrophic mistake.
+ *
+ * Deleting a PENDING registration destroys something nobody has reviewed, which
+ * is why the screen says so in the confirmation. The rule here cannot make that
+ * judgement for the operator; it can only guarantee that what goes is a
+ * registration and never a working school.
  *
  * One route for one, several, or all of them. "Delete all" is not a separate
  * power, it is the same power over a longer list, and giving it its own
@@ -2223,14 +2236,14 @@ app.post('/api/platform/schools/delete', platformRateLimit, async (req, res) => 
         include: { _count: { select: { sections: true, curriculums: true, users: true } } },
       });
       if (!school) { skipped.push({ id, name: null, reason: 'no longer exists' }); continue; }
-      if (school.status !== 'REJECTED') {
-        skipped.push({ id, name: school.name, reason: `is ${school.status}, not rejected` });
+      if (school.status !== 'REJECTED' && school.status !== 'PENDING') {
+        skipped.push({ id, name: school.name, reason: `is ${school.status} — only pending or rejected registrations can be deleted` });
         continue;
       }
       if (school._count.sections || school._count.curriculums) {
-        // Refused rather than cascaded. A rejected school holding real teaching
-        // data is a contradiction, so the right response is to stop and let a
-        // person look, not to delete whatever is there.
+        // Refused rather than cascaded. An unapproved school holding real
+        // teaching data is a contradiction, so the right response is to stop
+        // and let a person look, not to delete whatever is there.
         skipped.push({
           id, name: school.name,
           reason: `has ${school._count.sections} section(s) and ${school._count.curriculums} curriculum(s) — refusing to delete teaching data`,
@@ -2262,7 +2275,7 @@ app.post('/api/platform/schools/delete', platformRateLimit, async (req, res) => 
       await deletePrivate(school.registrantIdPath);
 
       deleted.push({ id, name: school.name, accountsRemoved: school._count.users });
-      console.log(`🗑 Deleted rejected school "${school.name}" (${school._count.users} account(s), files removed)`);
+      console.log(`🗑 Deleted ${school.status.toLowerCase()} school "${school.name}" (${school._count.users} account(s), files removed)`);
     }
 
     return res.json({ success: true, deleted, skipped });
