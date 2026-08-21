@@ -62,6 +62,11 @@ export default function Register() {
   // Set when the server refuses for a missing document — the belt to the
   // lookup's braces, for the case where the ID was never looked up at all.
   const [proofRequired, setProofRequired] = useState(false);
+  // The registrant's own school/employee ID. Required on every registration:
+  // the School ID above proves the school exists, and this is the only thing on
+  // the form suggesting the person filling it in belongs to that school.
+  const [registrantId, setRegistrantId] = useState(null);
+  const [registrantIdPreview, setRegistrantIdPreview] = useState(null);
   // Branding is optional — a school with neither falls back to the initials
   // placeholder and the default palette.
   const [logo, setLogo] = useState(null);
@@ -74,6 +79,8 @@ export default function Register() {
   const [submitted, setSubmitted] = useState(null);
 
   useEffect(() => () => { if (logoPreview) URL.revokeObjectURL(logoPreview); }, [logoPreview]);
+  useEffect(() => () => { if (registrantIdPreview) URL.revokeObjectURL(registrantIdPreview); },
+    [registrantIdPreview]);
 
   // Debounced so typing a six-digit ID is one lookup, not six. `cancelled`
   // guards against an earlier, slower response landing after a later one and
@@ -123,6 +130,30 @@ export default function Register() {
   // one case a human has to judge by hand.
   const showProofField = lookup?.state === 'missing' || proofRequired;
 
+  /** Mirrors the server's own rules so a too-large photo is caught before it is
+   *  uploaded over a phone connection rather than after. */
+  const handleRegistrantIdPick = (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    const isPdf = file.type === 'application/pdf';
+    if (!file.type.startsWith('image/') && !isPdf) {
+      return setError('Your ID must be a photo or a PDF.');
+    }
+    if (file.size > 8 * 1024 * 1024) return setError('The ID photo must be under 8MB.');
+    setError('');
+    if (registrantIdPreview) URL.revokeObjectURL(registrantIdPreview);
+    // A PDF has nothing to show inline, so it falls back to the filename row.
+    setRegistrantIdPreview(isPdf ? null : URL.createObjectURL(file));
+    setRegistrantId(file);
+  };
+
+  const clearRegistrantId = () => {
+    if (registrantIdPreview) URL.revokeObjectURL(registrantIdPreview);
+    setRegistrantIdPreview(null);
+    setRegistrantId(null);
+  };
+
   const handleLogoPick = (e) => {
     const file = e.target.files?.[0];
     e.target.value = '';
@@ -144,6 +175,11 @@ export default function Register() {
   const handleRegister = async (e) => {
     e.preventDefault();
     if (isSubmitting) return;
+    // Checked here as well as on the server: the field sits far enough down a
+    // long form that "you missed one" is worth saying without a round trip.
+    if (!registrantId) {
+      return setError('Please attach a photo of your school or employee ID before submitting.');
+    }
     setError('');
     setIsSubmitting(true);
     try {
@@ -154,6 +190,7 @@ export default function Register() {
       if (brandColor) body.append('brandColor', brandColor);
       if (logo) body.append('logo', logo);
       if (proof) body.append('proof', proof);
+      body.append('registrantId', registrantId);
 
       const response = await apiFetch(`${API_URL}/api/auth/register`, { method: 'POST', body });
       const data = await response.json();
@@ -425,6 +462,61 @@ export default function Register() {
                   <p className="text-[10px] text-navy-400 mt-1.5 font-semibold">Photo, PDF or Word — max 10MB</p>
                 </div>
               )}
+
+              {/* ── The registrant's own ID ──
+                  Always shown, unlike the permit above. The School ID field
+                  proves the school is real; DepEd publishes that list, so it
+                  says nothing about whether this person works there. This is
+                  the half that does, which is why it is not conditional on the
+                  lookup coming back clean — a matched school is exactly what
+                  an impersonator would type. */}
+              <div className="p-4 rounded-2xl bg-cream-100 border-2 border-navy-700/10">
+                <label className="tg-label flex items-center gap-1.5">
+                  <ShieldCheck className="w-4 h-4 text-royal-500" />
+                  Your school or employee ID
+                </label>
+                <p className="text-xs text-navy-500 font-semibold mb-3 leading-relaxed">
+                  A photo of your own school ID, employee ID, or a certification of employment —
+                  so we can check you work at the school you're registering.
+                </p>
+
+                {registrantId ? (
+                  <div className="flex items-center gap-3 p-3 rounded-xl bg-white border-2 border-navy-700/10">
+                    {registrantIdPreview ? (
+                      <img src={registrantIdPreview} alt="ID preview"
+                        className="w-14 h-10 object-cover rounded-lg border border-navy-700/10 shrink-0" />
+                    ) : (
+                      <FileText className="w-4 h-4 text-navy-500 shrink-0" />
+                    )}
+                    <span className="text-xs font-bold text-navy-700 truncate flex-1 min-w-0">
+                      {registrantId.name}
+                    </span>
+                    <button type="button" onClick={clearRegistrantId} title="Remove ID"
+                      className="shrink-0 text-navy-400 hover:text-red-600">
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+                ) : (
+                  <label className="flex items-center justify-center gap-2 p-4 border-2 border-dashed border-navy-300 rounded-xl cursor-pointer hover:border-royal-400 hover:bg-royal-50 transition-colors">
+                    <UploadCloud className="w-4 h-4 text-navy-400" />
+                    <span className="text-xs font-bold text-navy-500">Attach your ID</span>
+                    {/* `capture` is a hint, not a restriction — on a phone it
+                        opens the camera, on a laptop it is ignored and the
+                        normal file picker appears. */}
+                    <input type="file" accept="image/*,.pdf" capture="environment"
+                      className="hidden" onChange={handleRegistrantIdPick} />
+                  </label>
+                )}
+
+                {/* Said plainly and next to the upload, because this is the one
+                    field on the form that asks for a photograph of a person.
+                    Someone handing over an ID is owed the reason and the
+                    limits at the moment they do it, not in a policy page. */}
+                <p className="text-[10px] text-navy-400 mt-2 font-semibold leading-relaxed">
+                  Photo or PDF — max 8MB. Stored privately, visible only to the TulongGuro reviewer
+                  approving your school, and never shown to other schools or published anywhere.
+                </p>
+              </div>
 
               {/* ── Contact email ──
                   Separate from the sign-in address above, which sits on a

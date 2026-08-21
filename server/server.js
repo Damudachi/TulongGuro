@@ -549,6 +549,115 @@ async function uploadToCloud(localPath, filename, { folder = 'submissions', cont
 }
 
 /**
+ * ── Private storage, for files that identify a person ──
+ *
+ * uploadToCloud above returns a permanent public URL, which is right for a
+ * school logo and tolerable for a government permit. It is not right for a
+ * photograph of somebody's employee ID: that carries a name, a face and an ID
+ * number, the bucket is world-readable, and its filenames are `Date.now()` plus
+ * the original name — enumerable by anyone who thinks to try. Publishing one is
+ * also not undoable, since a public URL may be fetched and cached before anyone
+ * notices the mistake.
+ *
+ * So these go to a separate private bucket and the database stores the object
+ * *key*. A viewer gets a signed URL minted on request and valid for minutes,
+ * which means access is a decision made at read time — by a route that checks
+ * PLATFORM_ADMIN_KEY — rather than a property the file carries around forever.
+ */
+const PRIVATE_BUCKET = envValue('SUPABASE_PRIVATE_BUCKET') || 'school-verification';
+
+/**
+ * Where private files go when there is no Supabase configured (local dev).
+ *
+ * Deliberately NOT under `uploads/`, which is handed to express.static a few
+ * lines below — putting them there would have served every ID photo at a
+ * public URL, which is the exact thing this whole path exists to prevent.
+ */
+const privateUploadsDir = path.join(__dirname, 'private-uploads');
+
+/** Minted per view. Long enough to open and read the image, short enough that a
+ *  link pasted into a chat log is dead by the time anyone else follows it. */
+const SIGNED_URL_TTL_SECONDS = 5 * 60;
+
+/**
+ * Store a file privately and return the key to put in the database.
+ *
+ * The key is random rather than derived from the upload's name: the filename a
+ * phone gives a photo can itself be identifying, and a random key means the
+ * object cannot be guessed even if the bucket is later made public by mistake.
+ */
+async function uploadPrivate(localPath, { folder, contentType, extension }) {
+  const ext = (extension || '').toLowerCase().replace(/[^a-z0-9.]/g, '') || '.jpg';
+  const key = `${folder}/${crypto.randomUUID()}${ext}`;
+  if (!useSupabase) {
+    // Local development has no bucket. Keep the same key shape so the database
+    // and the read path do not have to care which mode wrote the row.
+    const dest = path.join(privateUploadsDir, key);
+    fs.mkdirSync(path.dirname(dest), { recursive: true });
+    fs.copyFileSync(localPath, dest);
+    return key;
+  }
+  const buffer = fs.readFileSync(localPath);
+  const { error } = await supabase.storage
+    .from(PRIVATE_BUCKET)
+    .upload(key, buffer, { contentType, upsert: false });
+  if (error) {
+    console.error(`⚠ Private upload failed for ${key}:`, error.message);
+    throw new Error(`Could not save the file to storage: ${error.message}`);
+  }
+  return key;
+}
+
+/** Mint a short-lived link to a privately stored object, or null if there is
+ *  nothing there. Callers must have already authorised the viewer. */
+async function signPrivateUrl(key, ttlSeconds = SIGNED_URL_TTL_SECONDS) {
+  if (!key) return null;
+  if (!useSupabase) {
+    // Same contract as Supabase's signed URLs — a link that works in a new tab
+    // and expires — because the operator screen just opens whatever it is
+    // given. It cannot send the PLATFORM_ADMIN_KEY header on a tab navigation,
+    // so authority has to travel in the URL, and it has to expire.
+    const expires = Math.floor(Date.now() / 1000) + ttlSeconds;
+    return `/api/platform/private-file?key=${encodeURIComponent(key)}&expires=${expires}`
+      + `&sig=${signLocalPrivateUrl(key, expires)}`;
+  }
+  const { data, error } = await supabase.storage
+    .from(PRIVATE_BUCKET)
+    .createSignedUrl(key, ttlSeconds);
+  if (error) {
+    console.error(`⚠ Could not sign ${key}:`, error.message);
+    return null;
+  }
+  return data.signedUrl;
+}
+
+/**
+ * HMAC that stands in for Supabase's signature in local mode. Keyed on
+ * PLATFORM_ADMIN_KEY, so a link is only mintable by something that already
+ * holds operator authority, and covers the expiry so the deadline cannot be
+ * edited in the address bar.
+ */
+function signLocalPrivateUrl(key, expires) {
+  return crypto.createHmac('sha256', process.env.PLATFORM_ADMIN_KEY || 'unset')
+    .update(`${key}:${expires}`).digest('hex');
+}
+
+/** Best-effort delete of a privately stored object. Used when a registration is
+ *  refused after the file has already been written. */
+async function deletePrivate(key) {
+  if (!key) return;
+  try {
+    if (!useSupabase) {
+      try { fs.unlinkSync(path.join(privateUploadsDir, key)); } catch {}
+      return;
+    }
+    await supabase.storage.from(PRIVATE_BUCKET).remove([key]);
+  } catch (err) {
+    console.error('⚠ Could not delete private file:', err.message);
+  }
+}
+
+/**
  * Remove a file previously written by uploadToCloud, given the URL it returned.
  * Best-effort: used on the privacy-rejection path, where the scan has already
  * been persisted by the time the AI tells us it has a name on it. Leaving it in
@@ -1643,11 +1752,22 @@ async function runDailyQuotaSelfCheck() {
 const registrationUpload = upload.fields([
   { name: 'logo', maxCount: 1 },
   { name: 'proof', maxCount: 1 },
+  { name: 'registrantId', maxCount: 1 },
 ]);
 
 /** A logo is a seal on a dashboard, not a document. Matches the cap the
  *  registration form states, which until now only the form enforced. */
 const MAX_LOGO_BYTES = 2 * 1024 * 1024;
+
+/** An ID card photographed on a phone. Generous enough not to refuse a modern
+ *  camera, small enough that the endpoint cannot be used as free storage. */
+const MAX_REGISTRANT_ID_BYTES = 8 * 1024 * 1024;
+
+/** What an ID may be. Images plus PDF, because some schools issue a PDF ID or
+ *  a scanned certification instead of a card. */
+const REGISTRANT_ID_MIME_TYPES = new Set([
+  'image/jpeg', 'image/png', 'image/webp', 'image/heic', 'image/heif', 'application/pdf',
+]);
 
 app.post('/api/auth/register', registerRateLimit, registerDailyRateLimit, (req, res, next) => {
   const ct = req.headers['content-type'] || '';
@@ -1662,8 +1782,14 @@ app.post('/api/auth/register', registerRateLimit, registerDailyRateLimit, (req, 
   // behind — which is the leak this endpoint is trying not to have.
   const logoFile = req.files?.logo?.[0] || null;
   const proofFile = req.files?.proof?.[0] || null;
+  const registrantIdFile = req.files?.registrantId?.[0] || null;
+  // Tracked outside the try so the catch below can clean up after itself. A
+  // registration that fails after the ID has been stored must not leave a
+  // photograph of somebody's face in the bucket with no row pointing at it —
+  // nothing would ever look at it again, and nothing would ever delete it.
+  let storedRegistrantIdPath = null;
   const dropTempFiles = () => {
-    for (const f of [logoFile, proofFile]) {
+    for (const f of [logoFile, proofFile, registrantIdFile]) {
       if (f?.path) { try { fs.unlinkSync(f.path); } catch { /* already gone */ } }
     }
   };
@@ -1712,6 +1838,32 @@ app.post('/api/auth/register', registerRateLimit, registerDailyRateLimit, (req, 
     }
     if (logoFile && logoFile.size > MAX_LOGO_BYTES) {
       return refuse(400, { error: 'The school logo must be under 2MB.' });
+    }
+
+    // ── The registrant's own ID ──
+    //
+    // The DepEd School ID answers "is this school real". This answers the
+    // question that one cannot: does the person filling in the form work
+    // there. DepEd publishes the masterlist, so a genuine School ID is
+    // readable by anyone — without this, claiming a real school you have
+    // nothing to do with costs an attacker nothing at all.
+    //
+    // Required on every registration, not only on the not-in-the-masterlist
+    // path. A matched school is exactly what someone impersonating a school
+    // would choose, so making the check conditional on a clean match would
+    // have exempted the case it most needs to cover.
+    if (!registrantIdFile) {
+      return refuse(400, {
+        code: 'REGISTRANT_ID_REQUIRED',
+        error: 'Please attach a photo of your school or employee ID. We use it to check that you '
+          + 'work at the school you are registering.',
+      });
+    }
+    if (!REGISTRANT_ID_MIME_TYPES.has((registrantIdFile.mimetype || '').toLowerCase())) {
+      return refuse(400, { error: 'Your ID must be a photo (JPG, PNG, WEBP or HEIC) or a PDF.' });
+    }
+    if (registrantIdFile.size > MAX_REGISTRANT_ID_BYTES) {
+      return refuse(400, { error: 'The ID photo must be under 8MB.' });
     }
 
     // Normalized, not as typed. `email` and `username` are both unique columns
@@ -1769,6 +1921,14 @@ app.post('/api/auth/register', registerRateLimit, registerDailyRateLimit, (req, 
     const proofUrl = proofFile
       ? await uploadToCloud(proofFile.path, proofFile.filename, { folder: 'school-proof', contentType: proofFile.mimetype })
       : null;
+    // Private, unlike the two above — see uploadPrivate for why an ID photo
+    // cannot live in the public bucket.
+    const registrantIdPath = await uploadPrivate(registrantIdFile.path, {
+      folder: 'registrant-ids',
+      contentType: registrantIdFile.mimetype,
+      extension: path.extname(registrantIdFile.originalname || '') || '.jpg',
+    });
+    storedRegistrantIdPath = registrantIdPath;
 
     // PENDING is set here rather than in the column default on purpose — see
     // the note on School.status. A platform operator approves it before anyone
@@ -1785,6 +1945,7 @@ app.post('/api/auth/register', registerRateLimit, registerDailyRateLimit, (req, 
         verificationNote: describeVerification(check, trimmedSchool),
         contactEmail: contactCheck.email,
         proofUrl,
+        registrantIdPath,
         registeredIp: req.ip || req.socket?.remoteAddress || null,
       }
     });
@@ -1824,6 +1985,7 @@ app.post('/api/auth/register', registerRateLimit, registerDailyRateLimit, (req, 
       },
     });
   } catch (e) {
+    await deletePrivate(storedRegistrantIdPath);
     return refuse(400, { error: e.message });
   }
 });
@@ -1959,8 +2121,14 @@ app.get('/api/platform/schools', platformRateLimit, async (req, res) => {
     // names repeat legitimately across divisions, so a close match is a
     // sentence for an operator ("check the division first"), not a refusal.
     const allNames = await prisma.school.findMany({ select: { id: true, name: true } });
-    const flagged = schools.map(s => ({
+    const flagged = schools.map(({ registrantIdPath, ...s }) => ({
       ...s,
+      // The storage key itself never leaves the server. The screen only needs
+      // to know whether there is an ID to look at; asking to see it is a
+      // separate, individually-authorised request that mints a link with a
+      // deadline on it. Sending the key here would have made every list load
+      // hand out a durable pointer to every registrant's ID at once.
+      hasRegistrantId: Boolean(registrantIdPath),
       similarSchools: nearDuplicateNames(
         s.name,
         allNames.filter(o => o.id !== s.id).map(o => o.name),
@@ -1977,6 +2145,62 @@ app.get('/api/platform/schools', platformRateLimit, async (req, res) => {
   } catch (e) {
     res.status(e.status || 500).json({ success: false, error: e.message });
   }
+});
+
+/**
+ * Mint a short-lived link to one school's registrant ID photo.
+ *
+ * Separate from the list route on purpose. Viewing a photograph of somebody's
+ * ID is a distinct act from reading the approvals queue, so it takes its own
+ * request, its own authorisation check, and produces a link that stops working
+ * in minutes. It is also the one place a view could be logged if this ever
+ * needs an audit trail — which it would, if the platform key became a team.
+ */
+app.get('/api/platform/schools/:schoolId/registrant-id', platformRateLimit, async (req, res) => {
+  try {
+    requirePlatformKey(req);
+    const school = await prisma.school.findUnique({
+      where: { id: req.params.schoolId },
+      select: { registrantIdPath: true },
+    });
+    if (!school?.registrantIdPath) {
+      // Distinguished from a failure: schools registered before the ID was
+      // required genuinely have none, and that is not an error to fix.
+      return res.status(404).json({ success: false, error: 'This registration has no ID on file.' });
+    }
+    const url = await signPrivateUrl(school.registrantIdPath);
+    if (!url) return res.status(502).json({ success: false, error: 'Could not open the stored ID.' });
+    return res.json({ success: true, url, expiresInSeconds: SIGNED_URL_TTL_SECONDS });
+  } catch (e) {
+    res.status(e.status || 500).json({ success: false, error: e.message });
+  }
+});
+
+/**
+ * Serves privately stored files in local development, where there is no
+ * Supabase to mint signed URLs. Authority travels in the query string because
+ * the browser opens this in a tab and cannot set a header — see signPrivateUrl.
+ * Never reachable in a deployment with Supabase configured.
+ */
+app.get('/api/platform/private-file', platformRateLimit, (req, res) => {
+  if (useSupabase) return res.status(404).end();
+  const { key = '', expires = '', sig = '' } = req.query;
+  if (Number(expires) * 1000 < Date.now()) {
+    return res.status(410).json({ success: false, error: 'This link has expired. Open it again from the approvals screen.' });
+  }
+  const expected = signLocalPrivateUrl(String(key), String(expires));
+  const supplied = String(sig);
+  if (supplied.length !== expected.length
+    || !crypto.timingSafeEqual(Buffer.from(supplied), Buffer.from(expected))) {
+    return res.status(401).json({ success: false, error: 'Not authorised.' });
+  }
+  // Resolved against the private root and re-checked, so a key containing
+  // `../` cannot walk out of it into the rest of the filesystem.
+  const resolved = path.resolve(privateUploadsDir, String(key));
+  if (!resolved.startsWith(path.resolve(privateUploadsDir) + path.sep)) {
+    return res.status(400).json({ success: false, error: 'Bad key.' });
+  }
+  return res.sendFile(resolved);
 });
 
 app.post('/api/platform/schools/:schoolId/approve', platformRateLimit, async (req, res) => {

@@ -85,6 +85,31 @@ export default function PlatformApprovals() {
   // eslint-disable-next-line react-hooks/set-state-in-effect -- flipping the loading flag ahead of an async read; the rule's alternative is a data-fetching library this app doesn't use
   useEffect(() => { load(); }, [load]);
 
+  /**
+   * Open a registrant's ID photo.
+   *
+   * The link is fetched on click rather than sent with the list, because it is
+   * signed and expires in minutes — one minted at page load would already be
+   * dead by the time an operator worked down the queue to it. It also means the
+   * key never sits in the page for schools nobody opened.
+   */
+  const viewRegistrantId = async (school) => {
+    setBusyId(school.id);
+    try {
+      const res = await apiFetch(`${API_URL}/api/platform/schools/${school.id}/registrant-id`, {
+        headers: { 'x-platform-key': key },
+      });
+      const data = await res.json();
+      if (!data.success) return showAlert(data.error || 'Could not open the ID.');
+      // noopener, because the signed URL is in this tab's referrer otherwise.
+      window.open(data.url, '_blank', 'noopener,noreferrer');
+    } catch {
+      showAlert('Network error. Is the API reachable?');
+    } finally {
+      setBusyId(null);
+    }
+  };
+
   const act = async (school, action, body) => {
     setBusyId(school.id);
     try {
@@ -250,12 +275,33 @@ export default function PlatformApprovals() {
                         </div>
                       )}
 
-                      {s.proofUrl && (
-                        <a href={s.proofUrl} target="_blank" rel="noreferrer"
-                          className="inline-flex items-center gap-1.5 mt-2 px-2.5 py-1 rounded-lg bg-slate-100 text-xs font-bold text-slate-700 hover:bg-slate-200">
-                          <FileText className="w-3.5 h-3.5" /> Proof document
-                        </a>
-                      )}
+                      <div className="flex flex-wrap items-center gap-2 mt-2">
+                        {s.proofUrl && (
+                          <a href={s.proofUrl} target="_blank" rel="noreferrer"
+                            className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-slate-100 text-xs font-bold text-slate-700 hover:bg-slate-200">
+                            <FileText className="w-3.5 h-3.5" /> Proof document
+                          </a>
+                        )}
+
+                        {/* The half of the evidence that is about the person
+                            rather than the school. A button, not a link: the
+                            URL does not exist until it is asked for, and the
+                            one minted expires in minutes. */}
+                        {s.hasRegistrantId ? (
+                          <button type="button" onClick={() => viewRegistrantId(s)}
+                            disabled={busyId === s.id}
+                            className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-indigo-100 text-xs font-bold text-indigo-700 hover:bg-indigo-200 disabled:opacity-50">
+                            <BadgeCheck className="w-3.5 h-3.5" /> View registrant's ID
+                          </button>
+                        ) : (
+                          /* Registrations from before the ID was required have
+                             none. Said plainly so its absence reads as an older
+                             registration rather than as something to chase. */
+                          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-amber-50 text-xs font-bold text-amber-700">
+                            <AlertTriangle className="w-3.5 h-3.5" /> No registrant ID on file
+                          </span>
+                        )}
+                      </div>
 
                       {/* Names repeat legitimately across divisions, so this is
                           a prompt to check the division — never a reason on its

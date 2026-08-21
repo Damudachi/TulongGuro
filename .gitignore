@@ -16,6 +16,10 @@ server/prisma/dev.db-journal
 # Uploaded files (local dev)
 server/uploads/
 
+# Registrant ID photos in local dev. Personal data — a name, a face and an
+# employee number — so this must never reach the repository.
+server/private-uploads/
+
 # Rendered sample papers and raw run output from
 # scripts/measure-grading-variance.js — regenerated on demand, and the JSON is
 # a record of one run against one model on one day, not a fixture.

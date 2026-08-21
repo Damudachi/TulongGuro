@@ -62,6 +62,20 @@ model School {
   /// is not in the masterlist. That path exists for schools that are real but
   /// newer than our copy of the list; the document is what a human judges.
   proofUrl         String?
+  /// Photo of the registrant's own school/employee ID.
+  ///
+  /// The School ID above proves the *school* is real; DepEd publishes that list,
+  /// so anyone can read a genuine ID off it. This is the other half: evidence
+  /// that the person filling in the form actually works there. Neither is proof
+  /// on its own — together they are what an operator judges.
+  ///
+  /// A storage *key*, not a URL, and deliberately not in the public bucket the
+  /// logo and permit use. This file carries a real person's name, face and
+  /// employee number, so it lives in the private `school-verification` bucket
+  /// and is only ever handed out as a short-lived signed link to an operator
+  /// holding PLATFORM_ADMIN_KEY. Storing a permanent URL would have made that
+  /// impossible to walk back.
+  registrantIdPath String?
   /// Where the registration came from. Triage only — one address submitting
   /// twenty schools is the signature this whole column set exists to surface.
   registeredIp     String?
