@@ -2185,6 +2185,93 @@ app.get('/api/platform/schools', platformRateLimit, async (req, res) => {
 });
 
 /**
+ * Permanently delete rejected school registrations.
+ *
+ * Rejection deliberately *keeps* the rows — see the note on the reject route:
+ * a refusal is often "we couldn't verify you yet", and that gets reversed. This
+ * is the other case, the one rejection cannot absorb: registrations that were
+ * never a school at all. Those accumulate in the queue forever, and each one
+ * holds a contact email, an IP, and a photograph of somebody's ID.
+ *
+ * ── The rules this refuses to break ──
+ * Only REJECTED schools, and only ones with no sections and no curriculums.
+ * The status check is the obvious one. The emptiness check is the load-bearing
+ * one: it means this route can never be the thing that destroys a real school's
+ * data, no matter what id it is handed or how the caller assembled the list.
+ * A rejected school has always had zero of both, because nobody can sign in
+ * until approval — so the rail costs nothing and removes the whole class of
+ * catastrophic mistake.
+ *
+ * One route for one, several, or all of them. "Delete all" is not a separate
+ * power, it is the same power over a longer list, and giving it its own
+ * endpoint would mean a second place the rules above have to be got right.
+ */
+app.post('/api/platform/schools/delete', platformRateLimit, async (req, res) => {
+  try {
+    requirePlatformKey(req);
+    const ids = Array.isArray(req.body?.ids) ? req.body.ids.filter(v => typeof v === 'string') : [];
+    if (!ids.length) {
+      return res.status(400).json({ success: false, error: 'No schools were selected.' });
+    }
+
+    const deleted = [];
+    const skipped = [];
+
+    for (const id of ids) {
+      const school = await prisma.school.findUnique({
+        where: { id },
+        include: { _count: { select: { sections: true, curriculums: true, users: true } } },
+      });
+      if (!school) { skipped.push({ id, name: null, reason: 'no longer exists' }); continue; }
+      if (school.status !== 'REJECTED') {
+        skipped.push({ id, name: school.name, reason: `is ${school.status}, not rejected` });
+        continue;
+      }
+      if (school._count.sections || school._count.curriculums) {
+        // Refused rather than cascaded. A rejected school holding real teaching
+        // data is a contradiction, so the right response is to stop and let a
+        // person look, not to delete whatever is there.
+        skipped.push({
+          id, name: school.name,
+          reason: `has ${school._count.sections} section(s) and ${school._count.curriculums} curriculum(s) — refusing to delete teaching data`,
+        });
+        continue;
+      }
+
+      // Users go first and in the same transaction: User.schoolId is nullable,
+      // so the relation's default behaviour is to *blank* it rather than remove
+      // the row, which would leave a school-less admin account behind — an
+      // account outside every tenancy rule that keys on schoolId.
+      try {
+        await prisma.$transaction([
+          prisma.user.deleteMany({ where: { schoolId: school.id } }),
+          prisma.school.delete({ where: { id: school.id } }),
+        ]);
+      } catch (err) {
+        // Most likely a foreign key we do not know about. Reported per-school
+        // so one awkward row cannot abort the rest of the batch.
+        skipped.push({ id, name: school.name, reason: `could not be deleted (${err.message.slice(0, 120)})` });
+        continue;
+      }
+
+      // Only once the rows are gone. Files are deleted after the transaction
+      // commits, because a rolled-back delete that had already destroyed the
+      // evidence would leave a registration nobody can review.
+      await deleteFromCloud(school.logoUrl);
+      await deleteFromCloud(school.proofUrl);
+      await deletePrivate(school.registrantIdPath);
+
+      deleted.push({ id, name: school.name, accountsRemoved: school._count.users });
+      console.log(`🗑 Deleted rejected school "${school.name}" (${school._count.users} account(s), files removed)`);
+    }
+
+    return res.json({ success: true, deleted, skipped });
+  } catch (e) {
+    res.status(e.status || 500).json({ success: false, error: e.message });
+  }
+});
+
+/**
  * Mint a short-lived link to one school's registrant ID photo.
  *
  * Separate from the list route on purpose. Viewing a photograph of somebody's

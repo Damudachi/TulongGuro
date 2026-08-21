@@ -1,9 +1,9 @@
 import { useState, useEffect, useCallback } from 'react';
 import { ShieldCheck, Loader2, Check, X, Building2, Mail, RefreshCw, AlertTriangle,
-  BadgeCheck, HelpCircle, FileText, Copy, Globe } from 'lucide-react';
+  BadgeCheck, HelpCircle, FileText, Copy, Globe, Trash2, CheckSquare, Square } from 'lucide-react';
 import { API_URL, apiFetch } from '../config';
 
-import { showAlert } from '../utils/dialog';
+import { showAlert, showConfirm } from '../utils/dialog';
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
 
 /**
@@ -53,6 +53,10 @@ export default function PlatformApprovals() {
   const [busyId, setBusyId] = useState(null);
   const [rejectingId, setRejectingId] = useState(null);
   const [rejectReason, setRejectReason] = useState('');
+  // Ids ticked for deletion. Only ever populated on the Rejected tab — see the
+  // toolbar below for why deletion is not offered anywhere else.
+  const [selected, setSelected] = useState(() => new Set());
+  const [isDeleting, setIsDeleting] = useState(false);
 
   const load = useCallback(async () => {
     if (!key) return;
@@ -84,6 +88,67 @@ export default function PlatformApprovals() {
 
   // eslint-disable-next-line react-hooks/set-state-in-effect -- flipping the loading flag ahead of an async read; the rule's alternative is a data-fetching library this app doesn't use
   useEffect(() => { load(); }, [load]);
+
+  // Deletion is offered only where it is safe to offer: a rejected
+  // registration has no sections, no curriculums and nobody who can sign in.
+  // Showing the same controls on Approved would put "delete all" one mis-click
+  // from a live school, so the tab itself is the first guard.
+  const canDelete = status === 'REJECTED';
+
+  const toggleSelected = (id) => setSelected(prev => {
+    const next = new Set(prev);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    return next;
+  });
+
+  /**
+   * Delete rejected registrations, one or many.
+   *
+   * The confirmation names what is about to happen rather than asking "are you
+   * sure": the count, the fact that the admin accounts go with it, and that the
+   * stored ID photo is destroyed. None of that is recoverable, so it belongs in
+   * front of the operator before the click, not in a toast afterwards.
+   */
+  const deleteSchools = async (ids, label) => {
+    if (!ids.length) return;
+    const many = ids.length !== 1;
+    const ok = await showConfirm(
+      `This also deletes their admin account${many ? 's' : ''} and the uploaded ID `
+      + `photo${many ? 's' : ''}. It cannot be undone.`,
+      {
+        title: `Permanently delete ${ids.length} ${label}?`,
+        confirmLabel: `Delete ${ids.length}`,
+        danger: true,
+      },
+    );
+    if (!ok) return;
+
+    setIsDeleting(true);
+    try {
+      const res = await apiFetch(`${API_URL}/api/platform/schools/delete`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-platform-key': key },
+        body: JSON.stringify({ ids }),
+      });
+      const data = await res.json();
+      if (!data.success) return showAlert(data.error || 'Could not delete.');
+
+      // The server decides per school, so some of a batch can be refused while
+      // the rest go through. Saying only "deleted N" would hide that.
+      if (data.skipped?.length) {
+        showAlert(
+          `Deleted ${data.deleted.length}. Kept ${data.skipped.length}:\n\n`
+          + data.skipped.map(s => `• ${s.name || s.id} — ${s.reason}`).join('\n'),
+        );
+      }
+      setSelected(new Set());
+      await load();
+    } catch {
+      showAlert('Network error. Is the API reachable?');
+    } finally {
+      setIsDeleting(false);
+    }
+  };
 
   /**
    * Open a registrant's ID photo.
@@ -192,8 +257,11 @@ export default function PlatformApprovals() {
         </div>
 
         <div className="flex items-center gap-2 mb-5">
+          {/* Switching tabs drops any ticks: those ids are about to leave the
+              screen, and a selection you cannot see is one you cannot check
+              before pressing delete. */}
           {['PENDING', 'APPROVED', 'REJECTED', 'ALL'].map(s => (
-            <button key={s} onClick={() => setStatus(s)}
+            <button key={s} onClick={() => { setStatus(s); setSelected(new Set()); }}
               className={cn('px-3 py-1.5 rounded-lg text-xs font-bold transition-colors',
                 status === s ? 'bg-ink-900 text-white' : 'bg-white text-slate-600 border border-slate-200 hover:bg-slate-50')}>
               {s[0] + s.slice(1).toLowerCase()}
@@ -227,6 +295,46 @@ export default function PlatformApprovals() {
           </div>
         )}
 
+        {/* ── Bulk actions, Rejected tab only ──
+            "Delete all" is deliberately the last thing here and labelled with
+            its count rather than the word "all", because "all" hides how much
+            is about to go and a number does not. */}
+        {canDelete && schools.length > 0 && (
+          <div className="mb-4 flex items-center gap-2 flex-wrap bg-white border border-slate-200 rounded-xl px-3 py-2">
+            <button type="button" disabled={isDeleting}
+              onClick={() => setSelected(prev =>
+                prev.size === schools.length ? new Set() : new Set(schools.map(s => s.id)))}
+              className="inline-flex items-center gap-1.5 text-xs font-bold text-slate-600 hover:text-slate-900 disabled:opacity-50">
+              {selected.size === schools.length
+                ? <CheckSquare className="w-4 h-4" />
+                : <Square className="w-4 h-4" />}
+              {selected.size === schools.length ? 'Clear selection' : 'Select all'}
+            </button>
+
+            <span className="text-xs text-slate-400 font-semibold">
+              {selected.size > 0 && `${selected.size} selected`}
+            </span>
+
+            <div className="ml-auto flex items-center gap-2">
+              <button type="button"
+                disabled={isDeleting || selected.size === 0}
+                onClick={() => deleteSchools([...selected],
+                  selected.size === 1 ? 'rejected registration' : 'rejected registrations')}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-red-600 text-white text-xs font-bold hover:bg-red-700 disabled:opacity-40 disabled:cursor-not-allowed">
+                {isDeleting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
+                Delete selected
+              </button>
+
+              <button type="button" disabled={isDeleting}
+                onClick={() => deleteSchools(schools.map(s => s.id),
+                  schools.length === 1 ? 'rejected registration' : 'rejected registrations')}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-red-300 text-red-700 text-xs font-bold hover:bg-red-50 disabled:opacity-40">
+                <Trash2 className="w-3.5 h-3.5" /> Delete all {schools.length}
+              </button>
+            </div>
+          </div>
+        )}
+
         {isLoading && schools.length === 0 ? (
           <div className="flex items-center justify-center h-40 text-slate-400">
             <Loader2 className="w-5 h-5 animate-spin mr-2" /> Loading...
@@ -242,9 +350,21 @@ export default function PlatformApprovals() {
               const admin = s.users?.[0];
               const verdict = VERIFICATION_STYLES[s.verification];
               return (
-                <div key={s.id} className="bg-white border border-slate-200 rounded-2xl p-4">
+                <div key={s.id} className={cn(
+                  'bg-white border rounded-2xl p-4 transition-colors',
+                  selected.has(s.id) ? 'border-red-300 bg-red-50/40' : 'border-slate-200',
+                )}>
                   <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0">
+                    {canDelete && (
+                      <button type="button" onClick={() => toggleSelected(s.id)}
+                        title={selected.has(s.id) ? 'Deselect' : 'Select for deletion'}
+                        className="shrink-0 mt-0.5 text-slate-400 hover:text-red-600">
+                        {selected.has(s.id)
+                          ? <CheckSquare className="w-4 h-4 text-red-600" />
+                          : <Square className="w-4 h-4" />}
+                      </button>
+                    )}
+                    <div className="min-w-0 flex-1">
                       <div className="flex items-center gap-2 flex-wrap">
                         <p className="font-bold text-slate-900">{s.name}</p>
                         <span className={cn('text-[10px] font-bold px-2 py-0.5 rounded-full', STATUS_STYLES[s.status])}>
@@ -364,6 +484,16 @@ export default function PlatformApprovals() {
                         <button onClick={() => { setRejectingId(s.id); setRejectReason(''); }} disabled={busyId === s.id}
                           className="px-3 py-1.5 rounded-lg bg-white border border-red-200 text-red-600 text-xs font-bold hover:bg-red-50 disabled:opacity-40 flex items-center gap-1">
                           <X className="w-3.5 h-3.5" /> Reject
+                        </button>
+                      )}
+                      {/* Icon-only and last: Approve is the action this screen
+                          exists for, and a delete button of equal weight beside
+                          it would be a mis-click with no undo. */}
+                      {canDelete && (
+                        <button onClick={() => deleteSchools([s.id], `"${s.name}"`)}
+                          disabled={isDeleting || busyId === s.id} title={`Delete "${s.name}"`}
+                          className="p-1.5 rounded-lg bg-white border border-slate-200 text-slate-400 hover:text-red-600 hover:border-red-300 hover:bg-red-50 disabled:opacity-40">
+                          <Trash2 className="w-3.5 h-3.5" />
                         </button>
                       )}
                     </div>
