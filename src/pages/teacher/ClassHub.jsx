@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import { Plus, Search, FileText, ArrowLeft, Clock, CheckCircle2, AlertCircle, UploadCloud, Trash2, PenLine, CloudOff, Eye, ShieldCheck, Medal } from 'lucide-react';
 import { API_URL, apiFetch } from '../../config';
-import { submissionWindow, formatDeadline } from '../../utils/deadlines';
+import { submissionWindow, formatDeadline, todayInPH } from '../../utils/deadlines';
 import { getStoredUser } from '../../utils/session';
 import { saveClassSnapshot, readClassSnapshot } from '../../utils/offlineSnapshot';
 
@@ -92,6 +92,26 @@ export default function ClassHub() {
     setIsEditOpen(false);
     setEditActivity(null);
   };
+
+  /**
+   * The earliest due date the quick edit will accept, or undefined for no floor.
+   *
+   * Only on work students submit themselves. A past due date there closes the
+   * activity the moment it is saved — every child who had not yet uploaded is
+   * locked out, or stamped late for a date that had already gone by. On
+   * teacher-upload and scores-only activities the date closes nothing (see
+   * submissionWindow), and a past one is a legitimate record of when the work
+   * was actually set, so it stays pickable.
+   *
+   * An activity whose deadline has already passed keeps its own date as the
+   * floor rather than today's. `min` alone would mark the untouched field
+   * invalid and the browser would silently refuse to submit the form — leaving
+   * no way to fix the instructions on last term's activity without also moving
+   * its due date.
+   */
+  const deadlineMin = editActivity?.submissionMode === 'STUDENT_SUBMIT'
+    ? [todayInPH(), editForm.deadline].filter(Boolean).sort()[0]
+    : undefined;
 
   const handleSaveEdit = async (e) => {
     e.preventDefault();
@@ -504,9 +524,16 @@ export default function ClassHub() {
                 <input
                   type="date"
                   value={editForm.deadline}
+                  min={deadlineMin}
                   onChange={(e) => setEditForm((prev) => ({ ...prev, deadline: e.target.value }))}
                   className="w-full border border-slate-200 p-2 rounded-lg outline-none focus:ring-2 focus:ring-brand-navy"
                 />
+                {editActivity.submissionMode === 'STUDENT_SUBMIT' && (
+                  <p className="text-xs text-slate-400 mt-1">
+                    Students upload their own work, so this cannot be moved into the past —
+                    a date that has gone by closes the activity on them.
+                  </p>
+                )}
               </div>
               {/* Required, like everywhere else an activity is written. The
                   server refuses a blank one (INSTRUCTIONS_REQUIRED), so asking

@@ -95,6 +95,33 @@ export function readCompetencies(stored) {
 }
 
 /**
+ * A curriculum lesson's name, with its week number said once.
+ *
+ * A lesson carries a week number and a title, and every screen that lists one
+ * writes "Week 3: " in front of the title. Extracted curriculum documents
+ * routinely put the week in the title too — the row in the school's own guide
+ * reads "Week 3: Figures of Speech" — so the two combined into "Week 3: Week 3:
+ * Figures of Speech" everywhere a lesson appeared.
+ *
+ * The leading week is dropped only when it is the same number the lesson
+ * records. "Week 1: Week 2 review" is not a duplicate: it is a week-1 lesson
+ * about week 2, and rewriting it would change what it says.
+ *
+ * Mirrors lessonDisplayName in server/depedTopics.js.
+ */
+export function lessonDisplayName(lesson) {
+  const title = String(lesson?.title ?? '').trim();
+  const week = parseInt(lesson?.weekNumber, 10);
+  if (!Number.isFinite(week) || week < 1) return title;
+  // (?![0-9]) so "Week 1" does not match the start of "Week 12", which would
+  // leave a title of "2: ..." behind.
+  const stripped = title
+    .replace(new RegExp(`^week\\s*0*${week}(?![0-9])\\s*[:.)\\-–—]*\\s*`, 'i'), '')
+    .trim();
+  return stripped ? `Week ${week}: ${stripped}` : `Week ${week}`;
+}
+
+/**
  * Where a term ends, in school weeks — mirrors server/depedTopics.js.
  *
  * Only needed for curriculum lessons, which record a week number and no term.

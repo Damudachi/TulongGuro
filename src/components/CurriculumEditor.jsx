@@ -18,6 +18,7 @@ import { API_URL, apiFetch } from '../config';
 import { showAlert, showConfirm } from '../utils/dialog';
 import { useRubricDrafts } from '../utils/useRubricDrafts';
 import { RubricDraftCard, RubricDraftButtons } from './RubricDrafts';
+import { lessonDisplayName } from '../utils/topics';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
 
@@ -350,7 +351,7 @@ export default function CurriculumEditor({ adminId, curriculum, onClose, onSaved
                         {l.isNew ? 'NEW' : 'ALREADY HERE'}
                       </span>
                       <span className="text-xs text-slate-700 leading-relaxed">
-                        {l.weekNumber ? `Week ${l.weekNumber}: ` : ''}{l.title}
+                        {lessonDisplayName(l)}
                       </span>
                     </div>
                   ))}
@@ -364,7 +365,7 @@ export default function CurriculumEditor({ adminId, curriculum, onClose, onSaved
                     </p>
                     <ul className="list-disc list-inside space-y-0.5 leading-relaxed">
                       {preview.current.filter(l => !l.inRevision).map(l => (
-                        <li key={l.id}>{l.weekNumber ? `Week ${l.weekNumber}: ` : ''}{l.title}</li>
+                        <li key={l.id}>{lessonDisplayName(l)}</li>
                       ))}
                     </ul>
                     <p>Replacing removes {goingCount === 1 ? 'it' : 'them'} from the curriculum. Adding the new lessons keeps {goingCount === 1 ? 'it' : 'them'}.</p>

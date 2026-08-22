@@ -19,6 +19,19 @@ const PH_UTC_OFFSET_HOURS = 8;
 const DATE_ONLY = /^(\d{4})-(\d{2})-(\d{2})$/;
 
 /**
+ * Today's date in Philippine time, as the "YYYY-MM-DD" an <input type="date">
+ * takes. The earliest date a deadline students have to meet may be set to.
+ *
+ * Not `new Date().toISOString().slice(0, 10)`: that is today in UTC, which is
+ * still yesterday in Manila until 8 AM. A teacher setting a due date before
+ * morning class would have been offered a "today" that was already over.
+ */
+export function todayInPH() {
+  const ph = new Date(Date.now() + PH_UTC_OFFSET_HOURS * 60 * 60 * 1000);
+  return ph.toISOString().slice(0, 10);
+}
+
+/**
  * The instant an activity actually closes, or null if it never does.
  * A date-only deadline resolves to 23:59:59.999 Philippine time on that date.
  */

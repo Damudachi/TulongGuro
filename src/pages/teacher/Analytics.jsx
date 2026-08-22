@@ -711,11 +711,17 @@ export default function Analytics() {
               The same chart the student screens draw, pooled across every class
               in scope. The bars this replaced only said where the class stands
               today; a line says which way each skill has been moving, which is
-              the thing a teacher can still act on. */}
+              the thing a teacher can still act on.
+
+              The server groups this one per activity rather than per paper (see
+              computeSkillProgress), so the axis counts the work the teacher set
+              — a class of 21 was drawing 21 points for every activity it had
+              graded. Only graded activities appear: an activity that is
+              published but not yet marked has nothing to plot. */}
           <SkillProgressChart
             dataUrl={classSkillProgressUrl}
             title="Writing skills across the class"
-            subtitle="Cumulative mastery over every graded activity in this view. Hover a point to see which activity it is."
+            subtitle="One point per graded activity, holding the whole class's marks for it. Hover a point to see which activity it is."
             showActivityList={false}
             cardClass="bg-white border-2 border-navy-700/10 rounded-3xl p-5 shadow-pop"
             emptyMessage="Once a few activities are graded against a rubric that assesses writing or language, the class trend will appear here."

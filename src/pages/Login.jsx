@@ -102,8 +102,14 @@ export default function Login() {
   };
 
   return (
-    <div className="min-h-screen bg-cream-100 tg-dotgrid flex items-center justify-center p-4 sm:p-6">
-      <div className="w-full max-w-5xl grid lg:grid-cols-2 bg-white rounded-[2rem] shadow-card-lg overflow-hidden border-2 border-navy-700/5">
+    /* min-w-0 on the card, and the switcher below is allowed to wrap.
+       Browser zoom shrinks the viewport in CSS pixels, so at 400% a laptop is
+       reporting the width of a small phone — and anything in here with a
+       minimum width larger than that pushed the whole card sideways, leaving a
+       horizontal scrollbar and the third role button cut off past the edge.
+       Nothing in this form is allowed to have a floor wider than the screen. */
+    <div className="min-h-screen bg-cream-100 tg-dotgrid flex items-center justify-center p-3 sm:p-6">
+      <div className="w-full min-w-0 max-w-5xl grid lg:grid-cols-2 bg-white rounded-[2rem] shadow-card-lg overflow-hidden border-2 border-navy-700/5">
 
         {/* ── Brand panel ── */}
         <div className={`${cfg.panel} hidden lg:flex flex-col justify-between p-10 text-white transition-colors duration-500 relative overflow-hidden`}>
@@ -145,7 +151,7 @@ export default function Login() {
         </div>
 
         {/* ── Form ── */}
-        <div className="p-7 sm:p-10">
+        <div className="p-5 sm:p-7 md:p-10 min-w-0">
           <Link to="/" className="lg:hidden inline-flex items-center gap-1.5 text-sm font-bold text-navy-500 hover:text-royal-500 mb-6">
             <ArrowLeft className="w-4 h-4" /> Back
           </Link>
@@ -153,19 +159,25 @@ export default function Login() {
           <h1 className="font-display text-3xl font-extrabold text-navy-700 mb-1.5">Log in</h1>
           <p className="text-sm text-navy-500 mb-7">Choose your role to continue.</p>
 
-          {/* Role switcher */}
-          <div className="flex bg-cream-100 p-1.5 rounded-2xl mb-7 gap-1">
+          {/* Role switcher.
+              flex-wrap with a 6rem basis rather than three rigid columns: the
+              three roles sit on one line at every ordinary width, and once the
+              row genuinely cannot hold them — a zoomed-in browser, a very
+              narrow phone — a button drops to a second line instead of
+              overflowing the card. Wrapping keeps every label readable, which
+              truncating to "Admi…" would not. */}
+          <div className="flex flex-wrap bg-cream-100 p-1.5 rounded-2xl mb-7 gap-1">
             {Object.entries(ROLES).map(([key, r]) => (
               <button
                 key={key}
                 type="button"
                 onClick={() => { setRole(key); setErrorMsg(''); }}
-                className={`flex-1 flex items-center justify-center gap-1.5 py-2.5 px-2 rounded-xl text-sm font-bold transition-all ${role === key
+                className={`flex-1 basis-24 flex items-center justify-center gap-1.5 py-2.5 px-2 rounded-xl text-sm font-bold transition-all ${role === key
                   ? `bg-white shadow-pop ${r.accent}`
                   : 'text-navy-400 hover:text-navy-600'
                   }`}
               >
-                <r.icon className="w-4 h-4" />
+                <r.icon className="w-4 h-4 shrink-0" />
                 {r.label}
               </button>
             ))}

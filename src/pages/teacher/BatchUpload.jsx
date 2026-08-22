@@ -1186,7 +1186,11 @@ export default function BatchUpload() {
 
       {/* ── Class-wide AI check ── */}
       {(aiPlan?.ready > 0 || aiJob) && (
-        <div className="tg-above-dock fixed bottom-0 left-0 right-0 z-40 border-t border-slate-200 bg-white/95 backdrop-blur px-4 pt-3 shadow-[0_-4px_16px_rgba(15,23,42,0.08)]">
+        /* md:left-64 — the width of the teacher sidebar, same as ScoreEntry's
+           bar. Spanning the full viewport instead put this over the rail's
+           account block, which is where Sign Out lives on desktop: the way out
+           of the app was covered for as long as papers were waiting. */
+        <div className="tg-above-dock fixed bottom-0 left-0 right-0 md:left-64 z-40 border-t border-slate-200 bg-white/95 backdrop-blur px-4 pt-3 shadow-[0_-4px_16px_rgba(15,23,42,0.08)]">
           <div className="max-w-5xl mx-auto">
             {/* Running */}
             {aiJob?.state === 'running' ? (

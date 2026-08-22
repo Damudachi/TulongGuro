@@ -383,6 +383,29 @@ const DEPED_GRADE6_ENGLISH_TOPICS = [
  */
 const TERM_LAST_WEEK = { 1: 13, 2: 26 };
 
+/**
+ * A curriculum lesson's name, with its week number said once.
+ *
+ * Every screen that lists a lesson writes "Week 3: " in front of its title, and
+ * extracted curriculum documents routinely carry the week in the title too — so
+ * the two combined into "Week 3: Week 3: Figures of Speech". The leading week is
+ * dropped only when it is the same number the lesson records: "Week 1: Week 2
+ * review" is a week-1 lesson about week 2, not a duplicate.
+ *
+ * Mirrors lessonDisplayName in src/utils/topics.js.
+ */
+function lessonDisplayName(lesson) {
+  const title = String(lesson?.title ?? '').trim();
+  const week = parseInt(lesson?.weekNumber, 10);
+  if (!Number.isFinite(week) || week < 1) return title;
+  // (?![0-9]) so "Week 1" does not match the start of "Week 12", which would
+  // leave a title of "2: ..." behind.
+  const stripped = title
+    .replace(new RegExp(`^week\\s*0*${week}(?![0-9])\\s*[:.)\\-–—]*\\s*`, 'i'), '')
+    .trim();
+  return stripped ? `Week ${week}: ${stripped}` : `Week ${week}`;
+}
+
 /** The term a school week most likely falls in, or null if it can't be placed. */
 function termForWeek(week) {
   const n = parseInt(week, 10);
@@ -561,6 +584,7 @@ module.exports = {
   parseTopicIds,
   formatTopicIds,
   termForWeek,
+  lessonDisplayName,
   weeksForWeekRef,
   LESSON_TOPIC_PREFIX,
   isLessonTopicId,

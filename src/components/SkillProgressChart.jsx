@@ -31,7 +31,16 @@ function CustomTooltip({ active, payload, label }) {
       {acts.length === 1 && (
         <>
           <p className="font-bold text-navy-600 leading-snug">{acts[0].title}</p>
-          {acts[0].date && <p className="text-navy-400 font-semibold mb-1.5">{fmtDate(acts[0].date)}</p>}
+          {(acts[0].date || acts[0].papers > 1) && (
+            <p className="text-navy-400 font-semibold mb-1.5">
+              {/* On a class chart the point holds every paper for that
+                  activity, so say how many it is averaging — a bare
+                  percentage looks like one child's mark. */}
+              {acts[0].papers > 1 && `${acts[0].papers} papers`}
+              {acts[0].papers > 1 && acts[0].date && ' · '}
+              {fmtDate(acts[0].date)}
+            </p>
+          )}
         </>
       )}
       {acts.length > 1 && (

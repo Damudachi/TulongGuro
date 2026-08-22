@@ -3,8 +3,9 @@ import { useNavigate, useSearchParams, useParams, Link } from 'react-router-dom'
 import { ArrowLeft, CheckCircle2, Plus, Camera, Users, Upload, FileText, X, Trash2, Loader2, Save, PenLine, Medal } from 'lucide-react';
 import { API_URL, apiFetch } from '../../config';
 import { ACTIVITY_TYPES } from '../../constants/activityTypes';
-import { parseTopicIds, formatTopicIds, lessonTopicId, lessonIdFromTopicId, isLessonTopicId, termForWeek, readCompetencies } from '../../utils/topics';
+import { parseTopicIds, formatTopicIds, lessonTopicId, lessonIdFromTopicId, isLessonTopicId, termForWeek, readCompetencies, lessonDisplayName } from '../../utils/topics';
 import { showAlert } from '../../utils/dialog';
+import { todayInPH } from '../../utils/deadlines';
 import {
   badgeLook, BADGE_ICON_KEYS, BADGE_COLOR_KEYS,
   DEFAULT_BADGE_ICON, DEFAULT_BADGE_COLOR,
@@ -376,7 +377,7 @@ export default function ActivityBuilder() {
   // where that decision is made and it is theirs alone; see toggleTopic.
   const coverageOptions = classLessons.map(l => ({
     id: lessonTopicId(l.id),
-    name: l.weekNumber ? `Week ${l.weekNumber}: ${l.title}` : l.title,
+    name: lessonDisplayName(l),
     detail: null,
     term: termForWeek(l.weekNumber),
     competencies: readCompetencies(l.competencies),
@@ -1614,6 +1615,10 @@ export default function ActivityBuilder() {
             <label className="block text-sm font-medium text-slate-700 mb-1">
               Deadline {form.submissionMode === 'STUDENT_SUBMIT' && <span className="text-red-500">*</span>}
             </label>
+            {/* min: Philippine today, not UTC today — before 8 AM in Manila the
+                two are different days, and the UTC one let a teacher setting up
+                before class pick a due date that had already passed. The quick
+                edit in ClassHub uses the same floor. */}
             <input type="date" value={form.deadline}
               onChange={e => {
                 const deadline = e.target.value;
@@ -1622,7 +1627,7 @@ export default function ActivityBuilder() {
                 // combination the server will silently discard anyway.
                 setForm(f => ({ ...f, deadline, lateUntil: f.lateUntil && deadline && f.lateUntil < deadline ? '' : f.lateUntil }));
               }}
-              min={form.submissionMode === 'STUDENT_SUBMIT' ? new Date().toISOString().split('T')[0] : undefined}
+              min={form.submissionMode === 'STUDENT_SUBMIT' ? todayInPH() : undefined}
               required={form.submissionMode === 'STUDENT_SUBMIT'}
               className="w-full px-4 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-brand-navy outline-none" />
             {form.submissionMode === 'STUDENT_SUBMIT' && (

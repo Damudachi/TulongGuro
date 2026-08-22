@@ -6,6 +6,7 @@ import { ACTIVITY_TYPES } from '../../constants/activityTypes';
 import { useRubricDrafts } from '../../utils/useRubricDrafts';
 import { RubricDraftCard, RubricDraftButtons } from '../../components/RubricDrafts';
 import CurriculumEditor from '../../components/CurriculumEditor';
+import { lessonDisplayName } from '../../utils/topics';
 
 import { showAlert, showConfirm } from '../../utils/dialog';
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
@@ -285,7 +286,7 @@ export default function AdminCurriculum() {
                           <div key={l.id} className="flex items-start gap-3 bg-slate-50 border border-slate-200 rounded-lg p-3">
                             <div className="flex-1 min-w-0">
                               <p className="text-sm font-semibold text-brand-slate">
-                                {l.weekNumber ? `Week ${l.weekNumber}: ` : ''}{l.title}
+                                {lessonDisplayName(l)}
                               </p>
                               {l.description && <p className="text-xs text-slate-500 mt-0.5 leading-relaxed">{l.description}</p>}
                               <div className="flex items-center gap-2 mt-1.5">

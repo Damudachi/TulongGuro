@@ -45,7 +45,7 @@ const {
   cellToText, extractRoster, readBirthday,
   looksLikeAName, looksLikeAHeaderRow, composeName, withSurnameComma, tidyRosterEntry,
 } = require('./rosterSheet');
-const { getAllTopics, getTopicById, getTopicsAIGuidance, parseTopicIds, formatTopicIds, lessonIdFromTopicId, lessonIdsFromTopics, termForWeek } = require('./depedTopics');
+const { getAllTopics, getTopicById, getTopicsAIGuidance, parseTopicIds, formatTopicIds, lessonIdFromTopicId, lessonIdsFromTopics, termForWeek, lessonDisplayName } = require('./depedTopics');
 // getRubricTemplateById is gone with the grader's topic-recommended rubric
 // tier: a built-in sample is something a teacher may choose, never something
 // the system applies on their behalf.
@@ -11618,7 +11618,10 @@ app.post('/api/student/:studentId/badges/celebrated', async (req, res) => {
 // flat list of GRADED submissions (each with rubricData + activity.rubric /
 // activity.classLesson.defaultRubric included) and computes the curriculum-
 // aligned 4-skill cumulative mastery timeline described in skillTaxonomy.js.
-function computeSkillProgress(submissions) {
+//
+// `perActivity` decides what one point on the line is — see the grouping note
+// below. Off for one learner, on for anything pooled across a class.
+function computeSkillProgress(submissions, { perActivity = false } = {}) {
   // Sort by best-available grading timestamp (gradedAt, falling back to updatedAt for legacy rows)
   // and drop submissions with no scorable rubric data (e.g. legacy non-array
   // rubricData shapes) — otherwise they'd occupy an empty point on the
@@ -11640,6 +11643,33 @@ function computeSkillProgress(submissions) {
   if (!withTimestamp.length) {
     return { hasData: false, weeks: [], series: {} };
   }
+
+  // ── What one point on the line is ──
+  //
+  // On one learner's chart a submission and an activity are the same thing, so
+  // a point per paper reads as a point per activity. Pooled across a class they
+  // are not the same at all: 21 learners times 15 activities drew 315 points —
+  // the same activity re-plotted once for every paper in the pile, an x-axis
+  // counting to 315 for a term with 15 pieces of work in it, and a "dip at 47"
+  // no teacher could trace back to anything they set.
+  //
+  // Grouped, a class point is the activity: every paper for it folded into the
+  // running totals together, plotted once, at the moment its first paper was
+  // marked. Fifteen activities graded, fifteen dots.
+  const units = perActivity
+    ? (() => {
+        const groups = new Map();
+        for (const { sub, ts } of withTimestamp) {
+          // A submission with no activityId is its own group rather than
+          // sharing one with every other orphan.
+          const key = sub.activityId || `submission:${sub.id}`;
+          const existing = groups.get(key);
+          if (!existing) groups.set(key, { ts, subs: [sub] });
+          else existing.subs.push(sub); // withTimestamp is sorted, so `ts` is already the earliest
+        }
+        return [...groups.values()].sort((a, b) => new Date(a.ts) - new Date(b.ts));
+      })()
+    : withTimestamp.map(({ sub, ts }) => ({ ts, subs: [sub] }));
 
   // Resolve each activity's rubric criteria name -> description map (cached per activity's rubric JSON)
   const criteriaMapCache = new Map();
@@ -11665,12 +11695,18 @@ function computeSkillProgress(submissions) {
   // mode collapses to a single point (a dot, no line). So: bucket per-activity
   // until the graded history actually spreads across a few distinct weeks,
   // then switch to the coarser weekly rollup for a cleaner long-term trend.
-  const firstTs = new Date(withTimestamp[0].ts).getTime();
+  //
+  // A grouped class chart never takes the weekly rollup. That rollup exists to
+  // keep a long history from crowding the axis, and grouping has already capped
+  // the point count at the number of activities the teacher actually set — the
+  // very thing they are looking for on this chart. Rolling those up by week
+  // would hide activities inside each other again for no gain in readability.
+  const firstTs = new Date(units[0].ts).getTime();
   const MS_WEEK = 7 * 24 * 60 * 60 * 1000;
   const rawWeekOf = ts => Math.floor((new Date(ts).getTime() - firstTs) / MS_WEEK);
-  const distinctRawWeeks = [...new Set(withTimestamp.map(x => rawWeekOf(x.ts)))].sort((a, b) => a - b);
+  const distinctRawWeeks = [...new Set(units.map(u => rawWeekOf(u.ts)))].sort((a, b) => a - b);
   const WEEKLY_MODE_MIN_WEEKS = 4;
-  const mode = distinctRawWeeks.length >= WEEKLY_MODE_MIN_WEEKS ? 'week' : 'activity';
+  const mode = !perActivity && distinctRawWeeks.length >= WEEKLY_MODE_MIN_WEEKS ? 'week' : 'activity';
 
   const skillIds = CURRICULUM_SKILLS.map(s => s.id);
   const running = {};
@@ -11709,15 +11745,33 @@ function computeSkillProgress(submissions) {
 
   /** Activities folded in since the last snapshot — one in activity mode, possibly several in a week. */
   let pending = [];
-  function record(sub, ts) {
-    const skills = accumulate(sub);
+  /**
+   * Fold one unit — a single paper, or every paper for one activity — into the
+   * running totals and describe it for the tooltip and the activity list.
+   *
+   * `percent` is the mean of the marks in the unit, which for a grouped unit is
+   * the class average on that activity. `papers` says how many that mean is
+   * over, so a point built from 21 papers does not read as one child's score.
+   */
+  function record(unit) {
+    const skills = new Set();
+    const percents = [];
+    for (const sub of unit.subs) {
+      accumulate(sub).forEach(id => skills.add(id));
+      const mark = sub.hitlScore ?? sub.aiScore;
+      if (typeof mark === 'number') percents.push(mark);
+    }
+    const first = unit.subs[0];
     pending.push({
-      submissionId: sub.id,
-      activityId: sub.activityId,
-      title: sub.activity?.title || 'Untitled activity',
-      date: ts,
-      percent: sub.hitlScore ?? sub.aiScore ?? null,
-      skills,
+      // Only meaningful when the unit is one paper; a grouped point is about the
+      // activity, and the list below the chart keys off activityId for those.
+      submissionId: unit.subs.length === 1 ? first.id : null,
+      activityId: first.activityId,
+      title: first.activity?.title || 'Untitled activity',
+      date: unit.ts,
+      percent: percents.length ? percents.reduce((a, b) => a + b, 0) / percents.length : null,
+      papers: unit.subs.length,
+      skills: [...skills],
     });
     return pending[pending.length - 1];
   }
@@ -11734,13 +11788,13 @@ function computeSkillProgress(submissions) {
   if (mode === 'week') {
     const weekIndexMap = new Map(distinctRawWeeks.map((rw, i) => [rw, i + 1]));
     let currentWeekIdx = null;
-    for (const { sub, ts } of withTimestamp) {
-      const weekIdx = weekIndexMap.get(rawWeekOf(ts));
+    for (const unit of units) {
+      const weekIdx = weekIndexMap.get(rawWeekOf(unit.ts));
       if (currentWeekIdx !== null && weekIdx !== currentWeekIdx) {
         snapshot(currentWeekIdx, `Week ${currentWeekIdx}`);
       }
       currentWeekIdx = weekIdx;
-      record(sub, ts);
+      record(unit);
     }
     if (currentWeekIdx !== null) snapshot(currentWeekIdx, `Week ${currentWeekIdx}`);
   } else {
@@ -11754,8 +11808,8 @@ function computeSkillProgress(submissions) {
     // glance and matches the numbered activity list under the chart, so the eye
     // goes straight from a dip to the row that caused it. The full title and
     // date live in the tooltip and that list.
-    withTimestamp.forEach(({ sub, ts }, i) => {
-      record(sub, ts);
+    units.forEach((unit, i) => {
+      record(unit);
       snapshot(i + 1, `Activity ${i + 1}`);
     });
   }
@@ -11805,7 +11859,9 @@ app.get('/api/teacher/:teacherId/skill-progress', async (req, res) => {
       where: { status: 'GRADED', rubricData: { not: null }, activity: { class: classWhere } },
       include: { activity: { select: SKILL_PROGRESS_ACTIVITY_SELECT } }
     });
-    const result = computeSkillProgress(submissions);
+    // One point per activity, not per paper — see the grouping note in
+    // computeSkillProgress. A class timeline is about the work the teacher set.
+    const result = computeSkillProgress(submissions, { perActivity: true });
     res.json({ success: true, skills: CURRICULUM_SKILLS, ...result });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
@@ -11846,7 +11902,9 @@ app.get('/api/teacher/:teacherId/section/:sectionId/skill-progress', async (req,
       },
       include: { activity: { select: SKILL_PROGRESS_ACTIVITY_SELECT } }
     });
-    const result = computeSkillProgress(submissions);
+    // Pooled across a section, so grouped per activity for the same reason as
+    // the Class Insights route above.
+    const result = computeSkillProgress(submissions, { perActivity: true });
     res.json({ success: true, skills: CURRICULUM_SKILLS, ...result });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
@@ -12899,7 +12957,7 @@ app.get('/api/student/:studentId/analytics', async (req, res) => {
       });
       for (const l of lessons) {
         lessonNames.set(l.id, {
-          name: l.weekNumber ? `Week ${l.weekNumber}: ${l.title}` : l.title,
+          name: lessonDisplayName(l),
           // Lessons carry a week, never a term — see termForWeek, which is a
           // best guess and is why this is derived rather than stored.
           term: termForWeek(l.weekNumber),
