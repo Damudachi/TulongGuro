@@ -826,6 +826,20 @@ model AiRequestLog {
   /// Truncated provider message on failure. Provider errors describe the
   /// request, not the paper, so nothing about a learner reaches this column.
   detail    String?
+  /// Approximate bytes of the outbound payload (prompt text + decoded inline
+  /// image), computed from the same `parts` array on every attempt of a call,
+  /// success or failure. Null on rows from before this column existed, and on
+  /// the SELFCHECK probe, which bypasses the normal call path entirely.
+  requestBytes    Int?
+  /// Bytes of the raw JSON text response. Null on failure (there is no
+  /// response to measure) and on a response whose candidate carries no text
+  /// (e.g. blocked by the provider's own safety filter).
+  responseBytes   Int?
+  /// Token counts straight from the provider's usageMetadata. Null on failure
+  /// and wherever the SDK/provider didn't return usage data for that call.
+  promptTokens    Int?
+  candidateTokens Int?
+  totalTokens     Int?
   createdAt DateTime @default(now())
 
   @@index([createdAt])

@@ -1553,19 +1553,60 @@ function logAiRequest(row) {
   const outcome = row.outcome || (row.ok ? 'OK' : 'ERROR');
   const detail = row.detail ? String(row.detail).slice(0, 300) : null;
 
+  const requestBytes = row.requestBytes ?? null;
+  const responseBytes = row.responseBytes ?? null;
+  const promptTokens = row.promptTokens ?? null;
+  const candidateTokens = row.candidateTokens ?? null;
+  const totalTokens = row.totalTokens ?? null;
+
   // Emitted synchronously, independent of the database write below, so the
   // dev metrics stream reflects a request the instant it finishes rather than
   // waiting on a round trip to Postgres.
   aiMetricsEvents.emit('metric', {
     type: 'ai_request', purpose, model, attempt, latencyMs, ok, outcome, detail,
+    requestBytes, responseBytes, promptTokens, candidateTokens, totalTokens,
     createdAt: new Date().toISOString(),
   });
 
   try {
     prisma.aiRequestLog.create({
-      data: { purpose, model, attempt, latencyMs, ok, outcome, detail },
+      data: { purpose, model, attempt, latencyMs, ok, outcome, detail,
+        requestBytes, responseBytes, promptTokens, candidateTokens, totalTokens },
     }).catch(() => {});
   } catch { /* never let observation break grading */ }
+}
+
+/**
+ * Approximate size, in bytes, of what a call to generateContent() actually
+ * puts on the wire — text as UTF-8, inline images decoded back out of base64
+ * (the wire form is ~33% larger than this, since base64 itself is inflation,
+ * but the decoded size is the one a human means by "how big was the image").
+ *
+ * Every grading/extract/parse call passes a bare parts array (`[prompt,
+ * {inlineData}]`); the assist caller passes the SDK's other accepted shape,
+ * `{contents: [{role, parts}], generationConfig}` — both are handled here so
+ * this can sit at the top of generateContentWithRetry regardless of which
+ * shape the caller used, rather than needing every call site to normalize
+ * first.
+ */
+function payloadBytesOf(parts) {
+  const list = Array.isArray(parts)
+    ? parts
+    : Array.isArray(parts?.contents)
+      ? parts.contents.flatMap(c => c?.parts || [])
+      : [];
+  let total = 0;
+  for (const part of list) {
+    if (typeof part === 'string') {
+      total += Buffer.byteLength(part, 'utf8');
+    } else if (typeof part?.text === 'string') {
+      total += Buffer.byteLength(part.text, 'utf8');
+    } else if (part?.inlineData?.data) {
+      const b64 = part.inlineData.data.replace(/=+$/, '');
+      total += Math.ceil((b64.length * 3) / 4);
+    }
+  }
+  return total;
 }
 
 /** Which bucket a failed call belongs in, for the observation log. */
@@ -1587,6 +1628,9 @@ function outcomeOf(cls) {
 // call site. `purpose` and `model` are passed in by callers that know them.
 async function generateContentWithRetry(genModel, parts, { retries = 2, baseDelayMs = 800, poolEntry = null, purpose = 'OTHER', modelLabel = null } = {}) {
   let lastErr;
+  // Same parts on every retry of the same logical call, so this is computed
+  // once rather than re-walked per attempt.
+  const requestBytes = payloadBytesOf(parts);
   for (let attempt = 0; attempt <= retries; attempt++) {
     // Started before the concurrency slot is acquired: queueing behind other
     // papers is part of the wait a teacher actually sits through, and a figure
@@ -1597,9 +1641,19 @@ async function generateContentWithRetry(genModel, parts, { retries = 2, baseDela
       try {
         const result = await genModel.generateContent(parts);
         if (poolEntry) poolEntry.used++;
+        // Both come off the same resolved response object; usageMetadata is
+        // absent on some SDK versions/error paths, so this stays best-effort.
+        const response = await result.response;
+        const usage = response?.usageMetadata || {};
+        let responseBytes = null;
+        try { responseBytes = Buffer.byteLength(response.text(), 'utf8'); } catch { /* non-text candidate, e.g. blocked response */ }
         logAiRequest({
           purpose, model: poolEntry?.label || modelLabel, attempt,
           latencyMs: Date.now() - startedAt, ok: true, outcome: 'OK',
+          requestBytes, responseBytes,
+          promptTokens: usage.promptTokenCount ?? null,
+          candidateTokens: usage.candidatesTokenCount ?? null,
+          totalTokens: usage.totalTokenCount ?? null,
         });
         return result;
       } finally {
@@ -1611,7 +1665,7 @@ async function generateContentWithRetry(genModel, parts, { retries = 2, baseDela
       logAiRequest({
         purpose, model: poolEntry?.label || modelLabel, attempt,
         latencyMs: Date.now() - startedAt, ok: false,
-        outcome: outcomeOf(cls), detail: cls.message,
+        outcome: outcomeOf(cls), detail: cls.message, requestBytes,
       });
       if (poolEntry) {
         poolEntry.failed++;
@@ -2691,7 +2745,11 @@ app.get('/api/dev/ai-metrics/recent', devRateLimit, async (req, res) => {
     const rows = await prisma.aiRequestLog.findMany({
       orderBy: { createdAt: 'desc' },
       take: limit,
-      select: { id: true, purpose: true, model: true, attempt: true, latencyMs: true, ok: true, outcome: true, detail: true, createdAt: true },
+      select: {
+        id: true, purpose: true, model: true, attempt: true, latencyMs: true, ok: true, outcome: true, detail: true,
+        requestBytes: true, responseBytes: true, promptTokens: true, candidateTokens: true, totalTokens: true,
+        createdAt: true,
+      },
     });
     res.json({ success: true, rows });
   } catch (e) {
@@ -2707,10 +2765,20 @@ app.get('/api/dev/ai-metrics/summary', devRateLimit, async (req, res) => {
     const requests = await prisma.aiRequestLog.findMany({
       where: { createdAt: { gte: since } },
       orderBy: { createdAt: 'asc' },
-      select: { purpose: true, model: true, latencyMs: true, ok: true, outcome: true, createdAt: true },
+      select: {
+        purpose: true, model: true, latencyMs: true, ok: true, outcome: true,
+        requestBytes: true, responseBytes: true, totalTokens: true, createdAt: true,
+      },
     });
 
     const okLatencies = (rows) => rows.filter(r => r.ok).map(r => r.latencyMs).sort((a, b) => a - b);
+    /** Ignores nulls (rows from before these columns existed, or a failed call
+     *  with nothing to measure) rather than letting them drag the mean toward 0. */
+    const meanOf = (rows, field) => {
+      const vals = rows.map(r => r[field]).filter(v => v !== null && v !== undefined);
+      return vals.length ? Math.round(vals.reduce((a, b) => a + b, 0) / vals.length) : null;
+    };
+    const sumOf = (rows, field) => rows.reduce((a, r) => a + (r[field] || 0), 0);
 
     const byPurpose = {};
     for (const r of requests) {
@@ -2721,6 +2789,9 @@ app.get('/api/dev/ai-metrics/summary', devRateLimit, async (req, res) => {
       count: rows.length,
       failed: rows.filter(r => !r.ok).length,
       ...latencyStats(okLatencies(rows)),
+      meanRequestBytes: meanOf(rows, 'requestBytes'),
+      meanResponseBytes: meanOf(rows, 'responseBytes'),
+      meanTokens: meanOf(rows, 'totalTokens'),
     }));
 
     const byModel = {};
@@ -2733,6 +2804,9 @@ app.get('/api/dev/ai-metrics/summary', devRateLimit, async (req, res) => {
       count: rows.length,
       failed: rows.filter(r => !r.ok).length,
       ...latencyStats(okLatencies(rows)),
+      meanRequestBytes: meanOf(rows, 'requestBytes'),
+      meanResponseBytes: meanOf(rows, 'responseBytes'),
+      meanTokens: meanOf(rows, 'totalTokens'),
     }));
 
     // Hourly buckets for the trend chart. ISO hour strings sort lexicographically.
@@ -2755,6 +2829,10 @@ app.get('/api/dev/ai-metrics/summary', devRateLimit, async (req, res) => {
       totalRequests: requests.length,
       totalFailed: requests.filter(r => !r.ok).length,
       overall: latencyStats(okLatencies(requests)),
+      totalRequestBytes: sumOf(requests, 'requestBytes'),
+      totalResponseBytes: sumOf(requests, 'responseBytes'),
+      totalTokens: sumOf(requests, 'totalTokens'),
+      meanTokensPerRequest: meanOf(requests, 'totalTokens'),
       byPurpose: purposeSummary,
       byModel: modelSummary,
       series,

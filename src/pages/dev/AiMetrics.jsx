@@ -55,6 +55,16 @@ const fmtTime = (iso) => new Date(iso).toLocaleString('en-PH', {
   month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit',
 });
 const fmtHour = (iso) => new Date(iso).toLocaleTimeString('en-PH', { hour: 'numeric', hour12: true });
+// Decoded size of the image/prompt actually sent, not the base64 wire size —
+// see payloadBytesOf in server.js for why. Not a bandwidth measurement: this
+// is "how big", not "how fast" — see the dashboard's own note on that.
+const fmtBytes = (n) => {
+  if (n === null || n === undefined) return '—';
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(2)} MB`;
+};
+const fmtTokens = (n) => (n === null || n === undefined) ? '—' : n.toLocaleString('en-US');
 
 function StatTile({ label, value, hint, tone = 'text-navy-700' }) {
   return (
@@ -122,6 +132,11 @@ function RequestRow({ row }) {
       <td className="py-1.5 pr-3 text-slate-500 truncate max-w-[9rem]" title={row.model || ''}>{row.model || '—'}</td>
       <td className="py-1.5 pr-3 text-slate-400">{row.attempt > 0 ? `retry ${row.attempt}` : ''}</td>
       <td className="py-1.5 pr-3 font-bold text-slate-700 whitespace-nowrap">{fmtMs(row.latencyMs)}</td>
+      <td className="py-1.5 pr-3 text-slate-500 whitespace-nowrap"
+        title={row.responseBytes ? `sent ${fmtBytes(row.requestBytes)}, received ${fmtBytes(row.responseBytes)}` : `sent ${fmtBytes(row.requestBytes)}`}>
+        {fmtBytes(row.requestBytes)}
+      </td>
+      <td className="py-1.5 pr-3 text-slate-500 whitespace-nowrap">{fmtTokens(row.totalTokens)}</td>
       <td className="py-1.5 pr-3">
         <span className={cn('px-2 py-0.5 rounded-full text-[10px] font-bold', OUTCOME_BADGE[row.outcome] || 'bg-slate-200 text-slate-600')}>
           {row.outcome}
@@ -340,6 +355,15 @@ export default function AiMetrics() {
                 tone={failRate > 0.1 ? 'text-red-600' : 'text-navy-700'} hint={`${summary.totalFailed} of ${summary.totalRequests}`} />
             </div>
 
+            {/* Payload size, not bandwidth — the SDK call is one atomic
+                request/response, so upload speed can't be isolated from
+                Gemini's own thinking time. This is "how big", not "how fast". */}
+            <div className="grid grid-cols-3 gap-3 mb-4">
+              <StatTile label="Avg tokens / request" value={fmtTokens(summary.meanTokensPerRequest)} />
+              <StatTile label="Total tokens" value={fmtTokens(summary.totalTokens)} hint="this window" />
+              <StatTile label="Total payload sent" value={fmtBytes(summary.totalRequestBytes)} hint="this window" />
+            </div>
+
             {summary.totalRequests === 0 ? (
               <Card className="mb-6 text-center py-10 text-slate-400">
                 No AI requests logged in this window yet.
@@ -391,7 +415,9 @@ export default function AiMetrics() {
                           <th className="pb-1.5 pr-2">Count</th>
                           <th className="pb-1.5 pr-2">Failed</th>
                           <th className="pb-1.5 pr-2">p50</th>
-                          <th className="pb-1.5">p95</th>
+                          <th className="pb-1.5 pr-2">p95</th>
+                          <th className="pb-1.5 pr-2">Avg tokens</th>
+                          <th className="pb-1.5">Avg payload</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -406,7 +432,9 @@ export default function AiMetrics() {
                             <td className="py-1.5 pr-2 text-slate-600">{p.count}</td>
                             <td className="py-1.5 pr-2 text-slate-600">{p.failed}</td>
                             <td className="py-1.5 pr-2 text-slate-600">{fmtMs(p.p50)}</td>
-                            <td className="py-1.5 text-slate-600">{fmtMs(p.p95)}</td>
+                            <td className="py-1.5 pr-2 text-slate-600">{fmtMs(p.p95)}</td>
+                            <td className="py-1.5 pr-2 text-slate-600">{fmtTokens(p.meanTokens)}</td>
+                            <td className="py-1.5 text-slate-600">{fmtBytes(p.meanRequestBytes)}</td>
                           </tr>
                         ))}
                       </tbody>
@@ -426,7 +454,9 @@ export default function AiMetrics() {
                             <th className="pb-1.5 pr-2">Count</th>
                             <th className="pb-1.5 pr-2">Failed</th>
                             <th className="pb-1.5 pr-2">p50</th>
-                            <th className="pb-1.5">p95</th>
+                            <th className="pb-1.5 pr-2">p95</th>
+                            <th className="pb-1.5 pr-2">Avg tokens</th>
+                            <th className="pb-1.5">Avg payload</th>
                           </tr>
                         </thead>
                         <tbody>
@@ -436,7 +466,9 @@ export default function AiMetrics() {
                               <td className="py-1.5 pr-2 text-slate-600">{m.count}</td>
                               <td className="py-1.5 pr-2 text-slate-600">{m.failed}</td>
                               <td className="py-1.5 pr-2 text-slate-600">{fmtMs(m.p50)}</td>
-                              <td className="py-1.5 text-slate-600">{fmtMs(m.p95)}</td>
+                              <td className="py-1.5 pr-2 text-slate-600">{fmtMs(m.p95)}</td>
+                              <td className="py-1.5 pr-2 text-slate-600">{fmtTokens(m.meanTokens)}</td>
+                              <td className="py-1.5 text-slate-600">{fmtBytes(m.meanRequestBytes)}</td>
                             </tr>
                           ))}
                         </tbody>
@@ -460,6 +492,8 @@ export default function AiMetrics() {
                         <th className="pb-1.5 pr-3">Model</th>
                         <th className="pb-1.5 pr-3"></th>
                         <th className="pb-1.5 pr-3">Latency</th>
+                        <th className="pb-1.5 pr-3">Payload</th>
+                        <th className="pb-1.5 pr-3">Tokens</th>
                         <th className="pb-1.5 pr-3">Outcome</th>
                         <th className="pb-1.5">Detail</th>
                       </tr>
