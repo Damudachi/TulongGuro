@@ -1339,14 +1339,34 @@ const UNGRADED_RESET = {
 };
 
 /**
- * Retention deadline for a submission: exactly one calendar year past the end of
- * the school year the work belongs to.
+ * How long a submission is kept after the school year it belongs to closes.
+ *
+ * Six months. The one number the whole policy is expressed in, so changing the
+ * period is this line and not date arithmetic scattered across the file.
+ *
+ * Shorter than the year this used to be, and deliberately: what is retained here
+ * is a photograph of a child's handwritten paper, which is personal data under
+ * the Data Privacy Act and is worth keeping only for as long as a grade could be
+ * queried. The *grade* is not what this protects — see the note on
+ * /api/admin/purge-grades about what survives a purge.
+ */
+const RETENTION_MONTHS = 6;
+
+/**
+ * Retention deadline for a submission: RETENTION_MONTHS past the end of the
+ * school year the work belongs to.
  *
  * School years are stored as free text ("2024-2025"), so the end year is the
  * second number when there is one and the only number otherwise. Philippine
  * school years end in the calendar year named second — 2024-2025 ends mid-2025 —
- * and DepEd treats 31 March as the close of the year, so retention runs to
- * 31 March of the following year.
+ * and DepEd treats 31 March as the close of the year, so the window runs from
+ * there: 2024-2025 work is kept until 30 September 2025.
+ *
+ * Anchored to the school year rather than to each upload on purpose. Counting
+ * six months from the submission itself would delete the first term's papers
+ * while the class that produced them is still running, and a teacher opening
+ * last term's work to answer a grade query would find the paper gone and the
+ * mark unexplainable. A year's work expires together, after the year is over.
  *
  * Returns null for an unparseable school year rather than guessing: a wrong
  * retainUntil either deletes records early or keeps them past what the Data
@@ -1357,8 +1377,12 @@ function computeRetainUntil(schoolYear) {
   if (!years || years.length === 0) return null;
   const endYear = Number(years[years.length - 1]);
   if (!Number.isFinite(endYear)) return null;
-  // Month is 0-indexed: 2 = March. Day 31, one year past the school year's end.
-  return new Date(Date.UTC(endYear + 1, 2, 31, 23, 59, 59));
+  // Months are 0-indexed and March is 2, so the month the window closes in is
+  // 2 + RETENTION_MONTHS. Day 0 of the month after that is the last day of it —
+  // which keeps the deadline on a month end whatever the period is set to.
+  // Naive month arithmetic would not: 31 March plus six months lands on a
+  // 30-day September and rolls forward to 1 October.
+  return new Date(Date.UTC(endYear, 2 + RETENTION_MONTHS + 1, 0, 23, 59, 59));
 }
 
 /** Look up a submission's retention deadline from its activity's class. */
@@ -13888,7 +13912,8 @@ app.get('/api/teacher/:teacherId/gradebook/export', async (req, res) => {
 
 // ─────────────────────────────────────────
 // GRADE RETENTION — Admin Report
-// Retention policy: grades are retained for at least 1 year after school year end.
+// Retention policy: submissions are kept RETENTION_MONTHS past the end of the
+// school year they belong to — see computeRetainUntil for the exact date.
 // This endpoint lists submissions grouped by retention status.
 // No auto-deletion — admin reviews and decides.
 // ─────────────────────────────────────────
@@ -13927,6 +13952,10 @@ app.get('/api/admin/retention-report', async (req, res) => {
 
     res.json({
       success: true,
+      // The policy the dates below were computed under, so a report read months
+      // from now is not silently reinterpreted against whatever the constant
+      // says by then.
+      retentionMonths: RETENTION_MONTHS,
       summary: {
         totalSubmissions: submissions.length,
         activeRetention: active.length,
@@ -13943,18 +13972,30 @@ app.get('/api/admin/retention-report', async (req, res) => {
 
 /**
  * Backfill retainUntil for submissions saved before it was computed at write
- * time. Idempotent and safe to re-run: it only touches rows where the field is
- * still null, so an admin who has manually set a date keeps it.
+ * time. Idempotent and safe to re-run: by default it only touches rows where the
+ * field is still null, so an admin who has manually set a date keeps it.
  *
  * Without this the retention report only ever sees submissions created after
  * this deploy, which would read as "nothing to retain" on a database full of
  * real student work.
+ *
+ * ?recompute=true additionally rewrites rows that already have a date, which is
+ * how a change to RETENTION_MONTHS reaches work already in the database.
+ * computeRetainUntil runs at write time, so without this a shortened window
+ * would apply only to submissions uploaded after the deploy and every existing
+ * paper would sit under the old, longer one — the policy would be true of the
+ * code and false of the data.
+ *
+ * Opt-in rather than the default because it is not reversible from here: the
+ * previous deadlines are not recorded anywhere, and a hand-set date (a school
+ * under an active dispute, say) is overwritten along with the rest.
  */
 app.post('/api/admin/backfill-retention', async (req, res) => {
   try {
     requirePlatformKey(req);
+    const recompute = req.query.recompute === 'true';
     const pending = await prisma.submission.findMany({
-      where: { retainUntil: null },
+      where: recompute ? {} : { retainUntil: null },
       select: { id: true, activity: { select: { class: { select: { schoolYear: true } } } } }
     });
 
@@ -13981,6 +14022,10 @@ app.post('/api/admin/backfill-retention', async (req, res) => {
 
     res.json({
       success: true,
+      // Says which of the two jobs actually ran, so a caller who forgot the
+      // flag can see that the existing rows were left alone.
+      mode: recompute ? 'recompute-all' : 'fill-missing-only',
+      retentionMonths: RETENTION_MONTHS,
       scanned: pending.length,
       updated,
       // Rows whose class has an unparseable schoolYear. Reported rather than
