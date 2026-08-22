@@ -49,7 +49,11 @@ const TICK_COLOR = 'var(--tg-neutral-500, #5F6B8F)';
 
 const fmtMs = (ms) => (ms === null || ms === undefined) ? '—' : ms < 1000 ? `${Math.round(ms)}ms` : `${(ms / 1000).toFixed(1)}s`;
 const fmtPct = (n) => (n === null || n === undefined) ? '—' : `${Math.round(n * 100)}%`;
-const fmtTime = (iso) => new Date(iso).toLocaleTimeString('en-PH', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+// Live rows can span the 7-day range, so the date matters, not just the time
+// of day — "10:45:03" alone reads as today even when it's from three days ago.
+const fmtTime = (iso) => new Date(iso).toLocaleString('en-PH', {
+  month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit',
+});
 const fmtHour = (iso) => new Date(iso).toLocaleTimeString('en-PH', { hour: 'numeric', hour12: true });
 
 function StatTile({ label, value, hint, tone = 'text-navy-700' }) {
