@@ -182,12 +182,12 @@ describe('the skills timeline narrows to one subject', () => {
     });
   });
 
-  it('reads the whole record when no subject is named', async () => {
-    // The same endpoint draws the chart on the learner's own dashboard, where
-    // their whole record is the point — so the filter has to stay optional.
+  it('reads every subject when none is named, still within the caller\'s classes', async () => {
+    // The subject filter is optional — the same chart is drawn on the learner's
+    // own dashboard, where their whole record is the point.
     await get(`/api/student/${STUDENT}/skill-progress`);
 
-    expect(where().activity).toBeUndefined();
+    expect(where().activity.class.subject).toBeUndefined();
     expect(where().studentId).toBe(STUDENT);
   });
 
@@ -199,5 +199,54 @@ describe('the skills timeline narrows to one subject', () => {
 
     expect(where().rubricData).toEqual({ not: null });
     expect(where().status).toBe('GRADED');
+  });
+});
+
+describe('the skills timeline shows a teacher only their own classes\' work', () => {
+  const where = () => prismaFake.submission.findMany.mock.calls[0][0].where;
+
+  it('scopes a teacher to the classes they actually teach', async () => {
+    // mayReadStudent answers "may this person open this learner at all", which
+    // for staff is a school-wide yes. That is the right answer for the header
+    // and the wrong one for the work: the submissions endpoint next door is
+    // scoped to the caller's own classes for exactly this reason. Unscoped,
+    // this chart drew a Mathematics teacher a skills line built from the
+    // child's English papers, above a list that correctly held none of them.
+    await get(`/api/student/${STUDENT}/skill-progress`);
+
+    expect(where().activity.class.teacherId).toBe(TEACHER);
+  });
+
+  it('combines the class scope with the subject filter under one activity key', async () => {
+    // Both narrowings live on activity.class. Spread as two `activity` keys the
+    // second silently replaces the first — and the one that would have been
+    // dropped is the authorization scope, not the display filter.
+    await get(`/api/student/${STUDENT}/skill-progress?subject=Mathematics`);
+
+    expect(where().activity.class).toEqual({ subject: 'Mathematics', teacherId: TEACHER });
+  });
+
+  it('does not narrow a learner reading their own record', async () => {
+    // A STUDENT caller has already been proved by authorizePath to be reading
+    // their own record, and their dashboard chart is about everything they have
+    // done — scoping it to a teacher would empty it.
+    const studentToken = signToken({ id: STUDENT, role: 'STUDENT', schoolId: SCHOOL });
+    await fetch(`${baseUrl}/api/student/${STUDENT}/skill-progress`, {
+      headers: { Authorization: `Bearer ${studentToken}` },
+    });
+
+    expect(where().activity).toBeUndefined();
+    // The release gate is what applies to a learner instead: work that has been
+    // marked but not yet handed back is not theirs to read.
+    expect(where().releasedAt).toEqual({ not: null });
+  });
+
+  it('leaves an admin the whole school, which is their remit', async () => {
+    const adminToken = signToken({ id: 'admin-1', role: 'ADMIN', schoolId: SCHOOL });
+    await fetch(`${baseUrl}/api/student/${STUDENT}/skill-progress`, {
+      headers: { Authorization: `Bearer ${adminToken}` },
+    });
+
+    expect(where().activity).toBeUndefined();
   });
 });

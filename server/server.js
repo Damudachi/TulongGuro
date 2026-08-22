@@ -12331,17 +12331,33 @@ const SKILL_PROGRESS_ACTIVITY_SELECT = {
 app.get('/api/student/:studentId/skill-progress', async (req, res) => {
   try {
     if (!(await mayReadStudent(req, res, req.params.studentId))) return;
-    // Optional subject scope, so this timeline can follow the subject filter on
-    // the screen that draws it. Without it a teacher filtering a learner's
-    // record down to Mathematics still read a skills line built from every
-    // subject's work — a chart contradicting the list directly beneath it.
-    // Optional rather than required because the same chart is drawn on the
-    // learner's own dashboard, where the whole record is the point.
+    // Two narrowings, both expressed on the activity's own class — so they are
+    // built into one object rather than spread as two `activity` keys, where
+    // the second would silently replace the first.
+    //
+    // 1. WHO IS ASKING. mayReadStudent above answers "may this person open this
+    //    learner at all", which for staff is a school-wide yes. That is the
+    //    right answer for the header and the wrong one for the work: the
+    //    submissions endpoint next door is scoped to the caller's own classes
+    //    for exactly this reason — an outside teacher was reading a learner's
+    //    feedback and grades in subjects they have no part in. This chart was
+    //    not, so the same screen showed a Mathematics teacher a skills line
+    //    built from the child's English papers, above a list that correctly
+    //    held none of them. Teachers only; an admin's remit really is the whole
+    //    school, and a STUDENT caller has already been proved to be reading
+    //    their own record.
+    // 2. WHICH SUBJECT, when the screen drawing it has been filtered to one.
+    //    Optional, because the same chart is drawn on the learner's own
+    //    dashboard, where their whole record is the point.
     const { subject } = req.query;
+    const classScope = {
+      ...(subject ? { subject } : {}),
+      ...(req.auth?.role === 'TEACHER' ? { teacherId: req.auth.sub } : {}),
+    };
     const submissions = await prisma.submission.findMany({
       where: {
         studentId: req.params.studentId, status: 'GRADED', rubricData: { not: null },
-        ...(subject ? { activity: { class: { subject } } } : {}),
+        ...(Object.keys(classScope).length ? { activity: { class: classScope } } : {}),
         ...releaseFilterFor(req.auth),
       },
       include: { activity: { select: SKILL_PROGRESS_ACTIVITY_SELECT } }
