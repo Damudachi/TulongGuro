@@ -293,13 +293,30 @@ export default function ClassHub() {
             // from the deadline alone ignored lateUntil, so an activity students
             // could still submit to was labelled Closed to their teacher.
             const subWindow = submissionWindow(activity);
+            // Where the activity itself lives — the same place the button on the
+            // right goes. Clicking the card used to open the quick edit instead,
+            // which meant the ordinary act of opening an activity to work on it
+            // landed in a settings dialog: the papers were two clicks away
+            // behind a Cancel, and the destructive Delete Activity control was
+            // one mis-click from a card nobody meant to edit. The card now goes
+            // where its own button goes, and editing is asked for by name.
+            const openHref = activity.submissionMode === 'MANUAL_SCORE'
+              ? `/teacher/scores?activityId=${activity.id}&classId=${classId}`
+              : `/teacher/batch-upload?activityId=${activity.id}&classId=${classId}`;
             return (
               <div
                 key={activity.id}
                 role="button"
                 tabIndex={0}
-                onClick={() => openEditModal(activity)}
-                onKeyDown={(e) => { if (e.key === 'Enter') openEditModal(activity); }}
+                onClick={() => navigate(openHref)}
+                // Space as well as Enter: a div with role="button" gets neither
+                // for free, and a keyboard user pressing Space on what announces
+                // itself as a button would otherwise scroll the page.
+                onKeyDown={(e) => {
+                  if (e.key !== 'Enter' && e.key !== ' ') return;
+                  e.preventDefault();
+                  navigate(openHref);
+                }}
                 className="bg-white p-4 rounded-xl border border-slate-200 flex items-center justify-between hover:shadow-sm transition-shadow cursor-pointer"
               >
                 <div className="flex items-start">
@@ -369,28 +386,38 @@ export default function ClassHub() {
                     </div>
                   </div>
                 </div>
-                {activity.submissionMode === 'MANUAL_SCORE' ? (
-                  // No papers to scan — this one goes straight to the score sheet.
-                  <Link to={`/teacher/scores?activityId=${activity.id}&classId=${classId}`}
-                    onClick={(e) => e.stopPropagation()}
-                    className="shrink-0 text-sm bg-lilac-500 text-white px-3 py-1.5 rounded-md font-medium hover:bg-lilac-600 transition-colors flex items-center gap-1">
-                    <PenLine className="w-4 h-4" /> Enter Scores
-                  </Link>
-                ) : isStudentSubmit ? (
-                  <div className="flex flex-col gap-1 shrink-0">
-                    <Link to={`/teacher/batch-upload?activityId=${activity.id}&classId=${classId}`}
+                <div className="flex items-center gap-2 shrink-0">
+                  {/* Quick edit, asked for by name.
+                      Secondary styling and second in the row: opening an
+                      activity to grade it is the everyday act, changing its
+                      title or due date is the occasional one, and the two
+                      should not look equally likely. */}
+                  <button
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); openEditModal(activity); }}
+                    title={`Edit "${activity.title}"`}
+                    className="text-sm border border-slate-200 text-slate-600 px-3 py-1.5 rounded-md font-medium hover:bg-slate-50 hover:text-brand-slate transition-colors flex items-center gap-1">
+                    <PenLine className="w-4 h-4" /> Edit activity
+                  </button>
+
+                  {/* Still a real link, so it keeps middle-click and
+                      open-in-new-tab even though the card around it now goes to
+                      the same place. */}
+                  {activity.submissionMode === 'MANUAL_SCORE' ? (
+                    // No papers to scan — this one goes straight to the score sheet.
+                    <Link to={openHref}
                       onClick={(e) => e.stopPropagation()}
-                      className="text-xs bg-brand-navy text-white px-3 py-1.5 rounded-md font-medium hover:bg-blue-900 transition-colors flex items-center gap-1">
-                      <UploadCloud className="w-3.5 h-3.5" /> Grade & View
+                      className="text-sm bg-lilac-500 text-white px-3 py-1.5 rounded-md font-medium hover:bg-lilac-600 transition-colors flex items-center gap-1">
+                      <PenLine className="w-4 h-4" /> Enter Scores
                     </Link>
-                  </div>
-                ) : (
-                  <Link to={`/teacher/batch-upload?activityId=${activity.id}&classId=${classId}`}
-                    onClick={(e) => e.stopPropagation()}
-                    className="shrink-0 text-sm bg-brand-navy text-white px-3 py-1.5 rounded-md font-medium hover:bg-blue-900 transition-colors flex items-center gap-1">
-                    <UploadCloud className="w-4 h-4" /> Grade
-                  </Link>
-                )}
+                  ) : (
+                    <Link to={openHref}
+                      onClick={(e) => e.stopPropagation()}
+                      className="text-sm bg-brand-navy text-white px-3 py-1.5 rounded-md font-medium hover:bg-blue-900 transition-colors flex items-center gap-1">
+                      <UploadCloud className="w-4 h-4" /> {isStudentSubmit ? 'Grade & View' : 'Grade'}
+                    </Link>
+                  )}
+                </div>
               </div>
             );
           })}
@@ -424,9 +451,12 @@ export default function ClassHub() {
         <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl p-6 w-full max-w-lg shadow-xl">
             <div className="mb-4 flex justify-between items-start">
-              <div>
-                <h2 className="text-xl font-bold text-brand-slate">Assignment Details</h2>
-                <p className="text-xs text-slate-500">Update the details for this activity.</p>
+              {/* Named after the button that opens it, and says which activity
+                  it is holding — the dialog is now one of several on a list of
+                  cards, so "this activity" alone no longer identifies it. */}
+              <div className="min-w-0">
+                <h2 className="text-xl font-bold text-brand-slate">Edit activity</h2>
+                <p className="text-xs text-slate-500 truncate">{editActivity.title}</p>
               </div>
               {editActivity?._count?.submissions > 0 ? (
                 <div className="text-xs text-slate-400 font-medium px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-lg cursor-not-allowed" title="Cannot delete because students have already uploaded submissions.">
