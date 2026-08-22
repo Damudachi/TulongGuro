@@ -285,13 +285,22 @@ async function workingAverageAcrossSubjects(subs, schoolId, resolvePolicy = null
  *
  * Reads GEMINI_API_KEY and GEMINI_API_KEY1..9 (plus GOOGLE_API_KEY), so a
  * single-key deployment needs no change and a second project is one env var.
+ *
+ * Values go through envValue (hoisted; declared below with the storage config)
+ * rather than a bare trim, because these credentials are increasingly pasted
+ * into a HOST DASHBOARD rather than typed into .env — and the two want
+ * different syntax. `.env` wants GEMINI_API_KEY3="AIza…" while Render's field
+ * wants the raw value, so a key copied from one into the other arrives with
+ * its quotes attached. Trimming alone leaves `"AIza…"` as the key, which
+ * Google rejects as invalid on every call, for a reason nothing in the boot
+ * log explains — the bucket is built and counted exactly like a good one.
  */
 const aiApiKeys = (() => {
   const names = ['GEMINI_API_KEY', 'GOOGLE_API_KEY', ...Array.from({ length: 9 }, (_, i) => `GEMINI_API_KEY${i + 1}`)];
   const seen = new Set();
   const keys = [];
   for (const name of names) {
-    const value = (process.env[name] || '').trim();
+    const value = envValue(name);
     if (!value || value === 'mock' || value === 'YOUR_API_KEY' || seen.has(value)) continue;
     seen.add(value);
     keys.push({ name, value });
@@ -951,6 +960,8 @@ const gradingPool = GRADING_MODEL_IDS.flatMap(id =>
       }
     }, { timeout: GEMINI_REQUEST_TIMEOUT_MS }),
     unavailableUntil: 0,  // set when this bucket reports its *daily* quota is gone
+    restReason: null,     // 'QUOTA' | 'CREDENTIAL' — why it is resting, so an
+                          // all-dead pool can say which of the two it is
     used: 0,              // calls this bucket actually answered today
     failed: 0
   }))
@@ -963,12 +974,42 @@ let gradingPoolDay = new Date().toDateString();
  *  wasted call an hour is cheaper than staying dark until someone restarts. */
 const GEMINI_DAILY_COOLDOWN_MS = Number(process.env.GEMINI_DAILY_COOLDOWN_MS || 15 * 60 * 1000);
 
+/** How long a bucket whose CREDENTIAL was refused sits out. Deliberately much
+ *  longer than the daily-quota rest: a quota comes back by itself, a rejected
+ *  key comes back only when a person replaces it, so re-probing it every 15
+ *  minutes just spends the rate gate on a call that is known to fail. Still
+ *  bounded rather than permanent, so a key that only needed its API switched on
+ *  rejoins without a redeploy. */
+const GEMINI_CREDENTIAL_COOLDOWN_MS = Number(process.env.GEMINI_CREDENTIAL_COOLDOWN_MS || 6 * 60 * 60 * 1000);
+
+/**
+ * Rest every bucket that holds a given credential.
+ *
+ * A refused key is refused for every model it is paired with, because what
+ * Google rejected was the key — not the request. Resting only the bucket that
+ * happened to discover it leaves the siblings live, so the very next paper
+ * spends another rate-gate slot proving the same thing again, once per model.
+ * On this deployment that is the difference between a revoked key costing one
+ * wasted call and costing one per model, forever.
+ */
+function restCredential(keyName, reason, cooldownMs) {
+  const until = Date.now() + cooldownMs;
+  let rested = 0;
+  for (const entry of gradingPool) {
+    if (entry.key !== keyName || entry.unavailableUntil > until) continue;
+    entry.unavailableUntil = until;
+    entry.restReason = reason;
+    rested++;
+  }
+  return rested;
+}
+
 /** Clears the per-day counters once the calendar day turns over. */
 function rollPoolDayIfNeeded() {
   const today = new Date().toDateString();
   if (today === gradingPoolDay) return;
   gradingPoolDay = today;
-  gradingPool.forEach(e => { e.used = 0; e.failed = 0; e.unavailableUntil = 0; });
+  gradingPool.forEach(e => { e.used = 0; e.failed = 0; e.unavailableUntil = 0; e.restReason = null; });
 }
 
 // Single handles kept for the callers that are not grading (rubric extraction,
@@ -1492,6 +1533,20 @@ function classifyAiError(err) {
   const quota = /429|resource.?exhausted|exceeded your current quota|rate limit/i.test(msg);
   return {
     quota,
+    // The credential itself is refused: revoked, expired, restricted, or from a
+    // project that never enabled the Generative Language API. Matched on
+    // Google's own status strings rather than on a bare 400/403, because those
+    // numbers appear in plenty of message bodies that mean something else.
+    //
+    // This is its own category — not quota, not transient — because it is the
+    // only failure that will NEVER succeed on retry and yet says nothing about
+    // the paper, the model, or Google's health. Without it such an error lands
+    // in the generic bucket, and a pool entry holding a dead key stays in the
+    // rotation and is dialled on every subsequent paper. That was survivable
+    // when the pool held one credential the operator owned; it is not once the
+    // pool holds eight belonging to eight different people, any one of whom
+    // can revoke theirs without telling anyone.
+    credential: !quota && /api[ _-]?key[ _-]?(?:not valid|invalid|expired)|API_KEY_INVALID|API_KEY_EXPIRED|API_KEY_SERVICE_BLOCKED|PERMISSION_DENIED|permission[ _-]?denied|has not been used in project|is disabled\b|SERVICE_DISABLED|API key not valid/i.test(msg),
     // The one that cannot be waited out inside a single request.
     dailyQuota: quota && /PerDay|per_day|requests per day/i.test(msg),
     // "Request aborted when fetching ..." is what the SDK raises when
@@ -1613,6 +1668,7 @@ function payloadBytesOf(parts) {
 function outcomeOf(cls) {
   if (cls.dailyQuota) return 'DAILY_QUOTA';
   if (cls.quota) return 'QUOTA';
+  if (cls.credential) return 'BAD_CREDENTIAL';
   if (cls.badImage) return 'BAD_IMAGE';
   if (cls.transient) return 'TRANSIENT';
   return 'ERROR';
@@ -1671,14 +1727,33 @@ async function generateContentWithRetry(genModel, parts, { retries = 2, baseDela
         poolEntry.failed++;
         if (cls.dailyQuota) {
           poolEntry.unavailableUntil = Date.now() + GEMINI_DAILY_COOLDOWN_MS;
+          poolEntry.restReason = 'QUOTA';
           console.log(`⚠ ${poolEntry.label}: daily quota exhausted — resting it for ${Math.round(GEMINI_DAILY_COOLDOWN_MS / 60000)} min`);
+        } else if (cls.credential) {
+          // Rested far longer than an exhausted budget, because this does not
+          // heal on Google's clock — it heals when a person fixes the key. The
+          // cost of leaving it in rotation is paid on every paper: the rate
+          // gate admits one call per GEMINI_MIN_SPACING_MS, so each doomed
+          // bucket adds that spacing to the wait a teacher sits through, twice
+          // over on a two-model pool. Re-probed rather than removed outright
+          // so a key that was merely missing its API enablement rejoins the
+          // pool on its own once someone turns it on.
+          const rested = restCredential(poolEntry.key, 'CREDENTIAL', GEMINI_CREDENTIAL_COOLDOWN_MS);
+          console.error(
+            `🚨 ${poolEntry.key}: credential REJECTED by Google (not a quota problem) — resting its ` +
+            `${rested} bucket(s) for ${Math.round(GEMINI_CREDENTIAL_COOLDOWN_MS / 60000)} min. This key is revoked, expired, ` +
+            `restricted, pasted with its surrounding quotes, or belongs to a project with the Generative ` +
+            `Language API disabled. Until it is replaced this deployment is down one budget. ` +
+            `Provider said: ${cls.message.slice(0, 200)}`
+          );
         }
       }
-      // A daily cap cannot be waited out inside one request, and an image the
-      // model can't decode will fail identically every time. Both go straight
-      // back to the caller so the rotation can spend a different model's budget
+      // A daily cap cannot be waited out inside one request, an image the model
+      // can't decode will fail identically every time, and a refused credential
+      // is refused for as long as it stays refused. All three go straight back
+      // to the caller so the rotation can spend a different model's budget
       // rather than burning this one on attempts that cannot succeed.
-      const worthRetrying = (cls.quota || cls.transient) && !cls.dailyQuota && !cls.badImage;
+      const worthRetrying = (cls.quota || cls.transient) && !cls.dailyQuota && !cls.badImage && !cls.credential;
       if (!worthRetrying || attempt >= retries) break;
       const backoff = baseDelayMs * Math.pow(2, attempt);
       // Honour whichever is longer: our backoff, or the wait Google asked for.
@@ -1713,6 +1788,15 @@ async function generateGradingContent(parts, opts = {}) {
   }
   const rotation = gradingRotation();
   if (!rotation.length) {
+    // "Out of budget" and "every key we hold was refused" both empty the
+    // rotation, and they are not the same message: the first tells a teacher to
+    // come back tomorrow, the second tells them to come back never, because
+    // nobody is coming to fix it unless someone is told. Telling a teacher to
+    // wait out a limit that will still be there tomorrow is the worse failure.
+    if (gradingPool.every(e => e.restReason === 'CREDENTIAL')) {
+      throw new AiUnavailableError('OUTAGE',
+        'AI checking is not available because every Gemini key on this server was refused. This is a setup problem, not a daily limit — please tell whoever manages the deployment.');
+    }
     throw new AiUnavailableError('QUOTA', 'Every AI model has used up its daily checking limit.');
   }
   let last = null;
@@ -1768,6 +1852,9 @@ function gradingCapacitySnapshot() {
     label: e.label,
     used: e.used,
     exhausted: e.unavailableUntil > now,
+    // Distinguishes "spent its budget" from "its key was refused" — identical
+    // from the pool's point of view, opposite in what a human has to do next.
+    restReason: e.unavailableUntil > now ? e.restReason : null,
     remaining: e.unavailableUntil > now ? 0 : Math.max(0, AI_DAILY_BUDGET_PER_MODEL - e.used)
   }));
   return {
@@ -1793,6 +1880,17 @@ function gradingCapacitySnapshot() {
  * the same day instead of a mystery stall someone has to debug later.
  */
 let lastQuotaSelfCheckDay = null;
+
+/** Probes ONE bucket per credential rather than the whole pool, because the two
+ *  questions this sweep answers have different granularity. "Has the tier's
+ *  ceiling moved?" is answered once, by the first probe. "Is this key still
+ *  accepted?" has to be asked of each key — but not of each bucket, since a
+ *  refused key is refused on every model it is paired with. That makes the
+ *  sweep cost one call per credential (8 of ~320 daily units here, ~2.5%),
+ *  not one per bucket. Set AI_CREDENTIAL_SELFCHECK=off to spend nothing and
+ *  go back to a single canary. */
+const CREDENTIAL_SELFCHECK_ENABLED = (process.env.AI_CREDENTIAL_SELFCHECK || 'on').toLowerCase() !== 'off';
+
 async function runDailyQuotaSelfCheck() {
   if (!gradingPool.length) return;
   rollPoolDayIfNeeded();
@@ -1800,30 +1898,64 @@ async function runDailyQuotaSelfCheck() {
   if (today === lastQuotaSelfCheckDay) return;
   lastQuotaSelfCheckDay = today;
 
-  const entry = gradingPool[0];
-  // Logged like any other request: it goes to the provider and it is counted
-  // against the same daily allowance, so leaving it out would make the day's
-  // request total off by one against Google's own tally.
-  const startedAt = Date.now();
-  try {
-    await entry.model.generateContent('Reply with exactly one word: OK');
-    // Counted against the tracked budget so gradingCapacitySnapshot's
-    // teacher-facing "checks left today" stays honest about the one unit
-    // this just spent.
-    entry.used++;
-    logAiRequest({ purpose: 'SELFCHECK', model: entry.label, latencyMs: Date.now() - startedAt, ok: true, outcome: 'OK' });
-    console.log(`✅ Quota self-check (${entry.label}): responded normally today.`);
-  } catch (err) {
-    const cls = classifyAiError(err);
-    logAiRequest({
-      purpose: 'SELFCHECK', model: entry.label, latencyMs: Date.now() - startedAt,
-      ok: false, outcome: outcomeOf(cls), detail: cls.message,
-    });
-    if (cls.quota) {
-      console.error(`🚨 Quota self-check (${entry.label}) hit a quota error before any real grading ran today — the configured daily budget (AI_DAILY_BUDGET_PER_MODEL=${AI_DAILY_BUDGET_PER_MODEL}) may no longer match what Google actually grants this project/tier. Full error: ${cls.message}`);
-    } else {
-      console.log(`⚠ Quota self-check (${entry.label}) failed for a non-quota reason: ${cls.message.slice(0, 200)}`);
+  // First bucket for each distinct credential, in pool order — so entry 0 is
+  // still the quota canary it always was, and the rest are credential probes.
+  const probes = [];
+  const seenKeys = new Set();
+  for (const entry of gradingPool) {
+    if (seenKeys.has(entry.key)) continue;
+    seenKeys.add(entry.key);
+    probes.push(entry);
+    if (!CREDENTIAL_SELFCHECK_ENABLED) break;
+  }
+
+  const dead = [];
+  // Sequential on purpose: these bypass the rate gate (they are not grading and
+  // must not queue behind a class set), so awaiting each in turn is the only
+  // thing keeping eight probes from leaving as a burst.
+  for (const [i, entry] of probes.entries()) {
+    // Logged like any other request: it goes to the provider and it is counted
+    // against the same daily allowance, so leaving it out would make the day's
+    // request total off by one against Google's own tally.
+    const startedAt = Date.now();
+    try {
+      await entry.model.generateContent('Reply with exactly one word: OK');
+      // Counted against the tracked budget so gradingCapacitySnapshot's
+      // teacher-facing "checks left today" stays honest about the one unit
+      // this just spent.
+      entry.used++;
+      logAiRequest({ purpose: 'SELFCHECK', model: entry.label, latencyMs: Date.now() - startedAt, ok: true, outcome: 'OK' });
+      if (i === 0) console.log(`✅ Quota self-check (${entry.label}): responded normally today.`);
+    } catch (err) {
+      const cls = classifyAiError(err);
+      logAiRequest({
+        purpose: 'SELFCHECK', model: entry.label, latencyMs: Date.now() - startedAt,
+        ok: false, outcome: outcomeOf(cls), detail: cls.message,
+      });
+      if (cls.credential) {
+        // Found before a teacher did. Rested here rather than left for the
+        // grading path to rediscover, so the first class set of the day is not
+        // the thing that pays to learn it.
+        restCredential(entry.key, 'CREDENTIAL', GEMINI_CREDENTIAL_COOLDOWN_MS);
+        dead.push(entry.key);
+      } else if (cls.quota && i === 0) {
+        console.error(`🚨 Quota self-check (${entry.label}) hit a quota error before any real grading ran today — the configured daily budget (AI_DAILY_BUDGET_PER_MODEL=${AI_DAILY_BUDGET_PER_MODEL}) may no longer match what Google actually grants this project/tier. Full error: ${cls.message}`);
+      } else {
+        console.log(`⚠ Self-check (${entry.label}) failed for a non-credential reason: ${cls.message.slice(0, 200)}`);
+      }
     }
+  }
+
+  if (dead.length) {
+    // Named individually because replacing a key means going back to whichever
+    // person's Google account it came from — "some keys are dead" is not an
+    // actionable sentence when eight of them belong to eight different people.
+    console.error(
+      `🚨 ${dead.length} of ${probes.length} Gemini credential(s) were REFUSED in today's self-check: ${dead.join(', ')}. ` +
+      `Daily AI-checking capacity is down by that share until each one is replaced in this service's environment variables.`
+    );
+  } else if (CREDENTIAL_SELFCHECK_ENABLED && probes.length > 1) {
+    console.log(`✅ Credential self-check: all ${probes.length} Gemini credentials accepted.`);
   }
 }
 
@@ -14251,6 +14383,9 @@ module.exports = {
   resolveGradingRubric, rubricScoreNoteFor, rubricTotalPercent, normalisePaperResult, UNGRADED_RESET,
   rubricIsPresent, isManualScoreMode, scaleCriteriaTo100, divideEqually,
   logAiRequest, outcomeOf,
+  // Exported for tests: the sweep is otherwise reachable only through a boot
+  // timer, and a test that waited on that timer would be timing, not testing.
+  runDailyQuotaSelfCheck, gradingCapacitySnapshot,
   normalizeTerm, normalizeCompetencies, readCompetencies,
   parseAssistantTurn,
 };

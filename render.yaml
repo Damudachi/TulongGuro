@@ -34,7 +34,42 @@ services:
     envVars:
       - key: DATABASE_URL
         sync: false
-      - key: GEMINI_API_KEY
+      # Gemini credentials. More than one is supported because the daily quota
+      # is metered per Google Cloud PROJECT per model, not per key — so eight
+      # keys cut from eight different projects are eight independent budgets,
+      # while eight keys cut from one project share a single budget and buy
+      # nothing at all. Google AI Studio caps keys per project, so hitting that
+      # cap is a sign of the second arrangement, not the first: check that the
+      # keys come from different projects before assuming the ceiling moved.
+      #
+      # The server reads GEMINI_API_KEY, GOOGLE_API_KEY and GEMINI_API_KEY1..9,
+      # skipping any that are unset — this list is an upper bound, not a
+      # requirement, and starting at 1 with no unnumbered GEMINI_API_KEY is
+      # normal. (The unnumbered one and GOOGLE_API_KEY are still read if this
+      # deployment ever sets them; they are left out here so a Blueprint sync
+      # does not ask for values that do not exist.) Names must match EXACTLY —
+      # GEMINI_API_KEY_1 or GEMINI_KEY1 are invisible to the loader and fail
+      # silently as "fewer buckets than expected". Check the 🤖 line in the
+      # boot log for the count actually loaded.
+      #
+      # Declared here rather than left as dashboard-only values so a Blueprint
+      # sync cannot drop the ones that are set: a wiped GEMINI_API_KEY5 does
+      # not fail the deploy, it just quietly costs a share of the daily budget.
+      - key: GEMINI_API_KEY1
+        sync: false
+      - key: GEMINI_API_KEY2
+        sync: false
+      - key: GEMINI_API_KEY3
+        sync: false
+      - key: GEMINI_API_KEY4
+        sync: false
+      - key: GEMINI_API_KEY5
+        sync: false
+      - key: GEMINI_API_KEY6
+        sync: false
+      - key: GEMINI_API_KEY7
+        sync: false
+      - key: GEMINI_API_KEY8
         sync: false
       - key: SUPABASE_URL
         sync: false

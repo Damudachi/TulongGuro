@@ -74,6 +74,13 @@ process.env.NODE_ENV = 'test';
 // whatever credentials are present, and an empty pool throws AiUnavailableError
 // before a request is ever assembled. The key is never used — every call to
 // Google is intercepted below — but it has to exist for the pool to be built.
+// Blanked first, because dotenv will not overwrite a value already on
+// process.env: leaving a slot alone hands it whatever the developer running
+// the tests has in server/.env, and this deployment now holds eight
+// credentials. That silently multiplies the "one bucket" below by eight.
+for (const name of ['GOOGLE_API_KEY', ...Array.from({ length: 9 }, (_, i) => `GEMINI_API_KEY${i + 1}`)]) {
+  process.env[name] = '';
+}
 process.env.GEMINI_API_KEY = 'test-key-not-used';
 // One bucket, so exactly one request goes out and there is no rotation to
 // disambiguate when reading what was sent.

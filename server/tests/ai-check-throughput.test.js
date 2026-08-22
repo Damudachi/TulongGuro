@@ -69,6 +69,19 @@ const { fake: prismaFake, reset: resetPrisma } = makePrismaFake();
 
 process.env.AUTH_SECRET = 'ai-throughput-test-secret';
 process.env.NODE_ENV = 'test';
+// Every credential slot is blanked before the one this test wants is set.
+// server.js loads server/.env and dotenv will not overwrite a value already on
+// process.env, so an unset slot is not an empty slot — it is whatever the
+// developer running the tests has configured. Once this deployment moved to
+// eight credentials, that turned the one-bucket pool the timeout test below is
+// written against into a nine-bucket one, and "gives up rather than waiting"
+// started failing on a real machine while still passing in CI: nine buckets
+// are walked before the rotation is exhausted, at two attempts each, so the
+// bounded wait was nine times longer than the bound. The pool size is part of
+// this fixture, not part of the environment.
+for (const name of ['GOOGLE_API_KEY', ...Array.from({ length: 9 }, (_, i) => `GEMINI_API_KEY${i + 1}`)]) {
+  process.env[name] = '';
+}
 process.env.GEMINI_API_KEY = 'test-key-not-used';
 process.env.GEMINI_GRADING_MODELS = 'gemini-3.6-flash';
 process.env.GEMINI_MIN_SPACING_MS = '0';
