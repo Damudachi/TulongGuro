@@ -112,6 +112,14 @@ export default function Analytics() {
   const [selectedStudent, setSelectedStudent] = useState(null);
   const [studentData, setStudentData] = useState(null);
   const [loadingStudent, setLoadingStudent] = useState(false);
+  // Null means every subject this teacher takes this learner for. Separate
+  // state from selectedSubject above, which scopes the class-wide view: a
+  // teacher can open a student from "all subjects" and then want Mathematics
+  // on its own without losing the class view they came from. Filtered here
+  // rather than refetched, because the payload already holds every subject —
+  // the one thing that does refetch is the skills chart, which is computed
+  // server-side from rubric data the client never receives.
+  const [studentSubject, setStudentSubject] = useState(null);
 
   // When the Dashboard warning panel links here with ?sectionId=..., skip the
   // section chooser and jump straight into that section's insights.
@@ -154,6 +162,10 @@ export default function Analytics() {
 
   const loadStudentDetail = (student) => {
     setSelectedStudent(student);
+    // Opens on whatever subject the class view was already filtered to, so
+    // drilling into a child from a Mathematics view lands on their Mathematics
+    // — not on a whole-workload page the teacher has to narrow down again.
+    setStudentSubject(selectedSubject);
     setLoadingStudent(true);
     apiFetch(`${API_URL}/api/teacher/student/${student.id}/analytics`)
       .then(r => r.json())
@@ -219,9 +231,43 @@ export default function Analytics() {
 
   // ── One student's detail ──
   if (selectedStudent) {
+    // Subjects this learner actually has work in with this teacher — read off
+    // the payload rather than off myClasses, so a subject the teacher takes but
+    // this child has handed nothing in for does not offer a chip that filters
+    // the page down to nothing.
+    const studentSubjects = [...new Set(
+      (studentData?.submissions || []).map(s => s.subject).filter(Boolean)
+    )].sort();
+    // A chip row for one subject is a control with no alternative to offer, so
+    // it only appears once there is a choice to make.
+    const showSubjectFilter = studentSubjects.length > 1;
+    // Only ever narrows to something the chip row is actually offering. Two
+    // ways it can be handed a subject it must ignore, both from inheriting the
+    // class view's filter: one this learner has no work in, which would empty
+    // the page with no control on screen to undo it; and one that is their
+    // *only* subject, where filtering changes nothing visible but does change
+    // which number the Average card reads — the cross-subject working, or that
+    // subject's own — and those two round differently. Same page, same data,
+    // two different figures, decided by state the teacher cannot see.
+    const activeSubject = showSubjectFilter && studentSubject && studentSubjects.includes(studentSubject)
+      ? studentSubject
+      : null;
+    const visibleSubmissions = (studentData?.submissions || [])
+      .filter(s => !activeSubject || s.subject === activeSubject);
+    // The per-subject working the server already computed under that subject's
+    // own DepEd weights. Used as the headline average when a subject is in
+    // scope, rather than re-deriving one on the client: the weights differ per
+    // subject and per school, and a second implementation of them here would be
+    // a second thing to keep in step with the report card.
+    const subjectBreakdown = (studentData?.gradeBreakdown || [])
+      .filter(b => !activeSubject || b.subject === activeSubject);
+    const scopedAvg = activeSubject
+      ? (subjectBreakdown.find(b => b.subjectGrade !== null)?.subjectGrade ?? null)
+      : studentData?.avgScore ?? 0;
+
     return (
       <div className="p-4 md:p-8 max-w-5xl mx-auto space-y-6 pb-24">
-        <button onClick={() => { setSelectedStudent(null); setStudentData(null); }}
+        <button onClick={() => { setSelectedStudent(null); setStudentData(null); setStudentSubject(null); }}
           className="flex items-center gap-2 text-sm font-bold text-royal-600 hover:text-royal-700">
           <ArrowLeft className="w-4 h-4" /> Back to class insights
         </button>
@@ -237,6 +283,36 @@ export default function Analytics() {
             </div>
           </div>
 
+          {/* ── Subject ──
+              The same reasoning as the class-wide chip row, applied to one
+              learner: a self-contained teacher takes these children for every
+              subject, so this page pooled five subjects into one average, one
+              points total and one date-ordered list of everything the child had
+              ever handed in. "Is she struggling?" has no answer in that shape —
+              only "is she struggling in Filipino?" does. */}
+          {showSubjectFilter && (
+            <div className="flex flex-wrap items-center gap-2 mb-5">
+              <span className="text-[11px] font-extrabold uppercase tracking-wider text-slate-400 mr-1">Subject</span>
+              <button type="button" onClick={() => setStudentSubject(null)}
+                className={cn('px-3 py-1 rounded-full text-xs font-bold border-2 transition-all',
+                  activeSubject === null
+                    ? 'border-brand-chrome bg-brand-chrome text-white'
+                    : 'border-slate-200 text-slate-500 hover:border-navy-300')}>
+                All subjects
+              </button>
+              {studentSubjects.map(subject => (
+                <button key={subject} type="button"
+                  onClick={() => setStudentSubject(activeSubject === subject ? null : subject)}
+                  className={cn('px-3 py-1 rounded-full text-xs font-bold border-2 transition-all',
+                    activeSubject === subject
+                      ? 'border-royal-500 bg-royal-500 text-white'
+                      : 'border-slate-200 text-slate-500 hover:border-royal-300')}>
+                  {subject}
+                </button>
+              ))}
+            </div>
+          )}
+
           {loadingStudent ? (
             <div className="flex items-center justify-center py-12 text-slate-400">
               <Loader2 className="w-5 h-5 animate-spin mr-2" /> Loading...
@@ -250,11 +326,14 @@ export default function Analytics() {
                 // carries its score — filtering on status alone counted work
                 // the learner was told not to hand in, and did so in the two
                 // cards printed next to an average that had dropped it.
-                const graded = studentData.submissions.filter(s => s.status === 'GRADED' && !s.excusedAt);
-                const excusedCount = studentData.submissions.filter(s => s.excusedAt).length;
+                const graded = visibleSubmissions.filter(s => s.status === 'GRADED' && !s.excusedAt);
+                const excusedCount = visibleSubmissions.filter(s => s.excusedAt).length;
                 const earned = graded.reduce((sum, s) => sum + toPoints(s.hitlScore ?? s.aiScore ?? 0, s.points), 0);
                 const possible = graded.reduce((sum, s) => sum + (s.points || 100), 0);
-                const band = bandFor(studentData.avgScore, passingGrade);
+                // Null only when a subject is in scope and nothing in it is
+                // graded yet — there is no average to band in that case, and
+                // showing 0% would read as a mark the learner had earned.
+                const band = scopedAvg === null ? null : bandFor(scopedAvg, passingGrade);
                 // What the raw points total would be if it were a percentage.
                 const rawPercent = possible > 0 ? Math.round((earned / possible) * 100) : null;
                 // ── The points card, weighted ──
@@ -272,18 +351,29 @@ export default function Analytics() {
                 // student's own points. The raw sum has not been thrown away —
                 // it moves to the footnote, where it is still the answer to
                 // "how many marks have they actually banked".
-                const weightedEarned = possible > 0 ? Math.round((studentData.avgScore / 100) * possible) : null;
+                const weightedEarned = possible > 0 && scopedAvg !== null
+                  ? Math.round((scopedAvg / 100) * possible)
+                  : null;
                 return (
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                     <div className="bg-royal-50 rounded-2xl p-4">
-                      <p className="text-[11px] font-bold uppercase tracking-wider text-royal-600 mb-1">Average</p>
-                      <p className="text-3xl font-extrabold text-royal-700">{pct(studentData.avgScore)}%</p>
+                      <p className="text-[11px] font-bold uppercase tracking-wider text-royal-600 mb-1">
+                        {activeSubject ? `${activeSubject} average` : 'Average'}
+                      </p>
+                      <p className="text-3xl font-extrabold text-royal-700">
+                        {scopedAvg === null ? '—' : `${pct(scopedAvg)}%`}
+                      </p>
                       {band && <span className={cn('inline-block mt-1.5 text-[11px] font-bold px-2 py-0.5 rounded-full', band.chip)}>{band.emoji} {band.short}</span>}
-                      <p className="text-[11px] text-royal-500 mt-1.5">Weighted by DepEd components</p>
+                      <p className="text-[11px] text-royal-500 mt-1.5">
+                        {scopedAvg === null ? 'Nothing graded in this subject yet' : 'Weighted by DepEd components'}
+                      </p>
                       {/* Flags an average that only covers some of this student's
                           subjects with this teacher — otherwise it renders
-                          identically to one covering all of them. */}
-                      {studentData.avgScorePartial && (
+                          identically to one covering all of them. Meaningless
+                          once a single subject is in scope: the figure is that
+                          subject's own grade, so "based on 1 of 3 subjects"
+                          would be describing a coverage gap that isn't there. */}
+                      {!activeSubject && studentData.avgScorePartial && (
                         <p className="text-[11px] text-royal-500 mt-1.5">
                           Based on {studentData.avgScoreSubjectsIncluded} of {studentData.avgScoreSubjectsTotal} subjects — the rest have no graded work yet
                         </p>
@@ -293,7 +383,7 @@ export default function Analytics() {
                       <p className="text-[11px] font-bold uppercase tracking-wider text-aqua-700 mb-1">Points earned</p>
                       <p className="text-3xl font-extrabold text-aqua-700">{weightedEarned ?? Math.round(earned)}<span className="text-lg text-aqua-400">/{possible}</span></p>
                       <p className="text-[11px] text-slate-500 mt-1.5">
-                        Weighted by DepEd components{weightedEarned !== null && ` · ${pct(studentData.avgScore)}%`}
+                        Weighted by DepEd components{weightedEarned !== null && ` · ${pct(scopedAvg)}%`}
                       </p>
                       {/* The unweighted sum, kept and labelled rather than
                           dropped: it is the honest answer to "how many marks
@@ -314,7 +404,11 @@ export default function Analytics() {
                     </div>
                     <div className="bg-sun-50 rounded-2xl p-4">
                       <p className="text-[11px] font-bold uppercase tracking-wider text-sun-700 mb-1">Graded</p>
-                      <p className="text-3xl font-extrabold text-sun-700">{graded.length}<span className="text-lg text-sun-400">/{studentData.totalSubmissions - excusedCount}</span></p>
+                      {/* Counted off the rows in scope rather than off
+                          totalSubmissions, which the server computes across
+                          every subject — with a subject filtered it read as
+                          "3/17 graded" beside a list holding four things. */}
+                      <p className="text-3xl font-extrabold text-sun-700">{graded.length}<span className="text-lg text-sun-400">/{visibleSubmissions.length - excusedCount}</span></p>
                       <p className="text-[11px] text-slate-500 mt-1.5">
                         Activities returned{excusedCount > 0 && `, ${excusedCount} excused`}
                       </p>
@@ -334,15 +428,15 @@ export default function Analytics() {
                   the applied weight is shown next to the school's configured
                   one whenever the two differ — a teacher reading "30%" against
                   a grade computed at 37.5% would be right to call it wrong. */}
-              {studentData.gradeBreakdown?.length > 0 && (
+              {subjectBreakdown.length > 0 && (
                 <div className="border border-slate-200 rounded-2xl p-4">
                   <h3 className="text-sm font-extrabold text-navy-700 mb-3 flex items-center gap-2">
                     <Scale className="w-4 h-4 text-slate-400" /> How this average is worked out
                   </h3>
                   <div className="space-y-4">
-                    {studentData.gradeBreakdown.map(b => (
+                    {subjectBreakdown.map(b => (
                       <div key={`${b.subject}|${b.gradeLevel}`}>
-                        {studentData.gradeBreakdown.length > 1 && (
+                        {subjectBreakdown.length > 1 && (
                           <p className="text-xs font-bold text-navy-600 mb-1.5">{b.subject || 'This subject'}</p>
                         )}
                         <div className="space-y-1">
@@ -380,7 +474,7 @@ export default function Analytics() {
                       </div>
                     ))}
                   </div>
-                  {studentData.gradeBreakdown.some(b => b.missingComponents?.length > 0) && (
+                  {subjectBreakdown.some(b => b.missingComponents?.length > 0) && (
                     <p className="text-[11px] text-slate-400 mt-3 leading-relaxed">
                       A component with nothing graded yet is left out and the remaining weights are
                       shared out to fill the gap — the amber figure is what was actually applied. It
@@ -390,20 +484,29 @@ export default function Analytics() {
                 </div>
               )}
 
+              {/* Refetched per subject rather than filtered here: the timeline
+                  is computed server-side from rubricData, which never reaches
+                  this client. Keyed on the subject so React remounts it and the
+                  chart cannot show the previous subject's line while the new
+                  read is in flight. */}
               <SkillProgressChart
-                studentId={selectedStudent.id}
-                title="How their writing skills are growing"
+                key={activeSubject || 'all'}
+                dataUrl={`${API_URL}/api/student/${selectedStudent.id}/skill-progress${activeSubject ? `?subject=${encodeURIComponent(activeSubject)}` : ''}`}
+                title={activeSubject ? `How their ${activeSubject} skills are growing` : 'How their writing skills are growing'}
                 emptyMessage="A couple more graded activities and a skills trend will appear here."
               />
 
               <div>
                 <h3 className="text-sm font-extrabold text-navy-700 mb-3 flex items-center gap-2">
-                  <ClipboardList className="w-4 h-4 text-slate-400" /> Every activity
+                  <ClipboardList className="w-4 h-4 text-slate-400" />
+                  {activeSubject ? `Every ${activeSubject} activity` : 'Every activity'}
                 </h3>
                 <div className="space-y-2">
-                  {studentData.submissions.length === 0 ? (
-                    <p className="text-sm text-slate-400 py-4 text-center">Nothing submitted yet.</p>
-                  ) : studentData.submissions.map(sub => {
+                  {visibleSubmissions.length === 0 ? (
+                    <p className="text-sm text-slate-400 py-4 text-center">
+                      {activeSubject ? `Nothing submitted in ${activeSubject} yet.` : 'Nothing submitted yet.'}
+                    </p>
+                  ) : visibleSubmissions.map(sub => {
                     const percent = sub.hitlScore ?? sub.aiScore;
                     // Excused first. A paper marked and then excused keeps its
                     // status and its score, so testing status alone drew it as

@@ -11610,6 +11610,17 @@ app.get('/api/teacher/student/:studentId/analytics', async (req, res) => {
         // points total beside it counted it, and nothing explained the gap.
         excusedAt: s.excusedAt, excusedReason: s.excusedReason,
         className: s.activity?.class?.name, points: s.activity?.points,
+        // The subject this work belongs to, so the screen can filter one
+        // student's record down to one subject. A self-contained teacher takes
+        // the same children for five subjects, which made "every activity" a
+        // list of everything they had ever handed in, with Filipino and
+        // Mathematics interleaved by date and no way to read either on its own.
+        // Sent as its own field rather than left to be parsed out of className,
+        // which is a display name a teacher is free to write anything into.
+        // gradeLevel rides along because subject only identifies a policy when
+        // paired with it — the same pairing gradeBreakdown is keyed on.
+        subject: s.activity?.class?.subject ?? null,
+        gradeLevel: s.activity?.class?.gradeLevel ?? null,
         aiScore: s.aiScore, hitlScore: s.hitlScore, status: s.status,
         imageUrl: s.imageUrl, aiFeedback: s.aiFeedback, hitlFeedback: s.hitlFeedback,
         createdAt: s.createdAt
@@ -12320,8 +12331,19 @@ const SKILL_PROGRESS_ACTIVITY_SELECT = {
 app.get('/api/student/:studentId/skill-progress', async (req, res) => {
   try {
     if (!(await mayReadStudent(req, res, req.params.studentId))) return;
+    // Optional subject scope, so this timeline can follow the subject filter on
+    // the screen that draws it. Without it a teacher filtering a learner's
+    // record down to Mathematics still read a skills line built from every
+    // subject's work — a chart contradicting the list directly beneath it.
+    // Optional rather than required because the same chart is drawn on the
+    // learner's own dashboard, where the whole record is the point.
+    const { subject } = req.query;
     const submissions = await prisma.submission.findMany({
-      where: { studentId: req.params.studentId, status: 'GRADED', rubricData: { not: null }, ...releaseFilterFor(req.auth) },
+      where: {
+        studentId: req.params.studentId, status: 'GRADED', rubricData: { not: null },
+        ...(subject ? { activity: { class: { subject } } } : {}),
+        ...releaseFilterFor(req.auth),
+      },
       include: { activity: { select: SKILL_PROGRESS_ACTIVITY_SELECT } }
     });
     const result = computeSkillProgress(submissions);

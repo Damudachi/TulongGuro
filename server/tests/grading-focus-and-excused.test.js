@@ -87,7 +87,18 @@ describe('excused work is out of the analytics totals', () => {
   it('shrinks the denominator too, so the count cannot exceed it', () => {
     // Dropping excused work from the numerator alone would show "8/10" for a
     // learner who handed in everything they were asked to.
-    expect(analytics).toContain('studentData.totalSubmissions - excusedCount');
+    //
+    // Counted off the rows the page is actually showing, not off the payload's
+    // totalSubmissions: that total spans every subject, so once the screen
+    // could be narrowed to one it became a denominator for a list that was no
+    // longer on screen — "3/17 graded" above four activities. The two are the
+    // same number whenever no subject is selected.
+    expect(analytics).toContain('visibleSubmissions.length - excusedCount');
+    // Both sides of the fraction read from the same scoped set. A numerator
+    // built from the whole payload would climb past the denominator the moment
+    // a subject was picked.
+    expect(analytics).toContain('const graded = visibleSubmissions.filter');
+    expect(analytics).toContain('const excusedCount = visibleSubmissions.filter(s => s.excusedAt).length;');
   });
 
   it('is drawn as excused in the activity list, not as a score', () => {
