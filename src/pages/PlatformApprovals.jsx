@@ -1,6 +1,7 @@
-import { useState, useEffect, useCallback } from 'react';
+﻿import { useState, useEffect, useCallback } from 'react';
 import { ShieldCheck, Loader2, Check, X, Building2, Mail, RefreshCw, AlertTriangle,
-  BadgeCheck, HelpCircle, FileText, Copy, Globe, Trash2, CheckSquare, Square } from 'lucide-react';
+  BadgeCheck, HelpCircle, FileText, Copy, Globe, Trash2, CheckSquare, Square,
+  ChevronDown } from 'lucide-react';
 import { API_URL, apiFetch } from '../config';
 
 import { showAlert, showConfirm } from '../utils/dialog';
@@ -14,7 +15,7 @@ function cn(...cls) { return cls.filter(Boolean).join(' '); }
  * server, typed in here and held in sessionStorage so it dies with the tab
  * rather than sitting in localStorage on a shared machine.
  *
- * The key is bearer authority — anyone holding it can approve any school — so
+ * The key is bearer authority â€” anyone holding it can approve any school â€” so
  * treat it like a password, not like a URL.
  */
 const KEY_STORAGE = 'tg_platform_key';
@@ -31,8 +32,8 @@ const STATUS_STYLES = {
  * to say what was checked rather than deliver a judgement an operator might
  * mistake for a decision already made.
  *
- * NOT_FOUND and NOT CHECKED look similar and mean opposite things — one is
- * about the school, the other about this server missing its data file — so
+ * NOT_FOUND and NOT CHECKED look similar and mean opposite things â€” one is
+ * about the school, the other about this server missing its data file â€” so
  * they are deliberately given different colours and different icons.
  */
 const VERIFICATION_STYLES = {
@@ -54,9 +55,14 @@ export default function PlatformApprovals() {
   const [rejectingId, setRejectingId] = useState(null);
   const [rejectReason, setRejectReason] = useState('');
   // Ids ticked for deletion. Only ever populated on the Pending and Rejected
-  // tabs — see canDelete below for why deletion is not offered anywhere else.
+  // tabs â€” see canDelete below for why deletion is not offered anywhere else.
   const [selected, setSelected] = useState(() => new Set());
   const [isDeleting, setIsDeleting] = useState(false);
+  // Ids whose details are open. Rows start collapsed on every tab: a queue is
+  // read by scanning names first and only opening the one being decided on, and
+  // the collapsed row still carries the two facts that identify a school â€”
+  // its name and its DepEd ID.
+  const [expanded, setExpanded] = useState(() => new Set());
 
   const load = useCallback(async () => {
     if (!key) return;
@@ -89,7 +95,7 @@ export default function PlatformApprovals() {
   // eslint-disable-next-line react-hooks/set-state-in-effect -- flipping the loading flag ahead of an async read; the rule's alternative is a data-fetching library this app doesn't use
   useEffect(() => { load(); }, [load]);
 
-  // Deletion is offered on Pending and Rejected — the two states where nobody
+  // Deletion is offered on Pending and Rejected â€” the two states where nobody
   // has ever been able to sign in, so there is no teaching data to lose.
   //
   // Not on Approved, which would put "delete all" one mis-click from a live
@@ -109,6 +115,14 @@ export default function PlatformApprovals() {
     return next;
   });
 
+  const toggleExpanded = (id) => setExpanded(prev => {
+    const next = new Set(prev);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    return next;
+  });
+
+  const allExpanded = schools.length > 0 && schools.every(s => expanded.has(s.id));
+
   /**
    * Delete pending or rejected registrations, one or many.
    *
@@ -127,7 +141,7 @@ export default function PlatformApprovals() {
       // waiting on approval looks exactly like a junk registration until
       // someone reads it.
       (status === 'PENDING'
-        ? `${many ? 'These have' : 'This has'} not been reviewed yet — if any of `
+        ? `${many ? 'These have' : 'This has'} not been reviewed yet â€” if any of `
           + `${many ? 'them are' : 'it is'} a real school waiting for approval, `
           + `${many ? 'they' : 'it'} will have to register again from scratch.\n\n`
         : '')
@@ -156,7 +170,7 @@ export default function PlatformApprovals() {
       if (data.skipped?.length) {
         showAlert(
           `Deleted ${data.deleted.length}. Kept ${data.skipped.length}:\n\n`
-          + data.skipped.map(s => `• ${s.name || s.id} — ${s.reason}`).join('\n'),
+          + data.skipped.map(s => `â€¢ ${s.name || s.id} â€” ${s.reason}`).join('\n'),
         );
       }
       setSelected(new Set());
@@ -172,7 +186,7 @@ export default function PlatformApprovals() {
    * Open a registrant's ID photo.
    *
    * The link is fetched on click rather than sent with the list, because it is
-   * signed and expires in minutes — one minted at page load would already be
+   * signed and expires in minutes â€” one minted at page load would already be
    * dead by the time an operator worked down the queue to it. It also means the
    * key never sits in the page for schools nobody opened.
    */
@@ -216,7 +230,7 @@ export default function PlatformApprovals() {
     }
   };
 
-  // ── Key gate ──
+  // â”€â”€ Key gate â”€â”€
   if (!key) {
     return (
       <div className="min-h-screen bg-slate-100 flex items-center justify-center p-4">
@@ -279,14 +293,23 @@ export default function PlatformApprovals() {
               screen, and a selection you cannot see is one you cannot check
               before pressing delete. */}
           {['PENDING', 'APPROVED', 'REJECTED', 'ALL'].map(s => (
-            <button key={s} onClick={() => { setStatus(s); setSelected(new Set()); }}
+            <button key={s} onClick={() => { setStatus(s); setSelected(new Set()); setExpanded(new Set()); }}
               className={cn('px-3 py-1.5 rounded-lg text-xs font-bold transition-colors',
                 status === s ? 'bg-ink-900 text-white' : 'bg-white text-slate-600 border border-slate-200 hover:bg-slate-50')}>
               {s[0] + s.slice(1).toLowerCase()}
             </button>
           ))}
+          {/* Opening every row at once is for reading the whole list â€” comparing
+              contacts or IPs across schools â€” rather than deciding on one. */}
+          {schools.length > 0 && (
+            <button onClick={() => setExpanded(allExpanded ? new Set() : new Set(schools.map(s => s.id)))}
+              className="ml-auto px-3 py-1.5 rounded-lg text-xs font-bold bg-white text-slate-600 border border-slate-200 hover:bg-slate-50">
+              {allExpanded ? 'Collapse all' : 'Expand all'}
+            </button>
+          )}
           <button onClick={load} title="Refresh"
-            className="ml-auto p-2 rounded-lg bg-white border border-slate-200 text-slate-500 hover:bg-slate-50">
+            className={cn('p-2 rounded-lg bg-white border border-slate-200 text-slate-500 hover:bg-slate-50',
+              schools.length === 0 && 'ml-auto')}>
             <RefreshCw className={cn('w-4 h-4', isLoading && 'animate-spin')} />
           </button>
         </div>
@@ -303,7 +326,7 @@ export default function PlatformApprovals() {
           <div className="mb-4 flex items-start gap-2 bg-amber-50 border border-amber-200 text-amber-800 rounded-xl p-3 text-sm">
             <HelpCircle className="w-4 h-4 shrink-0 mt-0.5" />
             <div>
-              <p className="font-bold">No DepEd masterlist installed — nothing below was verified automatically.</p>
+              <p className="font-bold">No DepEd masterlist installed â€” nothing below was verified automatically.</p>
               <p className="text-xs mt-0.5">
                 Import it on the server with{' '}
                 <code className="font-mono bg-amber-100 px-1 rounded">node scripts/import-deped-masterlist.js &lt;masterlist.xlsx&gt;</code>{' '}
@@ -313,7 +336,7 @@ export default function PlatformApprovals() {
           </div>
         )}
 
-        {/* ── Bulk actions, Rejected tab only ──
+        {/* â”€â”€ Bulk actions, Rejected tab only â”€â”€
             "Delete all" is deliberately the last thing here and labelled with
             its count rather than the word "all", because "all" hides how much
             is about to go and a number does not. */}
@@ -365,6 +388,7 @@ export default function PlatformApprovals() {
             {schools.map(s => {
               const admin = s.users?.[0];
               const verdict = VERIFICATION_STYLES[s.verification];
+              const isOpen = expanded.has(s.id);
               return (
                 <div key={s.id} className={cn(
                   'bg-white border rounded-2xl p-4 transition-colors',
@@ -381,111 +405,139 @@ export default function PlatformApprovals() {
                       </button>
                     )}
                     <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <p className="font-bold text-slate-900">{s.name}</p>
-                        <span className={cn('text-[10px] font-bold px-2 py-0.5 rounded-full', STATUS_STYLES[s.status])}>
-                          {s.status}
-                        </span>
-                        {verdict && (
-                          <span className={cn('inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full', verdict.cls)}>
-                            <verdict.Icon className="w-3 h-3" /> {verdict.label}
+                      {/* â”€â”€ The row you scan â”€â”€
+                          Name, verdict and DepEd ID are what tell two schools
+                          apart, so they stay on screen in both states; the whole
+                          strip is the toggle, since a 4px chevron is a poor
+                          target on a list this long. */}
+                      <button type="button" onClick={() => toggleExpanded(s.id)}
+                        aria-expanded={isOpen} aria-controls={`school-details-${s.id}`}
+                        className="w-full text-left group">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <ChevronDown className={cn(
+                            'w-4 h-4 shrink-0 text-slate-400 transition-transform group-hover:text-slate-700',
+                            !isOpen && '-rotate-90',
+                          )} />
+                          <p className="font-bold text-slate-900 group-hover:text-slate-700">{s.name}</p>
+                          <span className={cn('text-[10px] font-bold px-2 py-0.5 rounded-full', STATUS_STYLES[s.status])}>
+                            {s.status}
                           </span>
-                        )}
-                      </div>
-
-                      {/* ── What was checked ──
-                          The note is what the lookup found at the moment this
-                          school registered, not a re-check now: the masterlist
-                          file is replaced whenever DepEd publishes a new one. */}
-                      {s.depedSchoolId && (
-                        <div className="mt-2 text-xs text-slate-600 space-y-0.5">
-                          <p className="font-mono font-bold text-slate-800">
-                            DepEd ID {s.depedSchoolId}
-                          </p>
-                          {/* Shown whenever it differs, which is exactly when an
-                              operator needs to compare the two spellings. */}
-                          {s.officialName && s.officialName !== s.name && (
-                            <p>Masterlist says: <span className="font-bold text-slate-800">{s.officialName}</span></p>
+                          {verdict && (
+                            <span className={cn('inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full', verdict.cls)}>
+                              <verdict.Icon className="w-3 h-3" /> {verdict.label}
+                            </span>
                           )}
-                          {s.verificationNote && <p className="text-slate-500">{s.verificationNote}</p>}
+                          {/* Collapsed, the ID rides on the name row. Open, it
+                              heads the block below with what the lookup found. */}
+                          {!isOpen && s.depedSchoolId && (
+                            <span className="font-mono text-xs font-bold text-slate-500">
+                              DepEd ID {s.depedSchoolId}
+                            </span>
+                          )}
                         </div>
-                      )}
+                        {/* Said on the collapsed row rather than left blank: a
+                            registration with no ID at all is the case an
+                            operator most needs to notice before opening it. */}
+                        {!isOpen && !s.depedSchoolId && (
+                          <p className="ml-6 mt-0.5 text-xs text-slate-400 font-semibold">No DepEd ID given</p>
+                        )}
+                      </button>
 
-                      <div className="flex flex-wrap items-center gap-2 mt-2">
-                        {s.proofUrl && (
-                          <a href={s.proofUrl} target="_blank" rel="noreferrer"
-                            className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-slate-100 text-xs font-bold text-slate-700 hover:bg-slate-200">
-                            <FileText className="w-3.5 h-3.5" /> Proof document
-                          </a>
+                      <div id={`school-details-${s.id}`} hidden={!isOpen} className="ml-6">
+                        {/* â”€â”€ What was checked â”€â”€
+                            The note is what the lookup found at the moment this
+                            school registered, not a re-check now: the masterlist
+                            file is replaced whenever DepEd publishes a new one. */}
+                        {s.depedSchoolId && (
+                          <div className="mt-2 text-xs text-slate-600 space-y-0.5">
+                            <p className="font-mono font-bold text-slate-800">
+                              DepEd ID {s.depedSchoolId}
+                            </p>
+                            {/* Shown whenever it differs, which is exactly when an
+                                operator needs to compare the two spellings. */}
+                            {s.officialName && s.officialName !== s.name && (
+                              <p>Masterlist says: <span className="font-bold text-slate-800">{s.officialName}</span></p>
+                            )}
+                            {s.verificationNote && <p className="text-slate-500">{s.verificationNote}</p>}
+                          </div>
                         )}
 
-                        {/* The half of the evidence that is about the person
-                            rather than the school. A button, not a link: the
-                            URL does not exist until it is asked for, and the
-                            one minted expires in minutes. */}
-                        {s.hasRegistrantId ? (
-                          <button type="button" onClick={() => viewRegistrantId(s)}
-                            disabled={busyId === s.id}
-                            className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-indigo-100 text-xs font-bold text-indigo-700 hover:bg-indigo-200 disabled:opacity-50">
-                            <BadgeCheck className="w-3.5 h-3.5" /> View registrant's ID
-                          </button>
-                        ) : (
-                          /* Registrations from before the ID was required have
-                             none. Said plainly so its absence reads as an older
-                             registration rather than as something to chase. */
-                          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-amber-50 text-xs font-bold text-amber-700">
-                            <AlertTriangle className="w-3.5 h-3.5" /> No registrant ID on file
-                          </span>
-                        )}
-                      </div>
-
-                      {/* Names repeat legitimately across divisions, so this is
-                          a prompt to check the division — never a reason on its
-                          own to refuse. */}
-                      {s.similarSchools?.length > 0 && (
-                        <div className="flex items-start gap-1.5 mt-2 text-xs text-amber-700">
-                          <Copy className="w-3.5 h-3.5 shrink-0 mt-0.5" />
-                          <p>
-                            Similar to {s.similarSchools.map(d => `"${d.name}"`).join(', ')} — check the
-                            division before approving, or this may be a duplicate.
-                          </p>
-                        </div>
-                      )}
-
-                      {/* The two contacts, doing different jobs: the mailbox to
-                          reach out on, and the login it will sign in with. */}
-                      {(admin || s.contactEmail) && (
-                        <div className="text-sm text-slate-600 mt-2">
-                          {s.contactEmail && (
-                            <a href={`mailto:${s.contactEmail}`} className="inline-flex items-center gap-1 text-slate-700 font-semibold hover:text-slate-900 underline">
-                              <Mail className="w-3 h-3" /> {s.contactEmail}
+                        <div className="flex flex-wrap items-center gap-2 mt-2">
+                          {s.proofUrl && (
+                            <a href={s.proofUrl} target="_blank" rel="noreferrer"
+                              className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-slate-100 text-xs font-bold text-slate-700 hover:bg-slate-200">
+                              <FileText className="w-3.5 h-3.5" /> Proof document
                             </a>
                           )}
-                          {admin && (
-                            <p className="text-xs text-slate-500 mt-0.5">
-                              {admin.name}
-                              {admin.email && <span className="ml-1.5 text-slate-400">signs in as {admin.email}</span>}
-                            </p>
+
+                          {/* The half of the evidence that is about the person
+                              rather than the school. A button, not a link: the
+                              URL does not exist until it is asked for, and the
+                              one minted expires in minutes. */}
+                          {s.hasRegistrantId ? (
+                            <button type="button" onClick={() => viewRegistrantId(s)}
+                              disabled={busyId === s.id}
+                              className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-indigo-100 text-xs font-bold text-indigo-700 hover:bg-indigo-200 disabled:opacity-50">
+                              <BadgeCheck className="w-3.5 h-3.5" /> View registrant's ID
+                            </button>
+                          ) : (
+                            /* Registrations from before the ID was required have
+                               none. Said plainly so its absence reads as an older
+                               registration rather than as something to chase. */
+                            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-amber-50 text-xs font-bold text-amber-700">
+                              <AlertTriangle className="w-3.5 h-3.5" /> No registrant ID on file
+                            </span>
                           )}
                         </div>
-                      )}
 
-                      <p className="text-xs text-slate-400 mt-1.5">
-                        Registered {new Date(s.createdAt).toLocaleDateString('en-PH', { day: 'numeric', month: 'short', year: 'numeric' })}
-                        {' · '}{s._count?.users ?? 0} account(s)
-                        {' · '}{s._count?.sections ?? 0} section(s)
-                        {' · '}{s._count?.curriculums ?? 0} curriculum(s)
-                        {/* One address submitting many schools is the signature
-                            this whole screen exists to make visible. */}
-                        {s.registeredIp && (
-                          <span className="inline-flex items-center gap-1 ml-1.5 font-mono">
-                            <Globe className="w-3 h-3" />{s.registeredIp}
-                          </span>
+                        {/* Names repeat legitimately across divisions, so this is
+                            a prompt to check the division â€” never a reason on its
+                            own to refuse. */}
+                        {s.similarSchools?.length > 0 && (
+                          <div className="flex items-start gap-1.5 mt-2 text-xs text-amber-700">
+                            <Copy className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                            <p>
+                              Similar to {s.similarSchools.map(d => `"${d.name}"`).join(', ')} â€” check the
+                              division before approving, or this may be a duplicate.
+                            </p>
+                          </div>
                         )}
-                      </p>
-                      {s.status === 'REJECTED' && s.rejectedReason && (
-                        <p className="text-xs text-red-600 mt-1.5">Reason: {s.rejectedReason}</p>
-                      )}
+
+                        {/* The two contacts, doing different jobs: the mailbox to
+                            reach out on, and the login it will sign in with. */}
+                        {(admin || s.contactEmail) && (
+                          <div className="text-sm text-slate-600 mt-2">
+                            {s.contactEmail && (
+                              <a href={`mailto:${s.contactEmail}`} className="inline-flex items-center gap-1 text-slate-700 font-semibold hover:text-slate-900 underline">
+                                <Mail className="w-3 h-3" /> {s.contactEmail}
+                              </a>
+                            )}
+                            {admin && (
+                              <p className="text-xs text-slate-500 mt-0.5">
+                                {admin.name}
+                                {admin.email && <span className="ml-1.5 text-slate-400">signs in as {admin.email}</span>}
+                              </p>
+                            )}
+                          </div>
+                        )}
+
+                        <p className="text-xs text-slate-400 mt-1.5">
+                          Registered {new Date(s.createdAt).toLocaleDateString('en-PH', { day: 'numeric', month: 'short', year: 'numeric' })}
+                          {' Â· '}{s._count?.users ?? 0} account(s)
+                          {' Â· '}{s._count?.sections ?? 0} section(s)
+                          {' Â· '}{s._count?.curriculums ?? 0} curriculum(s)
+                          {/* One address submitting many schools is the signature
+                              this whole screen exists to make visible. */}
+                          {s.registeredIp && (
+                            <span className="inline-flex items-center gap-1 ml-1.5 font-mono">
+                              <Globe className="w-3 h-3" />{s.registeredIp}
+                            </span>
+                          )}
+                        </p>
+                        {s.status === 'REJECTED' && s.rejectedReason && (
+                          <p className="text-xs text-red-600 mt-1.5">Reason: {s.rejectedReason}</p>
+                        )}
+                      </div>
                     </div>
 
                     <div className="flex gap-2 shrink-0">
@@ -497,7 +549,10 @@ export default function PlatformApprovals() {
                         </button>
                       )}
                       {s.status !== 'REJECTED' && (
-                        <button onClick={() => { setRejectingId(s.id); setRejectReason(''); }} disabled={busyId === s.id}
+                        /* Opens the row with it: refusing a school is a decision
+                           to make with its details in front of you, not from a
+                           name alone. */
+                        <button onClick={() => { setRejectingId(s.id); setRejectReason(''); setExpanded(prev => new Set(prev).add(s.id)); }} disabled={busyId === s.id}
                           className="px-3 py-1.5 rounded-lg bg-white border border-red-200 text-red-600 text-xs font-bold hover:bg-red-50 disabled:opacity-40 flex items-center gap-1">
                           <X className="w-3.5 h-3.5" /> Reject
                         </button>
@@ -520,7 +575,7 @@ export default function PlatformApprovals() {
                       {/* Shown to the school at login, so it has to say something
                           they can act on rather than just "denied". */}
                       <label className="block text-xs font-bold text-slate-500 mb-1">
-                        Reason — the school sees this when they try to sign in
+                        Reason â€” the school sees this when they try to sign in
                       </label>
                       <div className="flex gap-2">
                         <input
