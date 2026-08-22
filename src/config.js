@@ -126,14 +126,15 @@ export async function apiFetch(input, init = {}) {
   const renewed = res.headers.get('X-Renewed-Token');
   if (renewed) renewStoredToken(renewed);
 
-  // The operator approvals page authenticates with PLATFORM_ADMIN_KEY, not a
-  // user session, so a 401 there means "wrong key" — not "your session ended".
-  // Treating it as the latter signed the operator out of an unrelated admin
-  // account in the same browser and bounced them to /login, where the page's
-  // own "that key was wrong" handling never got to run.
-  const isPlatformCall = String(input).includes('/api/platform/');
+  // The operator approvals and developer metrics pages authenticate with a
+  // shared key, not a user session, so a 401 there means "wrong key" — not
+  // "your session ended". Treating it as the latter signed the operator out
+  // of an unrelated admin account in the same browser and bounced them to
+  // /login, where the page's own "that key was wrong" handling never got to
+  // run.
+  const isKeyGatedCall = String(input).includes('/api/platform/') || String(input).includes('/api/dev/');
 
-  if (res.status === 401 && !isPlatformCall) {
+  if (res.status === 401 && !isKeyGatedCall) {
     clearSession();
     if (!redirecting && !window.location.pathname.startsWith('/login')) {
       redirecting = true;

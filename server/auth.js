@@ -144,6 +144,7 @@ const PUBLIC_PATHS = [
   /^\/api\/topics$/,                       // static DepEd reference data
   /^\/api\/rubric-templates\/builtin$/,    // static sample rubrics
   /^\/api\/platform\//,                    // guarded by PLATFORM_ADMIN_KEY instead
+  /^\/api\/dev\//,                         // guarded by DEV_ACCESS_KEY instead
   /^\/api\/admin\/(retention-report|backfill-retention|archive-grades|purge-grades)$/,
   /^\/uploads\//,                          // static files served by express
 ];
@@ -337,6 +338,8 @@ const changePasswordRateLimit = rateLimit({
 });
 /** The operator key is a single secret with no lockout behind it. */
 const platformRateLimit = rateLimit({ windowMs: 15 * 60_000, max: 20, key: clientIp });
+/** Higher than platformRateLimit: a live dashboard polls its aggregate endpoints on an interval. */
+const devRateLimit = rateLimit({ windowMs: 15 * 60_000, max: 120, key: clientIp });
 
 /**
  * Segments that come straight after /api/teacher or /api/student and name a
@@ -422,8 +425,6 @@ function authorizePath(req, res, next) {
     return next();
   }
 
-  if (area === 'dev') return deny(res, 'Not available.');
-
   return next();
 }
 
@@ -443,6 +444,7 @@ module.exports = {
   registerDailyRateLimit,
   schoolLookupRateLimit,
   platformRateLimit,
+  devRateLimit,
   changePasswordRateLimit,
   // Exported so scripts/verify-route-authorization.js can check every
   // registered route against the same allowlist authorizePath() itself uses,

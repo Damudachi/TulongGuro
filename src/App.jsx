@@ -3,6 +3,7 @@ import Landing from './pages/Landing';
 import Login from './pages/Login';
 import Register from './pages/Register';
 import PlatformApprovals from './pages/PlatformApprovals';
+import AiMetrics from './pages/dev/AiMetrics';
 import TeacherLayout from './layouts/TeacherLayout';
 import StudentLayout from './layouts/StudentLayout';
 import AdminLayout from './layouts/AdminLayout';
@@ -59,6 +60,9 @@ function App() {
         {/* Operator-only, outside every school layout. Guarded server-side by
             PLATFORM_ADMIN_KEY — the route itself is just a form. */}
         <Route path="/platform/approvals" element={<PlatformApprovals />} />
+        {/* Developer-only, outside every school layout, same as the platform
+            route above — guarded server-side by DEV_ACCESS_KEY. */}
+        <Route path="/dev/ai-metrics" element={<AiMetrics />} />
 
         {/* Admin Routes */}
         <Route path="/admin" element={<RequireRole role="ADMIN"><AdminLayout /></RequireRole>}>

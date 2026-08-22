@@ -22,13 +22,14 @@ const bcrypt = require('bcryptjs');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
+const EventEmitter = require('events');
 const sharp = require('sharp');
 const mammoth = require('mammoth');
 const {
   signToken, authenticate, authorizePath,
   configureRevocation, markRevoked,
   loginRateLimit, registerRateLimit, registerDailyRateLimit, schoolLookupRateLimit,
-  platformRateLimit, changePasswordRateLimit,
+  platformRateLimit, devRateLimit, changePasswordRateLimit,
   RENEWED_TOKEN_HEADER,
 } = require('./auth');
 const { classSchoolId, staffMayAccess, staffMayReadStudent, REAL_WORK } = require('./access');
@@ -65,6 +66,7 @@ const { getAllRubricTemplates } = require('./rubricTemplates');
 const { SKILLS: CURRICULUM_SKILLS, classifyCriterion } = require('./skillTaxonomy');
 const AI_SKILLS = ['vocabulary', 'punctuation', 'thematicFlow', 'sentenceStructure'];
 const grading = require('./grading');
+const { percentile, selectPair } = require('./scripts/export-grading-observations');
 const transfers = require('./transfers');
 // Badge conditions — pure, and tested without a database. See badges.js.
 const badgeRules = require('./badges');
@@ -1502,6 +1504,13 @@ class AiUnavailableError extends Error {
 }
 
 /**
+ * Live feed for the developer-only AI metrics page (/api/dev/ai-metrics). One
+ * emitter for both AiRequestLog and GradingAuditLog writes — see the 'audit'
+ * emit in logGradingEvent below — multiplexed by `type` on the SSE stream.
+ */
+const aiMetricsEvents = new EventEmitter();
+
+/**
  * Record one request to the model provider.
  *
  * Fire-and-forget by design: observation must never be able to fail, delay or
@@ -1512,17 +1521,25 @@ class AiUnavailableError extends Error {
  * @see AiRequestLog in schema.prisma for what this is for and what it must not carry.
  */
 function logAiRequest(row) {
+  const purpose = row.purpose || 'OTHER';
+  const model = row.model || null;
+  const attempt = row.attempt || 0;
+  const latencyMs = Math.max(0, Math.round(row.latencyMs || 0));
+  const ok = !!row.ok;
+  const outcome = row.outcome || (row.ok ? 'OK' : 'ERROR');
+  const detail = row.detail ? String(row.detail).slice(0, 300) : null;
+
+  // Emitted synchronously, independent of the database write below, so the
+  // dev metrics stream reflects a request the instant it finishes rather than
+  // waiting on a round trip to Postgres.
+  aiMetricsEvents.emit('metric', {
+    type: 'ai_request', purpose, model, attempt, latencyMs, ok, outcome, detail,
+    createdAt: new Date().toISOString(),
+  });
+
   try {
     prisma.aiRequestLog.create({
-      data: {
-        purpose: row.purpose || 'OTHER',
-        model: row.model || null,
-        attempt: row.attempt || 0,
-        latencyMs: Math.max(0, Math.round(row.latencyMs || 0)),
-        ok: !!row.ok,
-        outcome: row.outcome || (row.ok ? 'OK' : 'ERROR'),
-        detail: row.detail ? String(row.detail).slice(0, 300) : null,
-      },
+      data: { purpose, model, attempt, latencyMs, ok, outcome, detail },
     }).catch(() => {});
   } catch { /* never let observation break grading */ }
 }
@@ -2591,6 +2608,240 @@ app.post('/api/auth/login', loginRateLimit, async (req, res) => {
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
   }
+});
+
+// ─────────────────────────────────────────
+// DEVELOPER — AI processing time & grading accuracy
+// ─────────────────────────────────────────
+/**
+ * A live view of what server/scripts/export-grading-observations.js already
+ * computes offline, for whoever maintains this app rather than any school.
+ * Same shared-secret pattern as the platform routes above (DEV_ACCESS_KEY
+ * instead of PLATFORM_ADMIN_KEY) and the same reasoning for not inventing a
+ * user model to hold it — see the comment on requirePlatformKey.
+ */
+function requireDevKey(req) {
+  const configured = process.env.DEV_ACCESS_KEY;
+  if (!configured) {
+    const err = new Error('The developer metrics page is not configured on this server.');
+    err.status = 503;
+    throw err;
+  }
+  // EventSource cannot set request headers, so the stream route also accepts
+  // the key as a query param — the one deliberate exception, same as the
+  // short-lived signed URLs used elsewhere for a single read-only fetch.
+  const supplied = req.get('x-dev-key') || req.query.key || '';
+  const digest = (v) => crypto.createHash('sha256').update(String(v)).digest();
+  if (!crypto.timingSafeEqual(digest(supplied), digest(configured))) {
+    const err = new Error('Not authorised.');
+    err.status = 401;
+    throw err;
+  }
+}
+
+const SINCE_WINDOWS = { '1h': 3600_000, '24h': 86_400_000, '7d': 7 * 86_400_000 };
+/** `?since=1h|24h|7d`, defaulting to 24h. Unknown values fall back rather than 500. */
+function sinceDate(req) {
+  const ms = SINCE_WINDOWS[req.query.since] || SINCE_WINDOWS['24h'];
+  return new Date(Date.now() - ms);
+}
+
+/** p50/p95/p99/max/mean over a sorted-ascending array of numbers, or all null if empty. */
+function latencyStats(sortedLatencies) {
+  if (!sortedLatencies.length) return { p50: null, p95: null, p99: null, max: null, mean: null };
+  const sum = sortedLatencies.reduce((a, b) => a + b, 0);
+  return {
+    p50: percentile(sortedLatencies, 50),
+    p95: percentile(sortedLatencies, 95),
+    p99: percentile(sortedLatencies, 99),
+    max: sortedLatencies[sortedLatencies.length - 1],
+    mean: Math.round(sum / sortedLatencies.length),
+  };
+}
+
+/** Most recent raw requests, newest first — the live table's initial fill. */
+app.get('/api/dev/ai-metrics/recent', devRateLimit, async (req, res) => {
+  try {
+    requireDevKey(req);
+    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 100, 1), 500);
+    const rows = await prisma.aiRequestLog.findMany({
+      orderBy: { createdAt: 'desc' },
+      take: limit,
+      select: { id: true, purpose: true, model: true, attempt: true, latencyMs: true, ok: true, outcome: true, detail: true, createdAt: true },
+    });
+    res.json({ success: true, rows });
+  } catch (e) {
+    res.status(e.status || 500).json({ success: false, error: e.message });
+  }
+});
+
+/** Latency and throughput aggregates over AiRequestLog for the selected window. */
+app.get('/api/dev/ai-metrics/summary', devRateLimit, async (req, res) => {
+  try {
+    requireDevKey(req);
+    const since = sinceDate(req);
+    const requests = await prisma.aiRequestLog.findMany({
+      where: { createdAt: { gte: since } },
+      orderBy: { createdAt: 'asc' },
+      select: { purpose: true, model: true, latencyMs: true, ok: true, outcome: true, createdAt: true },
+    });
+
+    const okLatencies = (rows) => rows.filter(r => r.ok).map(r => r.latencyMs).sort((a, b) => a - b);
+
+    const byPurpose = {};
+    for (const r of requests) {
+      (byPurpose[r.purpose] ||= []).push(r);
+    }
+    const purposeSummary = Object.entries(byPurpose).map(([purpose, rows]) => ({
+      purpose,
+      count: rows.length,
+      failed: rows.filter(r => !r.ok).length,
+      ...latencyStats(okLatencies(rows)),
+    }));
+
+    const byModel = {};
+    for (const r of requests) {
+      if (!r.model) continue;
+      (byModel[r.model] ||= []).push(r);
+    }
+    const modelSummary = Object.entries(byModel).map(([model, rows]) => ({
+      model,
+      count: rows.length,
+      failed: rows.filter(r => !r.ok).length,
+      ...latencyStats(okLatencies(rows)),
+    }));
+
+    // Hourly buckets for the trend chart. ISO hour strings sort lexicographically.
+    const byHour = new Map();
+    for (const r of requests) {
+      const hour = r.createdAt.toISOString().slice(0, 13) + ':00:00.000Z';
+      if (!byHour.has(hour)) byHour.set(hour, []);
+      byHour.get(hour).push(r);
+    }
+    const series = [...byHour.entries()].sort().map(([hour, rows]) => ({
+      hour,
+      count: rows.length,
+      failed: rows.filter(r => !r.ok).length,
+      p50: latencyStats(okLatencies(rows)).p50,
+    }));
+
+    res.json({
+      success: true,
+      since: since.toISOString(),
+      totalRequests: requests.length,
+      totalFailed: requests.filter(r => !r.ok).length,
+      overall: latencyStats(okLatencies(requests)),
+      byPurpose: purposeSummary,
+      byModel: modelSummary,
+      series,
+    });
+  } catch (e) {
+    res.status(e.status || 500).json({ success: false, error: e.message });
+  }
+});
+
+/**
+ * Grading-accuracy aggregate over GradingAuditLog — the same pairing
+ * (`selectPair`) the offline export script uses, but only counts and rates
+ * leave this handler. No submission, student or school id is ever returned.
+ */
+app.get('/api/dev/ai-metrics/accuracy', devRateLimit, async (req, res) => {
+  try {
+    requireDevKey(req);
+    const since = sinceDate(req);
+
+    const schools = await prisma.school.findMany({ select: { id: true, passingGrade: true } });
+    const passingBySchool = new Map(schools.map(s => [s.id, s.passingGrade ?? grading.PASSING_GRADE]));
+
+    const events = await prisma.gradingAuditLog.findMany({
+      where: { createdAt: { gte: since }, event: { in: ['AI_GRADED', 'TEACHER_VALIDATED', 'RELEASED'] } },
+      orderBy: { createdAt: 'asc' },
+      select: { submissionId: true, event: true, score: true, schoolId: true, createdAt: true },
+    });
+
+    const bySubmission = new Map();
+    for (const e of events) {
+      if (!e.submissionId) continue;
+      if (!bySubmission.has(e.submissionId)) bySubmission.set(e.submissionId, []);
+      bySubmission.get(e.submissionId).push(e);
+    }
+
+    let editedScore = 0, released = 0;
+    const absDeltas = [];
+    const bandSupport = {};
+    const bandDeltaSum = {};
+
+    for (const evs of bySubmission.values()) {
+      const pair = selectPair(evs);
+      if (!pair) continue;
+      const { ai, teacher, released: wasReleased } = pair;
+      const passingGrade = passingBySchool.get(teacher.schoolId || ai.schoolId) ?? grading.PASSING_GRADE;
+      const teacherBand = grading.bandKeyFor(teacher.score, passingGrade);
+      const absDelta = Math.abs(Number((teacher.score - ai.score).toFixed(4)));
+
+      if (absDelta > 0) editedScore++;
+      if (wasReleased) released++;
+      absDeltas.push(absDelta);
+      bandSupport[teacherBand] = (bandSupport[teacherBand] || 0) + 1;
+      bandDeltaSum[teacherBand] = (bandDeltaSum[teacherBand] || 0) + absDelta;
+    }
+
+    const total = absDeltas.length;
+    const sortedDeltas = [...absDeltas].sort((a, b) => a - b);
+    const meanAbsDelta = total ? absDeltas.reduce((a, b) => a + b, 0) / total : null;
+    const medianAbsDelta = total ? percentile(sortedDeltas, 50) : null;
+
+    res.json({
+      success: true,
+      since: since.toISOString(),
+      pairedPapers: total,
+      released,
+      scoreEdited: editedScore,
+      scoreEditedRate: total ? editedScore / total : null,
+      meanAbsDelta, medianAbsDelta,
+      bands: Object.entries(bandSupport).map(([band, support]) => ({
+        band, support, meanAbsDelta: bandDeltaSum[band] / support,
+      })),
+    });
+  } catch (e) {
+    res.status(e.status || 500).json({ success: false, error: e.message });
+  }
+});
+
+/**
+ * Live feed: every AiRequestLog write and every GradingAuditLog write, as
+ * they happen. One connection per open dashboard tab — fine at this scale,
+ * and simple because the app already runs as a single instance (render.yaml
+ * calls numInstances: 1 load-bearing for exactly this kind of in-memory
+ * broadcaster; a second instance would only ever see half the events).
+ */
+app.get('/api/dev/ai-metrics/stream', devRateLimit, (req, res) => {
+  try {
+    requireDevKey(req);
+  } catch (e) {
+    return res.status(e.status || 500).json({ success: false, error: e.message });
+  }
+
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    'Connection': 'keep-alive',
+    'X-Accel-Buffering': 'no',
+  });
+  res.write(': connected\n\n');
+
+  const onMetric = (payload) => res.write(`data: ${JSON.stringify(payload)}\n\n`);
+  aiMetricsEvents.on('metric', onMetric);
+
+  // Idle connections get dropped by intermediary proxies well before an hour;
+  // a comment line every 25s is invisible to EventSource but keeps the socket
+  // looking alive to everything in between.
+  const heartbeat = setInterval(() => res.write(': heartbeat\n\n'), 25_000);
+
+  req.on('close', () => {
+    clearInterval(heartbeat);
+    aiMetricsEvents.off('metric', onMetric);
+  });
 });
 
 // ─────────────────────────────────────────
@@ -9535,6 +9786,11 @@ async function logGradingEvent(submissionId, event, { actorId = null, score = nu
 
     await prisma.gradingAuditLog.create({ data: { submissionId, event, actorId, score, ...context, policySnapshot } });
     consecutiveAuditLogFailures = 0;
+
+    // Tells the dev metrics stream to refetch its accuracy aggregate — no
+    // score, student or activity title here, same "nothing a learner could be
+    // identified by" bar AiRequestLog already holds itself to.
+    aiMetricsEvents.emit('metric', { type: 'audit', event, activityId: context.activityId, createdAt: new Date().toISOString() });
   } catch (err) {
     consecutiveAuditLogFailures++;
     const message = `Could not record grading audit log (${event} on ${submissionId}): ${err.message?.slice(0, 100)}`;

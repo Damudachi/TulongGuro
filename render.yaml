@@ -48,5 +48,9 @@ services:
       # Unlocks /platform/approvals. Must be a different value from AUTH_SECRET.
       - key: PLATFORM_ADMIN_KEY
         sync: false
+      # Unlocks /dev/ai-metrics. Must be a different value from AUTH_SECRET
+      # and PLATFORM_ADMIN_KEY — it is a separate audience with no overlap.
+      - key: DEV_ACCESS_KEY
+        sync: false
       - key: NODE_ENV
         value: production
