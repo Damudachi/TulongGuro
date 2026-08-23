@@ -344,7 +344,6 @@ export default function HITLWorkspace() {
   const [chatInput, setChatInput] = useState('');
   const [isChatLoading, setIsChatLoading] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
-  const [isApproved, setIsApproved] = useState(false);
   /** Why the last validate attempt did not record a mark. '' when all is well. */
   const [saveError, setSaveError] = useState('');
   const [covData, setCovData] = useState(null);
@@ -387,6 +386,24 @@ export default function HITLWorkspace() {
   });
   const isDirty = baseline !== null && currentSnapshot !== baseline;
 
+  /**
+   * Whether a teacher has signed this mark off. Derived, never stored.
+   *
+   * This used to be its own useState, set on load and again on validate, and
+   * cleared only when the screen moved to a different paper. Every route that
+   * changed the paper's status WITHOUT reloading it therefore desynced this
+   * screen from the server — most visibly re-checking a released paper, which
+   * sets the row back to PENDING while this flag stayed true: the footer went
+   * on offering "Release to student", and pressing it got "Validate this paper
+   * before releasing it" from a server that was simply right.
+   *
+   * There is exactly one authority on whether a paper is validated, and it is
+   * the row's own status. Reading it here means the button under the teacher's
+   * hand cannot disagree with the route it calls, whatever changed it —
+   * re-check, reopen, validate, or a payload arriving from any of them.
+   */
+  const isApproved = submission?.status === 'GRADED';
+
   useEffect(() => {
     // A failure belongs to the paper it happened on — carrying it onto the next
     // learner in a queue run would accuse a save that never ran.
@@ -394,12 +411,12 @@ export default function HITLWorkspace() {
     setSaveError('');
     // Everything below describes ONE paper, and this screen is reused for the
     // next one in a run rather than remounted — so anything not cleared here
-    // becomes a statement about the previous learner. `isApproved` was the
-    // dangerous one: it was only ever set to true, so after the first validated
-    // paper every subsequent paper in the run arrived already "approved". The
-    // baseline is cleared alongside it so nothing reads as edited (or as
-    // unedited) until this paper's own values have actually loaded.
-    setIsApproved(false);
+    // becomes a statement about the previous learner. `isApproved` used to be
+    // cleared here too, and was the dangerous one: only ever set to true, so
+    // after the first validated paper every subsequent paper in the run arrived
+    // already "approved". It is now derived from submission.status and cannot
+    // outlive its paper at all. The baseline still needs clearing, so nothing
+    // reads as edited (or as unedited) until this paper's own values load.
     setBaseline(null);
     setIsEditingAssessment(false);
     // The rest of one paper's working state. These feed the body of the save
@@ -496,7 +513,8 @@ export default function HITLWorkspace() {
           if (sub.covData) {
             try { setCovData(JSON.parse(sub.covData)); } catch { /* no COV data to show */ }
           }
-          setIsApproved(sub.status === 'GRADED');
+          // No setIsApproved here any more — `sub` is already in state by this
+          // point, and isApproved reads its status directly.
           setBaseline(editSnapshot({
             scores: nextScores || {},
             readingStrategy: sub.readingStrategy || '',
@@ -885,8 +903,39 @@ export default function HITLWorkspace() {
           setIsSaving(false);
           return;   // stay on this paper: not approved, no celebration, no advance
         }
+
+        // The saved row, not a guess at it. isApproved and the release controls
+        // all read submission.status / submission.releasedAt, so this is what
+        // moves the screen out of "needs validating" — and it is also how the
+        // screen learns that saving a change to a released paper withdrew that
+        // release (see the grade route).
+        if (data.submission) {
+          setSubmission(prev => ({
+            ...prev,
+            ...data.submission,
+            activity: data.submission.activity || prev?.activity,
+            student: data.submission.student || prev?.student,
+          }));
+        }
+        if (data.unreleased) {
+          // Said out loud, because the consequence is invisible and the wrong
+          // assumption is the comfortable one: the teacher has just corrected a
+          // mark and would otherwise walk away believing the learner now sees
+          // the correction, when in fact they can see nothing at all until it
+          // goes out again.
+          await showAlert(
+            'Your changes are saved.\n\n'
+            + 'Because this result had already gone out, it has been taken back while you were changing it — '
+            + `${submission?.student?.name || 'the learner'} cannot see the mark right now. `
+            + 'Press "Release to student" to send the updated result.',
+            { title: 'Release it again', variant: 'warning', confirmLabel: 'Got it' }
+          );
+        }
+      } else {
+        // The demo paper has no server behind it, so the status it would have
+        // come back with is set here instead.
+        setSubmission(prev => ({ ...(prev || {}), status: 'GRADED' }));
       }
-      setIsApproved(true);
       // What was just written is the new "unchanged" state, so the button drops
       // back to offering the next paper rather than another save.
       setBaseline(currentSnapshot);

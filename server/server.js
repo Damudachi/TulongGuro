@@ -11281,11 +11281,62 @@ app.put('/api/teacher/submissions/:id/grade', async (req, res) => {
       return res.status(403).json({ success: false, error: 'You can only grade papers from your own classes.' });
     }
 
+    /**
+     * Changing a mark the student has already been shown takes it back off
+     * them until it is released again.
+     *
+     * Without this, editing a released paper published the new mark instantly
+     * and silently — no validation step, no record of a second release, and a
+     * child's grade changing in front of them with nobody having pressed
+     * anything that says "publish". That is precisely the thing the
+     * human-in-the-loop design exists to prevent, and release was the only
+     * place it was being skipped.
+     *
+     * So an edited release goes back through the same door it came out of:
+     * withdrawn here, validated by this same write, then released deliberately.
+     * The teacher is told (see `unreleased` below) because the intermediate
+     * state is invisible from their side.
+     *
+     * Only on a REAL change. A re-validate that writes the same numbers is a
+     * teacher re-reading their own marking, and withdrawing a correct published
+     * grade for that would be a bug wearing this feature's clothes. The client
+     * already declines to send an unchanged save; this is the same rule where
+     * it can actually be enforced.
+     */
+    const rubricJson = JSON.stringify(rubricData);
+    const changed = (
+      // Float scores: compare with a tolerance rather than by identity, or
+      // 23.333333333333332 vs 23.33333333333333 reads as an edit.
+      Math.abs((sub.hitlScore ?? -1) - score) > 0.001
+      || (sub.hitlFeedback || '') !== (hitlFeedback || '')
+      || (sub.readingStrategy || '') !== (readingStrategy || '')
+      || (sub.rubricData || '') !== rubricJson
+    );
+    const withdrawRelease = !!sub.releasedAt && changed;
+
     const updated = await prisma.submission.update({
       where: { id: req.params.id },
-      data: { hitlScore: score, hitlFeedback, readingStrategy, rubricData: JSON.stringify(rubricData), status: 'GRADED', gradedAt: new Date() },
+      data: {
+        hitlScore: score,
+        hitlFeedback,
+        readingStrategy,
+        rubricData: rubricJson,
+        status: 'GRADED',
+        gradedAt: new Date(),
+        ...(withdrawRelease ? { releasedAt: null } : {}),
+      },
       include: { student: true, activity: { include: { class: true } } }
     });
+
+    if (withdrawRelease) {
+      await logGradingEvent(req.params.id, 'REOPENED', { actorId: teacherId, score: sub.hitlScore });
+      await createNotification(sub.studentId, {
+        type: 'GRADE_REOPENED',
+        title: 'A result is being updated',
+        body: `Your teacher is updating your result for "${sub.activity?.title || 'an activity'}". It will be back shortly.`,
+        link: `/student/activity/${sub.activityId}`
+      });
+    }
 
     // FEATURE 5: Mini-RAG capture — save as grading example if teacher meaningfully changed the AI result
     //
@@ -11324,7 +11375,11 @@ app.put('/api/teacher/submissions/:id/grade', async (req, res) => {
     }
     await logGradingEvent(req.params.id, 'TEACHER_VALIDATED', { actorId: teacherId, score });
 
-    res.json({ success: true, submission: updated });
+    // `unreleased` is the one thing the client cannot work out for itself: it
+    // knows it edited a released paper, but not whether this write counted as a
+    // change. The review screen turns it into a dialog, because a grade that
+    // has quietly gone dark is not something to leave a teacher to notice.
+    res.json({ success: true, submission: updated, unreleased: withdrawRelease });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
   }

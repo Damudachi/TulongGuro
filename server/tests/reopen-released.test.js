@@ -202,3 +202,107 @@ describe('POST /api/teacher/submissions/:id/reopen', () => {
     expect(status).toBe(404);
   });
 });
+
+/** Saves a mark through the review screen's own route. */
+async function grade(body, actor = T1) {
+  const token = signToken({ id: actor, role: 'TEACHER', schoolId: 'school-a' });
+  const res = await fetch(`${baseUrl}/api/teacher/submissions/${SUBMISSION}/grade`, {
+    method: 'PUT',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  return { status: res.status, body: await res.json() };
+}
+
+/**
+ * Editing a mark the learner has already seen.
+ *
+ * Before this, saving a change to a released paper republished it instantly and
+ * silently: no validation step, no second RELEASED event, and a child's grade
+ * changing in front of them without anyone pressing anything that says publish.
+ * Release was the one place the human-in-the-loop design was being skipped.
+ *
+ * So an edited release is withdrawn by the same write that records the change,
+ * and has to be released again deliberately. The asymmetry that matters is the
+ * last test: a re-validate that changes nothing must NOT take a correct grade
+ * off a learner.
+ */
+describe('PUT /api/teacher/submissions/:id/grade on a released paper', () => {
+  const SAVED = {
+    hitlScore: 86,
+    hitlFeedback: 'Clear opening paragraph.',
+    readingStrategy: null,
+    rubricData: [{ criterionName: 'Content', score: 4, maxPoints: 5 }],
+  };
+  /** The row as the server would have stored the values in SAVED. */
+  const asStored = (state) => ({
+    ...submissionIn(state),
+    hitlScore: SAVED.hitlScore,
+    hitlFeedback: SAVED.hitlFeedback,
+    readingStrategy: null,
+    rubricData: JSON.stringify(SAVED.rubricData),
+  });
+
+  it('takes the result back off the learner when the mark actually changes', async () => {
+    prismaFake.submission.findUnique.mockResolvedValue(asStored(RELEASED));
+    const { body } = await grade({ ...SAVED, hitlScore: 91 });
+    expect(body.success).toBe(true);
+    expect(body.unreleased).toBe(true);
+    expect(written()).toMatchObject({ releasedAt: null, status: 'GRADED' });
+  });
+
+  it('withdraws it for a feedback-only change too', async () => {
+    // The score is the same; the words the child reads are not.
+    prismaFake.submission.findUnique.mockResolvedValue(asStored(RELEASED));
+    const { body } = await grade({ ...SAVED, hitlFeedback: 'Clear opening, but the ending trails off.' });
+    expect(body.unreleased).toBe(true);
+    expect(written()).toMatchObject({ releasedAt: null });
+  });
+
+  it('tells the learner their result is being updated', async () => {
+    prismaFake.submission.findUnique.mockResolvedValue(asStored(RELEASED));
+    await grade({ ...SAVED, hitlScore: 91 });
+    expect(prismaFake.notification.create).toHaveBeenCalled();
+    expect(prismaFake.notification.create.mock.calls[0][0].data).toMatchObject({
+      userId: STUDENT,
+      type: 'GRADE_REOPENED',
+    });
+  });
+
+  it('records the withdrawal as well as the validation', async () => {
+    prismaFake.submission.findUnique.mockResolvedValue(asStored(RELEASED));
+    await grade({ ...SAVED, hitlScore: 91 });
+    const events = prismaFake.gradingAuditLog.create.mock.calls.map(c => c[0].data.event);
+    expect(events).toContain('REOPENED');
+    expect(events).toContain('TEACHER_VALIDATED');
+  });
+
+  it('leaves a released grade alone when nothing actually changed', async () => {
+    // A teacher re-reading their own marking and pressing save. Withdrawing a
+    // correct published grade for that would be this feature as a bug.
+    prismaFake.submission.findUnique.mockResolvedValue(asStored(RELEASED));
+    const { body } = await grade(SAVED);
+    expect(body.unreleased).toBe(false);
+    expect(written()).not.toHaveProperty('releasedAt');
+    expect(prismaFake.notification.create).not.toHaveBeenCalled();
+  });
+
+  it('does not treat float noise in a stored percentage as an edit', async () => {
+    // 7 of a 30-point rubric is 23.333…, and a round trip through JSON can
+    // come back a bit-flip different. That is not a teacher changing a mark.
+    prismaFake.submission.findUnique.mockResolvedValue({
+      ...asStored(RELEASED),
+      hitlScore: 23.333333333333332,
+    });
+    const { body } = await grade({ ...SAVED, hitlScore: 23.33333333333333 });
+    expect(body.unreleased).toBe(false);
+  });
+
+  it('has nothing to withdraw on a paper that was never released', async () => {
+    prismaFake.submission.findUnique.mockResolvedValue(asStored(VALIDATED));
+    const { body } = await grade({ ...SAVED, hitlScore: 91 });
+    expect(body.unreleased).toBe(false);
+    expect(written()).not.toHaveProperty('releasedAt');
+    expect(prismaFake.notification.create).not.toHaveBeenCalled();
+  });
+});
