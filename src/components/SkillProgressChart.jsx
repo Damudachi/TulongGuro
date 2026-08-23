@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo } from 'react';
-import { TrendingUp, Loader2 } from 'lucide-react';
+import { Link } from 'react-router-dom';
+import { TrendingUp, Loader2, ArrowRight } from 'lucide-react';
 import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid, Legend, Tooltip } from 'recharts';
 import { API_URL, apiFetch } from '../config';
 
@@ -67,6 +68,21 @@ export default function SkillProgressChart({
   // it is one row per submission per student, so a caller can turn it off and
   // leave the tooltip as the way back from a point to its activity.
   showActivityList = true,
+  // How many rows of that list to actually draw.
+  //
+  // The list is a key from a point on the axis back to the activity it came
+  // from, and it was drawing every graded activity the learner had — a term's
+  // worth is thirty rows of small print under a chart, which buries the recent
+  // work the chart is actually about. The most recent few answer "what have I
+  // just done?"; the rest belong in the gradebook, which is built for reading a
+  // whole term and is where `moreTo` sends them.
+  activityListLimit = 5,
+  // Where "See all" goes. Different per caller — a learner's own gradebook, or
+  // this learner's page in the teacher's — so the component cannot guess it.
+  // Without it the list simply truncates and says so, rather than offering a
+  // link to nowhere.
+  moreTo = null,
+  moreLabel = 'See all in the gradebook',
   // Lets a screen with its own card language keep the chart in the same set —
   // Class Insights uses the popped border, the student screens the soft one.
   cardClass = 'tg-card p-5 mb-6',
@@ -229,15 +245,29 @@ export default function SkillProgressChart({
             </p>
           ) : null;
         }
+        // The most recent few, not the first few. The tail is the work the
+        // learner just did and the part of the chart anyone is looking at;
+        // opening on activity 1 of 30 shows the oldest marks in the term.
+        // Numbering is untouched by the slice — row 26 stays "26" and still
+        // points at tick 26 — which is the whole reason the numbers exist.
+        const shown = activityListLimit > 0 ? rows.slice(-activityListLimit) : rows;
+        const hidden = rows.length - shown.length;
         return (
           <div className="mt-4 pt-4 border-t-2 border-cream-200">
             <p className="text-[10px] font-extrabold uppercase tracking-wider text-navy-400 mb-2.5">
+              {/* Says it is showing a slice whenever it is. A list headed
+                  "30 graded activities" with five rows under it reads as a
+                  loading bug. */}
               {activeSkill
-                ? `${rows.length} activit${rows.length === 1 ? 'y' : 'ies'} scored for ${activeSkill.label}`
-                : `${rows.length} graded activit${rows.length === 1 ? 'y' : 'ies'} in this chart`}
+                ? hidden > 0
+                  ? `Latest ${shown.length} of ${rows.length} scored for ${activeSkill.label}`
+                  : `${rows.length} activit${rows.length === 1 ? 'y' : 'ies'} scored for ${activeSkill.label}`
+                : hidden > 0
+                  ? `Latest ${shown.length} of ${rows.length} graded activities`
+                  : `${rows.length} graded activit${rows.length === 1 ? 'y' : 'ies'} in this chart`}
             </p>
             <ul className="space-y-1.5">
-              {rows.map((a) => (
+              {shown.map((a) => (
                 <li key={`${a.submissionId || a.activityId}-${a.n}`}
                   className="flex items-center gap-2.5 text-xs">
                   {/* Same number as the point on the axis, so a dip at 3 leads
@@ -253,6 +283,21 @@ export default function SkillProgressChart({
                 </li>
               ))}
             </ul>
+            {hidden > 0 && (
+              moreTo ? (
+                <Link to={moreTo}
+                  className="mt-3 inline-flex items-center gap-1.5 text-xs font-extrabold text-royal-600 hover:text-royal-700 hover:underline">
+                  {moreLabel}
+                  <ArrowRight className="w-3.5 h-3.5" />
+                </Link>
+              ) : (
+                // No destination configured, so say what is missing rather
+                // than silently dropping rows off the end of the list.
+                <p className="mt-3 text-xs font-semibold text-navy-400">
+                  {hidden} earlier activit{hidden === 1 ? 'y is' : 'ies are'} not shown.
+                </p>
+              )
+            )}
           </div>
         );
       })()}

@@ -10613,7 +10613,15 @@ app.post('/api/teacher/submissions/:id/reopen', async (req, res) => {
     // Nothing to take back. Not an error the teacher needs to act on — two
     // clicks on the same button, or a stale roster — so it reports the state
     // rather than failing.
-    if (!sub.releasedAt) {
+    //
+    // Both halves are tested, not just the release. A paper can be validated
+    // and not yet released, and that state locks the AI out exactly as a
+    // released one does (/analyze refuses anything that is not PENDING). If
+    // this only reopened released work, "Re-check with AI" on a validated
+    // paper would call reopen, get "already open", and then be refused by the
+    // very route it had just cleared the way for.
+    const wasReleased = !!sub.releasedAt;
+    if (!wasReleased && sub.status !== 'GRADED') {
       return res.json({ success: true, alreadyOpen: true, submission: sub });
     }
 
@@ -10632,12 +10640,19 @@ app.post('/api/teacher/submissions/:id/reopen', async (req, res) => {
     // showed it to a parent will come back to an activity that says it is
     // being looked at again; leaving them to discover the number gone is how a
     // correction reads as a system fault.
-    await createNotification(sub.studentId, {
-      type: 'GRADE_REOPENED',
-      title: 'A result is being checked again',
-      body: `Your teacher is taking another look at your work for "${sub.activity?.title || 'an activity'}". The grade will be back shortly.`,
-      link: `/student/activity/${sub.activityId}`
-    });
+    //
+    // Only when it was actually released, though. Reopening a validated paper
+    // the learner was never shown takes nothing away from them, and announcing
+    // "a result is being checked again" for a result they have not seen invents
+    // a worry out of ordinary marking.
+    if (wasReleased) {
+      await createNotification(sub.studentId, {
+        type: 'GRADE_REOPENED',
+        title: 'A result is being checked again',
+        body: `Your teacher is taking another look at your work for "${sub.activity?.title || 'an activity'}". The grade will be back shortly.`,
+        link: `/student/activity/${sub.activityId}`
+      });
+    }
 
     res.json({ success: true, submission: updated });
   } catch (e) {
@@ -10835,6 +10850,71 @@ function parseAssistantTurn(rawText, { isStructured } = {}) {
   };
 }
 
+/**
+ * Remove one learner's name from everything on its way to the assistant.
+ *
+ * The review screen stopped sending it (see assistantContext in
+ * HITLWorkspace.jsx), which is where the leak was. This is the layer that does
+ * not depend on the client behaving: a teacher can type "how do I explain this
+ * to Mark Lester?" into the chat box, and a browser running last week's build
+ * still sends the old context line. Either way the name would reach a
+ * third-party model, which the PII rule at the top of this file forbids.
+ *
+ * Matches MULTI-WORD forms only — the stored "Santos, Mark Lester E.", the
+ * same name without its comma, and the reordered "Mark Lester E. Santos" a
+ * person would actually type — never single tokens. That is deliberate: a lone
+ * "Grace" or "Angel" is a real word as often as it is a name in a Philippine
+ * classroom, and this text includes quotes from the child's own essay and the
+ * feedback that gets rewritten and handed back to them. Redacting a word out
+ * of a quote would corrupt the work to protect a name that a full-name match
+ * has already caught.
+ *
+ * Returns text unchanged when there is no submission to look up, which is the
+ * case for a caller that never sends one.
+ */
+async function withoutStudentName(submissionId, teacherId) {
+  const identity = (text) => text;
+  if (!submissionId) return identity;
+
+  let name = '';
+  try {
+    const sub = await prisma.submission.findFirst({
+      // Scoped to the caller's own class, so this cannot be used to probe
+      // whether an arbitrary submission id exists.
+      where: { id: String(submissionId), activity: { class: { teacherId } } },
+      select: { student: { select: { name: true } } },
+    });
+    name = String(sub?.student?.name || '').replace(/\s+/g, ' ').trim();
+  } catch {
+    // A lookup failure must not take the assistant down with it. The client
+    // already omits the name; this layer is the backstop, not the mechanism.
+    return identity;
+  }
+  if (!name) return identity;
+
+  const escape = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const comma = name.indexOf(',');
+  const surname = comma === -1 ? '' : name.slice(0, comma).trim();
+  const given = comma === -1 ? '' : name.slice(comma + 1).trim();
+
+  const forms = [
+    name,                                   // "Santos, Mark Lester E."
+    name.replace(',', ''),                  // "Santos Mark Lester E."
+    given && surname ? `${given} ${surname}` : '',   // "Mark Lester E. Santos"
+    // Without the middle initial, which is how a teacher writes it in prose.
+    given && surname ? `${given.replace(/\s+\p{L}\.?$/u, '')} ${surname}` : '',
+  ].filter(f => f && f.trim().includes(' '));
+
+  if (!forms.length) return identity;
+  // Longest first, so "Mark Lester E. Santos" is consumed before the shorter
+  // "Mark Lester Santos" can match part of it and leave a fragment behind.
+  const pattern = new RegExp(
+    `\\b(?:${[...new Set(forms)].sort((a, b) => b.length - a.length).map(escape).join('|')})`,
+    'giu'
+  );
+  return (text) => String(text ?? '').replace(pattern, 'the student');
+}
+
 const teacherAssistantHandler = async (req, res) => {
   try {
     const {
@@ -10843,11 +10923,17 @@ const teacherAssistantHandler = async (req, res) => {
       isStructured,
       history,
       context: screenContext,
+      submissionId,
     } = req.body;
 
     if (!teacherPrompt || !String(teacherPrompt).trim()) {
       return res.status(400).json({ success: false, error: 'Ask the assistant something first.' });
     }
+
+    // Applied to every field that is interpolated into the prompt below, not
+    // just the screen context — the name is equally a leak whichever box the
+    // teacher typed it into.
+    const scrub = await withoutStudentName(submissionId, req.auth.sub);
 
     // The last few turns, so follow-ups ("shorten that", "why?") mean
     // something. Capped and truncated: this is a side conversation about one
@@ -10855,7 +10941,7 @@ const teacherAssistantHandler = async (req, res) => {
     const priorTurns = Array.isArray(history)
       ? history.slice(-8)
           .filter(m => m && typeof m.text === 'string' && m.text.trim())
-          .map(m => `${m.role === 'user' ? 'TEACHER' : 'ASSISTANT'}: ${m.text.slice(0, 600)}`)
+          .map(m => `${m.role === 'user' ? 'TEACHER' : 'ASSISTANT'}: ${scrub(m.text.slice(0, 600))}`)
           .join('\n')
       : '';
 
@@ -10891,19 +10977,24 @@ RULES FOR STUDENT-FACING FEEDBACK you write in "revisedFeedback":
 - Tone is objective, clinical and measured. No praise words ("excellent", "amazing", "wonderful", "great job") and no exclamation marks. State facts about the work.
 - You are rewording, not re-grading. Never change a score, never invent evidence, and keep every exact student quote exactly as it is.
 
+WHO THE STUDENT IS:
+- You have NOT been told the student's name, and you never will be. Nothing below identifies them, by design — this is a child's record and their name does not leave the school.
+- If the teacher asks who the student is, say plainly that you are not given names, then answer whatever they were actually getting at about the work. Never guess a name, never repeat one back, and never treat a name-shaped word inside a quote as the author's.
+- Write about "the student" or "they". The teacher knows who is in front of them.
+
 RULES FOR "reply" (what the teacher reads):
 - Talk like a knowledgeable colleague: plain, direct, specific. Two or three short paragraphs at most, usually less.
 - Plain text only. No markdown headings, no bullet syntax, no code fences, and never paste JSON or field names into it.
 - If you are genuinely unsure what they want changed, answer with a question instead of guessing at a rewrite.
 
 --- THIS PAPER ---
-${String(screenContext || 'No additional context was provided.').slice(0, 4000)}
+${scrub(String(screenContext || 'No additional context was provided.').slice(0, 4000))}
 
 --- FEEDBACK CURRENTLY ON SCREEN ---
-${String(currentFeedback || '(the feedback is empty)').slice(0, 6000)}
+${scrub(String(currentFeedback || '(the feedback is empty)').slice(0, 6000))}
 ${priorTurns ? `\n--- CONVERSATION SO FAR ---\n${priorTurns}\n` : ''}
 --- TEACHER'S MESSAGE ---
-${teacherPrompt}
+${scrub(teacherPrompt)}
 
 Return ONLY a valid JSON object, nothing else:
 {

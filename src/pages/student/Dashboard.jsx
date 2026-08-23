@@ -207,7 +207,9 @@ export default function StudentDashboard() {
       )}
 
       {/* ── Skill progress ── */}
-      <SkillProgressChart studentId={user.id} />
+      {/* The list under the chart is capped at the latest few; the gradebook
+          is where a whole term is meant to be read. */}
+      <SkillProgressChart studentId={user.id} moreTo="/student/subjects/gradebook" moreLabel="See all my activities" />
 
       {/* ── Upcoming deadlines ── */}
       <section className="mb-8">

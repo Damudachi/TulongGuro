@@ -494,6 +494,8 @@ export default function Analytics() {
                 dataUrl={`${API_URL}/api/student/${selectedStudent.id}/skill-progress${activeSubject ? `?subject=${encodeURIComponent(activeSubject)}` : ''}`}
                 title={activeSubject ? `How their ${activeSubject} skills are growing` : 'How their writing skills are growing'}
                 emptyMessage="A couple more graded activities and a skills trend will appear here."
+                moreTo={`/teacher/gradebook/student/${selectedStudent.id}`}
+                moreLabel="See all their activities"
               />
 
               <div>

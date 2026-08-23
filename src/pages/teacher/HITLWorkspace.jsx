@@ -587,12 +587,25 @@ export default function HITLWorkspace() {
    * reword the feedback it was handed, so any real question ("why did
    * Organization land on 3?", "what should I reteach after this?") came back
    * as a guess or as a rewrite nobody asked for.
+   *
+   * The learner's NAME is not in it, and must not be added.
+   *
+   * It used to be — one `Student: ...` line — and the assistant did exactly
+   * what anything handed a name does: asked "what is the name of the student?",
+   * it answered "Mark Lester E. Santos". That is a child's name leaving the
+   * school for a third-party model, against the PII rule at the top of
+   * server.js, in exchange for nothing: every question this assistant is for
+   * ("why did this criterion land on 3?", "what should I reteach?") is about
+   * the paper, and the paper is here without it.
+   *
+   * The server strips the name again on the way past (see teacherAssistantHandler)
+   * so this is not the only thing standing between a roster and an API — but
+   * this is where it stops being sent, which is the part that matters.
    */
   const assistantContext = (() => {
     const lines = [];
     if (submission?.activity?.title) lines.push(`Activity: ${submission.activity.title}`);
     if (submission?.activity?.class?.name) lines.push(`Class: ${submission.activity.class.name}`);
-    if (submission?.student?.name) lines.push(`Student: ${submission.student.name}`);
     if (rubricItems.length) {
       lines.push('Rubric, as currently scored on screen:');
       for (const item of rubricItems) {
@@ -698,6 +711,11 @@ export default function HITLWorkspace() {
           isStructured,
           history,
           context: assistantContext,
+          // Not so the assistant can look the learner up — so the server can
+          // look up their name and scrub it out of everything on this request
+          // before any of it reaches the model. A teacher who types the name
+          // into the chat box is the case the client cannot catch on its own.
+          submissionId,
         })
       });
       const data = await res.json();
@@ -1235,25 +1253,65 @@ export default function HITLWorkspace() {
    * school's daily quota every time, so it should stay a deliberate press.
    */
   const handleRecheck = async () => {
+    // Three different things are at stake depending on where the paper is, and
+    // the teacher should be told which apply to theirs before it runs.
+    const released = !!submission?.releasedAt;
+    const validated = submission?.status === 'GRADED';
+
+    const consequences = [
+      'The AI will read it again from scratch, and its current scores and feedback will be replaced.',
+      released
+        ? `${submission?.student?.name || 'This learner'} will stop seeing their grade while it is redone, and will be told the work is being checked again. You validate and release it again when you are happy with it.`
+        : validated
+          ? 'This paper goes back to "not yet validated" — your marking stays on screen, but you will need to validate it again.'
+          : '',
+      isDirty ? 'The changes you have made on this screen but not saved will be lost.' : '',
+    ].filter(Boolean);
+
     const ok = await showConfirm(
-      isDirty
-        ? 'Send this paper back to the AI?\n\nThe AI will read it again from scratch. Its current scores and feedback will be replaced — and the changes you have made on this screen but not saved will be lost.'
-        : 'Send this paper back to the AI?\n\nThe AI will read it again from scratch, and its current scores and feedback will be replaced.',
+      `Send this paper back to the AI?\n\n${consequences.join('\n\n')}`,
       { title: 'Re-check with AI', confirmLabel: 'Re-check', cancelLabel: 'Keep this check' }
     );
     if (!ok) return;
+
     // Dropped so the re-checked result is not read back as an unsaved edit the
     // teacher made: the baseline is rebuilt from the new AI scores once they
     // land, the same way the first load builds it.
     setIsEditingAssessment(false);
+
+    // /analyze only accepts a PENDING paper — deliberately, so the AI can never
+    // silently overwrite a mark a human has signed off. Reopening first is how
+    // a teacher who HAS signed off asks for it anyway: it withdraws the
+    // validation (and the release, if there was one) as its own recorded act,
+    // and only then is the AI allowed to write.
+    if (released || validated) {
+      setIsAnalyzing(true);
+      try {
+        const res = await apiFetch(`${API_URL}/api/teacher/submissions/${submissionId}/reopen`, { method: 'POST' });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || !data.success) {
+          showAlert(data.error || 'Could not reopen this paper, so it was not sent for checking.');
+          return;
+        }
+        setSubmission(prev => ({ ...prev, releasedAt: null, status: 'PENDING' }));
+      } catch {
+        showAlert('Could not reach the server, so this paper was not sent for checking.');
+        return;
+      } finally {
+        // handleAnalyze sets its own; clearing here keeps the spinner honest if
+        // the reopen failed and we return above.
+        setIsAnalyzing(false);
+      }
+    }
+
     await handleAnalyze();
   };
 
   /**
    * Whether a re-check is offered.
    *
-   * Wants a paper the AI has already had an opinion on, still unvalidated, and
-   * with a stored image for the AI to read.
+   * Wants a paper the AI has already had an opinion on, and a stored image for
+   * it to read. That is all.
    *
    * The "has an opinion" test is exactly the negation of the "Ready for AI
    * Checking" banner's: while that banner is up, Start AI Checking is the right
@@ -1261,13 +1319,17 @@ export default function HITLWorkspace() {
    * different voice. A refused check (aiFailed) counts as an opinion, because
    * retrying it is the whole point.
    *
-   * Unvalidated because the server refuses a re-check after Validate — the mark
-   * is the teacher's from then on — and a button that is always refused is
-   * worse than no button.
+   * Status is deliberately NOT part of this any more. It used to require
+   * PENDING, on the reasoning that the server refuses a re-check after Validate
+   * — which it does, and should. But that made the one case teachers most need
+   * it unreachable: a mistake noticed after the grade went out, where the only
+   * remaining option was to leave a wrong mark in front of the child. The
+   * refusal is about the AI not overwriting a human decision unasked; a teacher
+   * pressing this button is asking. handleRecheck reopens first, which turns
+   * the refusal into a step rather than a wall.
    */
   const canRecheck = Boolean(
     submission?.id
-    && submission.status === 'PENDING'
     && submission.imageUrl
     && (submission.aiScore !== null || aiFailed)
   );
