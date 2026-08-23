@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   cellToText, readBirthday, headerRole, extractRoster,
   looksLikeAHeaderRow, splitDateOutOfName, composeName, withSurnameComma, tidyRosterEntry,
-  middleInitial, abbreviateMiddleName,
+  middleInitial,
 } from '../rosterSheet.js';
 
 /**
@@ -109,9 +109,8 @@ describe('a list with no headings at all', () => {
       ['Bautista, Maria Clara'],
     ]);
     expect(source).toBe('values');
-    // Names come back exactly as the sheet had them. The shortened reading is
-    // offered separately on `nameWithInitial` and applied only if the teacher
-    // says this list writes middle names last — see offerMiddleInitials.
+    // Untouched: a combined name column is stored exactly as the sheet wrote
+    // it. Only a middle name in a column of its own is shortened.
     expect(students.map(s => s.name)).toEqual(['Dela Cruz, Juan Miguel', 'Reyes, Mark', 'Bautista, Maria Clara']);
   });
 
@@ -287,108 +286,39 @@ describe('middleInitial — School Form 1 prints one letter, not the whole name'
   });
 });
 
-describe('abbreviateMiddleName — the middle name inside a single combined column', () => {
-  it('abbreviates the trailing middle name of a surname-first name', () => {
-    // The reported failure: a class list with one "LEARNER'S NAME" column came
-    // back spelled out, in a format nobody at the school uses.
-    expect(abbreviateMiddleName('Faustino, Rafael Luis Balestero')).toBe('Faustino, Rafael Luis B.');
-    expect(abbreviateMiddleName('Geronimo, Alyssa Jane Mamitag')).toBe('Geronimo, Alyssa Jane M.');
-  });
-
-  it('leaves a name with no surname boundary alone', () => {
-    // Without a comma there is nothing saying where the given names start, so
-    // the last word may well be the surname. withSurnameComma runs first and
-    // supplies the comma when it can.
-    expect(abbreviateMiddleName('Rafael Luis Balestero')).toBe('Rafael Luis Balestero');
-  });
-
-  it('needs two given names before there is a middle one to find', () => {
-    expect(abbreviateMiddleName('Faustino, Rafael')).toBe('Faustino, Rafael');
-  });
-
-  it('is idempotent, and gives a bare initial its full stop', () => {
-    // Runs over names that composeName/joinName already reduced, so it must
-    // not turn "B." into "B.." or re-abbreviate "Luis".
-    expect(abbreviateMiddleName('Faustino, Rafael Luis B.')).toBe('Faustino, Rafael Luis B.');
-    expect(abbreviateMiddleName('Faustino, Rafael Luis B')).toBe('Faustino, Rafael Luis B.');
-    expect(abbreviateMiddleName(abbreviateMiddleName('Faustino, Rafael Luis Balestero')))
-      .toBe('Faustino, Rafael Luis B.');
-  });
-
-  it('keeps a suffix, and does not mistake it for the middle name', () => {
-    expect(abbreviateMiddleName('Santos, Juan Cruz Jr.')).toBe('Santos, Juan C. Jr.');
-    expect(abbreviateMiddleName('Santos, Juan Cruz III')).toBe('Santos, Juan C. III');
-    // Nothing left to abbreviate once the suffix is lifted off.
-    expect(abbreviateMiddleName('Santos, Juan Jr.')).toBe('Santos, Juan Jr.');
-  });
-
-  it('takes one letter from a multi-word maternal surname', () => {
-    // The form gives it one box, so "Dela Cruz" is "D." — and the particle
-    // must not be read as the whole middle name, which would give "Juan D."
-    // from a different word than intended or strand "Cruz" as a given name.
-    expect(abbreviateMiddleName('Santos, Juan Dela Cruz')).toBe('Santos, Juan D.');
-    expect(abbreviateMiddleName('Santos, Juan Miguel San Jose')).toBe('Santos, Juan Miguel S.');
-  });
-
-  it('will not abbreviate the only spelled-out name a learner has', () => {
-    // "Ma." is short for Maria and "Teresa" is the child's actual first name.
-    // Abbreviating the trailing word here would leave "Ma. T." and no name.
-    expect(abbreviateMiddleName('Dela Cruz, Ma. Teresa')).toBe('Dela Cruz, Ma. Teresa');
-    // With a real middle name after it, there is something to reduce again.
-    expect(abbreviateMiddleName('Dela Cruz, Ma. Teresa Santos')).toBe('Dela Cruz, Ma. Teresa S.');
-  });
-
-  it('is a suggestion only — this is the case it would get wrong', () => {
-    // A child with two given names and no middle name. Nothing in the string
-    // distinguishes it from the Balestero case above, which is exactly why
-    // nothing calls this on its own authority: the result reaches a learner's
-    // account only after the teacher confirms the list is written that way.
-    // See offerMiddleInitials, and the extractRoster tests that hold the
-    // applied name to what the sheet actually said.
-    expect(abbreviateMiddleName('Dela Cruz, Juan Miguel')).toBe('Dela Cruz, Juan M.');
-  });
-});
-
-describe('a middle name is inferred only where the sheet left it to be inferred', () => {
-  it('offers, but does not apply, a reading of a combined name column', () => {
+describe('a middle name is shortened only when the roster supplied one', () => {
+  it('leaves a combined name column exactly as the sheet wrote it', () => {
+    // The rule, stated once: no middle-name column, no middle initial. An
+    // earlier version read the last word of the given portion as the middle
+    // name, which is right for "Balestero" and wrong for "Miguel" — and there
+    // is nothing in either string to tell them apart. So neither is touched.
     const { students } = extractRoster([
       ["Learner's Name", 'Birthday'],
       ['Faustino, Rafael Luis Balestero', '03/30/2004'],
-      ['Bautista, Maria Clara Cruz', '11/30/2013'],
+      ['Dela Cruz, Juan Miguel', '03/15/2014'],
     ]);
-    // The name is untouched...
-    expect(students.map(s => s.name)).toEqual(['Faustino, Rafael Luis Balestero', 'Bautista, Maria Clara Cruz']);
-    // ...and the shortening travels beside it for the teacher to accept.
-    expect(students.map(s => s.nameWithInitial))
-      .toEqual(['Faustino, Rafael Luis B.', 'Bautista, Maria Clara C.']);
+    expect(students.map(s => s.name))
+      .toEqual(['Faustino, Rafael Luis Balestero', 'Dela Cruz, Juan Miguel']);
   });
 
-  it('suggests nothing for a name with only one given word', () => {
-    // Nothing to shorten, so no question should ever be raised about this row.
-    const { students } = extractRoster([["Learner's Name"], ['Reyes, Mark']]);
-    expect(students[0].name).toBe('Reyes, Mark');
-    expect(students[0].nameWithInitial).toBeUndefined();
-  });
-
-  it('leaves a First Name column alone when no middle column sits beside it', () => {
-    // The sheet has said the whole column is given names. Inferring here would
-    // abbreviate a real first name — "Rafael Luis" is not "Rafael L.".
-    const { students } = extractRoster([
-      ['Last Name', 'First Name'],
-      ['Faustino', 'Rafael Luis'],
-    ]);
-    expect(students[0].name).toBe('Faustino, Rafael Luis');
-    // And no question is raised either — there is nothing here to be unsure of.
-    expect(students[0].nameWithInitial).toBeUndefined();
-  });
-
-  it('applies a real Middle Name column outright, with nothing left to ask', () => {
+  it('shortens a real Middle Name column', () => {
+    // Here the sheet has said which name is the middle one, so it is a fact
+    // and not a reading.
     const { students } = extractRoster([
       ['Last Name', 'First Name', 'Middle Name'],
       ['Faustino', 'Rafael Luis', 'Balestero'],
     ]);
     expect(students[0].name).toBe('Faustino, Rafael Luis B.');
-    expect(students[0].nameWithInitial).toBeUndefined();
+  });
+
+  it('leaves a First Name column alone when no middle column sits beside it', () => {
+    // The sheet has said the whole column is given names. "Rafael Luis" is not
+    // "Rafael L.".
+    const { students } = extractRoster([
+      ['Last Name', 'First Name'],
+      ['Faustino', 'Rafael Luis'],
+    ]);
+    expect(students[0].name).toBe('Faustino, Rafael Luis');
   });
 
   it('collapses two middle columns to one initial rather than one each', () => {
@@ -437,9 +367,9 @@ describe('a single combined name column', () => {
     expect(students).toEqual([
       { name: 'Mercer, Alex', birthday: '03/14/2005' },
       // The surname comma IS inferred (withSurnameComma) — the middle initial
-      // is not. The second row carries a suggestion alongside it; the first has
-      // only one given name, so there is nothing to suggest.
-      { name: 'Dela Cruz, Juan Miguel', birthday: '03/15/2014', nameWithInitial: 'Dela Cruz, Juan M.' },
+      // is not. "Miguel" is a given name as far as anything here can tell, and
+      // it stays one.
+      { name: 'Dela Cruz, Juan Miguel', birthday: '03/15/2014' },
     ]);
   });
 

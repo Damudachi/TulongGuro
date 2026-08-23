@@ -3,7 +3,6 @@ import {
   isReadableDate, previewPassword, parseRosterLines,
   isFilledRow, withBlankRow, emptyRoster, rosterPayload,
   normalizeRosterName, firstNameFromRoster,
-  rowsFromExtraction, offerMiddleInitials,
 } from '../../src/utils/roster.js';
 
 /**
@@ -261,104 +260,5 @@ describe('rosterPayload — what gets sent', () => {
 
   it('is empty, not null, when nothing has been entered', () => {
     expect(rosterPayload(emptyRoster(), onProblem)).toEqual([]);
-  });
-});
-
-/**
- * Shortening a middle name to its initial, and who gets to decide.
- *
- * The parser can see that "Faustino, Rafael Luis Balestero" might end in a
- * middle name. It cannot know: "Dela Cruz, Juan Miguel" is character-for-
- * character the same shape and "Miguel" is the child's second given name.
- * An earlier version applied the reading automatically and renamed real
- * learners to "Juan M." — so the rule these pin is that nothing is shortened
- * unless a human says the list is written that way.
- */
-describe('offerMiddleInitials', () => {
-  const extracted = (students) => rowsFromExtraction({ students });
-
-  const FILE = [
-    { name: 'Faustino, Rafael Luis Balestero', birthday: '03/30/2004', nameWithInitial: 'Faustino, Rafael Luis B.' },
-    { name: 'Reyes, Mark', birthday: '07/02/2014' },
-  ];
-
-  it('shortens only the rows that carry a suggestion, and only on yes', async () => {
-    const rows = await offerMiddleInitials(extracted(FILE), async () => true);
-    expect(rows).toEqual([
-      { name: 'Faustino, Rafael Luis B.', birthday: '03/30/2004' },
-      { name: 'Reyes, Mark', birthday: '07/02/2014' },
-    ]);
-  });
-
-  it('leaves every name exactly as the file had it on no', async () => {
-    // The reported bug, as a test: a teacher who says their list has no middle
-    // names must get their list back unchanged.
-    const rows = await offerMiddleInitials(extracted(FILE), async () => false);
-    expect(rows).toEqual([
-      { name: 'Faustino, Rafael Luis Balestero', birthday: '03/30/2004' },
-      { name: 'Reyes, Mark', birthday: '07/02/2014' },
-    ]);
-  });
-
-  it('treats a dismissed dialog as no, because that is the safe answer', async () => {
-    // showConfirm resolves false for Escape, Cancel and a click on the scrim.
-    // Whichever way a teacher gets out of the question, nobody is renamed.
-    const rows = await offerMiddleInitials(extracted(FILE), async () => undefined);
-    expect(rows[0].name).toBe('Faustino, Rafael Luis Balestero');
-  });
-
-  it('does not ask at all when nothing has an alternative', async () => {
-    // A sheet with its own Middle Name column is already exact, and a list of
-    // single given names has nothing to shorten. Either way the teacher should
-    // never see this dialog.
-    const ask = vi.fn(async () => true);
-    const rows = await offerMiddleInitials(
-      extracted([
-        { name: 'Faustino, Rafael Luis B.', birthday: '03/30/2004' },
-        { name: 'Reyes, Mark', birthday: '07/02/2014' },
-      ]),
-      ask,
-    );
-    expect(ask).not.toHaveBeenCalled();
-    expect(rows.map(r => r.name)).toEqual(['Faustino, Rafael Luis B.', 'Reyes, Mark']);
-  });
-
-  it('asks once for the whole file, not once per learner', async () => {
-    const ask = vi.fn(async () => true);
-    await offerMiddleInitials(extracted([...FILE, ...FILE, ...FILE]), ask);
-    expect(ask).toHaveBeenCalledTimes(1);
-  });
-
-  it('shows the teacher their own names, and says how many change', async () => {
-    const ask = vi.fn(async () => false);
-    await offerMiddleInitials(extracted(FILE), ask);
-    const [message] = ask.mock.calls[0];
-    // A worked example from their file — the question is unanswerable in the
-    // abstract, since it is about how THIS list is written.
-    expect(message).toContain('Faustino, Rafael Luis Balestero');
-    expect(message).toContain('Faustino, Rafael Luis B.');
-    expect(message).toContain('One learner');
-    // And the counter-example, because the wrong answer is otherwise silent.
-    expect(message).toContain('Dela Cruz, Juan Miguel');
-  });
-
-  it('never carries the suggestion into the rows the editor saves', async () => {
-    // rosterPayload sends {name, birthday}. A stray nameWithInitial riding
-    // along would be a third field the server never asked for.
-    for (const answer of [true, false]) {
-      const rows = await offerMiddleInitials(extracted(FILE), async () => answer);
-      expect(rows.every(r => !('nameWithInitial' in r))).toBe(true);
-    }
-  });
-
-  it('drops a suggestion identical to the name it is offered against', async () => {
-    // Belt and braces on the server's own check — an equal pair is not an
-    // alternative, and offering it would raise a dialog that changes nothing.
-    const ask = vi.fn(async () => true);
-    await offerMiddleInitials(
-      extracted([{ name: 'Reyes, Mark', nameWithInitial: 'Reyes, Mark' }]),
-      ask,
-    );
-    expect(ask).not.toHaveBeenCalled();
   });
 });

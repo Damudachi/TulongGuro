@@ -5,7 +5,7 @@ import { GRADE_LEVELS } from '../../constants/school';
 import StudentCredentials from '../../components/StudentCredentials';
 import SectionMoveConfirm from '../../components/SectionMoveConfirm';
 import RosterEditor from '../../components/RosterEditor';
-import { rowsFromExtraction, offerMiddleInitials, isFilledRow, rosterPayload, emptyRoster, withBlankRow, normalizeRosterName } from '../../utils/roster';
+import { rowsFromExtraction, isFilledRow, rosterPayload, emptyRoster, withBlankRow, normalizeRosterName } from '../../utils/roster';
 
 import { showAlert, showConfirm, showPrompt } from '../../utils/dialog';
 export default function ManageSections() {
@@ -214,9 +214,7 @@ export default function ManageSections() {
         body: formData
       });
       const data = await res.json();
-      // Asked before the rows land in the editor, so the teacher answers once
-      // about the whole file rather than correcting forty names afterwards.
-      const extracted = data.success ? await offerMiddleInitials(rowsFromExtraction(data), showConfirm) : [];
+      const extracted = data.success ? rowsFromExtraction(data) : [];
       if (extracted.length) {
         // Appended to whatever is already typed, so an upload adds to the class
         // list rather than replacing work the teacher has already done.
@@ -258,9 +256,7 @@ export default function ManageSections() {
     try {
       const res = await apiFetch(`${API_URL}/api/teacher/extract-students`, { method: 'POST', body: formData });
       const data = await res.json();
-      // Asked before the rows land in the editor, so the teacher answers once
-      // about the whole file rather than correcting forty names afterwards.
-      const extracted = data.success ? await offerMiddleInitials(rowsFromExtraction(data), showConfirm) : [];
+      const extracted = data.success ? rowsFromExtraction(data) : [];
       if (extracted.length) {
         setAddStudentRows(prev => withBlankRow([...prev.filter(isFilledRow), ...extracted]));
       } else { showAlert('Extraction failed: ' + (data.error || 'No learners were found in that file.')); }

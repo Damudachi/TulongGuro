@@ -9,7 +9,7 @@ import { GRADE_LEVELS } from '../../constants/school';
 import StudentCredentials from '../../components/StudentCredentials';
 import SectionMoveConfirm from '../../components/SectionMoveConfirm';
 import RosterEditor from '../../components/RosterEditor';
-import { rowsFromExtraction, offerMiddleInitials, isFilledRow, rosterPayload, emptyRoster, withBlankRow } from '../../utils/roster';
+import { rowsFromExtraction, isFilledRow, rosterPayload, emptyRoster, withBlankRow } from '../../utils/roster';
 
 import { showAlert, showConfirm } from '../../utils/dialog';
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
@@ -245,7 +245,7 @@ export default function AdminTeacherDetail() {
         body: formData,
       });
       const d = await res.json().catch(() => null);
-      const extracted = d?.success ? await offerMiddleInitials(rowsFromExtraction(d), showConfirm) : [];
+      const extracted = d?.success ? rowsFromExtraction(d) : [];
       if (extracted.length) {
         setStudentRows(prev => withBlankRow([...prev.filter(isFilledRow), ...extracted]));
       } else {

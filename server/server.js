@@ -45,7 +45,6 @@ const { currentSchoolYear, isCurrentSchoolYear, compareSchoolYearsDesc } = requi
 const {
   cellToText, extractRoster, readBirthday,
   looksLikeAName, looksLikeAHeaderRow, composeName, withSurnameComma, tidyRosterEntry,
-  abbreviateMiddleName,
 } = require('./rosterSheet');
 const { getAllTopics, getTopicById, getTopicsAIGuidance, parseTopicIds, formatTopicIds, lessonIdFromTopicId, lessonIdsFromTopics, termForWeek, lessonDisplayName } = require('./depedTopics');
 // getRubricTemplateById is gone with the grader's topic-recommended rubric
@@ -6035,7 +6034,7 @@ Rules:
 - Put each column of the list in its own field. Never join them into one string.
 - "lastName": the surname / family name / apelyido only.
 - "firstName": the given name(s) only. "middleName": the middle name or initial, or null.
-- If the list prints one combined name per learner instead of separate columns, split it the same way. Philippine lists are written "SURNAME, First Name Middle Name", so in "Faustino, Rafael Luis Balestero" the surname is "Faustino", the given names are "Rafael Luis" and the middle name is "Balestero". If you cannot tell whether a trailing word is a middle name or a second given name, put it in "firstName" and leave "middleName" null.
+- If the list prints one combined name per learner instead of separate columns, work out which part is the surname and put it in "lastName" and the rest in "firstName". Leave "middleName" null in that case — only fill it from a column the page actually labels as the middle name, never by guessing which word inside a combined name is one.
 - Copy the spelling exactly as printed. Do not correct, translate, reorder or expand a name.
 - NEVER put a row number, a date, an LRN, an age or a sex into any name field. Those are separate columns; leave them out entirely.
 - "birthday": that learner's date of birth as MM/DD/YYYY, or null if none is printed for them. Never use any other date on the page — not an enrolment date, not today's date.
@@ -6114,30 +6113,16 @@ async function extractRosterFromImage(localPath, mime) {
           readBirthday(entry?.birthday),
         );
         // Only infer the surname boundary when the model did not report one.
+        //
+        // The middle name is NOT inferred the same way. composeName shortens it
+        // when the model reported one in a field of its own — a column on the
+        // printed page — and a name transcribed as one string is left exactly
+        // as it was read. Same rule as the spreadsheet path: an initial the
+        // roster did not supply is not the app's to invent.
         const surnameIsKnown = Boolean(String(entry?.lastName ?? '').trim());
-        const withComma = surnameIsKnown ? tidied.name : withSurnameComma(tidied.name);
-        // The middle name is abbreviated by composeName when the model reported
-        // one in its own field. When it did not, the printed list may still
-        // have carried one — the prompt tells the model to split a combined
-        // name, and it does not always — so the name is read for one instead.
-        // Skipped when the field came back filled, because that reading is
-        // exact and this one is a guess. See abbreviateMiddleName.
-        const middleIsKnown = Boolean(String(entry?.middleName ?? '').trim());
-        return { ...tidied, name: withComma, middleIsKnown };
+        return surnameIsKnown ? tidied : { ...tidied, name: withSurnameComma(tidied.name) };
       })
-      // Judged on the transcribed name, before any abbreviation: a heading the
-      // model copied off the page ("Department of Education") stops looking
-      // like one once its last word is reduced to a letter, and would be
-      // enrolled as a learner. Same ordering as extractRoster, for the same
-      // reason.
-      .filter(s => s.name && looksLikeAName(s.name) && !looksLikeAHeaderRow(s.name))
-      .map(({ middleIsKnown, ...s }) => {
-        // Offered, not applied — same rule as the spreadsheet path. When the
-        // model DID report a middle name of its own, composeName has already
-        // reduced it and that reading is exact, so there is nothing to ask.
-        const suggestion = middleIsKnown ? s.name : abbreviateMiddleName(s.name);
-        return suggestion === s.name ? s : { ...s, nameWithInitial: suggestion };
-      });
+      .filter(s => s.name && looksLikeAName(s.name) && !looksLikeAHeaderRow(s.name));
   } finally {
     if (prepared !== localPath) { try { fs.unlinkSync(prepared); } catch { /* best effort */ } }
   }
