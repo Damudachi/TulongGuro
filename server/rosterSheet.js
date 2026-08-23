@@ -249,6 +249,48 @@ function looksLikeAHeaderRow(text) {
 }
 
 /**
+ * Placeholders a roster column carries instead of a middle name.
+ *
+ * SF1 exports and hand-typed lists both fill the gap rather than leaving it
+ * blank, and "N/A" turned into the initial "N." — a letter belonging to no
+ * relative, printed on the class list all year.
+ */
+const NO_MIDDLE_NAME = /^(n\/?a|none|n\.?a\.?|na|-+|_+|\.+|x+)$/i;
+
+/**
+ * A middle name reduced to the initial DepEd's School Form 1 prints.
+ *
+ * Rosters are written "SURNAME, First Name M." — the middle name is the
+ * mother's maiden surname and is shown as one letter. An extraction that keeps
+ * it spelled out ("Faustino, Rafael Luis Balestero") is not wrong about the
+ * child, but it does not match the form the teacher copied it from, the form
+ * every other class list at the school is in, or the form they would have typed
+ * — so it reads as an error and gets hand-edited forty times.
+ *
+ * One letter, not "D.C." for "Dela Cruz": the form has one box for it.
+ *
+ * Only ever called with a middle name that arrived in a field or column of its
+ * own. Nothing here guesses which part of a combined name is the middle one —
+ * "Dela Cruz, Juan Miguel" gives no way to tell a second given name from a
+ * maternal surname, and abbreviating on a guess would rename a child called
+ * Juan Miguel to "Juan M." See joinName and composeName for where the
+ * distinction is drawn.
+ *
+ * Returns '' for a blank or placeholder, so the caller drops the segment
+ * entirely rather than appending a stray full stop.
+ */
+function middleInitial(raw) {
+  const text = String(raw ?? '').replace(/\s+/g, ' ').trim();
+  if (!text || NO_MIDDLE_NAME.test(text)) return '';
+  // First letter of the first word. A name already written as an initial
+  // ("B", "B.", "B. C.") lands on the same letter, which is what makes this
+  // safe to run over a column that is sometimes "Middle Name" and sometimes
+  // "Middle Initial".
+  const letter = text.match(/\p{L}/u);
+  return letter ? `${letter[0].toUpperCase()}.` : '';
+}
+
+/**
  * Assemble the name from whichever fields arrived, in the last-name-first form
  * the rest of the app sorts and greets on.
  *
@@ -256,11 +298,14 @@ function looksLikeAHeaderRow(text) {
  * it is a fact rather than a reading. A combined name is handled separately by
  * withSurnameComma, which has to infer the boundary — and must run after the
  * row number and birth date have been stripped off, not here.
+ *
+ * The middle name is abbreviated because it arrived as its own field — see
+ * middleInitial.
  */
 function composeName(entry) {
   const clean = (v) => String(v ?? '').replace(/\s+/g, ' ').trim();
   const last = clean(entry?.lastName);
-  const given = [clean(entry?.firstName), clean(entry?.middleName)].filter(Boolean).join(' ');
+  const given = [clean(entry?.firstName), middleInitial(entry?.middleName)].filter(Boolean).join(' ');
   if (last && given) return `${last}, ${given}`;
   return last || given || clean(entry?.name);
 }
@@ -409,11 +454,21 @@ function findBirthdayColumnByValues(grid, startRow, excluded) {
  *
  * Surname and given names are rejoined with a comma; anything else is joined
  * left to right, which is the order a roster prints them in.
+ *
+ * A "middle name" column is abbreviated to its initial, matching School Form 1
+ * — the sheet is allowed to spell it out, the class list is not. This only
+ * happens for a column the headings actually named as the middle name; the
+ * fall-through below joins whatever arrived untouched, because without that
+ * heading there is nothing here that knows which word is the middle one.
  */
 function joinName(parts) {
   const pick = (role) => parts.filter(p => p.role === role).map(p => p.text).filter(Boolean);
   const last = pick('last').join(' ').trim();
-  const given = [...pick('first'), ...pick('middle')].join(' ').trim();
+  // The middle columns are collapsed to ONE initial between them, not one
+  // each: a sheet with both "Middle Name" and "Middle Initial" filled in is
+  // describing the same name twice, and "Juan S. S." is not a name.
+  const middle = middleInitial(pick('middle').join(' '));
+  const given = [...pick('first'), middle].filter(Boolean).join(' ').trim();
   if (last && given) return `${last}, ${given}`.replace(/\s+/g, ' ');
   return parts.map(p => p.text).filter(Boolean).join(' ').replace(/\s+/g, ' ').trim();
 }
@@ -503,6 +558,7 @@ module.exports = {
   looksLikeAName,
   looksLikeAHeaderRow,
   splitDateOutOfName,
+  middleInitial,
   composeName,
   withSurnameComma,
   tidyRosterEntry,

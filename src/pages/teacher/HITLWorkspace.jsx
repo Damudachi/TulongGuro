@@ -1,11 +1,12 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
-import { ArrowLeft, Check, Edit2, Info, Sparkles, X, Send, Bot, Loader2, CheckCircle2, ChevronDown, Plus, Trash2, AlertTriangle, SkipForward, Send as SendIcon, RefreshCw } from 'lucide-react';
+import { ArrowLeft, Check, Edit2, Info, Sparkles, X, Send, Bot, Loader2, CheckCircle2, ChevronDown, Plus, Trash2, AlertTriangle, SkipForward, Send as SendIcon, RefreshCw, RotateCcw } from 'lucide-react';
 import { API_URL, apiFetch } from '../../config';
+import { rubricPointScale, formatRubricPoints } from '../../utils/rubric';
 import SubmissionImage from '../../components/SubmissionImage';
 import { ONBOARDING, hasSeenOnboarding, markOnboardingSeen } from '../../utils/onboarding';
 
-import { showAlert } from '../../utils/dialog';
+import { showAlert, showConfirm } from '../../utils/dialog';
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
 
 /**
@@ -312,6 +313,7 @@ export default function HITLWorkspace() {
   const [releaseState, setReleaseState] = useState(null);  // { total, reviewed, released, readyToRelease }
   const [isReleasing, setIsReleasing] = useState(false);
   const [isReleasingOne, setIsReleasingOne] = useState(false);
+  const [isReopening, setIsReopening] = useState(false);
 
   const [submission, setSubmission] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -571,6 +573,11 @@ export default function HITLWorkspace() {
   const scorePercent = rubricTotal > 0 ? (totalScore / rubricTotal) * 100 : 0;
   // What that percentage is worth in the activity's own points.
   const scoreInPoints = (scorePercent / 100) * (submission?.activity?.points || 100);
+  // The breakdown below is drawn in the activity's points rather than the
+  // rubric's own, so every number on this screen is in one unit. Nothing about
+  // the rubric changes — see rubricPointScale.
+  const pointScale = rubricPointScale(rubricTotal, submission?.activity?.points);
+  const scaledPoints = (rubricPoints) => formatRubricPoints((rubricPoints || 0) * pointScale);
 
   /**
    * What the assistant is told about the paper being reviewed.
@@ -1090,6 +1097,51 @@ export default function HITLWorkspace() {
     }
   };
 
+  /**
+   * Take this released result back, so the paper can be redone.
+   *
+   * The same door BatchUpload's Re-submit opens, offered here too because this
+   * is where a teacher realises the mistake: they open the released paper to
+   * look at it again, see it is page two of somebody else's work, and this is
+   * the screen they are on. Sending them back to the roster to find the row and
+   * press a different button would be asking them to leave the evidence behind.
+   *
+   * See POST /api/teacher/submissions/:id/reopen for what is and is not undone.
+   */
+  const reopenThisOne = async () => {
+    if (!(await showConfirm(
+      'Take this result back so it can be redone?\n\n'
+      + `${submission?.student?.name || 'This learner'} will stop seeing the grade and will be told the work is being checked again. `
+      + 'Your marking stays on this screen — you can re-check it with the AI, replace the file from the class roster, or simply validate and release it again.',
+      { title: 'Re-submit this work', confirmLabel: 'Take it back', cancelLabel: 'Leave it released' }
+    ))) return;
+
+    setIsReopening(true);
+    try {
+      const res = await apiFetch(`${API_URL}/api/teacher/submissions/${submissionId}/reopen`, { method: 'POST' });
+      const data = await res.json();
+      if (data.success) {
+        // Relations kept, for the same reason releaseThisOne keeps them: this
+        // screen's denominators and back-link live on activity, and the route's
+        // payload is not guaranteed to carry them.
+        setSubmission(prev => ({
+          ...prev,
+          ...(data.submission || {}),
+          releasedAt: null,
+          status: 'PENDING',
+          activity: data.submission?.activity || prev?.activity,
+          student: data.submission?.student || prev?.student,
+        }));
+      } else {
+        showAlert(data.error || 'Could not take this result back. It is still released.');
+      }
+    } catch {
+      showAlert('Could not take this result back. Please check your connection.');
+    } finally {
+      setIsReopening(false);
+    }
+  };
+
   const handleAnalyze = async () => {
     if (!submissionId) return;
     setIsAnalyzing(true);
@@ -1168,6 +1220,57 @@ export default function HITLWorkspace() {
       setIsAnalyzing(false);
     }
   };
+
+  /**
+   * Re-run the AI check on a paper it has already read.
+   *
+   * The same call as the first check — /analyze is idempotent by design and
+   * rewrites the AI columns each time. What is added here is the warning,
+   * because a re-check is destructive in two ways a teacher will not expect
+   * from a button labelled "check again": the AI's scores and written feedback
+   * are replaced outright, and any adjustment made on this screen since the
+   * paper was loaded goes with them. Both are stated before anything runs.
+   *
+   * Not confirmed once and remembered: this spends an AI request against the
+   * school's daily quota every time, so it should stay a deliberate press.
+   */
+  const handleRecheck = async () => {
+    const ok = await showConfirm(
+      isDirty
+        ? 'Send this paper back to the AI?\n\nThe AI will read it again from scratch. Its current scores and feedback will be replaced — and the changes you have made on this screen but not saved will be lost.'
+        : 'Send this paper back to the AI?\n\nThe AI will read it again from scratch, and its current scores and feedback will be replaced.',
+      { title: 'Re-check with AI', confirmLabel: 'Re-check', cancelLabel: 'Keep this check' }
+    );
+    if (!ok) return;
+    // Dropped so the re-checked result is not read back as an unsaved edit the
+    // teacher made: the baseline is rebuilt from the new AI scores once they
+    // land, the same way the first load builds it.
+    setIsEditingAssessment(false);
+    await handleAnalyze();
+  };
+
+  /**
+   * Whether a re-check is offered.
+   *
+   * Wants a paper the AI has already had an opinion on, still unvalidated, and
+   * with a stored image for the AI to read.
+   *
+   * The "has an opinion" test is exactly the negation of the "Ready for AI
+   * Checking" banner's: while that banner is up, Start AI Checking is the right
+   * control and this would be a second button doing the same thing in a
+   * different voice. A refused check (aiFailed) counts as an opinion, because
+   * retrying it is the whole point.
+   *
+   * Unvalidated because the server refuses a re-check after Validate — the mark
+   * is the teacher's from then on — and a button that is always refused is
+   * worse than no button.
+   */
+  const canRecheck = Boolean(
+    submission?.id
+    && submission.status === 'PENDING'
+    && submission.imageUrl
+    && (submission.aiScore !== null || aiFailed)
+  );
 
   if (isLoading) return <div className="flex items-center justify-center h-64 text-slate-400"><Loader2 className="w-6 h-6 animate-spin mr-2" />Loading submission...</div>;
 
@@ -1449,7 +1552,7 @@ export default function HITLWorkspace() {
                 </p>
                 <p className="text-amber-600 text-xs mt-1 font-medium">Replace it with a clearer photo (top-left), or try checking this one again — a re-crop or better lighting is sometimes all it takes.</p>
                 {submission.status === 'PENDING' && (
-                  <button onClick={handleAnalyze} disabled={isAnalyzing}
+                  <button onClick={handleRecheck} disabled={isAnalyzing}
                     className="mt-2 text-xs font-bold text-amber-800 bg-amber-100 hover:bg-amber-200 px-3 py-1.5 rounded-lg transition-colors flex items-center gap-1.5 disabled:opacity-60">
                     {isAnalyzing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
                     {isAnalyzing ? 'Checking again…' : 'Check Again'}
@@ -1498,8 +1601,20 @@ export default function HITLWorkspace() {
                   activity reported as graded with no result behind it. */}
               {isApproved && (
                 submission?.releasedAt ? (
-                  <span className="mt-1 inline-flex items-center gap-1 text-xs font-bold text-green-600 bg-green-50 px-2 py-1 rounded-full">
-                    <CheckCircle2 className="w-3 h-3" /> Released to Student
+                  <span className="mt-1 inline-flex flex-wrap items-center gap-2">
+                    <span className="inline-flex items-center gap-1 text-xs font-bold text-green-600 bg-green-50 px-2 py-1 rounded-full">
+                      <CheckCircle2 className="w-3 h-3" /> Released to Student
+                    </span>
+                    {/* Sits with the badge that says the paper is locked,
+                        because that badge is where a teacher looking for a way
+                        to undo this will look. See reopenThisOne. */}
+                    <button type="button" onClick={reopenThisOne} disabled={isReopening}
+                      title="Take this result back so the work can be replaced and checked again. The learner stops seeing the grade."
+                      className="inline-flex items-center gap-1 text-[11px] font-bold text-brand-navy hover:underline disabled:opacity-50">
+                      {isReopening
+                        ? <><Loader2 className="w-3 h-3 animate-spin" /> Reopening…</>
+                        : <><RotateCcw className="w-3 h-3" /> Re-submit</>}
+                    </button>
                   </span>
                 ) : (
                   <span className="mt-1 inline-flex items-center gap-1 text-xs font-bold text-amber-700 bg-amber-50 border border-amber-200 px-2 py-1 rounded-full">
@@ -1509,6 +1624,31 @@ export default function HITLWorkspace() {
               )}
             </div>
             <div className="flex items-center gap-4">
+              {/* Run the AI over this paper again.
+                  There has always been a way to do this — /analyze accepts any
+                  PENDING paper however many times — but the only button for it
+                  sat inside the "No Readable Text Detected" banner, so it was
+                  reachable exactly when the AI had found nothing and unreachable
+                  in the ordinary case a teacher wants it: a check that read the
+                  paper but read it wrongly, or one run before the rubric was
+                  fixed. The alternative was re-uploading the photo to force a
+                  fresh check, which throws the file away to get at a re-run.
+
+                  Hidden once validated rather than shown-and-refused: after
+                  Validate the mark is the teacher's, and the server declines
+                  precisely so the AI cannot overwrite it. */}
+              {canRecheck && (
+                <button
+                  onClick={handleRecheck}
+                  disabled={isAnalyzing}
+                  title="Send this paper back to the AI. The current AI scores and feedback are replaced."
+                  className="text-xs font-bold text-brand-navy border-2 border-brand-navy/20 bg-white px-3 py-1.5 rounded-lg hover:bg-blue-50 transition-colors flex items-center gap-1.5 disabled:opacity-60 disabled:cursor-not-allowed"
+                >
+                  {isAnalyzing
+                    ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Checking again…</>
+                    : <><RefreshCw className="w-3.5 h-3.5" /> Re-check with AI</>}
+                </button>
+              )}
               {!isEditingAssessment ? (
                 <button
                   onClick={() => setIsEditingAssessment(true)}
@@ -1536,7 +1676,27 @@ export default function HITLWorkspace() {
 
           {/* Rubric Breakdown — editable sliders */}
           <div>
-            <h3 className="text-sm font-bold text-slate-400 uppercase tracking-wider mb-4">Rubric Breakdown <span className="text-slate-300 font-normal normal-case">{isEditingAssessment ? '(drag to adjust)' : '(read-only)'}</span></h3>
+            {/* The sub-line is said once, here, rather than repeated on every
+                row: the criteria below are the rubric's, converted into this
+                activity's points. Only worth saying when the two actually
+                differ, which is also why the heading's own bottom margin moves
+                — without the sentence there is nothing to make room for. */}
+            {(() => {
+              const explainScale = rubricItems.length > 0 && pointScale !== 1;
+              return (
+                <>
+                  <h3 className={cn('text-sm font-bold text-slate-400 uppercase tracking-wider', explainScale ? 'mb-1' : 'mb-4')}>
+                    Rubric Breakdown <span className="text-slate-300 font-normal normal-case">{isEditingAssessment ? '(drag to adjust)' : '(read-only)'}</span>
+                  </h3>
+                  {explainScale && (
+                    <p className="text-xs text-slate-400 mb-4">
+                      Shown out of this activity&apos;s {activity?.points} points. The rubric itself is unchanged &mdash;
+                      it is worth {rubricTotal} and is scaled to fit.
+                    </p>
+                  )}
+                </>
+              );
+            })()}
             {rubricItems.length === 0 && (
               <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 p-4">
                 <p className="text-sm font-bold text-amber-900">This activity has no rubric</p>
@@ -1559,11 +1719,15 @@ export default function HITLWorkspace() {
                   <div className="flex justify-between text-sm mb-1">
                     <span className="font-medium text-slate-700">{item.name}</span>
                     <div className="flex items-center gap-2">
-                      {/* Rubric points, labelled as such. These were shown as
-                          "0% / 15%" and then re-scaled as if the point value
+                      {/* Points, in the activity's own units. These were shown
+                          as "0% / 15%" and then re-scaled as if the point value
                           were a percentage, so a 12-out-of-15 criterion on a
-                          60-point activity reported "7.2 pts". */}
-                      <span className="font-bold text-slate-900">{scores[item.key] || 0} / {item.max}</span>
+                          60-point activity reported "7.2 pts"; then as raw
+                          rubric points, which are the rubric's units and not
+                          this activity's. rubricPointScale converts, and the
+                          raw pair still sits under the total score above for a
+                          teacher who wants to see the rubric's own arithmetic. */}
+                      <span className="font-bold text-slate-900">{scaledPoints(scores[item.key])} / {scaledPoints(item.max)}</span>
                       <span className="text-xs text-brand-navy font-bold">
                         ({item.max ? Math.round(((scores[item.key] || 0) / item.max) * 100) : 0}%)
                       </span>

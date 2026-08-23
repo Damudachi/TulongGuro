@@ -3,6 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { ArrowLeft, Lightbulb, Trophy, Image as ImageIcon, Loader2, ChevronDown, ChevronUp, CheckCircle2, AlertTriangle, Target, Sparkles } from 'lucide-react';
 import { API_URL, apiFetch } from '../../config';
 import SubmissionImage from '../../components/SubmissionImage';
+import { rubricPointScale, formatRubricPoints } from '../../utils/rubric';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
 
@@ -159,6 +160,15 @@ export default function OutputDetails() {
     rubricItems = [];
   }
 
+  // The breakdown is drawn in the activity's own points, not the rubric's, so
+  // the criteria a learner reads add up to the mark printed above them. A
+  // school rubric worth 100 on a 15-point quiz otherwise showed a child
+  // "27 / 30" on a paper that is only worth 15 in total. See rubricPointScale:
+  // the rubric is not modified, only converted for display.
+  const rubricTotal = rubricItems.reduce((sum, item) => sum + (item.max || 0), 0);
+  const pointScale = rubricPointScale(rubricTotal, maxPoints);
+  const scaledPoints = (rubricPoints) => formatRubricPoints((rubricPoints || 0) * pointScale);
+
   const hasStructuredFeedback = feedback && (feedback.areasForGrowth?.length > 0 || feedback.actionableSteps?.length > 0);
 
 
@@ -205,11 +215,14 @@ export default function OutputDetails() {
                   <div className="flex justify-between text-sm mb-1.5">
                     <span className="font-medium text-slate-700">{item.name}</span>
                     <div className="flex items-center gap-2">
-                      {/* Criterion scores are raw rubric points (e.g. 38 of 40), not
-                          percentages. They used to be labelled "%" and then re-scaled
-                          as if they were, which showed a pupil "38% / 40%" worth
-                          "38 pts" on a 100-point activity. */}
-                      <span className="font-bold text-slate-900">{item.score} / {item.max}</span>
+                      {/* Criterion scores are points, not percentages. They used
+                          to be labelled "%" and then re-scaled as if they were,
+                          which showed a pupil "38% / 40%" worth "38 pts" on a
+                          100-point activity; then raw rubric points, which are
+                          the rubric's units and need not add up to the mark at
+                          the top of this page. Converted now — see
+                          rubricPointScale. */}
+                      <span className="font-bold text-slate-900">{scaledPoints(item.score)} / {scaledPoints(item.max)}</span>
                       {pct !== null && (
                         <span className="text-xs text-brand-navy font-bold">({Math.round(pct)}%)</span>
                       )}

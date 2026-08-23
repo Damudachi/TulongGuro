@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
-import { ArrowLeft, UploadCloud, X, Loader2, Wifi, WifiOff, ShieldCheck, Info, FileText, Camera, Sparkles, Plus, CheckCircle2, AlertTriangle, ClipboardCheck, Send, Pencil, Trash2 } from 'lucide-react';
+import { ArrowLeft, UploadCloud, X, Loader2, Wifi, WifiOff, ShieldCheck, Info, FileText, Camera, Sparkles, Plus, CheckCircle2, AlertTriangle, ClipboardCheck, Send, Pencil, Trash2, RotateCcw } from 'lucide-react';
 import { getQueue, buildJob, enqueue, flushQueue, QUEUE_CHANGED } from '../../utils/offlineQueue';
 import { API_URL, apiFetch, MAX_SUBMISSION_PAGES } from '../../config';
 import { getStoredUser } from '../../utils/session';
@@ -348,6 +348,58 @@ export default function BatchUpload() {
     // activation is the dialog's rather than this button's — still a real
     // gesture, and still inside its window.
     triggerFilePick(studentId, source);
+  };
+
+  /**
+   * Take a released result back so the work can be redone.
+   *
+   * "Released — locked" was the whole of what this row offered once a mark went
+   * out, and locked meant locked: the photo could not be replaced, the AI could
+   * not be re-run, the submission could not be removed. Every one of those
+   * refusals protects the learner from a mark changing under them, and together
+   * they left the one mistake teachers actually make — validating and releasing
+   * the wrong paper — with no route back through the app at all.
+   *
+   * This is that route. It withdraws the result rather than editing it: the
+   * learner stops seeing the mark and is told the work is being looked at
+   * again, and the row returns to the same "checked, not yet validated" state a
+   * fresh scan lands in — so Replace File, Re-take Photo and Re-check with AI
+   * all become available in the usual places, and the teacher goes back through
+   * the flow they already know.
+   *
+   * The marking is not thrown away here. Uploading a replacement clears it (the
+   * grade belonged to a different paper), but a teacher who reopens, looks
+   * again and decides the mark was right can simply validate and release it
+   * again.
+   */
+  const reopenSubmission = async (student, sub) => {
+    if (!sub?.id || !sub.releasedAt) return;
+    const studentId = student.id;
+    if (!(await showConfirm(
+      'Take this result back so it can be redone?\n\n'
+      + `${student.name || 'This learner'} will stop seeing the grade and will be told the work is being checked again. `
+      + 'You can then replace the file, re-check it with the AI, and release it once more.',
+      { title: 'Re-submit this work', confirmLabel: 'Take it back', cancelLabel: 'Leave it released' }))) return;
+
+    setRemovingStudentIds(prev => new Set(prev).add(studentId));
+    try {
+      const res = await apiFetch(`${API_URL}/api/teacher/submissions/${sub.id}/reopen`, { method: 'POST' });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.success) {
+        // Patched in place rather than refetched, so the row's buttons swap
+        // over immediately — the teacher's next click is the replacement they
+        // opened this for.
+        setActivitySubmissions(prev => prev.map(x =>
+          x.id === sub.id ? { ...x, releasedAt: null, status: 'PENDING' } : x));
+        loadReleaseState();
+      } else {
+        showAlert(data.error || 'Could not take this result back. It is still released.');
+      }
+    } catch {
+      showAlert('Could not reach the server. This result is still released.');
+    } finally {
+      setRemovingStudentIds(prev => { const next = new Set(prev); next.delete(studentId); return next; });
+    }
   };
 
   /**
@@ -1080,7 +1132,8 @@ export default function BatchUpload() {
                        until it is released: Replace stages a new photo through
                        the exact same redact-then-confirm flow as a first upload.
                        Once released to the student it is locked — see the
-                       matching guard in /api/teacher/upload. */
+                       matching guard in /api/teacher/upload — and Re-submit is
+                       the one key to that lock (see reopenSubmission). */
                     <div className="flex flex-col items-center gap-1.5 shrink-0 w-full sm:w-28">
                       <Link to={`/teacher/review/${sub.id}`}
                         className="text-xs bg-brand-navy text-white px-3 py-1.5 rounded-md font-medium hover:bg-blue-900 w-full text-center">
@@ -1088,9 +1141,27 @@ export default function BatchUpload() {
                       </Link>
                       {grade !== null && <span className="text-xs font-bold text-brand-slate">{grade}/{maxPoints}</span>}
                       {sub.releasedAt ? (
-                        <span className="text-[11px] text-slate-400 text-center leading-tight">
-                          Released — locked
-                        </span>
+                        <>
+                          <span className="text-[11px] text-slate-400 text-center leading-tight">
+                            Released — locked
+                          </span>
+                          {/* The way out of a released mark that is wrong.
+                              Deliberately plain rather than a primary button:
+                              taking a grade back off a learner is the unusual
+                              path, and the common case here is a teacher
+                              reading the row, not fixing it. Not gated on the
+                              privacy checkbox — nothing is uploaded by this,
+                              and the replacement it leads to is gated on its
+                              own. */}
+                          <button type="button" onClick={() => reopenSubmission(student, sub)}
+                            disabled={removingStudentIds.has(student.id)}
+                            title="Take this result back so the work can be replaced and checked again. The learner stops seeing the grade."
+                            className="text-[11px] font-medium flex items-center justify-center gap-1 w-full text-brand-navy hover:underline disabled:opacity-40">
+                            {removingStudentIds.has(student.id)
+                              ? <><Loader2 className="w-3 h-3 animate-spin" /> Reopening…</>
+                              : <><RotateCcw className="w-3 h-3" /> Re-submit</>}
+                          </button>
+                        </>
                       ) : (
                         <>
                           {/* "Replace File" and "Re-take Photo" both replace

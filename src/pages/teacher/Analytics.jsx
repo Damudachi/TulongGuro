@@ -614,6 +614,12 @@ export default function Analytics() {
 
   const hasData = summary.gradedCount > 0;
   const classBand = bandFor(summary.classAverage, passingGrade);
+  // How many learners the class average is the mean of. Falls back to counting
+  // the trends locally so a client running ahead of a server that does not send
+  // `averagedOver` yet still captions the card with a real number, and to null
+  // only when there is nothing to count either way.
+  const averagedOver = summary.averagedOver
+    ?? (studentTrends.length ? studentTrends.filter(s => s.avgPercent !== null).length : null);
   // Which section this page is showing, so the heading says so — with a
   // subject chip row underneath, "Class Insights" alone stops being enough to
   // tell two views apart.
@@ -691,8 +697,22 @@ export default function Analytics() {
                   </span>
                 )}
               </div>
+              {/* Says what the headline is an average of.
+                  This used to read "178 of 225 points earned overall", which
+                  describes a calculation this figure is not: the average is the
+                  mean of each learner's own general average, each computed
+                  under its subject's DepEd weights, and the pooled point total
+                  is a different number that disagreed with the headline above
+                  it often enough to look like a bug. The point total is still
+                  worth having, so it stays — below, and labelled as the
+                  separate thing it is. */}
               <p className="text-xs text-slate-500 mt-2">
-                {summary.pointsEarned} of {summary.pointsPossible} points earned overall
+                {averagedOver !== null
+                  ? <>Average of {averagedOver} learner{averagedOver === 1 ? '' : 's'}&apos; general averages</>
+                  : <>Each learner&apos;s general average, averaged</>}
+              </p>
+              <p className="text-[11px] text-slate-400 mt-0.5">
+                {summary.pointsEarned} of {summary.pointsPossible} raw points earned in total
               </p>
             </div>
 

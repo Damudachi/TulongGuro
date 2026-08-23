@@ -10564,6 +10564,83 @@ app.post('/api/teacher/submissions/:id/release', async (req, res) => {
 });
 
 /**
+ * Take a released result back, so the paper can be replaced and re-checked.
+ *
+ * Release was a one-way door. Replacing the photo, deleting the submission and
+ * re-running the AI check are all refused once releasedAt is set, and each
+ * refusal is right on its own: a student has seen the mark, so it must not
+ * change underneath them silently. Together they left a teacher who validated
+ * and released the wrong paper — the wrong child's work, a photo of page two
+ * only, an activity scanned against the wrong rubric — with no way back at all.
+ * That is not caution, it is a dead end, and the workaround teachers reach for
+ * is worse: a second activity created to shadow the first.
+ *
+ * So the door opens, but only deliberately and only through here. What this
+ * does NOT do is quietly reverse anything:
+ *
+ *  - releasedAt is cleared, so the student stops seeing the mark. They see the
+ *    activity as awaiting its result again (maskUnreleasedForStudent), which is
+ *    honest — the result is genuinely being redone.
+ *  - status returns to PENDING, which is what makes the AI check and the file
+ *    replacement reachable again, and what stops the withdrawn mark counting
+ *    towards any average in the meantime (grading.countsAsGrade).
+ *  - hitlScore and hitlFeedback are LEFT ALONE. Reopening is not marking, and a
+ *    teacher who reopens to look again should still see what they had decided.
+ *    Uploading a replacement clears them, because at that point the mark
+ *    describes a different paper — that is the upload route's job, not this
+ *    one's.
+ *
+ * The audit log keeps both halves: the RELEASED row stays, with the policy
+ * snapshot of what the student was actually shown, and a REOPENED row records
+ * who took it back and when.
+ */
+app.post('/api/teacher/submissions/:id/reopen', async (req, res) => {
+  try {
+    const sub = await prisma.submission.findUnique({
+      where: { id: req.params.id },
+      include: { activity: { include: { class: { select: { teacherId: true } } } } }
+    });
+    if (!sub) return res.status(404).json({ success: false, error: 'Submission not found.' });
+    if (sub.activity?.class?.teacherId !== req.auth.sub) {
+      return res.status(403).json({ success: false, error: 'You can only reopen papers from your own classes.' });
+    }
+    // Nothing to take back. Not an error the teacher needs to act on — two
+    // clicks on the same button, or a stale roster — so it reports the state
+    // rather than failing.
+    if (!sub.releasedAt) {
+      return res.json({ success: true, alreadyOpen: true, submission: sub });
+    }
+
+    const updated = await prisma.submission.update({
+      where: { id: sub.id },
+      data: { releasedAt: null, status: 'PENDING' },
+      // The review screen re-renders from this payload, so it needs the same
+      // relations the analyze route returns — without them it loses
+      // activity.points (the score denominator) and activity.classId (the link
+      // back to the roster).
+      include: { student: true, activity: { include: { class: true } } }
+    });
+    await logGradingEvent(sub.id, 'REOPENED', { actorId: req.auth.sub, score: sub.hitlScore });
+
+    // Told, not silently withdrawn. A learner who opened their result and
+    // showed it to a parent will come back to an activity that says it is
+    // being looked at again; leaving them to discover the number gone is how a
+    // correction reads as a system fault.
+    await createNotification(sub.studentId, {
+      type: 'GRADE_REOPENED',
+      title: 'A result is being checked again',
+      body: `Your teacher is taking another look at your work for "${sub.activity?.title || 'an activity'}". The grade will be back shortly.`,
+      link: `/student/activity/${sub.activityId}`
+    });
+
+    res.json({ success: true, submission: updated });
+  } catch (e) {
+    console.error('reopen error:', e);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+/**
  * Excuse a student from an activity, or take the excusal back.
  *
  * Creates the Submission row if the student never handed anything in, which is
@@ -11400,6 +11477,18 @@ app.get('/api/teacher/:teacherId/analytics', async (req, res) => {
     studentTrends.sort((a, b) => (b.avgPercent ?? -1) - (a.avgPercent ?? -1));
 
     // ── Class-level headline numbers ──
+    //
+    // The class average is the mean of the learners' own general averages, not
+    // the class's total points over its total points possible. Those are
+    // different numbers and they answer different questions: pooling points
+    // lets a learner who happens to have been set more work — or more heavily
+    // weighted work — pull the class figure around, and it silently discards
+    // the per-subject DepEd weighting each learner's average was computed
+    // under. One learner, one vote is what a teacher means by "how is my class
+    // doing", and it is what every other average on this page already uses.
+    //
+    // `scored` is the denominator, not the roster: a child with nothing graded
+    // has no average to contribute and must not be counted as a zero.
     const scored = studentTrends.filter(s => s.avgPercent !== null);
     const classAverage = scored.length
       ? Math.round(scored.reduce((sum, s) => sum + s.avgPercent, 0) / scored.length)
@@ -11434,6 +11523,13 @@ app.get('/api/teacher/:teacherId/analytics', async (req, res) => {
         studentCount: uniqueStudents.length,
         gradedCount: graded.length,
         classAverage,
+        // How many learners classAverage is the mean of, so the card can say
+        // what the figure is an average OF. It used to caption itself with the
+        // pooled point total below, which describes a different calculation
+        // entirely — a teacher reading "178 of 225 points earned overall" under
+        // an 80% headline reasonably concluded the headline was 178/225, and
+        // then could not reconcile the two when they disagreed.
+        averagedOver: scored.length,
         pointsEarned: Math.round(totalEarned),
         pointsPossible: totalPossible,
         bands,

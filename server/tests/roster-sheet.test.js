@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   cellToText, readBirthday, headerRole, extractRoster,
   looksLikeAHeaderRow, splitDateOutOfName, composeName, withSurnameComma, tidyRosterEntry,
+  middleInitial,
 } from '../rosterSheet.js';
 
 /**
@@ -42,8 +43,11 @@ describe('the reported failure — a roster whose headings are not on row 1', ()
 
   it('rejoins split name columns with the surname comma the app greets on', () => {
     const { students } = extractRoster(SCHOOL_FORM);
-    expect(students[0].name).toBe('Dela Cruz, Juan Miguel Santos');
-    expect(students[2].name).toBe('Bautista, Maria Clara Cruz');
+    // The middle name comes back as its initial — the form spells "Santos" out
+    // in its own column, the class list this builds prints one letter. See
+    // middleInitial.
+    expect(students[0].name).toBe('Dela Cruz, Juan Miguel S.');
+    expect(students[2].name).toBe('Bautista, Maria Clara C.');
   });
 
   it('reads the birthday column, which used to be dropped entirely', () => {
@@ -235,7 +239,7 @@ describe('a whole table row arriving as one string', () => {
 describe('composeName — the shape the app sorts and greets on', () => {
   it('writes "Surname, Given" when the surname arrived as its own field', () => {
     expect(composeName({ lastName: 'Mercer', firstName: 'Alex' })).toBe('Mercer, Alex');
-    expect(composeName({ lastName: 'Dela Cruz', firstName: 'Juan', middleName: 'Santos' })).toBe('Dela Cruz, Juan Santos');
+    expect(composeName({ lastName: 'Dela Cruz', firstName: 'Juan', middleName: 'Santos' })).toBe('Dela Cruz, Juan S.');
   });
 
   it('leaves a combined name for withSurnameComma to handle after tidying', () => {
@@ -243,6 +247,64 @@ describe('composeName — the shape the app sorts and greets on', () => {
     // not write a comma into "1 Mercer Alex 03/14/2005".
     expect(composeName({ name: 'Mercer Alex' })).toBe('Mercer Alex');
     expect(composeName({ lastName: 'Mercer' })).toBe('Mercer');
+  });
+});
+
+describe('middleInitial — School Form 1 prints one letter, not the whole name', () => {
+  it('abbreviates a spelled-out middle name', () => {
+    expect(middleInitial('Balestero')).toBe('B.');
+    expect(middleInitial('Santos')).toBe('S.');
+  });
+
+  it('leaves a name already written as an initial on the same letter', () => {
+    // The same column is headed "Middle Name" on one export and "Middle
+    // Initial" on the next, so this runs over both. "S" and "S." must not
+    // become "S.." or "S. .".
+    expect(middleInitial('S')).toBe('S.');
+    expect(middleInitial('S.')).toBe('S.');
+    expect(middleInitial('S. C.')).toBe('S.');
+  });
+
+  it('takes one letter from a multi-word maternal surname', () => {
+    // The form has one box for it, so "Dela Cruz" is "D." and not "D.C.".
+    expect(middleInitial('Dela Cruz')).toBe('D.');
+  });
+
+  it('drops the placeholders a roster puts in an empty middle-name column', () => {
+    // "N/A" used to become the initial "N." — a letter belonging to no
+    // relative, printed on the class list all year.
+    for (const filler of ['', '  ', 'N/A', 'n/a', 'NA', 'none', '-', '--', '.', 'x']) {
+      expect(middleInitial(filler)).toBe('');
+    }
+  });
+
+  it('does not leave a stray full stop when there is no middle name', () => {
+    expect(composeName({ lastName: 'Mercer', firstName: 'Alex', middleName: 'N/A' })).toBe('Mercer, Alex');
+    expect(composeName({ lastName: 'Mercer', firstName: 'Alex', middleName: null })).toBe('Mercer, Alex');
+  });
+});
+
+describe('a middle name is only abbreviated when the roster said it was one', () => {
+  it('leaves a combined name alone, because nothing there says which word is the middle one', () => {
+    // "Dela Cruz, Juan Miguel" gives no way to tell a second given name from a
+    // maternal surname. Abbreviating on that guess would rename a child called
+    // Juan Miguel to "Juan M.", so the full-name path never does.
+    const { students } = extractRoster([
+      ["Learner's Name"],
+      ['Dela Cruz, Juan Miguel'],
+      ['Bautista, Maria Clara'],
+    ]);
+    expect(students.map(s => s.name)).toEqual(['Dela Cruz, Juan Miguel', 'Bautista, Maria Clara']);
+  });
+
+  it('collapses two middle columns to one initial rather than one each', () => {
+    // A sheet carrying both "Middle Name" and "Middle Initial" is describing
+    // the same name twice. "Juan S. S." is not a name.
+    const { students } = extractRoster([
+      ['Last Name', 'First Name', 'Middle Name', 'Middle Initial'],
+      ['Dela Cruz', 'Juan', 'Santos', 'S.'],
+    ]);
+    expect(students[0].name).toBe('Dela Cruz, Juan S.');
   });
 });
 
