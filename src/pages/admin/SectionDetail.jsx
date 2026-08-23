@@ -9,7 +9,7 @@ import { GRADE_LEVELS } from '../../constants/school';
 import StudentCredentials from '../../components/StudentCredentials';
 import SectionMoveConfirm from '../../components/SectionMoveConfirm';
 import RosterEditor from '../../components/RosterEditor';
-import { rowsFromExtraction, isFilledRow, rosterPayload, emptyRoster, withBlankRow, normalizeRosterName } from '../../utils/roster';
+import { rowsFromExtraction, offerMiddleInitials, isFilledRow, rosterPayload, emptyRoster, withBlankRow, normalizeRosterName } from '../../utils/roster';
 
 import { showAlert, showConfirm, showPrompt } from '../../utils/dialog';
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
@@ -131,7 +131,7 @@ export default function AdminSectionDetail() {
       const d = await res.json().catch(() => null);
       // Appended to whatever is already typed, so an upload adds to the class
       // list rather than replacing work already done.
-      const extracted = d?.success ? rowsFromExtraction(d) : [];
+      const extracted = d?.success ? await offerMiddleInitials(rowsFromExtraction(d), showConfirm) : [];
       if (extracted.length) {
         setStudentRows(prev => withBlankRow([...prev.filter(isFilledRow), ...extracted]));
       } else {

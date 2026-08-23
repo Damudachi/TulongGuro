@@ -96,13 +96,79 @@ export function parseRosterLines(text) {
 export function rowsFromExtraction(data) {
   if (Array.isArray(data?.students)) {
     return data.students
-      .map(s => ({
-        name: normalizeRosterName(String(s?.name ?? '')).trim(),
-        birthday: String(s?.birthday ?? '').trim(),
-      }))
+      .map(s => {
+        const name = normalizeRosterName(String(s?.name ?? '')).trim();
+        // The server's suggested "Surname, First M." reading of this name, when
+        // it has one. Carried through rather than applied — offerMiddleInitials
+        // is what decides. Dropped when it came back identical or empty, so a
+        // row either has a real alternative or none at all.
+        const suggested = normalizeRosterName(String(s?.nameWithInitial ?? '')).trim();
+        return {
+          name,
+          birthday: String(s?.birthday ?? '').trim(),
+          ...(suggested && suggested !== name ? { nameWithInitial: suggested } : {}),
+        };
+      })
       .filter(r => r.name);
   }
   return parseRosterLines((data?.names || []).join('\n'));
+}
+
+/**
+ * Ask whether this class list writes the middle name after the first name, and
+ * shorten it only if the teacher says it does.
+ *
+ * The parser can spot that "Faustino, Rafael Luis Balestero" *might* end in a
+ * middle name. It cannot know, and neither can anything else in this codebase:
+ * "Dela Cruz, Juan Miguel" is the identical shape and "Miguel" is the child's
+ * second given name. Shortening that on a hunch renames a real learner — their
+ * account, their class list, their report card — to fix a formatting nit.
+ *
+ * So it is asked, once per upload rather than once per learner, with a worked
+ * example taken from the teacher's own file so the question is about names
+ * they recognise instead of an abstraction. The counter-example is spelled out
+ * too, because the wrong answer here is silent: a teacher who does not know
+ * what "Juan M." would mean cannot consent to it.
+ *
+ * Says nothing and changes nothing when no row has an alternative — a sheet
+ * with its own Middle Name column is already exact, and a sheet of single
+ * given names has nothing to shorten.
+ *
+ * The safe answer is the default: `showConfirm` resolves false for Escape, the
+ * cancel button and a click on the scrim, and false leaves every name as the
+ * file had it.
+ *
+ * @param rows rows from rowsFromExtraction
+ * @param ask   the app's showConfirm, injected so this module stays free of the
+ *              dialog store and remains testable as plain data-in/out. Named
+ *              `ask` rather than `confirm` because a bare `confirm(...)` in
+ *              src/ is indistinguishable from the browser's own dialog, and
+ *              in-app-dialogs.test.js rejects the whole file on sight of one.
+ */
+export async function offerMiddleInitials(rows, ask) {
+  const strip = ({ name, birthday }) => ({ name, birthday });
+  const offered = rows.filter(r => r.nameWithInitial);
+  if (!offered.length || typeof ask !== 'function') return rows.map(strip);
+
+  const examples = offered.slice(0, 3)
+    .map(r => `    ${r.name}\n      →  ${r.nameWithInitial}`)
+    .join('\n');
+
+  const shorten = await ask(
+    `Does this class list write each learner's middle name after their first name?\n\n`
+    + `If it does, the last name on each line can be shortened to an initial, the way School Form 1 prints it:\n\n`
+    + `${examples}\n\n`
+    + `${offered.length === 1 ? 'One learner' : `${offered.length} learners`} would change.\n\n`
+    + `Say no if that last word is a second given name rather than a middle name — "Dela Cruz, Juan Miguel" `
+    + `would become "Dela Cruz, Juan M.", which is not that child's name.`,
+    {
+      title: 'Shorten middle names?',
+      confirmLabel: 'Yes, shorten to initials',
+      cancelLabel: 'No, keep them as they are',
+    }
+  );
+
+  return rows.map(r => strip(shorten && r.nameWithInitial ? { ...r, name: r.nameWithInitial } : r));
 }
 
 /** A row the teacher has actually put something in. */

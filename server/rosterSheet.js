@@ -379,24 +379,29 @@ const isAbbreviated = (word) => isInitial(word) || /\.$/.test(word);
  * "LEARNER'S NAME" column holding "Faustino, Rafael Luis Balestero" — where
  * nothing in the data marks which word is the mother's maiden surname.
  *
- * The inference: in a Philippine roster written surname-first, the LAST word of
- * the given-name portion is the middle name. That is the School Form 1 layout,
- * it is how every list this parser sees is typed, and it is the reading the
- * teacher who typed it intended.
+ * The reading: in a Philippine roster written surname-first, the LAST word of
+ * the given-name portion is the middle name. That is the School Form 1 layout
+ * and it is how most lists this parser sees are typed.
  *
- * It is a guess, and it can be wrong: "Dela Cruz, Juan Miguel" is a child with
- * two given names and no middle name, and this turns them into "Juan Miguel"
- * → "Juan M.". That cost is accepted for the same reason withSurnameComma
- * accepts its own — the alternative is not "no guess", it is a class list in a
- * format nobody at the school uses, hand-corrected forty times — and it is
- * bounded the same way: the result is shown in the roster editor, spelled out
- * and editable, before a single account is created. The greeting survives
- * either way, since firstNameFromRoster drops a trailing initial ("Juan").
+ * IT IS ONLY EVER A SUGGESTION. This is not applied to anybody's name on its
+ * own, and must not be: "Dela Cruz, Juan Miguel" is a child with two given
+ * names and no middle name at all, and there is nothing whatsoever in that
+ * string to tell it apart from "Faustino, Rafael Luis Balestero". Applying it
+ * automatically renamed real children — Juan Miguel became "Juan M." — which
+ * is data loss dressed up as formatting, and no amount of it being "usually
+ * right" makes it the app's call to make.
  *
- * Never applied where the sheet already said where the given names end — see
- * `givenNamesAreKnown` in extractRoster. A sheet with its own "First Name"
+ * So the answer comes from the only party that knows: the result is offered to
+ * the teacher, next to a worked example from their own file, and applied only
+ * if they say the list is written that way. See offerMiddleInitials in
+ * src/utils/roster.js for the ask, and `nameWithInitial` on the extraction
+ * response for how it travels.
+ *
+ * Not offered at all where the sheet already said where the given names end —
+ * see `givenNamesAreKnown` in extractRoster. A sheet with its own "First Name"
  * column has told us that the whole column is given names, so there is nothing
- * to infer and inferring anyway would abbreviate a real first name.
+ * to suggest, and suggesting anyway would offer to abbreviate a real first
+ * name.
  *
  * Guards, in the order they matter:
  *
@@ -643,12 +648,22 @@ function extractRoster(grid) {
     // and the school's letterhead was enrolled as a learner.
     if (!withComma || !looksLikeAName(withComma) || looksLikeAHeaderRow(withComma)) continue;
 
-    // Last, and only on a row that has already been accepted as a person: the
-    // surname boundary has to be in place for abbreviateMiddleName to know
+    // Offered, never applied. The name that goes into the roster is the one the
+    // sheet actually held; `nameWithInitial` rides alongside so the editor can
+    // ask the teacher whether this list writes the middle name last, and swap
+    // them over only if it does. See abbreviateMiddleName for why this is not
+    // a decision the parser can make.
+    //
+    // Computed only on a row already accepted as a person, and only once the
+    // surname boundary is in place — abbreviateMiddleName needs it to know
     // which words are given names at all.
-    const name = givenNamesAreKnown ? withComma : abbreviateMiddleName(withComma);
+    const suggestion = givenNamesAreKnown ? withComma : abbreviateMiddleName(withComma);
 
-    students.push({ name, birthday: entry.birthday });
+    students.push({
+      name: withComma,
+      birthday: entry.birthday,
+      ...(suggestion === withComma ? {} : { nameWithInitial: suggestion }),
+    });
   }
 
   return { students, source, headings: headingsSeen(rows) };

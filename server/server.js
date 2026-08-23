@@ -6131,10 +6131,13 @@ async function extractRosterFromImage(localPath, mime) {
       // enrolled as a learner. Same ordering as extractRoster, for the same
       // reason.
       .filter(s => s.name && looksLikeAName(s.name) && !looksLikeAHeaderRow(s.name))
-      .map(({ middleIsKnown, ...s }) => ({
-        ...s,
-        name: middleIsKnown ? s.name : abbreviateMiddleName(s.name),
-      }));
+      .map(({ middleIsKnown, ...s }) => {
+        // Offered, not applied — same rule as the spreadsheet path. When the
+        // model DID report a middle name of its own, composeName has already
+        // reduced it and that reading is exact, so there is nothing to ask.
+        const suggestion = middleIsKnown ? s.name : abbreviateMiddleName(s.name);
+        return suggestion === s.name ? s : { ...s, nameWithInitial: suggestion };
+      });
   } finally {
     if (prepared !== localPath) { try { fs.unlinkSync(prepared); } catch { /* best effort */ } }
   }
