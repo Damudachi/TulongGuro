@@ -4,6 +4,7 @@ import { API_URL, apiFetch } from '../../config';
 import { getStoredUser } from '../../utils/session';
 
 import { showAlert, showConfirm } from '../../utils/dialog';
+import { classifyCriterion, getSkillById } from '../../utils/skillTaxonomy';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
 
@@ -338,14 +339,28 @@ export default function RubricManager() {
         {isOpen && (
           <div className="border-t border-slate-100 px-5 pb-5 pt-4">
             <div className="space-y-3 mb-5">
-              {rubric.criteria.map((c, i) => (
+              {rubric.criteria.map((c, i) => {
+                const skill = getSkillById(classifyCriterion(c.name, c.description));
+                return (
                 <div key={i} className="p-3 bg-slate-50 rounded-lg">
                   <div className="flex items-start gap-4">
                     <div className="w-12 h-12 rounded-lg bg-brand-navy/10 text-brand-navy flex items-center justify-center font-extrabold text-sm shrink-0">
                       {type === 'standard' ? `${c.points}%` : c.points}
                     </div>
                     <div className="flex-1">
-                      <p className="font-semibold text-brand-slate text-sm">{c.name}</p>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <p className="font-semibold text-brand-slate text-sm">{c.name}</p>
+                        {skill && (
+                          <span
+                            className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full shrink-0"
+                            style={{ backgroundColor: `${skill.color}1A`, color: skill.color }}
+                            title={`Feeds into the "${skill.label}" skill on the Skill Progress chart`}
+                          >
+                            <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: skill.color }} />
+                            {skill.label}
+                          </span>
+                        )}
+                      </div>
                       <p className="text-xs text-slate-500 mt-0.5">{c.description}</p>
                     </div>
                   </div>
@@ -367,7 +382,8 @@ export default function RubricManager() {
                     </div>
                   )}
                 </div>
-              ))}
+                );
+              })}
             </div>
             <div className="flex gap-3 items-center">
               <button onClick={() => startEditing(rubric)}

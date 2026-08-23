@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash('/c/Program Files/Google/Chrome/Application/chrome.exe' --headless=new --disable-gpu --hide-scrollbars --window-size=1500,1900 --force-device-scale-factor=2 '--screenshot=C:\\\\Users\\\\Neriah\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\c--Users-Neriah-Documents-4th-Year-Thesis-Final-TulongGuro\\\\91030edc-16b0-494b-95ed-77d9c1916b18\\\\scratchpad\\\\component-uml.png' --default-background-color=FFFFFFFF file:///C:/Users/Neriah/AppData/Local/Temp/claude/c--Users-Neriah-Documents-4th-Year-Thesis-Final-TulongGuro/91030edc-16b0-494b-95ed-77d9c1916b18/scratchpad/component-uml.html)",
+      "Read(//c/Users/Neriah/AppData/Local/Temp/claude/c--Users-Neriah-Documents-4th-Year-Thesis-Final-TulongGuro/91030edc-16b0-494b-95ed-77d9c1916b18/scratchpad/**)"
+    ]
+  }
+}
