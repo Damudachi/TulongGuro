@@ -85,3 +85,18 @@ export function classifyCriterion(name, description) {
 export function getSkillById(id) {
   return SKILLS.find(s => s.id === id) || null;
 }
+
+/**
+ * The skill a criterion actually displays: a teacher's manual choice
+ * (criterion.skill) if they've set one, otherwise whatever classifyCriterion
+ * auto-detects from its name/description. Every screen that shows a
+ * criterion's skill badge should resolve it through here rather than calling
+ * classifyCriterion directly, so a manual override in the rubric editor is
+ * respected everywhere the rubric is shown — the rubric list, the activity
+ * builder's rubric preview, and anywhere else criteria are rendered.
+ */
+export function resolveCriterionSkill(criterion) {
+  if (!criterion) return null;
+  const skillId = criterion.skill || classifyCriterion(criterion.name, criterion.description);
+  return getSkillById(skillId);
+}

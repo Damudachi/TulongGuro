@@ -4,7 +4,7 @@ import { API_URL, apiFetch } from '../../config';
 import { getStoredUser } from '../../utils/session';
 
 import { showAlert, showConfirm } from '../../utils/dialog';
-import { classifyCriterion, getSkillById } from '../../utils/skillTaxonomy';
+import { SKILLS, classifyCriterion, getSkillById, resolveCriterionSkill } from '../../utils/skillTaxonomy';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
 
@@ -340,7 +340,7 @@ export default function RubricManager() {
           <div className="border-t border-slate-100 px-5 pb-5 pt-4">
             <div className="space-y-3 mb-5">
               {rubric.criteria.map((c, i) => {
-                const skill = getSkillById(classifyCriterion(c.name, c.description));
+                const skill = resolveCriterionSkill(c);
                 return (
                 <div key={i} className="p-3 bg-slate-50 rounded-lg">
                   <div className="flex items-start gap-4">
@@ -564,7 +564,9 @@ export default function RubricManager() {
 
                 <div className="space-y-3 mb-6">
                   <label className="block text-sm font-medium text-slate-700">Criteria</label>
-                  {editingRubric.criteria.map((c, i) => (
+                  {editingRubric.criteria.map((c, i) => {
+                    const autoSkill = getSkillById(classifyCriterion(c.name, c.description));
+                    return (
                     <div key={i} className="p-3 border border-slate-200 rounded-lg bg-slate-50 space-y-3">
                       <div className="flex items-start gap-3">
                         <div className="flex-1 space-y-2">
@@ -580,6 +582,26 @@ export default function RubricManager() {
                               setEditingRubric({...editingRubric, criteria: newC});
                             }}
                             className="w-full p-2 border border-slate-200 rounded text-sm focus:outline-none focus:ring-1 focus:ring-brand-navy text-slate-600 min-h-[60px]" placeholder="Description..." />
+                          <div className="flex items-center gap-2">
+                            <span className="text-[11px] font-bold text-slate-500 uppercase shrink-0">Skill</span>
+                            <select
+                              value={c.skill || 'auto'}
+                              onChange={e => {
+                                const v = e.target.value;
+                                const newC = [...editingRubric.criteria];
+                                newC[i] = { ...newC[i], skill: v === 'auto' ? undefined : v };
+                                setEditingRubric({...editingRubric, criteria: newC});
+                              }}
+                              className="flex-1 p-1.5 text-xs border border-slate-200 rounded focus:outline-none focus:ring-1 focus:ring-brand-navy"
+                            >
+                              <option value="auto">
+                                {autoSkill ? `Auto-detect (currently: ${autoSkill.label})` : 'Auto-detect (no match yet)'}
+                              </option>
+                              {SKILLS.map(s => (
+                                <option key={s.id} value={s.id}>{s.label}</option>
+                              ))}
+                            </select>
+                          </div>
                         </div>
                         <div className="flex flex-col gap-2 w-24">
                           <div className="flex flex-col items-center gap-1">
@@ -646,8 +668,9 @@ export default function RubricManager() {
                         </div>
                       )}
                     </div>
-                  ))}
-                  
+                    );
+                  })}
+
                   <button onClick={() => {
                       setEditingRubric({
                         ...editingRubric,

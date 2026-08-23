@@ -10,6 +10,7 @@ import {
   badgeLook, BADGE_ICON_KEYS, BADGE_COLOR_KEYS,
   DEFAULT_BADGE_ICON, DEFAULT_BADGE_COLOR,
 } from '../../constants/badgeLook';
+import { resolveCriterionSkill } from '../../utils/skillTaxonomy';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
 
@@ -1987,15 +1988,30 @@ export default function ActivityBuilder() {
               activity having lost it. */}
           {!showRubricEditor && activeCriteria.length > 0 && (rubricMode === 'template' || isRubricLocked) && (
             <ul className="space-y-1.5">
-              {activeCriteria.map((c, i) => (
+              {activeCriteria.map((c, i) => {
+                const skill = resolveCriterionSkill(c);
+                return (
                 <li key={i} className="flex items-baseline justify-between gap-3 text-sm">
-                  <span className="text-slate-700 truncate">{c.name}</span>
+                  <span className="flex items-center gap-2 min-w-0">
+                    <span className="text-slate-700 truncate">{c.name}</span>
+                    {skill && (
+                      <span
+                        className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full shrink-0"
+                        style={{ backgroundColor: `${skill.color}1A`, color: skill.color }}
+                        title={`Feeds into the "${skill.label}" skill on the Skill Progress chart`}
+                      >
+                        <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: skill.color }} />
+                        {skill.label}
+                      </span>
+                    )}
+                  </span>
                   <span className="text-slate-400 text-xs shrink-0">
                     {c.points}{rubricType === 'standard' ? '%' : ' pts'}
                     {toActivityPoints(c.points) && ` · ${toActivityPoints(c.points)} of ${form.points}`}
                   </span>
                 </li>
-              ))}
+                );
+              })}
             </ul>
           )}
 
