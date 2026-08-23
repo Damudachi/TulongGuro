@@ -358,6 +358,97 @@ function withSurnameComma(name) {
   return `${words.slice(0, surnameWords).join(' ')}, ${words.slice(surnameWords).join(' ')}`;
 }
 
+/** Suffixes that trail a name and are not part of it. More than one letter by
+ *  construction, so they never look like an initial. */
+const NAME_SUFFIXES = new Set(['jr', 'sr', 'ii', 'iii', 'iv', 'v', 'vi', 'vii']);
+
+/** A single letter, with or without its full stop — a name already abbreviated. */
+const isInitial = (word) => /^\p{L}\.?$/u.test(word);
+
+/**
+ * A word that is short for something: an initial, or anything ending in a full
+ * stop. "Ma." for Maria, "Fr." — the marker is the stop, not the length.
+ */
+const isAbbreviated = (word) => isInitial(word) || /\.$/.test(word);
+
+/**
+ * Abbreviate the middle name inside a name that arrived as ONE string.
+ *
+ * The exact path is middleInitial, which reads a middle-name field or column.
+ * This is the inexact one, for the very common roster that has a single
+ * "LEARNER'S NAME" column holding "Faustino, Rafael Luis Balestero" — where
+ * nothing in the data marks which word is the mother's maiden surname.
+ *
+ * The inference: in a Philippine roster written surname-first, the LAST word of
+ * the given-name portion is the middle name. That is the School Form 1 layout,
+ * it is how every list this parser sees is typed, and it is the reading the
+ * teacher who typed it intended.
+ *
+ * It is a guess, and it can be wrong: "Dela Cruz, Juan Miguel" is a child with
+ * two given names and no middle name, and this turns them into "Juan Miguel"
+ * → "Juan M.". That cost is accepted for the same reason withSurnameComma
+ * accepts its own — the alternative is not "no guess", it is a class list in a
+ * format nobody at the school uses, hand-corrected forty times — and it is
+ * bounded the same way: the result is shown in the roster editor, spelled out
+ * and editable, before a single account is created. The greeting survives
+ * either way, since firstNameFromRoster drops a trailing initial ("Juan").
+ *
+ * Never applied where the sheet already said where the given names end — see
+ * `givenNamesAreKnown` in extractRoster. A sheet with its own "First Name"
+ * column has told us that the whole column is given names, so there is nothing
+ * to infer and inferring anyway would abbreviate a real first name.
+ *
+ * Guards, in the order they matter:
+ *
+ *  - No comma, no surname boundary, no idea where the given names start. Left
+ *    alone; withSurnameComma runs before this and supplies one when it can.
+ *  - Suffixes ("Jr.", "III") ride at the end and are not the middle name, so
+ *    they are lifted off, the abbreviation applied, and put back.
+ *  - A last word that is already an initial means the work is done. Normalised
+ *    to "B." so a bare "B" gains its stop, which also makes this idempotent.
+ *  - A middle name can be a multi-word maternal surname — "Juan Dela Cruz" —
+ *    so a trailing particle group is taken as one name and reduced to one
+ *    letter, matching the single box the form gives it.
+ *  - If every word that would REMAIN is itself an abbreviation, stop: in
+ *    "Dela Cruz, Ma. Teresa" the trailing word is the child's actual first
+ *    name and "Ma." is the abbreviation. Abbreviating there would leave
+ *    "Ma. T." and no name at all.
+ */
+function abbreviateMiddleName(name) {
+  const text = String(name ?? '').replace(/\s+/g, ' ').trim();
+  const comma = text.indexOf(',');
+  if (comma === -1) return text;
+
+  const surname = text.slice(0, comma).trim();
+  const words = text.slice(comma + 1).trim().split(' ').filter(Boolean);
+  if (!surname || words.length < 2) return text;
+
+  const bare = (word) => word.toLowerCase().replace(/\./g, '');
+  const suffixes = [];
+  while (words.length && NAME_SUFFIXES.has(bare(words[words.length - 1]))) {
+    suffixes.unshift(words.pop());
+  }
+  if (words.length < 2) return text;
+
+  const rebuild = (given) => [`${surname},`, ...given, ...suffixes].join(' ');
+
+  const last = words[words.length - 1];
+  if (isInitial(last)) {
+    return rebuild([...words.slice(0, -1), `${last[0].toUpperCase()}.`]);
+  }
+
+  // Where the middle name starts. Never below 1 — a given name has to survive.
+  let start = words.length - 1;
+  while (start > 1 && SURNAME_PARTICLES.has(bare(words[start - 1]))) start--;
+
+  const given = words.slice(0, start);
+  if (given.every(isAbbreviated)) return text;
+
+  const letter = words[start].match(/\p{L}/u);
+  if (!letter) return text;
+  return rebuild([...given, `${letter[0].toUpperCase()}.`]);
+}
+
 /**
  * One learner, tidied: numbering off the front, any embedded birth date moved
  * to where it belongs. A birthday that came from its own column wins over one
@@ -519,6 +610,19 @@ function extractRoster(grid) {
   // surnames must not have "Dela Cruz" split into "Dela, Cruz".
   const surnameIsKnown = nameColumns.some(c => c.role === 'last');
 
+  // Whether the sheet itself said where the given names end.
+  //
+  // A "First Name" column is a structural fact: everything in it is a given
+  // name, so if a middle name exists it is in a column of its own and joinName
+  // has already reduced it. Nothing is left to infer, and inferring anyway
+  // would abbreviate a real first name — a sheet with First "Rafael Luis" and
+  // no middle column would come back as "Rafael L.".
+  //
+  // Without that column the name arrived as one string and the middle name, if
+  // there is one, is hiding inside it. That is what abbreviateMiddleName is
+  // for, and it is only ever reached from here.
+  const givenNamesAreKnown = nameColumns.some(c => c.role === 'first');
+
   const students = [];
   for (let r = firstDataRow; r < rows.length; r++) {
     const row = rows[r];
@@ -532,8 +636,17 @@ function extractRoster(grid) {
     // the name column itself rather than in one of its own. The surname comma
     // goes in after it, once the number and the date are gone.
     const entry = tidyRosterEntry(joinName(parts), fromColumn);
-    const name = surnameIsKnown ? entry.name : withSurnameComma(entry.name);
-    if (!name || !looksLikeAName(name) || looksLikeAHeaderRow(name)) continue;
+    const withComma = surnameIsKnown ? entry.name : withSurnameComma(entry.name);
+    // Judged on the text the sheet actually held, BEFORE any abbreviation.
+    // Abbreviating first defeated these: "Department of Education" became
+    // "Department, of E.", which no longer looks like the form heading it is,
+    // and the school's letterhead was enrolled as a learner.
+    if (!withComma || !looksLikeAName(withComma) || looksLikeAHeaderRow(withComma)) continue;
+
+    // Last, and only on a row that has already been accepted as a person: the
+    // surname boundary has to be in place for abbreviateMiddleName to know
+    // which words are given names at all.
+    const name = givenNamesAreKnown ? withComma : abbreviateMiddleName(withComma);
 
     students.push({ name, birthday: entry.birthday });
   }
@@ -559,6 +672,7 @@ module.exports = {
   looksLikeAHeaderRow,
   splitDateOutOfName,
   middleInitial,
+  abbreviateMiddleName,
   composeName,
   withSurnameComma,
   tidyRosterEntry,
