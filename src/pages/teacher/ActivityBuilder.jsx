@@ -10,7 +10,7 @@ import {
   badgeLook, BADGE_ICON_KEYS, BADGE_COLOR_KEYS,
   DEFAULT_BADGE_ICON, DEFAULT_BADGE_COLOR,
 } from '../../constants/badgeLook';
-import { resolveCriterionSkill } from '../../utils/skillTaxonomy';
+import { SKILLS, classifyCriterion, getSkillById, resolveCriterionSkill } from '../../utils/skillTaxonomy';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
 
@@ -1178,6 +1178,32 @@ export default function ActivityBuilder() {
           <input type="text" value={c.description} onChange={e => updateCriterion(i, 'description', e.target.value)}
             className="w-full px-3 py-1.5 border border-slate-200 rounded text-xs text-slate-600 focus:outline-none focus:ring-1 focus:ring-brand-navy" placeholder="Description (optional)" />
 
+          {/* Which of the 4 monitored skills this criterion feeds into on the
+              Skill Progress chart. Auto-detected from the name/description by
+              default; a teacher who disagrees with the guess can pin it to a
+              specific skill here, and the override travels with the criterion
+              wherever it's shown (Rubrics tab, this screen, Save as template). */}
+          {(() => {
+            const autoSkill = getSkillById(classifyCriterion(c.name, c.description));
+            return (
+              <div className="flex items-center gap-2">
+                <span className="text-[11px] font-bold text-slate-500 uppercase shrink-0">Skill</span>
+                <select
+                  value={c.skill || 'auto'}
+                  onChange={e => updateCriterion(i, 'skill', e.target.value === 'auto' ? undefined : e.target.value)}
+                  className="flex-1 p-1.5 text-xs border border-slate-200 rounded focus:outline-none focus:ring-1 focus:ring-brand-navy"
+                >
+                  <option value="auto">
+                    {autoSkill ? `Auto-detect (currently: ${autoSkill.label})` : 'Auto-detect (no match yet)'}
+                  </option>
+                  {SKILLS.map(s => (
+                    <option key={s.id} value={s.id}>{s.label}</option>
+                  ))}
+                </select>
+              </div>
+            );
+          })()}
+
           {/* Range bands editor */}
           {rubricType === 'range' && (
             <div className="mt-2 space-y-1.5 pl-2 border-l-2 border-slate-200">
@@ -2166,12 +2192,26 @@ export default function ActivityBuilder() {
 
               {/* Provenance for the current pick lives in the summary card
                   above, so it stays visible whichever mode is open. */}
-              {isEditingTemplate ? renderCriterionEditor(rubricCriteria) : rubricCriteria.map((c, i) => (
+              {isEditingTemplate ? renderCriterionEditor(rubricCriteria) : rubricCriteria.map((c, i) => {
+                const skill = resolveCriterionSkill(c);
+                return (
                 <div key={i} className="p-3 bg-slate-50 rounded-lg border border-slate-100 space-y-2">
                   <div className="flex items-start gap-3">
                     <CheckCircle2 className="w-5 h-5 text-brand-green shrink-0 mt-0.5" />
                     <div className="flex-1">
-                      <p className="text-sm font-bold text-brand-slate">{c.name}</p>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <p className="text-sm font-bold text-brand-slate">{c.name}</p>
+                        {skill && (
+                          <span
+                            className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full shrink-0"
+                            style={{ backgroundColor: `${skill.color}1A`, color: skill.color }}
+                            title={`Feeds into the "${skill.label}" skill on the Skill Progress chart`}
+                          >
+                            <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: skill.color }} />
+                            {skill.label}
+                          </span>
+                        )}
+                      </div>
                       <p className="text-xs text-slate-500">{c.description}</p>
                     </div>
                     {rubricType === 'standard' && (
@@ -2198,7 +2238,8 @@ export default function ActivityBuilder() {
                     </div>
                   )}
                 </div>
-              ))}
+                );
+              })}
             </div>
           )}
 
