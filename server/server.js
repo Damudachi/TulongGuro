@@ -10872,24 +10872,9 @@ function parseAssistantTurn(rawText, { isStructured } = {}) {
  * Returns text unchanged when there is no submission to look up, which is the
  * case for a caller that never sends one.
  */
-async function withoutStudentName(submissionId, teacherId) {
+function nameScrubber(rawName) {
   const identity = (text) => text;
-  if (!submissionId) return identity;
-
-  let name = '';
-  try {
-    const sub = await prisma.submission.findFirst({
-      // Scoped to the caller's own class, so this cannot be used to probe
-      // whether an arbitrary submission id exists.
-      where: { id: String(submissionId), activity: { class: { teacherId } } },
-      select: { student: { select: { name: true } } },
-    });
-    name = String(sub?.student?.name || '').replace(/\s+/g, ' ').trim();
-  } catch {
-    // A lookup failure must not take the assistant down with it. The client
-    // already omits the name; this layer is the backstop, not the mechanism.
-    return identity;
-  }
+  const name = String(rawName || '').replace(/\s+/g, ' ').trim();
   if (!name) return identity;
 
   const escape = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -10915,6 +10900,84 @@ async function withoutStudentName(submissionId, teacherId) {
   return (text) => String(text ?? '').replace(pattern, 'the student');
 }
 
+/**
+ * Everything the assistant is allowed to know about one paper: the learner's
+ * paper itself, and a scrubber for their name.
+ *
+ * One query for both, because they come off the same row and the alternative
+ * is two round trips per chat message.
+ *
+ * ── Why the paper is attached at all ──
+ *
+ * The assistant could previously see the rubric scores and the feedback, but
+ * not the work they describe. That made it confidently useless for the thing
+ * teachers actually open it for: asked to soften a comment or add a step, it
+ * could only reword what it was handed, and asked anything about the writing
+ * it said so — "I do not have access to the full, raw text of the student's
+ * essay… you can paste it right here in our chat." Asking a teacher to
+ * retype a child's handwriting into a chat box to get help with feedback is
+ * not a feature, it is the feature failing.
+ *
+ * ── What this costs ──
+ *
+ * A photographed paper is an image, and it goes up on EVERY message of the
+ * conversation, because the model is stateless. That is a real charge against
+ * the assist credential (kept off the grading pool on purpose — see
+ * ASSIST_MODEL_ID), and it is the honest price of the assistant being able to
+ * read the work. A typed submission costs almost nothing: buildFilePart
+ * returns extracted text for a Word file, not an image.
+ *
+ * ── What it does not send ──
+ *
+ * A paper the privacy gate flagged. That flag means a name or other
+ * identifying detail was detected ON the page, and the whole point of the gate
+ * is that such a page is not sent for AI processing. Grading refuses it; this
+ * refuses it too, rather than routing the same image to the same vendor
+ * through a different door.
+ *
+ * Failures are silent by design: a missing or unreadable file leaves the
+ * assistant working exactly as it did before, on rubric and feedback alone. A
+ * chat that 500s because a photo moved is worse than one that answers with
+ * slightly less to go on, and the reply says what it could see.
+ */
+async function loadAssistantPaper(submissionId, teacherId) {
+  const none = { scrub: nameScrubber(''), part: null, cleanup: async () => {} };
+  if (!submissionId) return none;
+
+  let sub;
+  try {
+    sub = await prisma.submission.findFirst({
+      // Scoped to the caller's own class, so this cannot be used to read a
+      // name off — or fetch the paper of — an arbitrary submission id.
+      where: { id: String(submissionId), activity: { class: { teacherId } } },
+      select: { imageUrl: true, privacyViolation: true, student: { select: { name: true } } },
+    });
+  } catch {
+    return none;
+  }
+  if (!sub) return none;
+
+  const scrub = nameScrubber(sub.student?.name);
+  if (!sub.imageUrl || sub.privacyViolation) return { ...none, scrub };
+
+  let resolved;
+  try {
+    resolved = await resolveLocalImagePath(sub.imageUrl);
+    if (!fs.existsSync(resolved.path)) throw new Error('paper is no longer on disk');
+    const part = await buildFilePart(resolved.path);
+    return {
+      scrub,
+      part,
+      cleanup: async () => {
+        if (resolved.isTemp) { try { fs.unlinkSync(resolved.path); } catch { /* best effort */ } }
+      },
+    };
+  } catch {
+    if (resolved?.isTemp) { try { fs.unlinkSync(resolved.path); } catch { /* best effort */ } }
+    return { ...none, scrub };
+  }
+}
+
 const teacherAssistantHandler = async (req, res) => {
   try {
     const {
@@ -10930,10 +10993,17 @@ const teacherAssistantHandler = async (req, res) => {
       return res.status(400).json({ success: false, error: 'Ask the assistant something first.' });
     }
 
-    // Applied to every field that is interpolated into the prompt below, not
-    // just the screen context — the name is equally a leak whichever box the
-    // teacher typed it into.
-    const scrub = await withoutStudentName(submissionId, req.auth.sub);
+    // The paper the conversation is about, plus the name scrubber. `scrub` is
+    // applied to every field interpolated into the prompt below, not just the
+    // screen context — the name is equally a leak whichever box the teacher
+    // typed it into.
+    const paper = await loadAssistantPaper(submissionId, req.auth.sub);
+    const { scrub } = paper;
+    // A Word submission comes back as extracted text, an image or PDF as an
+    // inline file part. The text kind is folded into the prompt where it reads
+    // naturally; only a real file needs its own part.
+    const paperIsText = typeof paper.part === 'string';
+    const paperFilePart = paperIsText ? null : paper.part;
 
     // The last few turns, so follow-ups ("shorten that", "why?") mean
     // something. Capped and truncated: this is a side conversation about one
@@ -10987,6 +11057,14 @@ RULES FOR "reply" (what the teacher reads):
 - Plain text only. No markdown headings, no bullet syntax, no code fences, and never paste JSON or field names into it.
 - If you are genuinely unsure what they want changed, answer with a question instead of guessing at a rewrite.
 
+THE STUDENT'S WORK:
+${paperFilePart
+    ? '- The student\'s actual paper is attached to this message. Read it. It is the primary evidence for anything you say about the writing — quote from it exactly, and never invent a sentence they did not write.\n- If the handwriting is unclear in places, say so rather than guessing at a word and building an argument on it.'
+    : paperIsText
+      ? '- The student\'s typed submission is included below, between the BEGIN/END markers. It is the primary evidence for anything you say about the writing — quote from it exactly, and never invent a sentence they did not write.'
+      : '- The paper itself is NOT available on this message. Work from the rubric scores and the feedback below, and say plainly that you cannot see the writing itself if the teacher asks something only the paper could answer. Do not ask them to paste it in unless they offer.'}
+- Reading the paper does not make you the grader. The scores are the teacher's; use the work to explain, illustrate and improve the feedback, never to argue a mark up or down unless the teacher asks you to.
+${paperIsText ? `${scrub(paper.part).slice(0, 12000)}\n` : ''}
 --- THIS PAPER ---
 ${scrub(String(screenContext || 'No additional context was provided.').slice(0, 4000))}
 
@@ -11019,7 +11097,9 @@ Return ONLY a valid JSON object, nothing else:
     if (assistModel) {
       try {
         const result = await generateContentWithRetry(assistModel, {
-          contents: [{ role: 'user', parts: [{ text: sys }] }],
+          // The paper rides after the instructions, the same order the grader
+          // uses: the model is told what it is looking at before it looks.
+          contents: [{ role: 'user', parts: [{ text: sys }, ...(paperFilePart ? [paperFilePart] : [])] }],
           generationConfig: { responseMimeType: 'application/json' }
         }, { purpose: 'ASSIST', modelLabel: ASSIST_MODEL_ID });
         const turn = parseAssistantTurn(result.response.text(), { isStructured });
@@ -11038,10 +11118,16 @@ Return ONLY a valid JSON object, nothing else:
         refineFailedReason = classifyAiError(e).quota
           ? 'The AI Teacher Assistant has reached its usage limit for now.'
           : 'The AI Teacher Assistant could not be reached.';
+      } finally {
+        // A paper downloaded out of Supabase Storage lands in a temp file.
+        // Cleared here rather than after the response, so a failed call does
+        // not leave one behind on every retry.
+        await paper.cleanup();
       }
     } else {
       refineFailed = true;
       refineFailedReason = 'The AI Teacher Assistant is not configured on this server.';
+      await paper.cleanup();
     }
 
     res.json({

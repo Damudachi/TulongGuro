@@ -1,5 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import { createRequire } from 'node:module';
+import fs from 'node:fs';
+import path from 'node:path';
 
 /**
  * The AI Teacher Assistant must never be told which child wrote the paper.
@@ -77,17 +79,37 @@ const SUBMISSION = 'submission-1';
 /** The learner, exactly as the roster stores them: "Surname, Given M." */
 const STUDENT_NAME = 'Santos, Mark Lester E.';
 
+/** A one-pixel JPEG. buildFilePart only base64s the bytes, but the file has to
+ *  really exist on disk for the paper to be attached. */
+const ONE_PIXEL_JPEG = Buffer.from(
+  '/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0a'
+  + 'HBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/wAALCAABAAEBAREA/8QAFAABAAAAAAAA'
+  + 'AAAAAAAAAAAACf/EABQQAQAAAAAAAAAAAAAAAAAAAAD/2gAIAQEAAD8AKp//2Q==',
+  'base64',
+);
+
 let baseUrl;
 let server;
 let signToken;
 let restoreClient;
 let sentToGoogle = [];
 let realFetch;
+let uploadPath;
+let paperUrl;
 
 beforeAll(async () => {
   restoreClient = require('../db.js').__setClientForTests(prismaFake);
   const { app } = require('../server.js');
   ({ signToken } = require('../auth.js'));
+
+  // resolveLocalImagePath joins a non-http imageUrl onto server/, so the paper
+  // has to sit under server/uploads for the route to find it.
+  const uploadsDir = path.join(__dirname, '..', 'uploads');
+  fs.mkdirSync(uploadsDir, { recursive: true });
+  const name = `assistant-paper-test-${process.pid}.jpg`;
+  uploadPath = path.join(uploadsDir, name);
+  fs.writeFileSync(uploadPath, ONE_PIXEL_JPEG);
+  paperUrl = `/uploads/${name}`;
 
   realFetch = globalThis.fetch;
   globalThis.fetch = async (input, init) => {
@@ -116,17 +138,20 @@ afterAll(async () => {
   if (realFetch) globalThis.fetch = realFetch;
   if (server) await new Promise((resolve) => server.close(resolve));
   if (restoreClient) restoreClient();
+  if (uploadPath) { try { fs.unlinkSync(uploadPath); } catch { /* already gone */ } }
 });
 
 beforeEach(() => {
   resetPrisma();
   sentToGoogle = [];
   prismaFake.user.findUnique.mockResolvedValue({ sessionsValidFrom: null });
-  // What withoutStudentName looks up. Scoped to the caller's own class in the
-  // query, so the `where` is honoured by returning null for anyone else.
+  // What loadAssistantPaper looks up. Scoped to the caller's own class in the
+  // query, so the `where` is honoured here by returning null for anyone else.
+  // No imageUrl by default: these first tests are about the name, and a paper
+  // on every one of them would only add an image part to ignore.
   prismaFake.submission.findFirst.mockImplementation(async ({ where }) => (
     where?.activity?.class?.teacherId === T1
-      ? { student: { name: STUDENT_NAME } }
+      ? { student: { name: STUDENT_NAME }, imageUrl: null, privacyViolation: false }
       : null
   ));
 });
@@ -236,5 +261,104 @@ describe('what the AI Teacher Assistant sends to Gemini', () => {
     // Nothing was redacted, because that teacher's lookup found nothing —
     // which is the point: no name was read, so none could be revealed.
     expect(prismaFake.submission.findFirst).toHaveBeenCalled();
+  });
+});
+
+/** The file parts of the one captured request — the paper, if it was sent. */
+const filesSent = () => sentToGoogle[0].contents.flatMap(c => c.parts).filter(p => p.inlineData);
+
+/** Puts a real paper on the submission the assistant is asked about. */
+function withPaper({ privacyViolation = false } = {}) {
+  prismaFake.submission.findFirst.mockImplementation(async ({ where }) => (
+    where?.activity?.class?.teacherId === T1
+      ? { student: { name: STUDENT_NAME }, imageUrl: paperUrl, privacyViolation }
+      : null
+  ));
+}
+
+/**
+ * The assistant can read the work it is being asked about.
+ *
+ * It used to see the rubric scores and the feedback but not the paper, which
+ * made it confidently useless for the thing teachers open it for: asked about
+ * the writing it answered "I do not have access to the full, raw text of the
+ * student's essay… you can paste it right here in our chat". Asking a teacher
+ * to retype a child's handwriting to get help with feedback is the feature
+ * failing, not a limitation to document.
+ */
+describe('the paper the assistant is reasoning about', () => {
+  it("attaches the student's work to the request", async () => {
+    withPaper();
+    await ask({ context: 'Activity: Flashbacks' });
+    const files = filesSent();
+    expect(files).toHaveLength(1);
+    expect(files[0].inlineData.mimeType).toBe('image/jpeg');
+    expect(files[0].inlineData.data).toBe(ONE_PIXEL_JPEG.toString('base64'));
+  });
+
+  it('tells the model the paper is there and is the evidence', async () => {
+    withPaper();
+    const prompt = await ask({ context: 'Activity: Flashbacks' });
+    expect(prompt).toContain("The student's actual paper is attached");
+    expect(prompt).toMatch(/quote from it exactly/i);
+  });
+
+  it('holds it to explaining the mark rather than re-grading it', async () => {
+    // The scores are the teacher's. Handing the model the work is what makes
+    // it able to argue about them, so the rule goes in beside the paper.
+    withPaper();
+    const prompt = await ask({ context: 'Activity: Flashbacks' });
+    expect(prompt).toMatch(/Reading the paper does not make you the grader/);
+  });
+
+  it('says plainly when there is no paper, instead of inventing one', async () => {
+    // Default fixture: no imageUrl. The old behaviour is still the honest
+    // answer when the file genuinely is not there.
+    const prompt = await ask({ context: 'Activity: Flashbacks' });
+    expect(filesSent()).toHaveLength(0);
+    expect(prompt).toContain('The paper itself is NOT available');
+  });
+
+  it('never sends a paper the privacy gate flagged', async () => {
+    // That flag means a name or other identifying detail was detected ON the
+    // page. Grading refuses such a page; routing the same image to the same
+    // vendor through the assistant would be the gate with a second door in it.
+    withPaper({ privacyViolation: true });
+    const prompt = await ask({ context: 'Activity: Flashbacks' });
+    expect(filesSent()).toHaveLength(0);
+    expect(prompt).toContain('The paper itself is NOT available');
+  });
+
+  it('keeps answering when the file has gone missing', async () => {
+    // A photo that moved must not 500 the chat. The assistant carries on with
+    // the rubric and feedback, and says what it cannot see.
+    prismaFake.submission.findFirst.mockResolvedValue({
+      student: { name: STUDENT_NAME },
+      imageUrl: '/uploads/this-file-does-not-exist.jpg',
+      privacyViolation: false,
+    });
+    const prompt = await ask({ context: 'Activity: Flashbacks' });
+    expect(filesSent()).toHaveLength(0);
+    expect(prompt).toContain('The paper itself is NOT available');
+  });
+
+  it("does not fetch another teacher's paper", async () => {
+    withPaper();
+    const token = signToken({ id: OTHER_TEACHER, role: 'TEACHER', schoolId: 'school-a' });
+    const res = await realFetch(`${baseUrl}/api/teacher/assistant`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ submissionId: SUBMISSION, prompt: 'anything' }),
+    });
+    expect(res.status).toBe(200);
+    expect(filesSent()).toHaveLength(0);
+  });
+
+  it('sends the paper after the instructions, so the model is told what it is looking at', async () => {
+    withPaper();
+    await ask({ context: 'Activity: Flashbacks' });
+    const parts = sentToGoogle[0].contents.flatMap(c => c.parts);
+    expect(typeof parts[0].text).toBe('string');
+    expect(parts[parts.length - 1].inlineData).toBeTruthy();
   });
 });

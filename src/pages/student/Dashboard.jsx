@@ -207,9 +207,12 @@ export default function StudentDashboard() {
       )}
 
       {/* ── Skill progress ── */}
-      {/* The list under the chart is capped at the latest few; the gradebook
-          is where a whole term is meant to be read. */}
-      <SkillProgressChart studentId={user.id} moreTo="/student/subjects/gradebook" moreLabel="See all my activities" />
+      {/* The list under the chart is capped at the latest few. "See all" goes
+          to Activities rather than the Gradebook: the rows it is continuing are
+          activities with their titles and dates, and Activities is the screen
+          that carries on showing exactly that — including the work that has not
+          been graded yet, which is usually what a learner is looking for. */}
+      <SkillProgressChart studentId={user.id} moreTo="/student/subjects/activities" moreLabel="See all my activities" />
 
       {/* ── Upcoming deadlines ── */}
       <section className="mb-8">
