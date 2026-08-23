@@ -547,14 +547,46 @@ export default function ActivityBuilder() {
     setIsEditingTemplate(false);
   };
 
-  /** Keep the edits on this activity. The published template is untouched. */
-  const finishTemplateEdit = () => {
+  /**
+   * Keep the edits. When the picked rubric is one of the teacher's own saved
+   * templates, the change is written back to that template too — so a skill
+   * override (or any other edit) made here shows up back in the Rubrics tab,
+   * the same as editing it there directly. A school-wide or built-in rubric
+   * still can't be rewritten from an activity page (see applyOption's note
+   * on why): those edits stay local to this activity only.
+   */
+  const finishTemplateEdit = async () => {
     if (!rubricCriteria.every(c => c.name?.trim())) {
       showAlert('Every rubric criterion needs a name.');
       return;
     }
+    const ownedId = selectedOption.startsWith('saved:') ? selectedOption.slice('saved:'.length) : null;
+    const owningTemplate = ownedId && savedRubrics.find(r => r.id === ownedId);
+    if (owningTemplate) {
+      try {
+        const res = await apiFetch(`${API_URL}/api/teacher/rubric-templates/${ownedId}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: owningTemplate.name, criteria: rubricCriteria })
+        });
+        const data = await res.json();
+        if (!data.success) {
+          showAlert(data.error || 'Could not save changes to this rubric.');
+          return;
+        }
+        setSavedRubrics(prev => prev.map(r => r.id === ownedId ? { ...r, criteria: rubricCriteria } : r));
+        setTemplateBaseline(structuredClone(rubricCriteria));
+      } catch {
+        showAlert('Network error — could not save changes to this rubric.');
+        return;
+      }
+    }
     setIsEditingTemplate(false);
   };
+
+  /** Whether the picked rubric is one this teacher owns and can save changes back to. */
+  const editingOwnTemplate = selectedOption.startsWith('saved:')
+    && savedRubrics.some(r => `saved:${r.id}` === selectedOption);
 
   // Whether the copy on screen still matches the template it came from. Derived
   // rather than tracked with a flag, so typing a change and typing it back is
@@ -2143,16 +2175,21 @@ export default function ActivityBuilder() {
               </select>
 
               {/* Edit / Save. A template that is nearly right — the wording of
-                  one band, a criterion worth 4 rather than 3 — used to mean
-                  retyping the whole thing in Create, so most teachers took the
-                  template as-is whether or not it matched the work they had
-                  set. Editing here changes this activity's copy only; the
-                  school's published rubric is never written to. */}
+                  one band, a criterion worth 4 rather than 3, a skill tag that
+                  doesn't fit — used to mean retyping the whole thing in Create,
+                  so most teachers took the template as-is whether or not it
+                  matched the work they had set. Save writes the change back to
+                  the teacher's own template (so it shows up in the Rubrics tab
+                  too) when they own it; a school-wide or built-in rubric still
+                  can't be rewritten from here, so those edits stay local to
+                  this activity only — see finishTemplateEdit. */}
               {rubricCriteria.length > 0 && (
                 <div className="flex flex-wrap items-center justify-between gap-2 pb-1">
                   <p className="text-xs font-bold text-slate-500">
                     {isEditingTemplate
-                      ? 'Editing this activity’s copy — the published rubric stays as it is'
+                      ? (editingOwnTemplate
+                          ? 'Editing your rubric — Save updates it everywhere, including the Rubrics tab'
+                          : 'Editing this activity’s copy — the published rubric stays as it is')
                       : templateEdited ? 'Edited for this activity' : 'What this activity will be marked against'}
                   </p>
                   <div className="flex flex-wrap gap-2">
@@ -2163,11 +2200,14 @@ export default function ActivityBuilder() {
                           <X className="w-3.5 h-3.5" /> Cancel
                         </button>
                         <button type="button" onClick={handleSaveAsTemplate}
-                          title="Keep this version in your own rubric list for future activities"
+                          title="Keep this version as a separate, new rubric in your own list"
                           className="text-xs font-bold text-purple-700 bg-purple-50 border border-purple-200 px-3 py-1.5 rounded-lg hover:bg-purple-100 transition-colors flex items-center gap-1">
                           <Save className="w-3.5 h-3.5" /> Save as template
                         </button>
                         <button type="button" onClick={finishTemplateEdit}
+                          title={editingOwnTemplate
+                            ? 'Saves this change back to your rubric, including in the Rubrics tab'
+                            : 'Keeps this change for this activity only — school-wide and built-in rubrics can\'t be overwritten here'}
                           className="text-xs font-bold text-white bg-brand-green px-3 py-1.5 rounded-lg hover:bg-emerald-600 transition-colors flex items-center gap-1">
                           <CheckCircle2 className="w-3.5 h-3.5" /> Save
                         </button>
