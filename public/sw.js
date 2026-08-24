@@ -19,11 +19,16 @@
  * hard and replaced wholesale when the hash changes.
  */
 
+// v7: this worker now handles push. The bump is not strictly needed for that
+// (a push handler is code, not a cached URL) but an activate is the cheapest
+// way to be certain every installed phone is actually running the version that
+// has one — a device still on v6 would receive nothing and give no sign why.
+//
 // v6: the brand mark replaced the placeholder book icon, and the tab icon moved
 // from favicon.svg to favicon.ico. The icon URLs are unhashed and served
 // cache-first, so without this bump an already-installed phone keeps painting
 // the old icon on its home screen indefinitely.
-const VERSION = 'v6';
+const VERSION = 'v7';
 const SHELL = `tg-shell-${VERSION}`;    // index.html + icons + manifest
 const ASSETS = `tg-assets-${VERSION}`;  // /assets/* — content-hashed, immutable
 const FONTS = `tg-fonts-${VERSION}`;    // Google Fonts, cross-origin
@@ -240,4 +245,91 @@ self.addEventListener('fetch', (event) => {
       }))
     );
   }
+});
+
+
+/**
+ * ── Push ──
+ *
+ * The counterpart to createNotification() on the server. Everything above this
+ * point is about the app opening at all on a bad connection; this is about the
+ * app reaching someone who does not have it open — which, for a released grade,
+ * is everyone.
+ *
+ * The payload is written by our own server (server/push.js) and arrives
+ * encrypted end-to-end, but it is still parsed defensively: a push event that
+ * throws leaves the browser to show its own generic "This site has been updated
+ * in the background" notification, which is worse than showing nothing.
+ */
+self.addEventListener('push', (event) => {
+  let data = {};
+  try {
+    data = event.data ? event.data.json() : {};
+  } catch {
+    // Not our payload, or not JSON. Fall through to the defaults below rather
+    // than returning: a push that reached this device means *something*
+    // happened, and the app's own name is a better thing to show than the
+    // browser's fallback text.
+  }
+
+  const title = data.title || 'TulongGuro';
+  const options = {
+    body: data.body || undefined,
+    icon: '/icon-192.png',
+    badge: '/icon-192.png',
+    // Collapses repeats: six papers released at once should update one line in
+    // the tray, not stack six identical ones to swipe away.
+    tag: data.tag || 'tulongguro',
+    renotify: true,
+    // Grades are not an alarm. A notification that vibrates a phone in a
+    // classroom during a lesson is a notification a teacher will turn off.
+    requireInteraction: false,
+    data: { link: typeof data.link === 'string' ? data.link : '/' },
+  };
+
+  // waitUntil, or the worker can be killed before the notification is shown —
+  // and on Chrome a push handled without showing anything eventually costs the
+  // site its push permission entirely.
+  event.waitUntil(self.registration.showNotification(title, options));
+});
+
+/**
+ * Opening a notification should land on the thing it is about, in the window
+ * that is already open if there is one.
+ *
+ * Focusing an existing client rather than always calling openWindow matters
+ * more here than it looks: on Android the installed PWA and the APK are one
+ * window, and openWindow on top of a running app gives the user a second copy
+ * of TulongGuro with a fresh, empty React state — losing, among other things,
+ * anything sitting in the offline upload queue's UI.
+ */
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  const link = event.notification.data?.link || '/';
+
+  event.waitUntil((async () => {
+    const clientList = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+
+    for (const client of clientList) {
+      // Same-origin check: matchAll with includeUncontrolled can hand back
+      // windows this worker does not control.
+      if (new URL(client.url).origin !== self.location.origin) continue;
+      await client.focus();
+      // The app is a single-page router, so tell the page to navigate rather
+      // than reloading it out from under whatever the user was doing.
+      if ('navigate' in client) {
+        try {
+          await client.navigate(link);
+          return;
+        } catch {
+          // navigate() rejects if the client is not controlled by this worker;
+          // the message below is the fallback the app listens for.
+        }
+      }
+      client.postMessage({ type: 'NAVIGATE', link });
+      return;
+    }
+
+    await self.clients.openWindow(link);
+  })());
 });

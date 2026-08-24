@@ -4,6 +4,7 @@ import { Users, Download, Loader2, BookOpen } from 'lucide-react';
 import { API_URL, apiFetch } from '../../config';
 import { getStoredUser } from '../../utils/session';
 import PageHeader from '../../components/PageHeader';
+import { fileNameFromDisposition, gradebookFileName } from '../../utils/exportFile';
 
 import { showAlert } from '../../utils/dialog';
 export default function GradebookSection() {
@@ -37,7 +38,12 @@ export default function GradebookSection() {
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `grades_${classId}.xlsx`;
+      // The name the API chose — class, term, date. This used to be
+      // `grades_<classId>.xlsx`, and classId is a uuid, so every class's
+      // export landed in the downloads folder under an unreadable name that
+      // looked exactly like every other one.
+      a.download = fileNameFromDisposition(response.headers.get('content-disposition'))
+        || gradebookFileName(classes.find(c => c.id === classId)?.name, null, 'xlsx');
       document.body.appendChild(a);
       a.click();
       a.remove();

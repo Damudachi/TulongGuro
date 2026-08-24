@@ -116,3 +116,136 @@ export function isPassing(value, passingGrade = DEFAULT_PASSING_GRADE) {
   if (value === null || value === undefined) return null;
   return Math.round(value) >= (Number(passingGrade) || DEFAULT_PASSING_GRADE);
 }
+
+/* ────────────────────────────────────────────────────────────────────────────
+ * THE GRADE ITSELF
+ *
+ * Everything above this line is presentation. Everything below is the DepEd
+ * DO 8 s.2015 computation, and it is a deliberate port of the same functions
+ * in server/grading.js — same names, same rules, same rounding.
+ *
+ * It is duplicated rather than shared because server/grading.js is CommonJS
+ * inside the API package and this file is an ES module bundled by Vite; there
+ * is no import that works both ways without a build step neither side has.
+ * The drift that duplication invites is guarded instead of hoped away:
+ * server/tests/gradebook-parity.test.js loads BOTH files and asserts they
+ * return the same number across the whole scale. If you change one, change the
+ * other, and that test will tell you if you didn't.
+ *
+ * Why the class gradebook needs this at all: the table used to total raw
+ * points across every activity — no component weights, and counting AI drafts
+ * the teacher had not validated. The exported file computed the real DepEd
+ * grade. Same class, two different numbers on screen and on paper, and the
+ * exported one was the correct one.
+ * ──────────────────────────────────────────────────────────────────────────── */
+
+/** The three DepEd components. Anything else on an activity counts as WW. */
+export const COMPONENTS = ['WW', 'PT', 'QA'];
+
+/**
+ * Percentage Score for one component: total points earned over total points
+ * possible, NOT the mean of each activity's percentage. A 50-point quiz must
+ * not weigh the same as a 100-point performance task.
+ */
+export function componentPercentage(entries) {
+  const valid = (entries || []).filter(e => e && typeof e.percent === 'number' && e.points > 0);
+  if (valid.length === 0) return null;
+  const earned = valid.reduce((sum, e) => sum + (e.percent / 100) * e.points, 0);
+  const possible = valid.reduce((sum, e) => sum + e.points, 0);
+  if (possible === 0) return null;
+  return (earned / possible) * 100;
+}
+
+/**
+ * Combine component percentages into an Initial Grade, dropping components
+ * with nothing graded and renormalising the rest — so a quarter reads
+ * sensibly before the Quarterly Assessment exists.
+ */
+export function initialGrade(componentPercents, weights) {
+  const present = COMPONENTS.filter(c => typeof componentPercents[c] === 'number');
+  const missing = COMPONENTS.filter(c => !present.includes(c));
+  if (present.length === 0) return { initialGrade: null, usedWeights: {}, missing };
+
+  const totalWeight = present.reduce((sum, c) => sum + (weights[c] || 0), 0);
+  if (totalWeight === 0) return { initialGrade: null, usedWeights: {}, missing };
+
+  const usedWeights = {};
+  let grade = 0;
+  for (const c of present) {
+    const w = (weights[c] || 0) / totalWeight;
+    usedWeights[c] = Math.round(w * 1000) / 10;
+    grade += componentPercents[c] * w;
+  }
+  return { initialGrade: grade, usedWeights, missing };
+}
+
+/**
+ * DepEd transmutation table as its two linear segments. Floors within each
+ * band — the published table is banded ("98.40–99.99 -> 99"), so rounding
+ * would push every boundary a grade too high and inflate report cards.
+ */
+export function transmute(initial) {
+  if (initial === null || initial === undefined || Number.isNaN(initial)) return null;
+  const ig = Math.max(0, Math.min(100, initial));
+  const step = ig >= 60 ? 1.6 : 4;
+  // toFixed(6) guards binary float error at band edges: 38.4/1.6 is 23.999… in
+  // IEEE 754, which would floor to 23 and cost the student a grade point.
+  const bands = Math.floor(Number(((ig - 60) / step).toFixed(6)));
+  return Math.max(60, Math.min(100, 75 + bands));
+}
+
+/** Default component weights by subject group, Grades 1–10 (DO 8 s.2015). */
+export const DEPED_DEFAULT_WEIGHTS = {
+  LANGUAGES_AP_ESP: { WW: 30, PT: 50, QA: 20 },
+  SCIENCE_MATH: { WW: 40, PT: 40, QA: 20 },
+  MAPEH_EPP_TLE: { WW: 20, PT: 60, QA: 20 },
+};
+
+/** Subject name -> default weight group. Loose matching: subjects are free text. */
+export function weightGroupForSubject(subject) {
+  const s = (subject || '').toLowerCase();
+  if (/(math|science|agham|matematika)/.test(s)) return 'SCIENCE_MATH';
+  if (/(mapeh|music|arts|physical|health|epp|tle|livelihood)/.test(s)) return 'MAPEH_EPP_TLE';
+  return 'LANGUAGES_AP_ESP';
+}
+
+/** The seed policy for a subject, before any admin override. */
+export function defaultPolicyFor(subject) {
+  return { ...DEPED_DEFAULT_WEIGHTS[weightGroupForSubject(subject)] };
+}
+
+/**
+ * Full pipeline for one student in one class. Mirrors computeGrade in
+ * server/grading.js exactly, including which value `finalGrade` resolves to.
+ *
+ * @param {{percent:number, points:number, component:string}[]} graded
+ * @param {object} [policy] component weights
+ * @param {{transmute?: boolean, passing?: number}} [opts]
+ */
+export function computeGrade(graded, policy, opts = {}) {
+  const weights = policy || DEPED_DEFAULT_WEIGHTS.LANGUAGES_AP_ESP;
+  const passing = opts.passing ?? DEFAULT_PASSING_GRADE;
+
+  const byComponent = {};
+  for (const c of COMPONENTS) {
+    byComponent[c] = componentPercentage(
+      (graded || []).filter(g => (COMPONENTS.includes(g.component) ? g.component : 'WW') === c)
+    );
+  }
+
+  const { initialGrade: ig, usedWeights, missing } = initialGrade(byComponent, weights);
+  const transmuted = opts.transmute === false ? null : transmute(ig);
+  const final = opts.transmute === false ? ig : transmuted;
+
+  return {
+    componentPercents: byComponent,
+    weights,
+    usedWeights,
+    missingComponents: missing,
+    initialGrade: ig === null ? null : Math.round(ig * 100) / 100,
+    transmutedGrade: transmuted,
+    finalGrade: final === null ? null : Math.round(final),
+    passing,
+    isPassing: final === null ? null : Math.round(final) >= passing,
+  };
+}

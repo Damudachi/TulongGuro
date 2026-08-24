@@ -6,6 +6,7 @@ import { getStoredUser } from '../../utils/session';
 import PageHeader from '../../components/PageHeader';
 import { gradeChip } from '../../utils/grading';
 import { usePassingGrade } from '../../utils/useSchool';
+import { fileNameFromDisposition, gradebookFileName } from '../../utils/exportFile';
 
 import { showAlert, showConfirm } from '../../utils/dialog';
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
@@ -71,7 +72,12 @@ export default function Gradebook() {
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `grades_section_${sectionId}.xlsx`;
+      // The name the API chose — section, date. It used to be
+      // `grades_section_<uuid>.xlsx`, which tells a teacher nothing about
+      // which section they just exported.
+      const sectionName = teacherClasses.find(c => c.sectionId === sectionId)?.section?.name;
+      a.download = fileNameFromDisposition(response.headers.get('content-disposition'))
+        || gradebookFileName(sectionName, null, 'xlsx');
       document.body.appendChild(a);
       a.click();
       a.remove();

@@ -218,6 +218,7 @@ model User {
   ownedSections     Section[]        @relation("TeacherSections")
   submissions       Submission[]
   notifications     Notification[]
+  pushSubscriptions PushSubscription[]
   badges            StudentBadge[]
   createdBadges     TeacherBadge[]   @relation("TeacherBadges")
   school            School?          @relation(fields: [schoolId], references: [id])
@@ -331,6 +332,41 @@ model Notification {
   user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId, readAt])
+}
+
+/// One browser's permission to raise a notification on one device.
+///
+/// A row here is what turns the in-app bell (Notification, above) into
+/// something a phone can show while the app is closed — which is the only
+/// state a student is ever actually in when a grade is released. The bell
+/// polls, so it can only speak to someone already looking at it.
+///
+/// Keyed by endpoint, not by user: one person legitimately has several (the
+/// classroom desktop, their own phone), and re-subscribing on a device that
+/// already has a row must update it rather than accumulate duplicates that
+/// would each deliver the same notification again.
+model PushSubscription {
+  id        String   @id @default(uuid())
+  userId    String
+  /// The push service URL the browser handed us. Unique because it *is* the
+  /// device's identity as far as push is concerned — the same browser
+  /// re-subscribing returns the same endpoint.
+  endpoint  String   @unique
+  /// The two halves of the browser-generated encryption key. The payload is
+  /// encrypted to these before it leaves this server, so the push service
+  /// (Google, Mozilla, Apple) relays ciphertext it cannot read.
+  p256dh    String
+  auth      String
+  /// Rough note of which device this is, for the "signed-in devices" list a
+  /// user needs to make sense of revoking one. Never parsed, only displayed.
+  userAgent String?
+  createdAt DateTime @default(now())
+  /// Bumped on every successful send. A push service that has not errored but
+  /// has not been written to in months is a device that is gone.
+  lastSeenAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
 }
 
 model Section {

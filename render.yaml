@@ -87,5 +87,21 @@ services:
       # and PLATFORM_ADMIN_KEY — it is a separate audience with no overlap.
       - key: DEV_ACCESS_KEY
         sync: false
+      # ── Web Push ──
+      # Turns the in-app bell into a notification a closed phone can show. Both
+      # are optional: with them unset the server logs that push is off at boot
+      # and everything else behaves exactly as before, so this can ship ahead of
+      # the keys being set.
+      #
+      # Self-hosted — no Firebase project, no SDK, no bill. Generate the pair
+      # once with `cd server && npx web-push generate-vapid-keys` and paste them
+      # into the dashboard. The private key can push to every subscribed device,
+      # so it belongs with AUTH_SECRET, not with the public one.
+      - key: VAPID_PUBLIC_KEY
+        sync: false
+      - key: VAPID_PRIVATE_KEY
+        sync: false
+      - key: VAPID_SUBJECT
+        sync: false
       - key: NODE_ENV
         value: production

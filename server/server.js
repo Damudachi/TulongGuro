@@ -41,6 +41,9 @@ const {
   normalizeSchoolId, verifySchool, describeVerification, nearDuplicateNames,
   loadMasterlist,
 } = require('./depedMasterlist');
+const {
+  isPushConfigured, getPublicKey: getVapidPublicKey, sendPushToUser, trackPush, flushPushes,
+} = require('./push');
 const { currentSchoolYear, isCurrentSchoolYear, compareSchoolYearsDesc } = require('./schoolYear');
 const {
   cellToText, extractRoster, readBirthday,
@@ -81,6 +84,143 @@ const prisma = require('./db');
 const port = process.env.PORT || 3000;
 
 const BCRYPT_SALT_ROUNDS = 10;
+
+/**
+ * Sort people by name, the way a class list is read.
+ *
+ * localeCompare rather than Prisma's `orderBy`, because that orders by the
+ * database's collation — byte order on SQLite and on an unaccented Postgres
+ * database. Byte order files every lowercase name after every uppercase one
+ * ("de la Cruz" after "Zamora") and puts "Ñ" past "Z", which is not where a
+ * Filipino teacher looks for either. Copies rather than sorting in place: the
+ * arrays passed in come straight off a Prisma result other code also reads.
+ */
+// ─────────────────────────────────────────
+// GRADE EXPORT — file and sheet presentation
+//
+// Small, boring helpers, kept here rather than inline in the export route so
+// the xlsx and csv branches physically cannot name a file, a column or a sheet
+// differently from each other.
+// ─────────────────────────────────────────
+
+/**
+ * The DepEd component an activity counts toward.
+ *
+ * Anything unrecognised — including the null on every activity created before
+ * components existed — falls back to Written Work, which is the same default
+ * computeGrade applies. The two must agree: the exported sheet prints this
+ * letter in a row its own formulas read, so a column filed here under one
+ * component and weighted by the app under another would produce a file that
+ * disagrees with the app about a grade it shows on the same page.
+ */
+function componentOf(component) {
+  return grading.COMPONENTS.includes(component) ? component : 'WW';
+}
+
+/**
+ * Excel column letter for a 1-based index: 1 -> A, 27 -> AA.
+ *
+ * The export builds every formula from column arithmetic rather than from
+ * literal references, because the number of columns is however many activities
+ * the class happens to have — a hardcoded `L5` is correct until someone sets an
+ * eleventh piece of work.
+ */
+function colLetter(index) {
+  let n = index;
+  let out = '';
+  while (n > 0) {
+    const rem = (n - 1) % 26;
+    out = String.fromCharCode(65 + rem) + out;
+    n = Math.floor((n - 1) / 26);
+  }
+  return out;
+}
+
+/** Green for clearly strong, amber for passing, red below the school's line. */
+function scoreFont(percent, passingGrade) {
+  if (percent >= Math.max(85, passingGrade)) return { color: { argb: 'FF16A34A' }, bold: true };
+  if (percent >= passingGrade) return { color: { argb: 'FFD97706' } };
+  return { color: { argb: 'FFDC2626' } };
+}
+
+/**
+ * A worksheet name Excel will actually open.
+ *
+ * Excel refuses `: \ / ? * [ ]` in a sheet name and caps it at 31 characters —
+ * and a class called "Math 6 / Newton" is an entirely ordinary thing for a
+ * teacher to type. exceljs does not check, so the failure landed as a corrupt
+ * workbook at the other end rather than as an error here.
+ */
+function safeSheetName(name) {
+  const cleaned = String(name || 'Grades').replace(/[:\\/?*[\]]/g, '-').trim();
+  return (cleaned || 'Grades').substring(0, 31);
+}
+
+/**
+ * One word of a filename: readable, and safe on Windows, macOS and Android.
+ *
+ * Runs of punctuation and whitespace collapse to a single hyphen rather than
+ * one underscore each, which is what turned "English Grade 6 - Newton" into
+ * `English_Grade_6___Newton_Grades.xlsx`. Accents are folded rather than
+ * dropped, so "Piñas" reads as "Pinas" instead of "Pi-as".
+ */
+function fileNamePart(text, fallback) {
+  const folded = String(text || '')
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-zA-Z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  return folded || fallback;
+}
+
+/**
+ * What the downloaded file is called.
+ *
+ * Everything a teacher needs to tell two exports apart without opening them:
+ * the class (or the section, when one file covers several classes), the term,
+ * and the day it was taken. The date is ISO so a downloads folder sorts
+ * chronologically, and the term is in the name because the same class exported
+ * for two terms would otherwise collide on one filename.
+ */
+function exportFileName(classData, exportTerm, extension) {
+  const subject = classData.length === 1
+    ? fileNamePart(classData[0].cls.name, 'Class')
+    : fileNamePart(classData[0]?.cls?.section?.name, 'Section');
+  const scope = classData.length === 1 ? 'Grades' : 'Section-Grades';
+  const term = exportTerm === null ? '' : `_Term-${exportTerm}`;
+  // Manila, because that is the day the teacher pressing the button is living
+  // in — a late-evening export must not be filed under tomorrow.
+  const day = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Manila' });
+  return `${subject}_${scope}${term}_${day}.${extension}`;
+}
+
+/**
+ * The Content-Disposition header for a download.
+ *
+ * Both the plain `filename` (ASCII, for old clients) and RFC 5987's
+ * `filename*`, so a name that survived fileNamePart's folding still arrives
+ * intact — and so a stray quote in a class name cannot break out of the header.
+ */
+function contentDisposition(fileName) {
+  const ascii = fileName.replace(/["\\]/g, '');
+  return `attachment; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(fileName)}`;
+}
+
+/**
+ * A stored percentage expressed in an activity's own points — the number a
+ * teacher writes in a record book. Mirrors toPoints() in src/utils/grading.js,
+ * so the exported sheet and the gradebook table print the same figure for the
+ * same mark.
+ */
+function pointsOf(percent, activityPoints) {
+  if (percent === null || percent === undefined) return null;
+  return Math.round((percent / 100) * (activityPoints || 100) * 10) / 10;
+}
+
+function byName(people) {
+  return [...(people || [])].sort((a, b) =>
+    String(a?.name || '').localeCompare(String(b?.name || ''), 'en', { sensitivity: 'base' })
+  );
+}
 
 // ─────────────────────────────────────────
 // GRADING
@@ -315,7 +455,13 @@ const aiConfigured = aiApiKeys.length > 0;
 // frontend is on a different origin to this API in production. Without this
 // the header arrives on the wire, the browser refuses to expose it, and
 // sessions quietly stop sliding — while everything looks correct in curl.
-app.use(cors({ exposedHeaders: [RENEWED_TOKEN_HEADER] }));
+//
+// Content-Disposition is on the list for the same reason. The gradebook export
+// is fetched as a blob and saved by a script-created <a download>, so the
+// filename this API chose only reaches the downloads folder if the page can
+// read the header — otherwise the browser saves the class record under
+// whatever the page guesses, or under "download".
+app.use(cors({ exposedHeaders: [RENEWED_TOKEN_HEADER, 'Content-Disposition'] }));
 app.use(express.json());
 
 // File storage: Supabase Storage in production, local disk in development.
@@ -10058,7 +10204,19 @@ async function createNotification(userId, { type, title, body = null, link = nul
     await prisma.notification.create({ data: { userId, type, title, body, link } });
   } catch (err) {
     console.log(`⚠ Could not create notification (${type} for ${userId}): ${err.message?.slice(0, 100)}`);
+    // The row is what the bell reads and what a push links back to, so if the
+    // write failed there is nothing to announce. Returning here keeps the two
+    // in step: no phone is ever buzzed about a notification the app cannot
+    // then show when it is opened.
+    return;
   }
+
+  // Deliberately not awaited. The row is saved, which is what this function
+  // promises; delivery is a fan-out of HTTPS calls to Google's and Mozilla's
+  // push services, and a teacher releasing a class of forty should not sit
+  // through eighty of them before the page responds. trackPush keeps the
+  // promise observable so tests and shutdown can wait for it.
+  trackPush(sendPushToUser(prisma, userId, { type, title, body, link }));
 }
 
 /**
@@ -12294,6 +12452,101 @@ app.post('/api/notifications/:id/read', async (req, res) => {
 });
 
 // ─────────────────────────────────────────
+// WEB PUSH
+// ─────────────────────────────────────────
+// Same scoping rule as the notification routes above: everything here is
+// keyed to req.auth.sub and no id appears in a path, so there is nothing for
+// authorizePath to check and nothing to get wrong.
+
+/**
+ * The VAPID public key the browser needs to subscribe, and whether this
+ * deployment can send at all.
+ *
+ * Served rather than baked into the frontend bundle because the key belongs to
+ * the deployment, not to the build: the same dist/ is what Vercel serves and
+ * what the Android APK loads, and a rebuilt-and-redeployed frontend every time
+ * the backend rotates its keypair is a coupling with no upside. `enabled:false`
+ * is the honest answer on a deployment with no keys set, and the UI uses it to
+ * hide the toggle rather than offer a switch that cannot do anything.
+ */
+app.get('/api/push/public-key', (req, res) => {
+  res.json({ success: true, enabled: isPushConfigured(), publicKey: getVapidPublicKey() });
+});
+
+/**
+ * Register this browser for notifications.
+ *
+ * Upsert on endpoint, not create: the endpoint IS the device's identity to the
+ * push service, and a browser that re-subscribes (after a permission re-prompt,
+ * a service worker update, or simply a second sign-in) hands back the same one.
+ * Inserting would leave two rows pointing at one device and deliver every
+ * notification to it twice.
+ *
+ * The userId in the upsert's update branch matters as much as the insert: a
+ * shared classroom device is the normal case here, not the exotic one. When a
+ * second teacher signs in on the same machine and subscribes, that endpoint
+ * must change hands — otherwise the phone keeps buzzing for the previous
+ * account's grades, which on a shared device is a small privacy leak rather
+ * than merely a bug.
+ */
+app.post('/api/push/subscribe', async (req, res) => {
+  if (!isPushConfigured()) {
+    return res.status(503).json({ success: false, error: 'Notifications are not set up on this server.' });
+  }
+
+  const { endpoint, keys } = req.body || {};
+  const p256dh = keys?.p256dh;
+  const auth = keys?.auth;
+
+  // Validated rather than trusted: these go straight into an encryption step,
+  // and a half-formed subscription fails at send time — long after the user has
+  // been told notifications are on.
+  if (typeof endpoint !== 'string' || !/^https:\/\//.test(endpoint) || endpoint.length > 2000) {
+    return res.status(400).json({ success: false, error: 'That subscription is not valid.' });
+  }
+  if (typeof p256dh !== 'string' || typeof auth !== 'string' || !p256dh || !auth) {
+    return res.status(400).json({ success: false, error: 'That subscription is missing its keys.' });
+  }
+
+  // Trimmed hard: this is only ever shown back to the user as "Chrome on
+  // Android", and storing an unbounded client-supplied string is how a text
+  // column becomes a place to put things.
+  const userAgent = typeof req.get('user-agent') === 'string' ? req.get('user-agent').slice(0, 255) : null;
+
+  try {
+    await prisma.pushSubscription.upsert({
+      where: { endpoint },
+      create: { userId: req.auth.sub, endpoint, p256dh, auth, userAgent },
+      update: { userId: req.auth.sub, p256dh, auth, userAgent, lastSeenAt: new Date() },
+    });
+  } catch (err) {
+    console.log(`⚠ Could not save push subscription for ${req.auth.sub}: ${err.message?.slice(0, 100)}`);
+    return res.status(500).json({ success: false, error: 'Could not turn on notifications. Please try again.' });
+  }
+
+  res.json({ success: true });
+});
+
+/**
+ * Turn notifications off for this browser.
+ *
+ * Scoped to the caller so one person cannot unsubscribe another's device by
+ * guessing an endpoint, and deleteMany so an already-removed row is a no-op
+ * rather than a 404 the client would have to special-case — switching the
+ * toggle off twice should not produce an error either time.
+ */
+app.post('/api/push/unsubscribe', async (req, res) => {
+  const { endpoint } = req.body || {};
+  if (typeof endpoint !== 'string' || !endpoint) {
+    return res.status(400).json({ success: false, error: 'No subscription given.' });
+  }
+  await prisma.pushSubscription
+    .deleteMany({ where: { endpoint, userId: req.auth.sub } })
+    .catch(() => {});
+  res.json({ success: true });
+});
+
+// ─────────────────────────────────────────
 // STUDENT ROUTES
 // ─────────────────────────────────────────
 app.get('/api/student/:studentId/dashboard', async (req, res) => {
@@ -12794,10 +13047,26 @@ app.get('/api/teacher/:teacherId/gradebook', async (req, res) => {
       },
       orderBy: { createdAt: 'desc' }
     });
-    // Also get all students for each class
+    // Also get all students for each class.
+    //
+    // Ordered by name, because a record book is read by looking someone up.
+    // Prisma's ordering is the database's collation, which is byte order on
+    // both SQLite and unaccented Postgres — so the final alphabetical pass
+    // below is done in JS with localeCompare, where "Ñ" and "ñ" and "de la
+    // Cruz" land where a Filipino teacher expects them rather than where their
+    // code points do.
     const classes = await prisma.class.findMany({
       where: { teacherId: req.params.teacherId },
-      include: { section: { include: { students: { select: { id: true, name: true, username: true } } } } }
+      include: {
+        section: {
+          include: {
+            students: {
+              select: { id: true, name: true, username: true },
+              orderBy: { name: 'asc' },
+            },
+          },
+        },
+      },
     });
 
     // ── Learners who have transferred out ──
@@ -12849,15 +13118,48 @@ app.get('/api/teacher/:teacherId/gradebook', async (req, res) => {
         ...cls,
         section: cls.section && {
           ...cls.section,
+          // Alphabetical within each group, current members first. Two groups
+          // rather than one sorted list on purpose: a learner who has left the
+          // section is shown greyed out and is excluded from the class
+          // average, and interleaving them with the current roster would put
+          // rows that do not count toward the average in the middle of rows
+          // that do — on screen and in the exported sheet, whose CLASS AVERAGE
+          // formula needs the counted rows contiguous.
           students: [
-            ...current.map(s => ({ ...s, transferredOut: false, transferredOutAt: null })),
-            ...transferredOut,
+            ...byName(current.map(s => ({ ...s, transferredOut: false, transferredOutAt: null }))),
+            ...byName(transferredOut),
           ],
         },
       };
     });
 
-    res.json({ success: true, activities, classes: classesWithDepartures });
+    // ── What the table needs to compute the same grade as the export ──
+    //
+    // The table used to total raw points across every activity: no component
+    // weights, and counting AI drafts nobody had validated. The export ran the
+    // real DO 8 s.2015 pipeline. Same class, 62% on screen and 87% in the file.
+    //
+    // The weights and the transmutation switch are school data, so the client
+    // cannot derive them — they have to travel with the gradebook. Sent per
+    // class because a school may set a different policy per grade and subject,
+    // and one teacher's gradebook spans several.
+    const schoolIds = [...new Set(classesWithDepartures.map(c => c.section?.schoolId).filter(Boolean))];
+    const settingsBySchool = new Map(
+      await Promise.all(schoolIds.map(async id => [id, await gradingSettingsFor(id)]))
+    );
+    const defaultSettings = await gradingSettingsFor(null);
+    const gradingByClass = {};
+    for (const cls of classesWithDepartures) {
+      const schoolId = cls.section?.schoolId ?? null;
+      const settings = (schoolId && settingsBySchool.get(schoolId)) || defaultSettings;
+      gradingByClass[cls.id] = {
+        policy: await gradingPolicyFor(schoolId, cls.gradeLevel, cls.subject),
+        passingGrade: settings.passingGrade,
+        useTransmutation: settings.useTransmutation,
+      };
+    }
+
+    res.json({ success: true, activities, classes: classesWithDepartures, grading: gradingByClass });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
   }
@@ -13995,11 +14297,15 @@ app.get('/api/teacher/:teacherId/gradebook/export', async (req, res) => {
       const leftAt = new Map();
       for (const d of departures) if (!leftAt.has(d.studentId)) leftAt.set(d.studentId, d.transferredAt);
 
+      // Alphabetical within each group, current members first — the same order
+      // the gradebook table uses, and the same reason the two groups are not
+      // interleaved: only the current members are averaged, and the sheet's
+      // CLASS AVERAGE formula needs those rows contiguous to point at them.
       const students = [
-        ...roster.map(s => ({ ...s, transferredOut: false, transferredOutAt: null })),
-        ...departedStudents.map(s => ({
+        ...byName(roster.map(s => ({ ...s, transferredOut: false, transferredOutAt: null }))),
+        ...byName(departedStudents.map(s => ({
           ...s, transferredOut: true, transferredOutAt: leftAt.get(s.id) || null,
-        })),
+        }))),
       ];
 
       // The export is the official class record, so its average has to be the
@@ -14084,7 +14390,15 @@ app.get('/api/teacher/:teacherId/gradebook/export', async (req, res) => {
           }
           if (sub && !grading.countsAsGrade(sub)) unreviewedCount++;
           const score = grading.gradePercentOf(sub);
-          row[act.id] = score === null ? null : Math.round(score * 10) / 10;
+          // Raw points, not the percentage — the number written on the paper.
+          //
+          // The cell used to hold a percentage while the gradebook table held
+          // points, so a 20-point essay marked 16.6 read as "83" in the file
+          // and "16.6" on screen. Points is the side that has to win: it is
+          // what the table shows, what a teacher writes in a record book, and
+          // the only unit in which the sheet's own weighting formulas can be
+          // written — a percentage column cannot be summed against a total.
+          row[act.id] = score === null ? null : pointsOf(score, act.points);
           if (score !== null) {
             entries.push({ percent: score, points: act.points || 100, component: act.component || 'WW' });
           }
@@ -14122,7 +14436,10 @@ app.get('/api/teacher/:teacherId/gradebook/export', async (req, res) => {
             );
           }
           const score = grading.gradePercentOf(sub);
-          row[`carried:${sub.activity.id}`] = score === null ? null : Math.round(score * 10) / 10;
+          // Points, for the same reason as the class's own activities above.
+          row[`carried:${sub.activity.id}`] = score === null
+            ? null
+            : pointsOf(score, sub.activity.points);
         }
         entries.push(...transfers.carriedOverEntries(carried));
 
@@ -14130,8 +14447,15 @@ app.get('/api/teacher/:teacherId/gradebook/export', async (req, res) => {
         // scores above — DO 8 s.2015 maps the Initial Grade, not raw marks.
         // finalGrade already resolves to whichever basis is in force, so the
         // two branches cannot drift.
-        const { finalGrade } = grading.computeGrade(entries, exportPolicy, { transmute: useTransmutation });
-        row.average = finalGrade;
+        const computed = grading.computeGrade(entries, exportPolicy, { transmute: useTransmutation });
+        row.average = computed.finalGrade;
+        // Kept so the spreadsheet's component columns can carry a cached
+        // result alongside their formula. Excel recalculates on open, but a
+        // sheet read by Google Sheets, LibreOffice, a preview pane or a
+        // phone's file viewer shows the cached value — a formula with no
+        // result is a blank cell to all of them.
+        row.componentPercents = computed.componentPercents;
+        row.initialGrade = computed.initialGrade;
         return row;
       });
 
@@ -14139,6 +14463,10 @@ app.get('/api/teacher/:teacherId/gradebook/export', async (req, res) => {
       // scope and colours each cell against the school's own passing grade.
       classData.push({
         cls, activities, students, rows, passingGrade: exportPassing, unreviewedCount, useTransmutation,
+        // The component weights the sheet's own formulas are built from, so a
+        // teacher editing a score in Excel recomputes against the same policy
+        // the app used rather than a hardcoded 30/50/20.
+        policy: exportPolicy,
         carriedActivities, carriedUnreviewedCount, carriedUnreviewedSections: [...carriedUnreviewedSections],
         departedCount: departedStudents.length, untaggedExcluded,
       });
@@ -14248,11 +14576,29 @@ app.get('/api/teacher/:teacherId/gradebook/export', async (req, res) => {
 
       for (const {
         cls, activities, rows, passingGrade: exportPassing, unreviewedCount, useTransmutation,
-        carriedActivities, carriedUnreviewedCount, carriedUnreviewedSections, departedCount,
+        policy, carriedActivities, carriedUnreviewedCount, carriedUnreviewedSections, departedCount,
         untaggedExcluded,
       } of classData) {
-        const sheetName = (cls.name || 'Grades').substring(0, 31);
-        const sheet = workbook.addWorksheet(sheetName);
+        const sheet = workbook.addWorksheet(safeSheetName(cls.name));
+
+        // ── Every column that holds a mark, in the order they are printed ──
+        //
+        // The class's own activities then the carried ones, each carrying the
+        // two facts the sheet's formulas need: what it is out of, and which
+        // DepEd component it belongs to. Both are printed in their own rows
+        // below the header rather than kept in the server's head, because the
+        // whole point of this file is that it keeps working after the teacher
+        // has closed the app.
+        const scoreCols = [
+          ...activities.map(a => ({
+            key: a.id, title: a.title,
+            points: a.points || 100, component: componentOf(a.component),
+          })),
+          ...[...carriedActivities.values()].map(a => ({
+            key: `carried:${a.id}`, title: carriedHeader(a),
+            points: a.points || 100, component: componentOf(a.component),
+          })),
+        ];
 
         // Metadata rows
         sheet.addRow(['Class:', cls.name]);
@@ -14271,9 +14617,25 @@ app.get('/api/teacher/:teacherId/gradebook/export', async (req, res) => {
         sheet.addRow([
           'Grading basis:',
           useTransmutation
-            ? 'DepEd transmutation table applied (DO 8 s.2015). Activity scores are raw; the final grade is transmuted.'
-            : 'Initial Grade — points-weighted, not transmuted.'
+            ? 'DepEd transmutation table applied (DO 8 s.2015). Activity scores are raw points; the final grade is transmuted.'
+            : 'Initial Grade — points-weighted per DO 8 s.2015, not transmuted.'
         ]);
+        sheet.addRow([
+          'Weights:',
+          `Written Work ${policy.WW}% · Performance Task ${policy.PT}% · Quarterly Assessment ${policy.QA}%. `
+          + 'A component with nothing graded yet is dropped and the remaining weights are shared out over what is there.'
+        ]);
+        // Says the file is live, because it does not look it. A teacher who
+        // assumes these are frozen numbers will retype the whole grade column
+        // by hand, which is exactly the work this is meant to remove.
+        const liveRow = sheet.addRow([
+          'This file computes:',
+          'Type a score over any mark (or over a "—") and the component percentages, the Initial Grade, '
+          + 'the Final Grade and the class averages all recalculate. Scores are in the activity\'s own points — '
+          + 'the row under each heading says what it is out of.'
+        ]);
+        liveRow.getCell(1).font = { bold: true, color: { argb: 'FF15803D' } };
+        liveRow.getCell(2).font = { color: { argb: 'FF15803D' } };
         // Stated in the sheet, not just implied by empty cells, so an export
         // taken mid-marking cannot be mistaken for a complete record.
         if (unreviewedCount > 0) {
@@ -14305,96 +14667,273 @@ app.get('/api/teacher/:teacherId/gradebook/export', async (req, res) => {
         }
         sheet.addRow([]);
 
+        // ── Column map ──
+        // Marks occupy columns 2 .. lastScoreCol; the computed columns follow.
+        // Held as numbers rather than letters so the formulas below are built
+        // from one arithmetic, not from string constants that would silently
+        // point at the wrong column the moment a class gains an activity.
+        const FIRST_SCORE_COL = 2;
+        const lastScoreCol = FIRST_SCORE_COL + scoreCols.length - 1;
+        const hasScoreCols = scoreCols.length > 0;
+        const colWW = lastScoreCol + 1;
+        const colPT = lastScoreCol + 2;
+        const colQA = lastScoreCol + 3;
+        const colInitial = lastScoreCol + 4;
+        const colFinal = lastScoreCol + 5;
+        const COMPONENT_COLS = { WW: colWW, PT: colPT, QA: colQA };
+        const finalHeader = useTransmutation ? 'Final Grade (transmuted)' : 'Final Grade';
+
         // Header row
-        const headers = [
+        const headerRow = sheet.addRow([
           'Student Name',
-          ...activities.map(a => a.title),
-          ...[...carriedActivities.values()].map(carriedHeader),
-          useTransmutation ? 'Final Grade (transmuted)' : 'Average (%)'
-        ];
-        const headerRow = sheet.addRow(headers);
+          ...scoreCols.map(c => c.title),
+          `Written Work ${policy.WW}%`,
+          `Performance Task ${policy.PT}%`,
+          `Quarterly Assessment ${policy.QA}%`,
+          'Initial Grade',
+          finalHeader,
+        ]);
+        headerRow.height = 32;
         headerRow.eachCell(cell => {
           cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF6B21A8' } };
           cell.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 11 };
-          cell.alignment = { horizontal: 'center', vertical: 'middle' };
+          cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
           cell.border = { bottom: { style: 'thin', color: { argb: 'FF9333EA' } } };
         });
+
+        // ── The two rows the formulas read ──
+        //
+        // A mark of 16.6 means nothing without "out of 20", and which
+        // component an activity belongs to is what decides how heavily it
+        // counts. Both used to live only in the app; printing them here is
+        // what makes the file self-contained — and it is also how a teacher
+        // checks that an activity is filed under the component they meant.
+        const hpsRow = sheet.addRow([
+          'Highest Possible Score',
+          ...scoreCols.map(c => c.points),
+        ]);
+        const compRow = sheet.addRow([
+          'Component (WW / PT / QA)',
+          ...scoreCols.map(c => c.component),
+        ]);
+        for (const row of [hpsRow, compRow]) {
+          row.eachCell(cell => {
+            cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF5F3FF' } };
+            cell.font = { italic: true, size: 10, color: { argb: 'FF5B21B6' } };
+            cell.alignment = { horizontal: 'center' };
+          });
+          row.getCell(1).alignment = { horizontal: 'left' };
+        }
+
+        // Everything from here down is addressed by cell reference, so the
+        // header rows have to be pinned before the first data row is written.
+        const hpsRowNo = hpsRow.number;
+        const compRowNo = compRow.number;
+        const firstDataRow = compRowNo + 1;
+
+        /** `B5:K5` — one student's marks. */
+        const scoreRangeFor = (r) => `${colLetter(FIRST_SCORE_COL)}${r}:${colLetter(lastScoreCol)}${r}`;
+        /** `B$6:K$6` — the Highest Possible Score row, pinned. */
+        const hpsRange = `${colLetter(FIRST_SCORE_COL)}$${hpsRowNo}:${colLetter(lastScoreCol)}$${hpsRowNo}`;
+        const compRange = `${colLetter(FIRST_SCORE_COL)}$${compRowNo}:${colLetter(lastScoreCol)}$${compRowNo}`;
+
+        /**
+         * Percentage Score for one component, as a live formula.
+         *
+         * SUMIFS over the component row picks the right columns; the
+         * `">=0"` test on the student's own marks is what keeps an ungraded
+         * cell out of BOTH halves of the fraction. That matters more than it
+         * looks: a blank or an "Excused" is not a zero, and counting its
+         * points in the denominator would mark the child down for work they
+         * were never given or were told not to hand in — the same rule
+         * componentPercentage follows in the app.
+         */
+        const componentFormula = (r, component) => {
+          const scores = scoreRangeFor(r);
+          const possible = `SUMIFS(${hpsRange},${compRange},"${component}",${scores},">=0")`;
+          const earned = `SUMIFS(${scores},${compRange},"${component}",${scores},">=0")`;
+          return `IF(${possible}=0,"",100*${earned}/${possible})`;
+        };
+
+        /**
+         * Initial Grade: the weighted sum of whichever components have
+         * anything in them, renormalised over just those.
+         *
+         * The renormalising is the reason this is not a flat SUMPRODUCT. A
+         * quarter before the Quarterly Assessment exists has no QA percentage,
+         * and treating that as a zero would park every learner at 80% of their
+         * real grade until exam week.
+         */
+        const initialFormula = (r) => {
+          const cell = (c) => `${colLetter(c)}${r}`;
+          const parts = ['WW', 'PT', 'QA'].map(c => ({
+            ref: cell(COMPONENT_COLS[c]),
+            weight: policy[c] || 0,
+          }));
+          const numerator = parts.map(p => `IF(ISNUMBER(${p.ref}),${p.ref},0)*${p.weight}`).join('+');
+          const denominator = parts.map(p => `IF(ISNUMBER(${p.ref}),${p.weight},0)`).join('+');
+          return `IF(${denominator}=0,"",(${numerator})/(${denominator}))`;
+        };
+
+        /**
+         * Final Grade.
+         *
+         * With transmutation on this is the DO 8 s.2015 table, written as the
+         * two straight lines it actually is: one grade point per 1.6 initial
+         * points above 60, one per 4 below it, floored at 60. INT rather than
+         * FLOOR because Excel's FLOOR disagrees with itself across versions on
+         * negative numbers, and ROUND(...,6) for the same reason the app calls
+         * toFixed(6) — 38.4/1.6 is 23.999… in binary floating point, and
+         * without the guard a band edge costs the student a whole grade point.
+         * MEDIAN(0,x,100) is the clamp.
+         */
+        const finalFormula = (r) => {
+          const ig = `${colLetter(colInitial)}${r}`;
+          if (!useTransmutation) return `IF(NOT(ISNUMBER(${ig})),"",ROUND(${ig},0))`;
+          const clamped = `MEDIAN(0,${ig},100)`;
+          return `IF(NOT(ISNUMBER(${ig})),"",MAX(60,MIN(100,75+INT(ROUND((${clamped}-60)/IF(${clamped}>=60,1.6,4),6)))))`;
+        };
 
         // Data rows
         for (const row of rows) {
           const dataRow = sheet.addRow([
             studentLabel(row),
-            ...activities.map(a => row[a.id] !== null ? row[a.id] : '—'),
-            ...[...carriedActivities.keys()].map(id => {
-              const v = row[`carried:${id}`];
-              return v === undefined || v === null ? '—' : v;
-            }),
-            row.average !== null ? `${row.average}%` : '—'
+            ...scoreCols.map(c => (row[c.key] === undefined || row[c.key] === null ? '—' : row[c.key])),
           ]);
-          // Color code scores
-          dataRow.eachCell((cell, colNumber) => {
-            if (colNumber > 1) {
-              // parseFloat, not parseInt — scores now carry decimals, and
-              // parseInt("6.9%") truncating to 6 would colour a passing mark red.
-              const val = typeof cell.value === 'number' ? cell.value : parseFloat(String(cell.value));
-              if (!isNaN(val)) {
-                // Green for clearly strong, amber for passing, red for below the
-                // school's own line — not a hardcoded 75.
-                if (val >= Math.max(85, exportPassing)) cell.font = { color: { argb: 'FF16A34A' }, bold: true };
-                else if (val >= exportPassing) cell.font = { color: { argb: 'FFD97706' } };
-                else cell.font = { color: { argb: 'FFDC2626' } };
-              }
-              cell.alignment = { horizontal: 'center' };
+          const r = dataRow.number;
+
+          // Colour by percentage of what the activity is out of, never by the
+          // raw points. The cells hold points now, so testing 16.6 against a
+          // passing grade of 75 would paint every mark on every small activity
+          // red — the whole column, on a class doing perfectly well.
+          scoreCols.forEach((c, i) => {
+            const cell = dataRow.getCell(FIRST_SCORE_COL + i);
+            cell.alignment = { horizontal: 'center' };
+            cell.numFmt = '0.##';
+            if (typeof row[c.key] === 'number' && c.points > 0) {
+              cell.font = scoreFont((row[c.key] / c.points) * 100, exportPassing);
             }
           });
+
+          // ── The computed columns ──
+          //
+          // Written as formulas with the app's own answer cached alongside.
+          // Excel recalculates on open, but Google Sheets' importer, a preview
+          // pane and a phone's file viewer all show the cached value — a
+          // formula with no result reads as an empty cell in every one of
+          // them, which would make the grade column look blank on exactly the
+          // devices a teacher checks it on.
+          const cached = {
+            [colWW]: row.componentPercents?.WW ?? null,
+            [colPT]: row.componentPercents?.PT ?? null,
+            [colQA]: row.componentPercents?.QA ?? null,
+            [colInitial]: row.initialGrade ?? null,
+            [colFinal]: row.average ?? null,
+          };
+          const formulas = hasScoreCols ? {
+            [colWW]: componentFormula(r, 'WW'),
+            [colPT]: componentFormula(r, 'PT'),
+            [colQA]: componentFormula(r, 'QA'),
+            [colInitial]: initialFormula(r),
+            [colFinal]: finalFormula(r),
+          } : {};
+
+          for (const col of [colWW, colPT, colQA, colInitial, colFinal]) {
+            const cell = dataRow.getCell(col);
+            const result = cached[col];
+            if (formulas[col]) {
+              cell.value = { formula: formulas[col], result: result === null ? '' : result };
+            } else {
+              cell.value = result === null ? '—' : result;
+            }
+            cell.alignment = { horizontal: 'center' };
+            cell.numFmt = col === colFinal ? '0' : '0.00';
+            if (typeof result === 'number') cell.font = scoreFont(result, exportPassing);
+          }
+          // The grade of record, so it reads as one.
+          dataRow.getCell(colFinal).font = {
+            ...(dataRow.getCell(colFinal).font || {}), bold: true, size: 12,
+          };
+          dataRow.getCell(1).alignment = { vertical: 'middle' };
         }
 
-        // Class average row
-        const avgRow = ['CLASS AVERAGE'];
-        // Current members only — see averagedRows.
+        // ── CLASS AVERAGE ──
+        //
+        // Current members only — see averagedRows — which is why they are
+        // printed first and contiguously: the formula points at a block of
+        // rows, and a transferred-out learner in the middle of it would be
+        // averaged in by the spreadsheet even though the app excludes them.
+        const currentCount = rows.filter(r => !r.transferredOut).length;
+        const lastAveragedRow = firstDataRow + currentCount - 1;
+        const canAverage = currentCount > 0;
+        /** `=IF(COUNT(B7:B12)=0,"",ROUND(AVERAGE(B7:B12),1))` for one column. */
+        const averageFormula = (col, decimals) => {
+          const range = `${colLetter(col)}${firstDataRow}:${colLetter(col)}${lastAveragedRow}`;
+          return `IF(COUNT(${range})=0,"",ROUND(AVERAGE(${range}),${decimals}))`;
+        };
+
+        const footerRow = sheet.addRow(['CLASS AVERAGE']);
         const avgOver = averagedRows(rows);
-        for (const act of activities) {
-          // Numbers only: an excused cell holds the string 'Excused', and
-          // reduce() on a mixed array would concatenate rather than add.
-          const scores = avgOver.map(r => r[act.id]).filter(s => typeof s === 'number');
-          avgRow.push(scores.length > 0 ? Math.round(scores.reduce((a, b) => a + b, 0) / scores.length) : '—');
+        scoreCols.forEach((c, i) => {
+          const col = FIRST_SCORE_COL + i;
+          const scores = avgOver.map(r => r[c.key]).filter(s => typeof s === 'number');
+          const result = scores.length ? Math.round((scores.reduce((a, b) => a + b, 0) / scores.length) * 10) / 10 : null;
+          const cell = footerRow.getCell(col);
+          cell.value = canAverage
+            ? { formula: averageFormula(col, 1), result: result === null ? '' : result }
+            : '—';
+          cell.numFmt = '0.#';
+        });
+        for (const [col, decimals, pick] of [
+          [colWW, 2, r => r.componentPercents?.WW ?? null],
+          [colPT, 2, r => r.componentPercents?.PT ?? null],
+          [colQA, 2, r => r.componentPercents?.QA ?? null],
+          [colInitial, 2, r => r.initialGrade ?? null],
+          [colFinal, 0, r => r.average ?? null],
+        ]) {
+          const vals = avgOver.map(pick).filter(v => typeof v === 'number');
+          const mean = vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : null;
+          const result = mean === null ? null : Math.round(mean * 10 ** decimals) / 10 ** decimals;
+          const cell = footerRow.getCell(col);
+          cell.value = (canAverage && hasScoreCols)
+            ? { formula: averageFormula(col, decimals), result: result === null ? '' : result }
+            : (result === null ? '—' : result);
+          cell.numFmt = decimals === 0 ? '0' : '0.00';
         }
-        for (const activityId of carriedActivities.keys()) {
-          // Numbers only, same as above: an excused cell holds the string
-          // 'Excused' and would concatenate rather than add.
-          const scores = avgOver.map(r => r[`carried:${activityId}`]).filter(s => typeof s === 'number');
-          avgRow.push(scores.length > 0 ? Math.round(scores.reduce((a, b) => a + b, 0) / scores.length) : '—');
-        }
-        const allAvgs = avgOver.map(r => r.average).filter(a => a !== null);
-        avgRow.push(allAvgs.length > 0 ? `${Math.round(allAvgs.reduce((a, b) => a + b, 0) / allAvgs.length)}%` : '—');
-        const footerRow = sheet.addRow(avgRow);
         footerRow.eachCell(cell => {
           cell.font = { bold: true, size: 11 };
           cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF3F4F6' } };
           cell.alignment = { horizontal: 'center' };
         });
+        footerRow.getCell(1).alignment = { horizontal: 'left' };
 
-        // Auto-fit columns
-        sheet.columns.forEach(col => {
+        // The name column and the three heading rows stay put while a teacher
+        // scrolls right through twenty activities — without this the marks in
+        // the far columns belong to nobody visible.
+        sheet.views = [{ state: 'frozen', xSplit: 1, ySplit: compRowNo }];
+
+        // Auto-fit columns. The heading rows wrap, so they are measured
+        // against a cap rather than allowed to set the width of a mark column
+        // to the length of an activity title.
+        sheet.columns.forEach((col, i) => {
           let maxLen = 10;
-          col.eachCell({ includeEmpty: true }, cell => {
-            const len = cell.value ? String(cell.value).length : 0;
+          col.eachCell({ includeEmpty: true }, (cell, rowNumber) => {
+            // The metadata block above the table is one long sentence in
+            // column B; letting it size that column would push the whole
+            // table off the screen.
+            if (rowNumber < headerRow.number) return;
+            const len = cell.value && typeof cell.value === 'object' && cell.value.formula
+              ? String(cell.value.result ?? '').length
+              : (cell.value ? String(cell.value).length : 0);
             if (len > maxLen) maxLen = len;
           });
-          col.width = Math.min(maxLen + 4, 40);
+          col.width = i === 0 ? Math.min(maxLen + 4, 34) : Math.min(maxLen + 3, 18);
         });
       }
 
-      // The term is in the name as well as in the sheet: two exports of the
-      // same class for two terms would otherwise land in a downloads folder
-      // under one filename, and the second would overwrite or shadow the first.
-      const termSuffix = exportTerm === null ? '' : `_Term${exportTerm}`;
-      const fileName = classData.length === 1
-        ? `${classData[0].cls.name.replace(/[^a-zA-Z0-9]/g, '_')}_Grades${termSuffix}.xlsx`
-        : `Section_Grades_Export${termSuffix}.xlsx`;
-
+      const fileName = exportFileName(classData, exportTerm, 'xlsx');
       res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-      res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+      res.setHeader('Content-Disposition', contentDisposition(fileName));
       await workbook.xlsx.write(res);
       res.end();
 
@@ -14402,7 +14941,7 @@ app.get('/api/teacher/:teacherId/gradebook/export', async (req, res) => {
       // CSV export
       const lines = [];
       for (const {
-        cls, activities, rows, unreviewedCount, useTransmutation,
+        cls, activities, rows, unreviewedCount, useTransmutation, policy,
         carriedActivities, carriedUnreviewedCount, carriedUnreviewedSections, departedCount,
         untaggedExcluded,
       } of classData) {
@@ -14412,8 +14951,9 @@ app.get('/api/teacher/:teacherId/gradebook/export', async (req, res) => {
         lines.push(`# Term: ${termNotice(untaggedExcluded)}`);
         lines.push(`# Exported: ${new Date().toLocaleDateString('en-PH', { dateStyle: 'long' })}`);
         lines.push(`# Grading basis: ${useTransmutation
-          ? 'DepEd transmutation table applied (DO 8 s.2015). Activity scores are raw; the final grade is transmuted.'
-          : 'Initial Grade — points-weighted, not transmuted.'}`);
+          ? 'DepEd transmutation table applied (DO 8 s.2015). Activity scores are raw points; the final grade is transmuted.'
+          : 'Initial Grade — points-weighted per DO 8 s.2015, not transmuted.'}`);
+        lines.push(`# Weights: Written Work ${policy.WW}% · Performance Task ${policy.PT}% · Quarterly Assessment ${policy.QA}%. A component with nothing graded is dropped and the remaining weights are shared out over what is there.`);
         // Said out loud, because an empty cell reads the same whether the
         // student never submitted or the teacher simply hasn't marked it yet.
         if (unreviewedCount > 0) {
@@ -14438,9 +14978,22 @@ app.get('/api/teacher/:teacherId/gradebook/export', async (req, res) => {
           'Student Name',
           ...activities.map(a => `"${a.title.replace(/"/g, '""')}"`),
           ...[...carriedActivities.values()].map(a => `"${carriedHeader(a).replace(/"/g, '""')}"`),
-          useTransmutation ? 'Final Grade (transmuted)' : 'Average (%)'
+          useTransmutation ? 'Final Grade (transmuted)' : 'Final Grade'
         ];
         lines.push(headers.join(','));
+
+        // What each mark is out of, and which component it counts toward.
+        //
+        // The score cells hold raw points, so a column of 16.6s says nothing
+        // on its own — and which component an activity belongs to is what
+        // decides how heavily it counts. Both were only ever in the app; a
+        // file that becomes a report card has to carry them itself.
+        const scoreMeta = [
+          ...activities.map(a => ({ points: a.points || 100, component: componentOf(a.component) })),
+          ...[...carriedActivities.values()].map(a => ({ points: a.points || 100, component: componentOf(a.component) })),
+        ];
+        lines.push(['Highest Possible Score', ...scoreMeta.map(m => m.points), ''].join(','));
+        lines.push(['Component (WW / PT / QA)', ...scoreMeta.map(m => m.component), ''].join(','));
 
         // Data rows
         for (const row of rows) {
@@ -14478,12 +15031,12 @@ app.get('/api/teacher/:teacherId/gradebook/export', async (req, res) => {
         lines.push('');
       }
 
-      const fileName = classData.length === 1
-        ? `${classData[0].cls.name.replace(/[^a-zA-Z0-9]/g, '_')}_Grades.csv`
-        : `Section_Grades_Export.csv`;
-
+      // Same naming as the xlsx, term included — the CSV used to omit it, so
+      // exporting Term 1 and Term 2 of one class produced two files with
+      // identical names and the second silently shadowed the first.
+      const fileName = exportFileName(classData, exportTerm, 'csv');
       res.setHeader('Content-Type', 'text/csv');
-      res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+      res.setHeader('Content-Disposition', contentDisposition(fileName));
       res.send(lines.join('\n'));
     }
   } catch (e) {
@@ -14759,5 +15312,10 @@ module.exports = {
   // timer, and a test that waited on that timer would be timing, not testing.
   runDailyQuotaSelfCheck, gradingCapacitySnapshot,
   normalizeTerm, normalizeCompetencies, readCompetencies,
+  // Exported for tests: the name a downloaded gradebook gets is a real
+  // behaviour (two terms of one class must not collide on one filename), and
+  // asserting it by grepping the route's source proves only that a string
+  // literal exists.
+  exportFileName, fileNamePart, safeSheetName, contentDisposition, colLetter,
   parseAssistantTurn,
 };

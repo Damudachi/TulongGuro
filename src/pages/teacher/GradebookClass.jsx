@@ -4,8 +4,9 @@ import { Download, ChevronDown, Loader2 } from 'lucide-react';
 import { API_URL, apiFetch } from '../../config';
 import { getStoredUser } from '../../utils/session';
 import PageHeader from '../../components/PageHeader';
-import { gradeTone, toPoints, formatPoints } from '../../utils/grading';
+import { gradeTone, toPoints, formatPoints, computeGrade, defaultPolicyFor } from '../../utils/grading';
 import { usePassingGrade } from '../../utils/useSchool';
+import { fileNameFromDisposition, gradebookFileName } from '../../utils/exportFile';
 
 import { showAlert } from '../../utils/dialog';
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
@@ -23,6 +24,16 @@ function cn(...cls) { return cls.filter(Boolean).join(' '); }
  */
 const ALL_TERMS = 'all';
 const NO_TERM = 'untagged';
+
+/**
+ * The DepEd component an activity counts toward, spelled out.
+ *
+ * Shown under each column heading because the component is what decides how
+ * heavily the mark counts — a teacher looking at a grade that surprises them
+ * needs to be able to see, without leaving the page, that the 100-point task
+ * they thought was a Performance Task is filed as Written Work.
+ */
+const COMPONENT_LABELS = { WW: 'Written Work', PT: 'Performance Task', QA: 'Quarterly' };
 
 export default function GradebookClass() {
   const passingGrade = usePassingGrade();
@@ -69,8 +80,14 @@ export default function GradebookClass() {
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      const suffix = term !== ALL_TERMS && term !== NO_TERM ? `_Term${term}` : '';
-      a.download = `grades_${classId}${suffix}.${format === 'csv' ? 'csv' : 'xlsx'}`;
+      // The server names the file — class, term and date — and says so in
+      // Content-Disposition. This used to overwrite that with
+      // `grades_<classId>.xlsx`, and classId is a uuid, so every export landed
+      // in the downloads folder as `grades_3f9c1b2e-….xlsx`: unreadable, and
+      // indistinguishable from every other class's.
+      const className = (data?.classes || []).find(c => c.id === classId)?.name;
+      a.download = fileNameFromDisposition(response.headers.get('content-disposition'))
+        || gradebookFileName(className, term !== ALL_TERMS && term !== NO_TERM ? term : null, format);
       document.body.appendChild(a);
       a.click();
       a.remove();
@@ -101,6 +118,28 @@ export default function GradebookClass() {
   const classes = data.classes || [];
   const targetClass = classes.find(c => c.id === classId) || {};
   const students = targetClass.section?.students || [];
+
+  // ── The school's grading policy ──
+  //
+  // Component weights and the transmutation switch are school data — an admin
+  // sets them in Admin → Grading — so the table cannot derive them and must be
+  // told. They come down with the gradebook, per class, because a school may
+  // set a different policy per grade level and subject.
+  //
+  // The fallbacks are for the moment before the response lands and for the
+  // handful of accounts with no school attached; they are the same DepEd
+  // defaults the server seeds with, so the number never jumps when the real
+  // policy arrives unless the school has actually overridden it.
+  const classGrading = data.grading?.[classId] || {};
+  const policy = classGrading.policy || defaultPolicyFor(targetClass.subject);
+  const useTransmutation = !!classGrading.useTransmutation;
+  // The class's own school, which is the section's — not the signed-in
+  // teacher's, which is what usePassingGrade resolves. They are the same
+  // school in every ordinary case, and where they are not (a teacher moved
+  // between schools mid-year, a co-admin looking at another site's section)
+  // the line that decides pass or fail belongs to the learners' school, and
+  // has to be the same one the exported sheet colours against.
+  const passing = classGrading.passingGrade ?? passingGrade;
 
   // ── Term filter ──
   // Only the terms this class actually has work in are offered. A filter
@@ -153,29 +192,54 @@ export default function GradebookClass() {
   }
 
   /**
-   * The row total, in points.
+   * The grade this class's work adds up to, for one student.
    *
-   * Summed over the activities the student actually has a mark in, so the
-   * denominator moves with them: a learner excused from a 50-point task is
-   * shown out of what they were asked to do, not marked down against work they
-   * were told not to hand in. That is the same rule the computed average
-   * follows — see computeGrade, which drops excused work and renormalises.
+   * This is the whole point of the fix. It used to be a flat points total —
+   * every activity summed, divided by every activity's points — which is not
+   * how a DepEd grade is computed and is not what the exported file computed
+   * either. On the same class the table said 62% and the file said 87%,
+   * because the table (a) gave a 10-point drill the same standing per point as
+   * a 100-point performance task instead of weighting Written Work, Performance
+   * Task and Quarterly Assessment by the school's policy, and (b) counted AI
+   * drafts the teacher had never validated.
+   *
+   * Both are now the same computation: computeGrade, over validated work only,
+   * with the school's own weights and its transmutation setting. The raw
+   * points total is still shown underneath, because that is the number a
+   * teacher checks against a stack of marked papers — it is just no longer
+   * passed off as the grade.
+   *
+   * Excused work is dropped rather than zeroed, and a component with nothing
+   * graded in it is dropped and its weight shared out over the rest — so a
+   * learner excused from a task, or a quarter before the Quarterly Assessment
+   * exists, is graded on what they were actually asked to do.
    */
-  function totalFor(studentId) {
-    let earned = 0, possible = 0, any = false, hasDraft = false;
+  function gradeFor(studentId) {
+    const entries = [];
+    let earned = 0, possible = 0, anyMark = false, hasDraft = false;
     for (const a of activities) {
       const cell = cellFor(studentId, a);
       if (cell.state !== 'scored') continue;
-      any = true;
+      anyMark = true;
+      // A draft is visible in its cell but counts toward nothing — not the
+      // grade, and not the points line either. Letting the points include it
+      // while the grade excluded it would rebuild a small version of the
+      // discrepancy this whole change exists to remove: two numbers on one
+      // row, counting different work, with nothing saying so.
+      if (cell.isDraft) { hasDraft = true; continue; }
       earned += cell.points;
       possible += a.points || 100;
-      if (cell.isDraft) hasDraft = true;
+      entries.push({ percent: cell.percent, points: a.points || 100, component: a.component });
     }
-    if (!any) return null;
+    if (!anyMark) return null;
+    const { initialGrade, finalGrade } = computeGrade(entries, policy, { transmute: useTransmutation });
     return {
       earned: Math.round(earned * 10) / 10,
       possible,
-      percent: possible > 0 ? Math.round((earned / possible) * 100) : null,
+      // Null, not zero, when everything a student has is still a draft: they
+      // have no grade of record yet, and a 0 would read as a failing one.
+      grade: finalGrade,
+      initialGrade,
       hasDraft,
     };
   }
@@ -267,17 +331,38 @@ export default function GradebookClass() {
                     {activities.map(a => (
                       /* One column per activity, headed with what it is out of
                          — a raw mark is meaningless without its denominator,
-                         and repeating "/50" in forty cells is noise. */
-                      <th key={a.id} className="px-4 py-3 text-center font-extrabold text-navy-700 min-w-[110px] align-top">
-                        <div className="max-w-[130px] mx-auto line-clamp-2 leading-snug">{a.title}</div>
+                         and repeating "/50" in forty cells is noise.
+
+                         The title wraps in full rather than being clipped to
+                         two lines. Every activity a teacher sets in a term
+                         tends to start with the same words ("PETA GOLD #9",
+                         "PETA GOLD #10"), so a clipped heading hid the only
+                         part that told two columns apart — and the teacher had
+                         no way to see the rest without leaving the page. */
+                      <th key={a.id} title={a.title}
+                        className="px-3 py-3 text-center font-extrabold text-navy-700 min-w-[120px] align-top">
+                        {/* The cap goes on this div, not on the <th>: table
+                            layout ignores max-width on a cell, so a single
+                            long title would otherwise stretch its column
+                            across the screen instead of wrapping. */}
+                        <div className="max-w-[180px] mx-auto leading-snug whitespace-normal break-words">{a.title}</div>
                         <div className="text-[10px] text-navy-400 font-bold mt-1">
-                          {a.points} pts{a.type ? ` · ${a.type}` : ''}
+                          {a.points} pts{a.component ? ` · ${COMPONENT_LABELS[a.component] || a.component}` : ''}
                         </div>
+                        {a.type && (
+                          <div className="text-[10px] text-navy-400 font-semibold">{a.type}</div>
+                        )}
                       </th>
                     ))}
-                    <th className="px-4 py-3 text-center font-extrabold text-navy-700 min-w-[110px] align-top">
-                      <div>Total</div>
-                      <div className="text-[10px] text-navy-400 font-bold mt-1">points</div>
+                    <th className="px-4 py-3 text-center font-extrabold text-navy-700 min-w-[124px] align-top">
+                      {/* Named for what it is. It used to say "Total / points"
+                          while holding a flat points percentage that no report
+                          card would ever show; this is the DepEd grade, and it
+                          says which basis produced it. */}
+                      <div>{useTransmutation ? 'Final Grade' : 'Initial Grade'}</div>
+                      <div className="text-[10px] text-navy-400 font-bold mt-1">
+                        {useTransmutation ? 'transmuted · DO 8' : 'weighted · DO 8'}
+                      </div>
                     </th>
                   </tr>
                 </thead>
@@ -285,7 +370,7 @@ export default function GradebookClass() {
                   {students.length === 0 ? (
                     <tr><td colSpan={activities.length + 2} className="py-12 text-center font-bold text-navy-400">No students found</td></tr>
                   ) : students.map(student => {
-                    const total = totalFor(student.id);
+                    const total = gradeFor(student.id);
                     return (
                       <tr key={student.id}
                         className={cn(
@@ -331,10 +416,10 @@ export default function GradebookClass() {
                                   filled pill: forty pills in a row is a wall,
                                   and this table is read by scanning down a
                                   column for the low marks. */}
-                              <span className={cn('font-extrabold tabular-nums', gradeTone(cell.percent, passingGrade))}
+                              <span className={cn('font-extrabold tabular-nums', gradeTone(cell.percent, passing))}
                                 title={cell.isDraft
-                                  ? 'Includes an AI draft you have not validated yet. Drafts are not exported and do not count toward the official record.'
-                                  : `${Math.round(cell.percent)}%`}>
+                                  ? 'An AI draft you have not validated yet. It counts toward nothing — not the grade, not the class average, and it is not exported.'
+                                  : `${Math.round(cell.percent)}% of ${a.points} pts`}>
                                 {formatPoints(cell.percent, a.points)}
                                 {cell.isDraft && <span className="text-amber-600">*</span>}
                               </span>
@@ -346,11 +431,26 @@ export default function GradebookClass() {
                             <span className="text-navy-300">—</span>
                           ) : (
                             <>
-                              <span className={cn('font-extrabold text-sm tabular-nums', gradeTone(total.percent, passingGrade))}>
-                                {total.earned}<span className="text-navy-400">/{total.possible}</span>
+                              {/* The grade leads, the raw points follow. The
+                                  points are still worth showing — it is what a
+                                  teacher checks against a stack of marked
+                                  papers — but they are not the grade, and
+                                  showing them as one is what made this table
+                                  disagree with the exported file. */}
+                              <span className={cn('font-extrabold text-base tabular-nums', gradeTone(total.grade, passing))}
+                                title={total.grade === null
+                                  ? 'Nothing validated yet — every mark here is still an AI draft.'
+                                  : useTransmutation
+                                    ? `Initial Grade ${Math.round(total.initialGrade)}, transmuted to ${total.grade} (DepEd DO 8 s.2015).`
+                                    : `Points-weighted across Written Work, Performance Task and Quarterly Assessment (DepEd DO 8 s.2015).`}>
+                                {total.grade === null ? '—' : total.grade}
                                 {total.hasDraft && <span className="text-amber-600">*</span>}
                               </span>
-                              <p className="text-[10px] font-bold text-navy-400">{total.percent}%</p>
+                              {total.possible > 0 && (
+                                <p className="text-[10px] font-bold text-navy-400 tabular-nums">
+                                  {total.earned}/{total.possible} pts
+                                </p>
+                              )}
                             </>
                           )}
                         </td>
@@ -362,11 +462,18 @@ export default function GradebookClass() {
                   <tr className="bg-royal-50 border-t-2 border-royal-100">
                     <td className="px-4 py-3 font-extrabold text-royal-700 text-sm sticky left-0 bg-royal-50 z-10">Class Average</td>
                     {activities.map(a => {
-                      // Averaged over the learners who have a mark, in points,
-                      // so it lands in the same unit as the column above it.
+                      // Averaged over the learners who have a validated mark,
+                      // in points, so it lands in the same unit as the column
+                      // above it and in the same unit as the exported sheet.
+                      //
+                      // Drafts and transferred-out learners are both left out,
+                      // for the reasons the footnote and the export give: a
+                      // draft is not a grade, and a learner who left is graded
+                      // on the part of the quarter they were present for.
                       const pts = students
+                        .filter(s => !s.transferredOut)
                         .map(s => cellFor(s.id, a))
-                        .filter(c => c.state === 'scored')
+                        .filter(c => c.state === 'scored' && !c.isDraft)
                         .map(c => c.points);
                       return (
                         <td key={a.id} className="px-4 py-3 text-center text-sm font-extrabold text-royal-700 tabular-nums">
@@ -378,10 +485,17 @@ export default function GradebookClass() {
                     })}
                     <td className="px-4 py-3 text-center text-sm font-extrabold text-royal-700 tabular-nums">
                       {(() => {
-                        const totals = students.map(s => totalFor(s.id)).filter(Boolean);
-                        if (!totals.length) return '—';
-                        const avg = totals.reduce((sum, t) => sum + t.percent, 0) / totals.length;
-                        return `${Math.round(avg)}%`;
+                        // The mean of the learners who have a grade, over the
+                        // current roster only — a learner who transferred out
+                        // is graded on the part of the quarter they were here
+                        // for, so averaging them in compares two different
+                        // things. Same rule as the exported sheet.
+                        const grades = students
+                          .filter(s => !s.transferredOut)
+                          .map(s => gradeFor(s.id)?.grade)
+                          .filter(g => typeof g === 'number');
+                        if (!grades.length) return '—';
+                        return Math.round(grades.reduce((sum, g) => sum + g, 0) / grades.length);
                       })()}
                     </td>
                   </tr>
@@ -393,8 +507,8 @@ export default function GradebookClass() {
               <p className="mt-3 text-xs font-semibold text-navy-500 flex items-start gap-1.5">
                 <span className="text-amber-600 font-extrabold shrink-0">*</span>
                 Includes an AI draft you haven&apos;t validated yet. Drafts show here so you can see where the class
-                stands, but they are not part of the official record — they are left out of exports and of the
-                averages in them. Validate them in the review queue to lock them in.
+                stands, but they are not part of the official record — they are left out of the grade column, the
+                class average and the exported file alike. Validate them in the review queue to lock them in.
               </p>
             )}
           </>

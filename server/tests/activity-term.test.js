@@ -183,12 +183,41 @@ describe('the export follows the term filter', () => {
     expect(source).toContain('term: true,');
   });
 
-  it('states its scope on the sheet and in the filename', () => {
-    // Two exports of the same class for two terms otherwise land in a
-    // downloads folder under one name, and are indistinguishable once open.
+  it('states its scope on the sheet', () => {
     expect(source).toContain('const termNotice =');
     expect(source).toContain("sheet.addRow(['Term:', termNotice(untaggedExcluded)]);");
     expect(source).toContain('# Term: ${termNotice(untaggedExcluded)}');
-    expect(source).toContain('_Term${exportTerm}');
+  });
+
+  it('states its scope in the filename, in both formats', () => {
+    // Two exports of the same class for two terms otherwise land in a
+    // downloads folder under one name, and are indistinguishable once open.
+    // The CSV branch used to omit the term entirely, so the collision was
+    // real there and not just theoretical.
+    const { exportFileName } = require('../server.js');
+    const classData = [{ cls: { name: 'English Grade 6 - Newton', section: { name: 'Newton' } } }];
+
+    for (const format of ['xlsx', 'csv']) {
+      const t1 = exportFileName(classData, 1, format);
+      const t2 = exportFileName(classData, 2, format);
+      const wholeYear = exportFileName(classData, null, format);
+
+      expect(t1).toContain('_Term-1_');
+      expect(t2).toContain('_Term-2_');
+      expect(wholeYear).not.toContain('Term');
+      expect(new Set([t1, t2, wholeYear]).size).toBe(3);
+      expect(t1.endsWith(`.${format}`)).toBe(true);
+    }
+  });
+
+  it('names the file after the class, not its id', () => {
+    // It used to be named `grades_<uuid>.xlsx` by the page, which is both
+    // unreadable and identical in shape for every class a teacher exports.
+    const { exportFileName } = require('../server.js');
+    const name = exportFileName(
+      [{ cls: { name: 'English Grade 6 - Newton', section: { name: 'Newton' } } }], null, 'xlsx'
+    );
+    // One hyphen per run of punctuation, not one underscore per character.
+    expect(name).toMatch(/^English-Grade-6-Newton_Grades_\d{4}-\d{2}-\d{2}\.xlsx$/);
   });
 });

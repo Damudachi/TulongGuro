@@ -49,3 +49,40 @@ August 14 MightTeam_TulongGuro - Latest.docx
 # Output of research/analyze_observations.py — derived from a run's worth of
 # real grade data. Regenerated on demand from the exported CSVs.
 research/out/
+
+# ── Android APK build (TWA) — shelved ──
+#
+# The whole android/ tree is kept out of the repository. The APK is not part of
+# the work being written up, and carrying a Gradle project, a CI workflow and a
+# signing identity for something nobody is shipping is upkeep the paper does not
+# owe. Nothing here is deleted: the project still builds from this working copy
+# exactly as it did, it is simply not the repository's problem until someone
+# decides to ship it. Un-ignore this block to bring it back.
+android/
+
+# The signing keystore and its password, listed again on their own so they stay
+# ignored even if the line above is ever removed. This key cannot be
+# regenerated: the APK's identity to Android IS this key, its SHA-256 is what
+# public/.well-known/assetlinks.json pins, and every future update must be
+# signed with the same one. Lose it and installed phones cannot be upgraded —
+# they must uninstall and reinstall, losing their notification permission with
+# it. Back it up somewhere outside this repository, and never commit it: anyone
+# holding it can build an APK that Android accepts as TulongGuro.
+android/*.keystore
+android/*.jks
+android/keystore-password.txt
+
+# Builds the APK in CI. No use without the android/ project above.
+.github/workflows/android-apk.yml
+
+# How to build, sign and ship the APK. Documents the shelved tree, not the app.
+docs/ANDROID-APK.md
+
+# Digital Asset Links — the half of the two-way handshake that the deployed
+# site serves so Android trusts the APK to open tulong-guro links without the
+# address bar. It pins the keystore fingerprint above, so it means nothing on
+# its own and is dead weight on the web deployment while the APK is shelved.
+public/.well-known/
+
+# Screenshots attached to a bug report, like /bugs screenshots above.
+/gradebook issues
