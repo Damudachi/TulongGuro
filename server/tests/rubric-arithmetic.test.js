@@ -75,14 +75,37 @@ describe('the headline score is rebuilt from the rubric breakdown', () => {
     expect(result.aiScoreCorrectedFrom).toBe(67);
   });
 
-  it('tells the teacher what was changed and to what', () => {
-    const note = check({
+  it('records the correction without raising a banner over it', () => {
+    // The rebuild is arithmetic, and arithmetic done by code is not something
+    // a teacher can usefully be asked to check: the criteria that produced the
+    // new number are printed directly under the banner, and the paper is going
+    // to be validated by hand either way. Warning about it fired on ordinary
+    // correctly-graded papers and taught teachers to skim the amber triangle,
+    // which is what the band-mismatch case below actually needs.
+    //
+    // So the correction is kept as a FACT on the result (and logGradingEvent
+    // writes it to the grading log), and kept out of the teacher-facing note.
+    const result = check({
       score: 67,
       rubricScores: [row('A', 22, 40, ''), row('B', 18, 30, ''), row('C', 25, 30, '')],
-    }).rubricScoreNote;
-    expect(note).toContain('67');
-    expect(note).toContain('65');
-    expect(note).toContain('Check this paper before validating it.');
+    });
+    expect(result.score).toBe(65);
+    expect(result.aiScoreCorrectedFrom).toBe(67);
+    expect(result.rubricScoreNote).toBeNull();
+  });
+
+  it('still flags a band mismatch on a paper whose total was also rebuilt', () => {
+    // The two checks are independent: silencing the arithmetic one must not
+    // take the judgement one down with it when both are true of one paper.
+    const result = check({
+      score: 99,
+      rubricScores: [
+        row('A', 22, 40, 'Developing (20-27 pts): Claims are broad.'),
+        row('B', 28, 30, 'Proficient (21-26 pts): Appropriate tone.'),
+      ],
+    });
+    expect(result.aiScoreCorrectedFrom).toBe(99);
+    expect(result.rubricScoreNote).toContain('21-26');
   });
 
   it('scales against the rubric\'s own total, not against 100', () => {

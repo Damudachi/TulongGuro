@@ -1058,7 +1058,47 @@ WHEN MORE THAN ONE PAPER IS SENT IN ONE REQUEST:
 // There is no student-facing AI. The Study Buddy chatbot that used to run here
 // was removed along with its endpoint — the AI in this system is a teacher tool,
 // and every AI output a learner sees has passed through a teacher first.
-const ASSIST_MODEL_ID = process.env.GEMINI_ASSIST_MODEL || process.env.GEMINI_CHAT_MODEL || 'gemini-3.5-flash';
+//
+// A POOL rather than one model, for the same reason grading has one, learned
+// the same way. The assistant ran on a single model on a single credential and
+// this deployment's own AiRequestLog shows what that cost: every ASSIST row
+// between 16:06 and 16:25 on 2026-08-25 is
+//
+//     [503 Service Unavailable] This model is currently experiencing high
+//     demand. Spikes in demand are usually temporary.
+//
+// three attempts each, ~5s apart, all against gemini-3.5-flash. The retries
+// were spent re-dialling the one model that had just said it was out of
+// capacity, so the teacher got "The AI Teacher Assistant could not be reached"
+// while seven other credentials and every other model sat unused. A 503 is
+// Google-side capacity for THAT model — the only lever that moves it is asking
+// a different one, which is exactly what the grading pool exists to do.
+//
+// Both defaults are deliberately OUTSIDE GRADING_MODEL_IDS: a side conversation
+// must never be able to spend budget the grading queue is depending on. Measured
+// on this deployment's own keys against a real submission image (2026-08-26):
+// 3.5-flash 2.7s, 3.1-flash-lite 2.1s, 2.5-flash retired (404), and 3.7-flash
+// did not answer inside 60s — fast enough to be a chat, which is why 3.7 is not
+// in here despite being newer.
+//
+// Overridable: GEMINI_ASSIST_MODELS takes a comma-separated preference order.
+// Putting a grading model (gemini-3.6-flash) in it works and gives the
+// assistant the better reader, at the price of sharing that model's daily
+// budget with the checking queue.
+const ASSIST_MODEL_IDS = (
+  process.env.GEMINI_ASSIST_MODELS
+  || process.env.GEMINI_ASSIST_MODEL
+  || process.env.GEMINI_CHAT_MODEL
+  || 'gemini-3.5-flash,gemini-3.1-flash-lite'
+).split(',').map(s => s.trim()).filter(Boolean);
+
+/** How many buckets one assistant message may try before giving up. Each try
+ *  costs a rate-gate slot (GEMINI_MIN_SPACING_MS), and there is a teacher
+ *  watching a spinner at the other end, so this is bounded well below the size
+ *  of the pool. Four covers both models on two credentials — enough to prove a
+ *  503 is not just this model, without turning a real outage into a minute of
+ *  waiting. */
+const ASSIST_MAX_TRIES = Number(process.env.GEMINI_ASSIST_MAX_TRIES || 4);
 
 // What one bucket is assumed to be good for in a day. Google does not expose a
 // remaining-quota endpoint, so this is a declared budget used only to show the
@@ -1170,16 +1210,32 @@ function rollPoolDayIfNeeded() {
 // credentials as the ends of the pool, plain model config otherwise.
 const model = genAIByKey[0]?.client.getGenerativeModel({ model: GRADING_MODEL_IDS[0], generationConfig: { responseMimeType: 'application/json' } }, { timeout: GEMINI_DOCUMENT_TIMEOUT_MS }) || null;
 const modelLite = genAIByKey[genAIByKey.length - 1]?.client.getGenerativeModel({ model: GRADING_MODEL_IDS[GRADING_MODEL_IDS.length - 1], generationConfig: { responseMimeType: 'application/json' } }, { timeout: GEMINI_DOCUMENT_TIMEOUT_MS }) || null;
-// Runs on the LAST credential, so on a multi-project deployment the assistant is
-// charged to a different project than the grading rotation opens on — the same
-// isolation reasoning as giving it its own model.
-const assistModel = genAIByKey.length
-  ? genAIByKey[genAIByKey.length - 1].client.getGenerativeModel({ model: ASSIST_MODEL_ID }, { timeout: GEMINI_REQUEST_TIMEOUT_MS })
-  : null;
+/**
+ * One entry per (assist model × credential), same shape as gradingPool and for
+ * the same reason: the pair, not the model alone, is what Google meters.
+ *
+ * Credentials are held in REVERSE order. The grading rotation opens on key 1
+ * and walks forward, so starting the assistant at the far end means that on a
+ * multi-project deployment a teacher's side conversation is charged to a
+ * different project than the checking queue is currently spending — the same
+ * isolation reasoning as giving it its own models, applied to the other axis.
+ */
+const assistPool = [...genAIByKey].reverse().flatMap(k =>
+  ASSIST_MODEL_IDS.map(id => ({
+    id,
+    key: k.name,
+    label: `${id}@${k.name}`,
+    model: k.client.getGenerativeModel({ model: id }, { timeout: GEMINI_REQUEST_TIMEOUT_MS }),
+  }))
+);
+/** Rotating start offset, so consecutive messages don't all open on the same
+ *  credential — the assistant is the one AI caller a teacher can fire in a
+ *  burst just by typing fast. */
+let assistPoolCursor = 0;
 
 if (aiConfigured) {
   console.log(`🤖 Gemini AI enabled — ${gradingPool.length} grading bucket(s): ${gradingPool.map(e => e.label).join(', ')}`);
-  console.log(`   teacher assistant: ${ASSIST_MODEL_ID}@${genAIByKey[genAIByKey.length - 1].name}`);
+  console.log(`   teacher assistant: ${assistPool.length} bucket(s), tries up to ${ASSIST_MAX_TRIES} — ${ASSIST_MODEL_IDS.join(' → ')}`);
   if (aiApiKeys.length === 1) {
     console.log('   note: one credential in use. Quota is metered per project, so a key from a second project doubles the daily budget.');
   }
@@ -1380,37 +1436,42 @@ function rubricTotalPercent(raw) {
 }
 
 /**
- * The note a teacher reads next to a paper whose numbers needed attention.
+ * The note a teacher reads next to a paper whose numbers need THEIR attention.
  *
- * `correctedFrom` is the model's own headline score when it disagreed with its
- * criteria and was replaced by them — see normalisePaperResult. Passed in
- * rather than recomputed so the note can only ever describe a correction that
- * actually happened.
+ * Only one thing qualifies: a criterion scored outside the band the model
+ * itself named. Which band a piece of work sits in is a judgement, the two
+ * numbers disagree about that judgement rather than about arithmetic, and
+ * nothing but a person who has read the paper can settle it.
+ *
+ * ── Why the headline-vs-criteria disagreement is NOT in here any more ──
+ *
+ * It used to be, and it was the case that actually fired: teachers were shown
+ * "The AI's Numbers Needed Correcting — the AI reported 83% but its own
+ * criteria add up to 86%, so the score below has been set to 86%. Check this
+ * paper before validating it." on ordinary, correctly-graded papers.
+ *
+ * There is nothing in that for a teacher to check. normalisePaperResult has
+ * already rebuilt the score from the criteria, that rebuild is arithmetic
+ * rather than a judgement, the criteria it used are printed directly beneath
+ * the banner, and the teacher is going to validate the paper regardless —
+ * that is what the HITL step IS. An amber warning with no available action is
+ * how a teacher learns to skim past amber warnings, which costs the band
+ * mismatch below its audience. So the correction stays; the alarm goes.
+ *
+ * It is not hidden: `aiScoreCorrectedFrom` still rides on the result and
+ * logGradingEvent still records "(rebuilt from its rubric; it reported N)" for
+ * every paper it happened to, which is where "how often does the model stop
+ * being able to add up its own rubric" is answered. `correctedFrom` is still
+ * a parameter so that record and this note cannot drift apart.
  */
-function rubricScoreNoteFor(raw, correctedFrom = null) {
+function rubricScoreNoteFor(raw, _correctedFrom = null) {
   if (raw?.noTextDetected || raw?.privacyViolationDetected) return null;
   const rows = Array.isArray(raw?.rubricScores) ? raw.rubricScores : [];
   if (rows.length === 0) return null;
 
   const problems = [];
-  const round1 = (n) => Math.round(n * 10) / 10;
 
-  // 1) The headline the model wrote, against the criteria it wrote next to it.
-  //    This is now reported as a correction rather than as a question, because
-  //    the score has already been rebuilt from the criteria.
-  if (correctedFrom !== null) {
-    const fromRubric = rubricTotalPercent(raw);
-    problems.push(
-      `the AI reported ${round1(correctedFrom)}% but its own criteria add up to `
-      + `${round1(fromRubric)}%, so the score below has been set to ${round1(fromRubric)}%`
-    );
-  }
-
-  // 2) Each score inside the band it claims. NOT auto-corrected, and the reason
-  //    is the difference between this and the check above: which band a piece of
-  //    work sits in is a judgement, and the two numbers here disagree about the
-  //    judgement rather than about arithmetic. Nothing can pick between them
-  //    except a person who has read the paper.
+  // Each score inside the band it claims.
   for (const r of rows) {
     const range = bandRangeOf(r?.bandDescription);
     const s = Number(r?.score);
@@ -1423,7 +1484,9 @@ function rubricScoreNoteFor(raw, correctedFrom = null) {
   }
 
   if (problems.length === 0) return null;
-  return `The AI's own numbers disagreed: ${problems.join('; ')}. Check this paper before validating it.`;
+  return `The AI scored a criterion outside the band it named for that criterion: ${problems.join('; ')}. `
+    + `The score and the words next to it describe different work, and only someone who has read the paper can say which is right. `
+    + `Check the breakdown below before validating it.`;
 }
 
 function normalisePaperResult(raw, modelId, gradeLevelAssumed = false, rubricParseFailed = false) {
@@ -1984,6 +2047,52 @@ async function generateContentWithFallback(primaryModel, parts, opts = {}) {
     }
     throw err;
   }
+}
+
+/**
+ * Run one AI Teacher Assistant call against the assist pool.
+ *
+ * Ordered so consecutive tries change the MODEL first and the credential
+ * second — [3.5-flash@k8, 3.1-flash-lite@k8, 3.5-flash@k7, …]. That order is
+ * the whole point: the failure this exists for is a 503 "this model is
+ * currently experiencing high demand", which is Google-side capacity for one
+ * model and follows a credential wherever it goes. Trying the same model on a
+ * second key would just buy the same answer more slowly.
+ *
+ * retries: 0 per bucket, deliberately. generateContentWithRetry's backoff
+ * re-dials the SAME model, which is what turned a spike into "the assistant
+ * could not be reached" three times over; with a pool behind it, moving on is
+ * strictly better than sleeping. The retry budget is spent across buckets
+ * instead of inside one.
+ */
+async function generateAssistContent(parts) {
+  if (!assistPool.length) {
+    throw new AiUnavailableError('NOT_CONFIGURED', 'Gemini AI is not configured on this server.');
+  }
+  const stride = Math.max(ASSIST_MODEL_IDS.length, 1);
+  const rotation = assistPool
+    .map((_, i) => assistPool[(assistPoolCursor + i) % assistPool.length])
+    .slice(0, ASSIST_MAX_TRIES);
+  assistPoolCursor = (assistPoolCursor + stride) % assistPool.length;
+
+  let lastErr = null;
+  for (const bucket of rotation) {
+    try {
+      return await generateContentWithRetry(bucket.model, parts, {
+        purpose: 'ASSIST', retries: 0, modelLabel: bucket.label,
+      });
+    } catch (err) {
+      lastErr = err;
+      const cls = classifyAiError(err);
+      console.log(`⚠ assistant ${bucket.label} failed: ${cls.message.slice(0, 120)}`);
+      // A refused credential and a decoded-image failure say nothing about the
+      // next bucket in one case and everything about it in the other: a picture
+      // this model could not read will not become readable on another model, so
+      // that one stops here rather than spending three more slots proving it.
+      if (cls.badImage) break;
+    }
+  }
+  throw lastErr;
 }
 
 /** Snapshot of the grading pool for the teacher-facing "checks left today"
@@ -9522,6 +9631,15 @@ async function generateSubmissionFeedback(imagePaths, activityId, studentId) {
     const sourceNoun = anyHandwritten ? 'handwritten paper' : 'typed submission';
     // Formats a criteria array into the "MANDATORY RUBRIC" prompt block, shared by all rubric tiers below.
     function formatRubricCriteria(criteria, sourceLabel) {
+      // What the rubric is out of. Handed to the model as a literal number
+      // rather than left for it to work out, because the percentage it derives
+      // from this is the single arithmetic step it gets wrong most often — the
+      // "The AI's Numbers Needed Correcting" note teachers see is almost always
+      // this division, not the criterion scores. One live example: criteria of
+      // 43 out of a 50-point rubric reported as 83% instead of 86%. The
+      // criterion scores were right; the denominator was guessed. Naming it
+      // removes the guess.
+      const rubricTotalPoints = criteria.reduce((sum, c) => sum + (Number(c.points) || 0), 0);
       return `MANDATORY RUBRIC${sourceLabel ? ` (${sourceLabel})` : ''} — You MUST use this rubric for scoring. Do NOT use any default rubric.\n\n` +
         criteria.map((c, i) => {
           let entry = `CRITERION ${i+1}: ${c.name} (${c.points || 0} points maximum)\n`;
@@ -9535,9 +9653,9 @@ async function generateSubmissionFeedback(imagePaths, activityId, studentId) {
         }).join('\n\n') +
         `\n\nSCORING INSTRUCTIONS:\n` +
         `- Grade each criterion independently within its point range.\n` +
-        `- The total score = sum of all criterion scores, scaled to 0-100.\n` +
         `- In your rubricScores array, list each criterion with its name, score, maxPoints, and bandDescription.\n` +
-        `- Your "score" field must equal the sum, scaled to percentage.\n` +
+        `- Give each criterion a score that lies INSIDE the point range of the band you named for it in bandDescription. If you want to award a score outside that range, you have picked the wrong band — name the band the score actually falls in.\n` +
+        `- THIS RUBRIC IS WORTH ${rubricTotalPoints} POINTS IN TOTAL. Work the "score" field out from that, in two steps: first add your criterion scores together, then compute ROUND(100 × that sum ÷ ${rubricTotalPoints}). Do the division; do not estimate the percentage from an impression of the paper, and do not round it to a "nicer" number afterwards.\n` +
         `- The rubricScores array is what counts. The grade is rebuilt from those criterion scores, so spend your care on getting each one right against its band; the "score" field is checked against them, not trusted over them.`;
     }
 
@@ -10803,9 +10921,29 @@ app.get('/api/teacher/activities/:activityId/ai-check', async (req, res) => {
   const ready = await prisma.submission.count({
     where: { activityId: req.params.activityId, aiScore: null, imageUrl: { not: null }, status: 'PENDING' }
   });
+
+  // A check already running on this activity, so a teacher who navigated away
+  // can be put back on it.
+  //
+  // The run itself was always server-side and always survived leaving the page
+  // — but `aiJob` lived only in BatchUpload's React state, so coming back
+  // rendered the panel from nothing, the poller had no job id to poll, and the
+  // page said the same thing it says when no check has ever been started. The
+  // teacher's reading of that was the correct one for what they could see:
+  // "the check stopped when I left." Nothing was stopping; the screen had
+  // simply forgotten. This is what it re-attaches to.
+  //
+  // Only a RUNNING job. A finished one must not come back after the teacher
+  // has dismissed its summary, and re-attaching to it would do exactly that on
+  // the next plan refresh.
+  const running = [...aiJobs.values()].find(j =>
+    j.activityId === req.params.activityId && j.state === 'running' && j.teacherId === req.auth.sub
+  );
+
   res.json({
     success: true,
     ready,
+    runningJob: running ? serialiseJob(running) : null,
     batchSize: AI_BATCH_SIZE,
     requestsNeeded: Math.ceil(ready / AI_BATCH_SIZE),
     capacity: gradingCapacitySnapshot(),
@@ -11360,7 +11498,7 @@ function nameScrubber(rawName) {
  * A photographed paper is an image, and it goes up on EVERY message of the
  * conversation, because the model is stateless. That is a real charge against
  * the assist credential (kept off the grading pool on purpose — see
- * ASSIST_MODEL_ID), and it is the honest price of the assistant being able to
+ * ASSIST_MODEL_IDS), and it is the honest price of the assistant being able to
  * read the work. A typed submission costs almost nothing: buildFilePart
  * returns extracted text for a Word file, not an image.
  *
@@ -11524,21 +11662,21 @@ Return ONLY a valid JSON object, nothing else:
     // Distinguishes "the assistant had nothing to change" from "the assistant
     // never ran." Both used to come back as the unchanged feedback with
     // success: true, so a teacher who saw their own words returned could not
-    // tell which had happened. This deliberately does NOT get grading's
-    // rotation/fallback (see ASSIST_MODEL_ID above on why it is kept off the
-    // grading pool), so one exhausted credential surfaces here rather than
-    // retrying forever.
+    // tell which had happened. The assistant has its own rotation (assistPool)
+    // rather than grading's, so one busy model no longer surfaces here — but
+    // an assist pool that is genuinely out still does, rather than retrying
+    // forever.
     let refineFailed = false;
     let refineFailedReason = null;
 
-    if (assistModel) {
+    if (assistPool.length) {
       try {
-        const result = await generateContentWithRetry(assistModel, {
+        const result = await generateAssistContent({
           // The paper rides after the instructions, the same order the grader
           // uses: the model is told what it is looking at before it looks.
           contents: [{ role: 'user', parts: [{ text: sys }, ...(paperFilePart ? [paperFilePart] : [])] }],
           generationConfig: { responseMimeType: 'application/json' }
-        }, { purpose: 'ASSIST', modelLabel: ASSIST_MODEL_ID });
+        });
         const turn = parseAssistantTurn(result.response.text(), { isStructured });
         action = turn.action;
         reply = turn.reply;
@@ -11552,9 +11690,19 @@ Return ONLY a valid JSON object, nothing else:
       } catch (e) {
         console.log('⚠ AI assistant failed:', e.message?.slice(0, 80));
         refineFailed = true;
-        refineFailedReason = classifyAiError(e).quota
+        const cls = classifyAiError(e);
+        // Three different things, three different sentences. "Could not be
+        // reached" was being shown for all of them, and it is actively wrong
+        // for the common one: the model answered, promptly, to say it was
+        // busy. A teacher told the assistant is unreachable stops trying; one
+        // told it is busy tries again in a minute, which works.
+        refineFailedReason = cls.quota
           ? 'The AI Teacher Assistant has reached its usage limit for now.'
-          : 'The AI Teacher Assistant could not be reached.';
+          : cls.transient
+            ? 'The AI models are busy right now. Nothing is wrong with your paper — send the message again in a moment.'
+            : cls.credential
+              ? 'The AI Teacher Assistant\'s API key was refused. This is a setup problem — please tell whoever manages the deployment.'
+              : 'The AI Teacher Assistant could not be reached.';
       } finally {
         // A paper downloaded out of Supabase Storage lands in a temp file.
         // Cleared here rather than after the response, so a failed call does

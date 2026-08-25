@@ -214,7 +214,27 @@ export default function BatchUpload() {
     if (!activityId) return;
     apiFetch(`${API_URL}/api/teacher/activities/${activityId}/ai-check`)
       .then(r => r.json())
-      .then(d => { if (d.success) setAiPlan(d); })
+      .then(d => {
+        if (!d.success) return;
+        setAiPlan(d);
+        // Re-attach to a check that is still running on the server.
+        //
+        // The run has always been server-side — the panel says "you can leave
+        // this page" because that is true of the JOB. What was not true was of
+        // the SCREEN: aiJob lived only here, so leaving and coming back
+        // rendered the panel from an empty state, the poller below had no job
+        // id to poll, and the page looked exactly as it does when no check was
+        // ever started. Papers kept being checked the whole time and the
+        // teacher had no way to know.
+        //
+        // The server only offers a job whose state is still 'running', so a
+        // finished summary the teacher has dismissed cannot reappear here on
+        // the next refresh. Same job id we already hold means keep what we
+        // have: this response is a plan read, and the poller's copy is fresher.
+        if (d.runningJob) {
+          setAiJob(prev => (prev?.jobId === d.runningJob.jobId ? prev : d.runningJob));
+        }
+      })
       .catch(() => {});
   }, [activityId]);
 
@@ -1278,7 +1298,7 @@ export default function BatchUpload() {
                     />
                   </div>
                   <p className="text-[11px] text-slate-500 mt-1">
-                    You can leave this page — the check keeps running.
+                    You can leave this page — the check keeps running, and this panel picks it back up when you return.
                   </p>
                 </div>
                 {/* The server has always been able to stop a run; nothing ever

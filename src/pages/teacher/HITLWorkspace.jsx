@@ -1605,25 +1605,32 @@ export default function HITLWorkspace() {
             </div>
           )}
 
-          {/* The AI's own arithmetic disagreed with itself. Two different
-              things end up here and they are handled differently on purpose:
+          {/* A criterion scored outside the band the AI itself named for it —
+              e.g. 28 points awarded under a band the AI labelled "Proficient
+              (21-26 pts)". The number and the words next to it describe
+              different pieces of work, and which one is right is a judgement
+              about the paper, so nothing is corrected server-side and this is
+              genuinely the teacher's to settle.
 
-                • the headline score not being the sum of the criteria printed
-                  under it — pure addition, so the score is now REBUILT from the
-                  breakdown server-side and this banner reports what changed;
-                • a criterion scored outside the band the model itself named — a
-                  judgement, not arithmetic, so nothing is corrected and the
-                  teacher is the one who decides.
+              This banner used to carry a second, much more common case: the
+              AI's headline percentage not matching the criteria printed under
+              it. That one is arithmetic, not judgement — the server rebuilds
+              the score from the criteria and the correction is provably right —
+              so putting it here amounted to warning a teacher about something
+              already fixed, with no action available to them. It fired on
+              ordinary well-graded papers ("reported 83% but its own criteria
+              add up to 86%") and was training people to skim past the amber
+              triangle, which is precisely what this remaining case cannot
+              afford. The rebuild still happens and is still recorded in the
+              grading log; see rubricScoreNoteFor in server.js.
 
               Distinct from the banner above, which asks whether a shortfall was
-              *explained*. Amber rather than red now that the arithmetic case
-              carries its own fix: the note is something to check, not two
-              numbers the teacher has to choose between. */}
+              *explained*. */}
           {submission?.rubricScoreNote && (
             <div className="flex items-start gap-3 p-4 bg-amber-50 border-2 border-amber-300 rounded-xl text-sm">
               <AlertTriangle className="w-5 h-5 shrink-0 text-amber-600" />
               <div>
-                <p className="font-bold text-amber-800">The AI&apos;s Numbers Needed Correcting</p>
+                <p className="font-bold text-amber-800">A Criterion Doesn&apos;t Match Its Band</p>
                 <p className="text-amber-700 text-xs mt-0.5">{submission.rubricScoreNote}</p>
               </div>
             </div>

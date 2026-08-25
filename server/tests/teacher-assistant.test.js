@@ -195,7 +195,7 @@ describe('the endpoint the drawer talks to', () => {
   it('refuses an empty message before spending a model call', () => {
     const handler = SERVER_SRC.slice(SERVER_SRC.indexOf('const teacherAssistantHandler'));
     const guard = handler.indexOf('Ask the assistant something first');
-    const modelCall = handler.indexOf('if (assistModel)');
+    const modelCall = handler.indexOf('if (assistPool.length)');
     expect(guard).toBeGreaterThan(-1);
     expect(guard).toBeLessThan(modelCall);
   });

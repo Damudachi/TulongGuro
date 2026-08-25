@@ -264,3 +264,54 @@ describe('a class set is checked with more than one paper in flight', () => {
     expect(peak).toBeLessThanOrEqual(3);   // never past the gate's own ceiling
   }, 30000);
 });
+
+/**
+ * The panel says "you can leave this page — the check keeps running", and the
+ * run always did. The SCREEN did not: BatchUpload held the job in React state
+ * only, so navigating away and back rendered the panel from nothing, the poller
+ * had no job id to poll, and the page looked exactly as it does when no check
+ * was ever started. Teachers read that, correctly for what they could see, as
+ * "the check stops when I leave."
+ *
+ * The plan endpoint is what the page already re-reads on mount, so that is
+ * where the running job is offered back.
+ */
+describe('a running check can be picked back up after leaving the page', () => {
+  it('offers the running job on the plan the page reloads with', async () => {
+    const queue = [0, 1].map((i) => ({
+      id: `sub-${i}`, studentId: `student-${i}`,
+      imageUrl: `/uploads/${path.basename(uploadPaths[i])}`,
+      retainUntil: null,
+    }));
+    prismaFake.submission.findMany.mockResolvedValue(queue);
+    prismaFake.submission.update.mockResolvedValue({ id: 'x' });
+    googleHandler = async () => {
+      await new Promise((r) => setTimeout(r, 300));
+      return ok();
+    };
+
+    const start = await call('POST', `/api/teacher/activities/${ACTIVITY}/ai-check`);
+    const { jobId } = await start.json();
+
+    // What a remount does: read the plan, and find the run still there.
+    const plan = await call('GET', `/api/teacher/activities/${ACTIVITY}/ai-check`);
+    const planBody = await plan.json();
+    expect(planBody.runningJob?.jobId).toBe(jobId);
+    expect(planBody.runningJob?.state).toBe('running');
+    expect(planBody.runningJob?.total).toBe(2);
+
+    let state = 'running';
+    for (let i = 0; i < 100 && state === 'running'; i++) {
+      await new Promise((r) => setTimeout(r, 50));
+      const poll = await call('GET', `/api/teacher/ai-jobs/${jobId}`);
+      ({ state } = await poll.json());
+    }
+    expect(state).toBe('finished');
+
+    // A finished job must NOT come back here. The page clears its panel when
+    // the teacher dismisses the summary, and re-attaching on the next plan
+    // refresh would put it straight back.
+    const after = await call('GET', `/api/teacher/activities/${ACTIVITY}/ai-check`);
+    expect((await after.json()).runningJob).toBeNull();
+  }, 30000);
+});
