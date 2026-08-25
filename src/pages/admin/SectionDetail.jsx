@@ -9,8 +9,12 @@ import { GRADE_LEVELS } from '../../constants/school';
 import StudentCredentials from '../../components/StudentCredentials';
 import SectionMoveConfirm from '../../components/SectionMoveConfirm';
 import StudentTransferDialog from '../../components/StudentTransferDialog';
+import RosterSearch from '../../components/RosterSearch';
 import RosterEditor from '../../components/RosterEditor';
-import { rowsFromExtraction, isFilledRow, rosterPayload, emptyRoster, withBlankRow, normalizeRosterName } from '../../utils/roster';
+import {
+  rowsFromExtraction, isFilledRow, rosterPayload, emptyRoster, withBlankRow, normalizeRosterName,
+  matchesRosterQuery, sortRosterByName,
+} from '../../utils/roster';
 
 import { showAlert, showConfirm, showPrompt } from '../../utils/dialog';
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
@@ -52,6 +56,8 @@ export default function AdminSectionDetail() {
    * submitted work it stays null, because the first call already did the move.
    */
   const [transferChoice, setTransferChoice] = useState(null);
+  /** What is typed in the roster search box. Never sent anywhere; filters in place. */
+  const [rosterQuery, setRosterQuery] = useState('');
 
   // Both banners sit above a roster that can run to forty rows, so a message
   // raised by a control near the bottom needs bringing into view — otherwise
@@ -282,6 +288,19 @@ export default function AdminSectionDetail() {
 
   const { section, teachers } = data;
 
+  /**
+   * The roster as it is read: alphabetical, then filtered by what is typed.
+   *
+   * The number is assigned before the filter, not after, so it is the
+   * learner's position on the full list rather than their position among the
+   * search results. Renumbering the matches 1..n would make the column mean
+   * something different depending on what is in the box — and "she is 14th"
+   * is the only thing that column was ever telling anybody.
+   */
+  const roster = sortRosterByName(section.students)
+    .map((s, i) => ({ ...s, rosterNo: i + 1 }));
+  const visibleRoster = roster.filter(s => matchesRosterQuery(s, rosterQuery));
+
   return (
     <div className="p-4 md:p-8 max-w-4xl mx-auto pb-24">
       <button onClick={() => navigate(-1)} className="flex items-center text-sm text-slate-500 hover:text-brand-slate mb-6">
@@ -485,10 +504,22 @@ export default function AdminSectionDetail() {
           <p className="text-sm font-medium">No students in this section</p>
         </div>
       ) : (
+        <>
+          {/* Worth the row from about a dozen names up, which is most
+              sections. Below that the whole roster is already on screen. */}
+          {section.students.length > 8 && (
+            <RosterSearch
+              value={rosterQuery}
+              onChange={setRosterQuery}
+              count={visibleRoster.length}
+              total={roster.length}
+              className="mb-3"
+            />
+          )}
         <div className="bg-white border border-slate-200 rounded-2xl divide-y divide-slate-50 overflow-hidden">
-          {section.students.map((s, i) => (
+          {visibleRoster.map((s) => (
             <div key={s.id} className="flex items-center gap-3 px-4 py-2.5 hover:bg-slate-50 group">
-              <span className="text-xs text-slate-400 w-5 text-right font-mono shrink-0">{i + 1}</span>
+              <span className="text-xs text-slate-400 w-5 text-right font-mono shrink-0">{s.rosterNo}</span>
               <div className="w-8 h-8 rounded-full bg-brand-navy/10 text-brand-navy flex items-center justify-center text-xs font-bold shrink-0">
                 {s.name.charAt(0)}
               </div>
@@ -522,6 +553,7 @@ export default function AdminSectionDetail() {
             </div>
           ))}
         </div>
+        </>
       )}
     </div>
   );

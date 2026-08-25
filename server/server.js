@@ -4573,7 +4573,14 @@ app.get('/api/admin/:adminId/teachers/:teacherId', async (req, res) => {
       prisma.section.findMany({
         where: { teacherId: teacher.id },
         include: {
-          students: { select: { id: true, name: true, username: true }, orderBy: { username: 'asc' } },
+          // Alphabetical, which for a roster stored "Dela Cruz, Juan Miguel"
+          // is surname order without any parsing. Ordering by `username`, as
+          // this did, is the sequence the accounts happened to be created in —
+          // a list nobody can look a name up in. The client sorts again with
+          // localeCompare so "Peña" files beside "Pena" rather than after "Z";
+          // this makes the payload arrive close to right for anything reading
+          // it without that step.
+          students: { select: { id: true, name: true, username: true }, orderBy: { name: 'asc' } },
           _count: { select: { classes: true } }
         },
         orderBy: [{ gradeLevel: 'asc' }, { name: 'asc' }]
@@ -4785,7 +4792,9 @@ app.get('/api/admin/:adminId/sections/:sectionId', async (req, res) => {
           teacher: { select: { id: true, name: true, email: true } },
           students: {
             select: { id: true, name: true, username: true, _count: { select: { submissions: { where: REAL_WORK } } } },
-            orderBy: { username: 'asc' }
+            // Alphabetical — see the note on the teacher-detail route, which
+            // orders its rosters the same way for the same reason.
+            orderBy: { name: 'asc' }
           },
           classes: {
             select: {

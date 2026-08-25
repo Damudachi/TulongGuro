@@ -8,8 +8,12 @@ import { API_URL, apiFetch } from '../../config';
 import { GRADE_LEVELS } from '../../constants/school';
 import StudentCredentials from '../../components/StudentCredentials';
 import SectionMoveConfirm from '../../components/SectionMoveConfirm';
+import RosterSearch from '../../components/RosterSearch';
 import RosterEditor from '../../components/RosterEditor';
-import { rowsFromExtraction, isFilledRow, rosterPayload, emptyRoster, withBlankRow } from '../../utils/roster';
+import {
+  rowsFromExtraction, isFilledRow, rosterPayload, emptyRoster, withBlankRow,
+  matchesRosterQuery, sortRosterByName,
+} from '../../utils/roster';
 
 import { showAlert, showConfirm } from '../../utils/dialog';
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
@@ -56,6 +60,15 @@ export default function AdminTeacherDetail() {
   const [notice, setNotice] = useState('');
   const [newAccounts, setNewAccounts] = useState([]);
   const [moveRequest, setMoveRequest] = useState(null);
+  /**
+   * One box for every roster on the page, not one per section card.
+   *
+   * The question an admin actually arrives with here is "which of this
+   * teacher's sections is Sophia in" — a search per card answers a question
+   * they would have to already know the answer to, and puts four identical
+   * inputs on screen to do it.
+   */
+  const [rosterQuery, setRosterQuery] = useState('');
   // Reassignment failures (the target teacher already has this shell) are shown
   // where the control is, not only in the page banner far above it.
   const [reassignError, setReassignError] = useState('');
@@ -284,6 +297,25 @@ export default function AdminTeacherDetail() {
   const { teacher, classes, sections, teachers = [] } = data;
   const otherTeachers = teachers.filter(t => t.id !== teacher.id);
   const totalStudents = sections.reduce((n, s) => n + s.students.length, 0);
+
+  /**
+   * Each section's roster alphabetised and numbered once, then filtered.
+   *
+   * Numbered before the filter so the column keeps meaning "position on this
+   * section's list" whatever is typed — see the same note on the section page.
+   * `rosterTotal` is kept beside the filtered rows because the card header
+   * still reports the real size of the section: a search must never look like
+   * students have gone missing.
+   */
+  const searchedSections = sections.map(section => {
+    const roster = sortRosterByName(section.students).map((s, i) => ({ ...s, rosterNo: i + 1 }));
+    return {
+      ...section,
+      roster: roster.filter(s => matchesRosterQuery(s, rosterQuery)),
+      rosterTotal: roster.length,
+    };
+  });
+  const matchCount = searchedSections.reduce((n, s) => n + s.roster.length, 0);
 
   return (
     <div className="p-4 md:p-8 max-w-4xl mx-auto pb-24">
@@ -522,7 +554,16 @@ export default function AdminTeacherDetail() {
         </div>
       ) : (
         <div className="space-y-4">
-          {sections.map(section => (
+          {totalStudents > 8 && (
+            <RosterSearch
+              value={rosterQuery}
+              onChange={setRosterQuery}
+              count={matchCount}
+              total={totalStudents}
+              placeholder={`Search ${totalStudents} students across ${sections.length} section${sections.length === 1 ? '' : 's'}…`}
+            />
+          )}
+          {searchedSections.map(section => (
             <div key={section.id} className="bg-white border border-slate-200 rounded-2xl overflow-hidden">
               <div className="p-4 flex items-start justify-between gap-3 border-b border-slate-100">
                 {editingSectionId === section.id ? (
@@ -621,11 +662,20 @@ export default function AdminTeacherDetail() {
 
               {section.students.length === 0 ? (
                 <p className="px-4 py-6 text-sm text-slate-400 text-center">No students in this section.</p>
+              ) : section.roster.length === 0 ? (
+                /* The card is kept rather than hidden. A section that vanished
+                   while the admin typed reads as a section that was deleted,
+                   and it also takes its Add Students and Edit controls with
+                   it — which are exactly what someone whose search found
+                   nothing may want next. */
+                <p className="px-4 py-6 text-sm text-slate-400 text-center">
+                  No match here — all {section.rosterTotal} student{section.rosterTotal === 1 ? '' : 's'} still on this roster.
+                </p>
               ) : (
                 <div className="divide-y divide-slate-50 max-h-80 overflow-y-auto">
-                  {section.students.map((s, i) => (
+                  {section.roster.map((s) => (
                     <div key={s.id} className="flex items-center gap-3 px-4 py-2.5 hover:bg-slate-50 group">
-                      <span className="text-xs text-slate-400 w-5 text-right font-mono shrink-0">{i + 1}</span>
+                      <span className="text-xs text-slate-400 w-5 text-right font-mono shrink-0">{s.rosterNo}</span>
                       <div className="w-7 h-7 rounded-full bg-brand-navy/10 text-brand-navy flex items-center justify-center text-xs font-bold shrink-0">
                         {s.name.charAt(0)}
                       </div>

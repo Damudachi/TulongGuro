@@ -237,3 +237,72 @@ export function rosterPayload(rows, onProblem) {
 
   return filled.map(r => ({ name: r.name.trim(), birthday: r.birthday.trim() }));
 }
+
+/**
+ * Fold a string down to what a person searching actually means by it.
+ *
+ * Lowercased, accents stripped, and punctuation reduced to single spaces. The
+ * accents matter here more than they would elsewhere: Filipino rosters carry
+ * Peña, Muñoz and Sanchez-Villanueva, and an admin hunting for a child types
+ * "pena" because that is what is on their keyboard. Byte-comparing "Peña"
+ * against "pena" fails, and the search silently reports a learner who is
+ * plainly on the list as not being there.
+ *
+ * The punctuation fold does the same job for the surname comma: the roster
+ * stores "Dela Cruz, Juan Miguel", so a search for "cruz juan" — surname then
+ * given name, exactly how it reads on the screen — would otherwise miss.
+ */
+export function foldForSearch(text) {
+  return (text || '')
+    .normalize('NFD')                 // split "ñ" into "n" + combining tilde
+    .replace(/[\u0300-\u036f]/g, '')   // drop the marks, keep the letters
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+}
+
+/**
+ * Whether one learner answers to what was typed.
+ *
+ * Every whitespace-separated term has to match somewhere, in any order, so
+ * "juan cruz" finds "Dela Cruz, Juan Miguel" and so does "cruz juan". Matching
+ * the query as one string would make word order a rule the admin has to guess.
+ *
+ * The Student ID is searched alongside the name because it is the other thing
+ * printed on the row, and it is what a teacher reads off a form when the
+ * spelling of a name is the very thing in doubt.
+ */
+export function matchesRosterQuery(student, query) {
+  const terms = foldForSearch(query).split(' ').filter(Boolean);
+  if (terms.length === 0) return true;
+  const haystack = `${foldForSearch(student?.name)} ${foldForSearch(student?.username)}`;
+  return terms.every(term => haystack.includes(term));
+}
+
+/**
+ * A roster in the order a roster is read: alphabetical, by the stored name.
+ *
+ * That is surname order without any parsing, because the stored name already
+ * starts with the surname — "Dela Cruz, Juan Miguel" — which is the format
+ * every roster editor in the app asks for and the reason it asks. Sorting by
+ * `username` instead, which is what these lists used to do, ordered them by
+ * the sequence their accounts happened to be created in: an admin looking for
+ * Sotto in a class of forty had to read all forty.
+ *
+ * `localeCompare` rather than `<`: it puts "Ñ" after "N" instead of after "Z",
+ * treats case as a tiebreak rather than a division, and orders "de la Cruz"
+ * next to "Dela Cruz" instead of a block apart. Numeric ordering is on so a
+ * roster that has fallen back to Student IDs reads 2 before 10.
+ *
+ * Returns a new array; the caller's is left alone.
+ */
+export function sortRosterByName(students) {
+  return [...(students || [])].sort((a, b) =>
+    String(a?.name || '').localeCompare(String(b?.name || ''), undefined, {
+      sensitivity: 'base', numeric: true,
+    })
+    // Two learners genuinely called the same thing keep a stable order rather
+    // than swapping places between renders.
+    || String(a?.username || '').localeCompare(String(b?.username || ''), undefined, { numeric: true })
+  );
+}
