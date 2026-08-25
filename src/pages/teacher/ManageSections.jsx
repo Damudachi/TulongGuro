@@ -5,7 +5,10 @@ import { GRADE_LEVELS } from '../../constants/school';
 import StudentCredentials from '../../components/StudentCredentials';
 import SectionMoveConfirm from '../../components/SectionMoveConfirm';
 import RosterEditor from '../../components/RosterEditor';
-import { rowsFromExtraction, isFilledRow, rosterPayload, emptyRoster, withBlankRow, normalizeRosterName } from '../../utils/roster';
+import {
+  rowsFromExtraction, isFilledRow, rosterPayload, emptyRoster, withBlankRow, normalizeRosterName,
+  matchesRosterQuery, foldForSearch, sortRosterByName,
+} from '../../utils/roster';
 
 import { showAlert, showConfirm, showPrompt } from '../../utils/dialog';
 export default function ManageSections() {
@@ -401,23 +404,31 @@ export default function ManageSections() {
           // that has ended is still a record — its gradebook and feedback are
           // last year's marks — so "hidden" here means out of the way by
           // default, never unreachable.
-          const q = searchQuery.toLowerCase();
+          // Folded the same way the admin roster search folds, so the two
+          // sides of the app agree on what a query means: accents dropped
+          // ("pena" finds "Peña"), punctuation reduced to spaces, and each
+          // term matched independently so word order is not a rule the
+          // teacher has to guess at. This used to be a raw
+          // `name.toLowerCase().includes(q)`, which missed both.
+          const q = foldForSearch(searchQuery);
+          const sectionNameMatches = (s) => foldForSearch(s.name).includes(q);
           const filteredSections = sections
             .filter(s => {
-              if (s.name.toLowerCase().includes(q)) return true;
-              // Also match if any enrolled student's name contains the query,
-              // so a teacher can find which block a learner sits in.
-              return (s.students || []).some(st => st.name.toLowerCase().includes(q));
+              if (sectionNameMatches(s)) return true;
+              // Also match if any enrolled learner does, so a teacher can find
+              // which block a child sits in — the one question this page's
+              // search is really for.
+              return (s.students || []).some(st => matchesRosterQuery(st, searchQuery));
             })
             .filter(s => showArchived || !s.isArchived);
           // When the query matched a student rather than the section name,
           // auto-expand the section so the teacher sees who matched.
           const studentMatchedIds = q
             ? filteredSections
-                .filter(s => !s.name.toLowerCase().includes(q) && (s.students || []).some(st => st.name.toLowerCase().includes(q)))
+                .filter(s => !sectionNameMatches(s) && (s.students || []).some(st => matchesRosterQuery(st, searchQuery)))
                 .map(s => s.id)
             : [];
-          
+
           if (sections.length === 0) {
             return (
               <div className="text-center p-12 border-2 border-dashed border-slate-200 rounded-2xl text-slate-500">
@@ -540,14 +551,27 @@ export default function ManageSections() {
                       <p className="text-sm text-slate-400 py-2">No students in this section.</p>
                     ) : (
                       <div className="space-y-1.5 max-h-72 overflow-y-auto">
-                        {section.students.map((s, i) => (
+                        {/* Alphabetical, the same order the admin's rosters
+                            read in — for a name stored "Dela Cruz, Juan
+                            Miguel" that is surname order with no parsing. The
+                            whole roster stays on screen while searching, with
+                            the match highlighted, because this list is short
+                            enough to scan and its neighbours are the context
+                            "which block is she in" is asking about. */}
+                        {sortRosterByName(section.students).map((s, i) => (
                           <div key={s.id} className="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-slate-50">
                             <span className="text-xs text-slate-400 w-5 text-right font-mono">{i + 1}</span>
                             <div className="w-7 h-7 rounded-full bg-brand-navy/10 text-brand-navy flex items-center justify-center text-xs font-bold shrink-0">
                               {s.name.charAt(0)}
                             </div>
                             <div className="flex-1 min-w-0">
-                              <p className="text-sm font-medium text-brand-slate truncate">{q && s.name.toLowerCase().includes(q) ? <span className="bg-yellow-200 rounded px-0.5">{s.name}</span> : s.name}</p>
+                              {/* Highlighted through the same matcher that did
+                                  the filtering. Kept as its own test rather
+                                  than reusing the section's: a query that hit
+                                  the section name expands every row, and
+                                  marking all of them yellow would say each one
+                                  matched. */}
+                              <p className="text-sm font-medium text-brand-slate truncate">{q && matchesRosterQuery(s, searchQuery) ? <span className="bg-yellow-200 rounded px-0.5">{s.name}</span> : s.name}</p>
                               <p className="text-[11px] text-slate-400 font-mono">ID: {s.username}</p>
                               {/* Shown inline and left on screen until the next
                                   reset: the teacher has to read it out to the

@@ -6279,7 +6279,13 @@ app.get('/api/teacher/:teacherId/sections', async (req, res) => {
     where,
     include: {
       _count: { select: { students: true } },
-      students: { select: { id: true, name: true, username: true } },
+      // Alphabetical, matching the two admin roster routes. This had no
+      // `orderBy` at all, so a roster came back in whatever order the database
+      // happened to hand it over — which is neither the order the names were
+      // entered in nor any order a teacher could look a name up in. The client
+      // sorts again with localeCompare; see the note on the teacher-detail
+      // route for why both.
+      students: { select: { id: true, name: true, username: true }, orderBy: { name: 'asc' } },
       teacher: { select: { id: true, name: true } }
     },
     orderBy: [{ gradeLevel: 'asc' }, { name: 'asc' }]
