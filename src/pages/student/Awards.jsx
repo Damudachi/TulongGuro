@@ -1,9 +1,10 @@
 import { useState, useEffect } from 'react';
 import {
   Trophy, Star, Lock, Zap, BookOpen, Award, Flag, Medal, TrendingUp, Rocket,
-  BarChart3, Target, Clock, Compass, Flame, GraduationCap,
+  BarChart3, Target, Clock, Compass, Flame, GraduationCap, Loader2,
 } from 'lucide-react';
 import { API_URL, apiFetch } from '../../config';
+import { getStoredUser } from '../../utils/session';
 import { badgeLook } from '../../constants/badgeLook';
 import BadgeCelebration from '../../components/BadgeCelebration';
 
@@ -81,9 +82,24 @@ export default function Awards() {
   // the acknowledgement it sends on dismissal is what stops them showing the
   // same badge twice.
   const [justEarned, setJustEarned] = useState(null);
+  /**
+   * Until this clears, the page says nothing about what the learner has won.
+   *
+   * Every number here starts at its empty value — 0 stars, no badges, a 0%
+   * bar — and the copy at the bottom of the page states outright that the
+   * teacher has not graded anything yet. Rendered while the request is still
+   * in flight, that is not an empty state, it is a wrong answer given
+   * confidently to a child who may well have a badge they came here to look
+   * at. Slower the connection, longer they are told they have nothing.
+   *
+   * Starts false when nobody is signed in, matching the student dashboard:
+   * with no id there is nothing to fetch, so the spinner would only ever be
+   * taken away again on the first commit. See getStoredUser.
+   */
+  const [isLoading, setIsLoading] = useState(() => !!getStoredUser().id);
 
   useEffect(() => {
-    const user = JSON.parse(localStorage.getItem('user') || '{}');
+    const user = getStoredUser();
     if (!user.id) return;
     apiFetch(`${API_URL}/api/student/${user.id}/dashboard`)
       .then(r => r.json())
@@ -93,12 +109,22 @@ export default function Awards() {
         setBadges(d.badges || []);
         setJustEarned(d.justEarnedBadges || null);
       })
-      .catch(() => {});
+      .catch(() => {})
+      // Cleared on failure too. A learner who is offline should see the empty
+      // trophy room the rest of the page already handles, not a spinner that
+      // never resolves.
+      .finally(() => setIsLoading(false));
   }, []);
 
   const unlocked = badges.filter(b => b.earned);
   const locked = badges.filter(b => !b.earned);
   const progress = badges.length ? Math.round((unlocked.length / badges.length) * 100) : 0;
+
+  if (isLoading) return (
+    <div className="flex items-center justify-center h-64 text-navy-400 font-bold">
+      <Loader2 className="w-6 h-6 animate-spin mr-2" />Loading...
+    </div>
+  );
 
   return (
     <div className="p-4 md:p-8 max-w-3xl mx-auto pb-24">

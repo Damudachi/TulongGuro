@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Bell, BellOff } from 'lucide-react';
+import { Bell, BellOff, Loader2 } from 'lucide-react';
 import { API_URL, apiFetch } from '../config';
 import { pushSupported, permissionState, fetchPushConfig, isPushEnabled, enablePush, disablePush } from '../utils/push';
 
@@ -19,6 +19,20 @@ export default function NotificationBell() {
   // off the clock while rendering. The poll below runs every minute, which is
   // exactly the resolution these labels are shown in, so nothing goes stale.
   const [polledAt, setPolledAt] = useState(0);
+  /**
+   * Whether the first load has come back yet — win or lose.
+   *
+   * "Nothing yet." is a claim about the server's answer, and before the first
+   * response there is no answer to report. A teacher who opens the bell on a
+   * slow connection was told they had no notifications and then watched a list
+   * appear underneath the words.
+   *
+   * Deliberately not an `isLoading` that every poll re-raises: load() runs on a
+   * 60-second timer, and a panel left open would blink back to a spinner each
+   * time it fired. Only the first round trip is unknown; after that the list on
+   * screen is the last thing the server actually said.
+   */
+  const [hasLoaded, setHasLoaded] = useState(false);
   const panelRef = useRef(null);
 
   // null while we do not yet know whether this deployment can push at all —
@@ -38,7 +52,10 @@ export default function NotificationBell() {
           setPolledAt(Date.now());
         }
       })
-      .catch(() => {});
+      .catch(() => {})
+      // Set on failure too: an offline bell should show the empty state the
+      // panel already handles, not spin forever.
+      .finally(() => setHasLoaded(true));
   };
 
   useEffect(() => {
@@ -166,7 +183,11 @@ export default function NotificationBell() {
               </button>
             )}
           </div>
-          {notifications.length === 0 ? (
+          {!hasLoaded ? (
+            <p className="px-4 py-8 flex items-center justify-center gap-2 text-sm text-navy-300">
+              <Loader2 className="w-4 h-4 animate-spin" />Loading…
+            </p>
+          ) : notifications.length === 0 ? (
             <p className="px-4 py-8 text-center text-sm text-navy-300">Nothing yet.</p>
           ) : (
             <ul>

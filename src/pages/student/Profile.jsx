@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { User, School, IdCard, BookOpen, Star } from 'lucide-react';
 import { API_URL, apiFetch } from '../../config';
+import { getStoredUser } from '../../utils/session';
 
 const INFO_TILES = [
   { key: 'username', label: 'Student ID', icon: IdCard, tile: 'bg-royal-500' },
@@ -10,18 +11,40 @@ const INFO_TILES = [
 
 export default function StudentProfile() {
   const [data, setData] = useState(null);
+  /**
+   * Whether the dashboard read has come back — win or lose.
+   *
+   * Only the Academic Summary waits on it, and that split is the point. The
+   * identity tiles above fall back to the signed-in user held in localStorage,
+   * so ID, name and section are already correct on the first paint; hiding
+   * them behind a spinner would replace information the app has with a
+   * placeholder it does not need.
+   *
+   * The three numbers below have no such fallback. They start at 0, 0 and '—',
+   * which is not "not loaded yet" but "you have submitted nothing, your
+   * average is nothing, you have earned nothing" — read by the learner it is
+   * about, on a school connection slow enough to sit with it.
+   *
+   * Starts settled when nobody is signed in: there is no request to wait for,
+   * so the empty summary is already the honest answer. Decided in the
+   * initializer rather than from the effect, which would be a second render
+   * to undo the first. Same shape as the student dashboard's isLoading.
+   */
+  const [statsLoaded, setStatsLoaded] = useState(() => !getStoredUser().id);
 
   useEffect(() => {
-    const user = JSON.parse(localStorage.getItem('user') || '{}');
-    if (user.id) {
-      apiFetch(`${API_URL}/api/student/${user.id}/dashboard`)
-        .then(r => r.json())
-        .then(d => { if (d.success) setData(d); })
-        .catch(() => {});
-    }
+    const user = getStoredUser();
+    if (!user.id) return;
+    apiFetch(`${API_URL}/api/student/${user.id}/dashboard`)
+      .then(r => r.json())
+      .then(d => { if (d.success) setData(d); })
+      .catch(() => {})
+      // Set on failure too: offline, the empty summary is what the rest of the
+      // app already shows, and it beats a placeholder that never resolves.
+      .finally(() => setStatsLoaded(true));
   }, []);
 
-  const user = JSON.parse(localStorage.getItem('user') || '{}');
+  const user = getStoredUser();
   const student = data?.student || user;
   const submissions = data?.submissions || [];
   const stars = data?.stars || 0;
@@ -82,9 +105,19 @@ export default function StudentProfile() {
             { value: stars, label: 'Stars', tone: 'text-sun-700' },
           ].map(stat => (
             <div key={stat.label} className="bg-cream-100 rounded-2xl py-4">
-              <p className={`font-display text-3xl font-extrabold ${stat.tone}`}>{stat.value}</p>
+              {/* A bar the height of the number it stands in for, so the tile
+                  does not resize when the real figure lands. The label stays:
+                  what this tile is going to say is not in doubt, only what it
+                  says. */}
+              {statsLoaded ? (
+                <p className={`font-display text-3xl font-extrabold ${stat.tone}`}>{stat.value}</p>
+              ) : (
+                <div className="h-9 flex items-center justify-center" aria-hidden="true">
+                  <span className="block h-6 w-10 rounded-lg bg-navy-200/60 animate-pulse" />
+                </div>
+              )}
               <p className="text-xs font-bold text-navy-500 mt-1">{stat.label}</p>
-              {stat.hint && <p className="text-[10px] font-semibold text-navy-400 mt-0.5">{stat.hint}</p>}
+              {statsLoaded && stat.hint && <p className="text-[10px] font-semibold text-navy-400 mt-0.5">{stat.hint}</p>}
             </div>
           ))}
         </div>
