@@ -194,9 +194,33 @@ export default function SkillProgressChart({
         </div>
       )}
 
-      <div className="w-full h-64">
+      {/* h-72 rather than h-64: the bottom margin below grew to make room for
+          the axis caption, and paying for that out of the plot would have
+          flattened the very trend the chart is drawn to show. */}
+      <div className="w-full h-72">
         <ResponsiveContainer width="100%" height="100%">
-          <LineChart data={visibleChartData} margin={{ top: 5, right: 12, left: 0, bottom: 14 }}>
+          {/* bottom: 28 is the fix for the axis caption sitting on top of the
+              legend, and it is worth writing down why, because the number
+              looks arbitrary and is not.
+
+              Recharts stacks the space under the plot as
+              margin.bottom + XAxis height + legend height, and then draws the
+              legend from the container's bottom edge upward. The caption is
+              drawn relative to the AXIS (position insideBottom, offset -10), so
+              it reaches about 21px past the axis — 10px of offset plus its own
+              11px of type. With margin.bottom at 14 there were only 14px before
+              the legend began, so the last ~7px of "Activity" landed on the
+              legend row.
+
+              28 clears it with room to spare. The legend is deliberately left
+              to size itself: on a narrow screen it wraps to two or three lines,
+              and Recharts measures that and grows the offset, so the caption
+              stays above it. Pinning an explicit legend height would clip.
+
+              Uniform across tabs, not just the summary one that has a legend.
+              A per-tab margin would resize the plot area as the teacher clicked
+              between skills, which reads as the data moving. */}
+          <LineChart data={visibleChartData} margin={{ top: 5, right: 12, left: 0, bottom: 28 }}>
             <CartesianGrid strokeDasharray="3 3" stroke="var(--tg-neutral-100, #EDEFF6)" />
             <XAxis dataKey="label" interval={tickInterval} tickFormatter={tickNumber}
               tick={{ fontSize: 11, fill: 'var(--tg-neutral-500, #5F6B8F)' }} axisLine={{ stroke: 'var(--tg-neutral-200, #DDE1EE)' }} tickLine={false}
