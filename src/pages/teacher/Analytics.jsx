@@ -102,13 +102,17 @@ export default function Analytics() {
   // Nobody signed in means there is nothing to fetch, so this must not open on
   // a spinner that only the first commit would take away again.
   const [isLoading, setIsLoading] = useState(() => !!getStoredUser().id);
-  const [selectedSectionId, setSelectedSectionId] = useState(null);
+  // Seeded from the URL rather than assigned by an effect after mount. The
+  // Dashboard warning panel links here as ?sectionId=..., and reading it during
+  // the first render is what stops the section chooser from painting once and
+  // being replaced on the very next commit.
+  const [selectedSectionId, setSelectedSectionId] = useState(() => searchParams.get('sectionId'));
   // Null means every subject this teacher takes in whatever section is in
   // scope. A self-contained homeroom teacher takes five subjects with the same
   // children, and averaging Filipino into Mathematics tells them nothing about
   // either.
   const [selectedSubject, setSelectedSubject] = useState(null);
-  const [showSelector, setShowSelector] = useState(true);
+  const [showSelector, setShowSelector] = useState(() => !searchParams.get('sectionId'));
   const [selectedStudent, setSelectedStudent] = useState(null);
   const [studentData, setStudentData] = useState(null);
   const [loadingStudent, setLoadingStudent] = useState(false);
@@ -121,16 +125,13 @@ export default function Analytics() {
   // server-side from rubric data the client never receives.
   const [studentSubject, setStudentSubject] = useState(null);
 
-  // When the Dashboard warning panel links here with ?sectionId=..., skip the
-  // section chooser and jump straight into that section's insights.
+  // The deep link has already been read into state above, so the query string
+  // has done its job. Clearing it writes to an external system — the browser's
+  // history entry — rather than to component state: it stops a later "Back"
+  // from landing on a URL that re-seeds a section the teacher has since
+  // navigated away from.
   useEffect(() => {
-    const sid = searchParams.get('sectionId');
-    if (sid) {
-      setSelectedSectionId(sid);
-      setShowSelector(false);
-      // Clean the URL so a later "Back" doesn't re-trigger this effect.
-      setSearchParams({}, { replace: true });
-    }
+    if (searchParams.get('sectionId')) setSearchParams({}, { replace: true });
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
