@@ -1050,10 +1050,10 @@ WHEN MORE THAN ONE PAPER IS SENT IN ONE REQUEST:
 - Never let a quote, an error, or an observation from one paper leak into another paper's result.`;
 
 // The AI Teacher Assistant answers the teacher's questions about a paper and
-// rewrites feedback wording on request. It is short text turns, not vision
-// grading, so it gets a model deliberately NOT in the grading pool: a side
-// conversation must never be able to spend budget the grading queue is
-// depending on.
+// rewrites feedback wording on request. The paper itself rides along on every
+// turn, so these are short VISION turns rather than the text-only chat this
+// pool was first written for — which is what decided the preference order
+// below.
 //
 // There is no student-facing AI. The Study Buddy chatbot that used to run here
 // was removed along with its endpoint — the AI in this system is a teacher tool,
@@ -1074,30 +1074,55 @@ WHEN MORE THAN ONE PAPER IS SENT IN ONE REQUEST:
 // Google-side capacity for THAT model — the only lever that moves it is asking
 // a different one, which is exactly what the grading pool exists to do.
 //
-// Both defaults are deliberately OUTSIDE GRADING_MODEL_IDS: a side conversation
-// must never be able to spend budget the grading queue is depending on. Measured
-// on this deployment's own keys against a real submission image (2026-08-26):
-// 3.5-flash 2.7s, 3.1-flash-lite 2.1s, 2.5-flash retired (404), and 3.7-flash
-// did not answer inside 60s — fast enough to be a chat, which is why 3.7 is not
-// in here despite being newer.
+// FIRST preference is gemini-3.6-flash — the grading primary — and that is a
+// deliberate reversal of what this list used to say. The assistant is not the
+// text-only chat the original split assumed: buildFilePart attaches the pupil's
+// PAPER to every message (see the note on the assistant route), so a teacher
+// asking "did they actually support this claim?" is asking a VISION question
+// about Grade 6 handwriting. That is the one job 3.6 is in the grading pool
+// FOR, and answering it on a weaker reader produces a confident answer about
+// handwriting the model misread — worse than a slow one. It also emits ~17%
+// fewer output tokens than 3.5 for the same reasoning, so the better reader is
+// not the more expensive one per turn.
+//
+// The isolation argument that put the assistant outside the grading pool is
+// still real and still honoured, on the two axes that survive:
+//
+//   1. The FALLBACKS stay outside GRADING_MODEL_IDS. When 3.6's bucket is spent
+//      or busy the assistant drops to models grading never touches, instead of
+//      queueing behind the checking run. The overlap is one model deep, not
+//      pool-wide.
+//   2. assistPool walks credentials in REVERSE (see its own note), and Google
+//      meters per project PER MODEL — so 3.6-flash@lastKey is a different daily
+//      bucket from the 3.6-flash@key1 that grading opens on. On this
+//      deployment's two credentials the assistant spends the far end of the
+//      rotation, not the end the queue is working through.
+//
+// What it genuinely costs: with one credential configured there is no far end,
+// and a chatty afternoon can eat into the same 20/day bucket grading needs.
+// A deployment in that position should either add a key from a second project
+// (which is what doubles the budget) or put 3.6 back behind the others here.
+//
+// Measured on this deployment's own keys against a real submission image
+// (2026-08-26): 3.5-flash 2.7s, 3.1-flash-lite 2.1s, 2.5-flash retired (404),
+// and 3.7-flash did not answer inside 60s — not fast enough to be a chat, which
+// is why 3.7 is not in here despite being newer.
 //
 // Overridable: GEMINI_ASSIST_MODELS takes a comma-separated preference order.
-// Putting a grading model (gemini-3.6-flash) in it works and gives the
-// assistant the better reader, at the price of sharing that model's daily
-// budget with the checking queue.
 const ASSIST_MODEL_IDS = (
   process.env.GEMINI_ASSIST_MODELS
   || process.env.GEMINI_ASSIST_MODEL
   || process.env.GEMINI_CHAT_MODEL
-  || 'gemini-3.5-flash,gemini-3.1-flash-lite'
+  || 'gemini-3.6-flash,gemini-3.5-flash,gemini-3.1-flash-lite'
 ).split(',').map(s => s.trim()).filter(Boolean);
 
 /** How many buckets one assistant message may try before giving up. Each try
  *  costs a rate-gate slot (GEMINI_MIN_SPACING_MS), and there is a teacher
  *  watching a spinner at the other end, so this is bounded well below the size
- *  of the pool. Four covers both models on two credentials — enough to prove a
- *  503 is not just this model, without turning a real outage into a minute of
- *  waiting. */
+ *  of the pool. Four covers all three models on one credential plus the first
+ *  model on the next — enough to prove a 503 is not just this model, and enough
+ *  to cross to a second project's quota, without turning a real outage into a
+ *  minute of waiting. */
 const ASSIST_MAX_TRIES = Number(process.env.GEMINI_ASSIST_MAX_TRIES || 4);
 
 // What one bucket is assumed to be good for in a day. Google does not expose a
@@ -1217,8 +1242,14 @@ const modelLite = genAIByKey[genAIByKey.length - 1]?.client.getGenerativeModel({
  * Credentials are held in REVERSE order. The grading rotation opens on key 1
  * and walks forward, so starting the assistant at the far end means that on a
  * multi-project deployment a teacher's side conversation is charged to a
- * different project than the checking queue is currently spending — the same
- * isolation reasoning as giving it its own models, applied to the other axis.
+ * different project than the checking queue is currently spending.
+ *
+ * This is now the LOAD-BEARING half of keeping the two apart, not a second
+ * layer on top of a model split: ASSIST_MODEL_IDS opens on gemini-3.6-flash,
+ * which grading also uses, so it is the credential axis that keeps the
+ * assistant off the bucket the queue is actually working through. With one
+ * credential configured there is no far end and the two genuinely share —
+ * see the note on ASSIST_MODEL_IDS for what to do about that.
  */
 const assistPool = [...genAIByKey].reverse().flatMap(k =>
   ASSIST_MODEL_IDS.map(id => ({
@@ -11497,9 +11528,11 @@ function nameScrubber(rawName) {
  *
  * A photographed paper is an image, and it goes up on EVERY message of the
  * conversation, because the model is stateless. That is a real charge against
- * the assist credential (kept off the grading pool on purpose — see
- * ASSIST_MODEL_IDS), and it is the honest price of the assistant being able to
- * read the work. A typed submission costs almost nothing: buildFilePart
+ * the assist credential (held at the far end of the key rotation on purpose —
+ * see ASSIST_MODEL_IDS and assistPool), and it is the honest price of the
+ * assistant being able to read the work. It is also the reason that pool opens
+ * on the grading primary: what goes up is a photographed page, so the model's
+ * vision quality decides the answer. A typed submission costs almost nothing: buildFilePart
  * returns extracted text for a Word file, not an image.
  *
  * ── What it does not send ──

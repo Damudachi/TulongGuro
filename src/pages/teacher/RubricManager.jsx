@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { ClipboardList, ChevronDown, ChevronRight, Edit2, Trash2, Plus, X, UploadCloud, Loader2, AlertTriangle, Percent, ListOrdered } from 'lucide-react';
 import { API_URL, apiFetch } from '../../config';
 import { getStoredUser } from '../../utils/session';
@@ -55,6 +55,51 @@ const DEFAULT_RANGE_BANDS = [
   { label: 'Needs Improvement', score: 1, description: 'Does not meet.' },
 ];
 
+/**
+ * Re-point a criterion's scoring bands onto a new criterion maximum.
+ *
+ * A banded criterion states the same scale twice: once as its Points box and
+ * once as the ladder underneath it. The grader is handed BOTH — formatRubricCriteria
+ * prints "CRITERION 1: … (30 points maximum)" and then every band's own points —
+ * so a criterion raised to 30 while its bands still read 1-5 hands the model two
+ * different answers for what the criterion is out of. Teachers were left to fix
+ * that by retyping five numbers the app can work out exactly.
+ *
+ * Proportional, anchored on the top band. The ladder's SHAPE is the teacher's
+ * judgement — a 5/4/3/2/1 Likert and a 30/25/15/5/0 weighted ladder say
+ * different things about how much a middling answer is worth — so only the
+ * scale moves: the highest band lands exactly on the new maximum and the rest
+ * keep their share of it. Rounding is plain and monotone, so the ladder never
+ * inverts; it can flatten (five bands into a 3-point criterion cannot stay
+ * distinct) and that is visible in the editor for the teacher to overrule.
+ *
+ * `range` is cleared where it existed. It is free text read off an uploaded
+ * document ("27-30"), it wins over `score` in the grading prompt, and it
+ * describes a scale that no longer exists once this has run — a stale range is
+ * exactly the contradiction this function is here to remove.
+ */
+const rescaleBands = (bands, newPoints, basisScores) => {
+  if (!Array.isArray(bands) || bands.length === 0) return bands;
+  const target = Number(newPoints) || 0;
+  if (target <= 0) return bands;
+
+  const basis = Array.isArray(basisScores) && basisScores.length === bands.length
+    ? basisScores.map(n => Number(n) || 0)
+    : bands.map(b => Number(b.score) || 0);
+  const basisMax = Math.max(...basis);
+  // Nothing to keep the proportions of. Bands that have never been pointed
+  // (a fresh criterion at 0) are left for the teacher rather than invented.
+  if (basisMax <= 0) return bands;
+
+  const topIndex = basis.indexOf(basisMax);
+  return bands.map((b, i) => {
+    const scaled = i === topIndex ? target : Math.round((basis[i] / basisMax) * target);
+    const next = { ...b, score: scaled };
+    if (next.range) next.range = '';
+    return next;
+  });
+};
+
 export default function RubricManager() {
   const [expandedId, setExpandedId] = useState(null);
   const [savedRubrics, setSavedRubrics] = useState([]);
@@ -75,6 +120,18 @@ export default function RubricManager() {
   // banded points — and the editor renders differently for each, so it is a
   // choice rather than something to infer from an empty rubric.
   const [newRubricType, setNewRubricType] = useState(null);
+  /**
+   * The band ladder each criterion's Points box is currently being rescaled
+   * FROM, keyed by criterion index and captured on the first keystroke.
+   *
+   * Rescaling from whatever the bands hold right now loses the ladder to
+   * typing: reaching 30 by way of "3" rescales 1/2/3/4/5 onto a 3-point
+   * criterion (1/1/2/2/3, the distinctions already gone) and then rescales
+   * THAT onto 30. Held in a ref because it is not rendered and must not
+   * schedule a render of its own — it is a fact about the keystroke in
+   * progress, released on blur.
+   */
+  const bandBasisRef = useRef({});
   const [isUploading, setIsUploading] = useState(false);
   const [uploadError, setUploadError] = useState('');
 
@@ -606,11 +663,26 @@ export default function RubricManager() {
                         <div className="flex flex-col gap-2 w-24">
                           <div className="flex flex-col items-center gap-1">
                             <span className="text-xs font-bold text-slate-500 uppercase">{type === 'standard' ? 'Percent %' : 'Points'}</span>
-                            <input type="number" value={c.points === 0 ? '' : c.points} onChange={e => {
+                            <input type="number" value={c.points === 0 ? '' : c.points}
+                              onChange={e => {
+                                const points = e.target.value === '' ? 0 : parseInt(e.target.value) || 0;
                                 const newC = [...editingRubric.criteria];
-                                newC[i].points = e.target.value === '' ? 0 : parseInt(e.target.value) || 0;
+                                if (!bandBasisRef.current[i] && c.bands?.length) {
+                                  bandBasisRef.current[i] = c.bands.map(b => Number(b.score) || 0);
+                                }
+                                newC[i] = {
+                                  ...newC[i],
+                                  points,
+                                  // The ladder follows the maximum it is written against —
+                                  // see rescaleBands. Standard rubrics carry no bands, so
+                                  // this is a no-op there rather than a branch.
+                                  ...(c.bands?.length
+                                    ? { bands: rescaleBands(c.bands, points, bandBasisRef.current[i]) }
+                                    : {}),
+                                };
                                 setEditingRubric({...editingRubric, criteria: newC});
                               }}
+                              onBlur={() => { delete bandBasisRef.current[i]; }}
                               className="w-full text-center font-bold text-lg p-2 border border-slate-300 rounded focus:outline-none focus:ring-2 focus:ring-brand-navy" />
                           </div>
                           <button onClick={() => {
@@ -625,7 +697,10 @@ export default function RubricManager() {
 
                       {type === 'range' && (
                         <div className="pl-4 border-l-2 border-purple-200 space-y-2 mt-2">
-                          <p className="text-xs font-bold text-purple-700">Scoring Bands</p>
+                          <div className="flex items-baseline gap-2 flex-wrap">
+                            <p className="text-xs font-bold text-purple-700">Scoring Bands</p>
+                            <span className="text-[10px] text-slate-400">Band points rescale with this criterion's Points — edit any band after to overrule.</span>
+                          </div>
                           {c.bands?.map((b, bi) => (
                             <div key={bi} className="flex gap-2">
                               <input type="text" value={b.label} onChange={e => {
