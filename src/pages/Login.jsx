@@ -35,6 +35,25 @@ const ROLES = {
   },
 };
 
+/**
+ * What may be typed into the Student ID field.
+ *
+ * IDs are issued as PREFIX-YY-NNNN and nothing else is ever a student ID, so
+ * the characters outside this set cannot help anyone sign in — they can only
+ * make a correct ID look wrong. Keeping them out at the keystroke shows that
+ * immediately, instead of after a round trip that comes back "Invalid
+ * credentials" and reads as *the password is wrong*.
+ *
+ * Separators are kept rather than normalised away: a child copying off a slip
+ * should see the ID they are copying. The server folds case and separators
+ * itself (relaxedStudentId), and it — not this — is what actually decides.
+ * This is a keyboard, not a check.
+ *
+ * Applies to students only. Teacher and admin identifiers are email addresses,
+ * where + . _ - and @ are all ordinary.
+ */
+const STUDENT_ID_DISALLOWED = /[^A-Za-z0-9 ._-]/g;
+
 // Decorative blob cast, echoing the landing page.
 const BLOBS = ['bg-sun-400', 'bg-magenta-500', 'bg-lilac-300', 'bg-lime-400'];
 
@@ -171,7 +190,14 @@ export default function Login() {
               <button
                 key={key}
                 type="button"
-                onClick={() => { setRole(key); setErrorMsg(''); }}
+                onClick={() => {
+                  setRole(key);
+                  setErrorMsg('');
+                  // Switching to Student re-filters whatever is already in the
+                  // box, so a half-typed teacher email cannot leave an "@"
+                  // sitting in a field that no longer accepts one.
+                  if (key === 'student') setIdentifier(v => v.replace(STUDENT_ID_DISALLOWED, ''));
+                }}
                 className={`flex-1 basis-24 flex items-center justify-center gap-1.5 py-2.5 px-2 rounded-xl text-sm font-bold transition-all ${role === key
                   ? `bg-white shadow-pop ${r.accent}`
                   : 'text-navy-400 hover:text-navy-600'
@@ -199,7 +225,10 @@ export default function Login() {
                 className="tg-input"
                 placeholder={cfg.idPlaceholder}
                 value={identifier}
-                onChange={(e) => setIdentifier(e.target.value)}
+                maxLength={role === 'student' ? 64 : undefined}
+                onChange={(e) => setIdentifier(
+                  role === 'student' ? e.target.value.replace(STUDENT_ID_DISALLOWED, '') : e.target.value
+                )}
               />
             </div>
 

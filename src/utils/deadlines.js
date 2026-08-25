@@ -32,6 +32,27 @@ export function todayInPH() {
 }
 
 /**
+ * The calendar day after `date`, as a "YYYY-MM-DD" string — or '' if there
+ * isn't one to compute.
+ *
+ * The earliest a late window may close. Both dates are bare days and a
+ * date-only deadline means the END of that day, so a late window set to the
+ * deadline itself is zero length: it accepts nothing that was not already on
+ * time, while every screen reads the activity as one that takes late work.
+ * Stepped through UTC rather than local time so a laptop in another timezone
+ * does not roll the date twice.
+ *
+ * Mirrors resolveLateWindow() in server/server.js, which is what enforces it —
+ * change them together.
+ */
+export function dayAfter(date) {
+  const m = DATE_ONLY.exec(String(date ?? '').trim());
+  if (!m) return '';
+  const next = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]) + 1));
+  return Number.isNaN(next.getTime()) ? '' : next.toISOString().slice(0, 10);
+}
+
+/**
  * The instant an activity actually closes, or null if it never does.
  * A date-only deadline resolves to 23:59:59.999 Philippine time on that date.
  */
@@ -82,13 +103,34 @@ export function submissionWindow(activity) {
   if (activity && activity.submissionMode && activity.submissionMode !== 'STUDENT_SUBMIT') {
     return { acceptsLate: false, isLate: false, isClosed: false, closesOn: null };
   }
-  const acceptsLate = !!activity?.lateUntil;
+  const lateUntil = effectiveLateUntil(activity);
   return {
-    acceptsLate,
+    acceptsLate: !!lateUntil,
     isLate: isPastDeadline(activity?.deadline),
-    isClosed: isPastDeadline(activity?.lateUntil || activity?.deadline),
-    closesOn: activity?.lateUntil || activity?.deadline || null,
+    isClosed: isPastDeadline(lateUntil || activity?.deadline),
+    closesOn: lateUntil || activity?.deadline || null,
   };
+}
+
+/**
+ * The late window an activity really has, ignoring one that does not close
+ * strictly after the due date.
+ *
+ * A date-only deadline runs to the end of its day, so lateUntil on the deadline
+ * itself accepts nothing that was not already on time — yet the mere presence
+ * of the field used to be enough to report acceptsLate, which told a child work
+ * was still being taken until a date that had already closed. The write path
+ * refuses such a window now (resolveLateWindow in server/server.js), but rows
+ * saved before that are still in the database and are read by these functions.
+ *
+ * An activity with a late window and NO deadline keeps it: there is no due date
+ * for it to be shorter than, and the window is the only closing date it has.
+ */
+function effectiveLateUntil(activity) {
+  const lateUntil = activity?.lateUntil || null;
+  const deadline = activity?.deadline || null;
+  if (!lateUntil) return null;
+  return !deadline || lateUntil > deadline ? lateUntil : null;
 }
 
 /**

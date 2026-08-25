@@ -3091,6 +3091,34 @@ app.post('/api/auth/change-password', changePasswordRateLimit, async (req, res) 
   }
 });
 
+/**
+ * A student ID reduced to the form it can be compared in, or null if what was
+ * typed is not a student ID at all.
+ *
+ * The tolerance being bought here is CASE and SEPARATORS, nothing else. IDs are
+ * issued as PREFIX-YY-NNNN (studentIdIssuer) and copied off a printed slip by
+ * a child, so "as-26-0001", "AS 26 0001", "as_26_0001" and "as260001" are all
+ * the same identifier badly typed. "AS-26-0001#@#!" is not: those characters
+ * are not a way of writing a separator, and treating them as one means the
+ * field accepts strings that were never issued to anybody.
+ *
+ * Anything outside that class returns null, and the caller then finds no user
+ * and answers "Invalid credentials" — the same reply as any other wrong ID,
+ * because which of the two it was is not the login screen's business to say.
+ *
+ * The length cap is a guard, not a rule about IDs: the value is interpolated
+ * into a regexp_replace comparison over every student row, and there is no
+ * reason to run that over a megabyte of pasted text.
+ */
+function relaxedStudentId(raw) {
+  const s = String(raw ?? '').trim();
+  if (!s || s.length > 64) return null;
+  // Letters and digits, optionally separated. Must start and end on an
+  // alphanumeric, so a bare "---" or a trailing separator is not an ID.
+  if (!/^[A-Za-z0-9]+(?:[ ._-]+[A-Za-z0-9]+)*$/.test(s)) return null;
+  return s.replace(/[ ._-]+/g, '').toUpperCase();
+}
+
 app.post('/api/auth/login', loginRateLimit, async (req, res) => {
   try {
     const { username, password, role } = req.body;
@@ -3115,13 +3143,24 @@ app.post('/api/auth/login', loginRateLimit, async (req, res) => {
     // treated as no match rather than guessing which child signed in. The
     // password is still checked normally below, so this widens how the account
     // is *named*, never what proves it is yours.
+    //
+    // What "relaxed" means is deliberately narrow — see relaxedStudentId. It
+    // used to mean "delete every character that is not a letter or a digit",
+    // which let MES-26-0001#@#!#@#!@# sign in as MES-26-0001: the junk was
+    // stripped, the remainder matched, and the child's real password did the
+    // rest. Nobody's account was reachable that was not already reachable with
+    // the correct ID, but an identifier that is not the one on the slip must
+    // not be treated as the one on the slip — it makes the ID field look like
+    // it accepts anything, it means an audit log can hold a login for a
+    // username that does not exist, and it is the sort of leniency that stops
+    // being harmless the moment something downstream trusts the string.
     if (!user && role === 'STUDENT' && typeof username === 'string') {
-      const normalized = username.replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
+      const normalized = relaxedStudentId(username);
       if (normalized) {
         const matches = await prisma.$queryRaw`
           SELECT id FROM "User"
           WHERE role = 'STUDENT'
-            AND upper(regexp_replace(username, '[^a-zA-Z0-9]', '', 'g')) = ${normalized}
+            AND upper(regexp_replace(username, '[ ._-]', '', 'g')) = ${normalized}
           LIMIT 2
         `;
         if (matches.length === 1) {
@@ -8302,6 +8341,35 @@ function normalizeDateInput(value) {
   return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : null;
 }
 
+/**
+ * The late window an activity should actually store, given its due date.
+ *
+ * Strictly AFTER the deadline, and that strictness is the point. Both dates are
+ * bare calendar days (see normalizeDateInput), and a date-only deadline means
+ * the END of that day in Manila — so "due the 2nd, late until the 2nd" is a
+ * window of zero length. Nothing can be submitted into it that was not already
+ * on time.
+ *
+ * It was accepted before (`late >= due`) and it is what a teacher gets by
+ * default from the builder's checkbox, so activities exist that advertise late
+ * submissions and offer none. The cost is not cosmetic: submissionWindow()
+ * reports acceptsLate: true off the mere presence of lateUntil, so the student
+ * screen tells a child work is still being accepted until a date that has
+ * already closed, and the teacher believes they left a grace period they did
+ * not leave.
+ *
+ * Null rather than an error, matching what the routes already did with an
+ * impossible window: a same-day or backwards value means "no late window",
+ * which is the activity's normal state and needs no interruption. The builder
+ * refuses to offer the date in the first place, so a request carrying one is
+ * not a teacher's considered choice arriving here.
+ */
+function resolveLateWindow(lateUntil, deadline) {
+  const late = normalizeDateInput(lateUntil);
+  const due = normalizeDateInput(deadline);
+  return late && due && late > due ? late : null;
+}
+
 /** WW / PT / QA, defaulting to Written Work for anything unrecognised. */
 function normalizeComponent(value) {
   const c = String(value || '').toUpperCase();
@@ -8504,10 +8572,7 @@ app.post('/api/teacher/activities', (req, res, next) => {
     }
 
     const due = normalizeDateInput(deadline);
-    const late = normalizeDateInput(lateUntil);
-    // A late window that closes before the due date would refuse work that was
-    // never actually late. Treat it as no window rather than failing the save.
-    const lateWindow = late && due && late >= due ? late : null;
+    const lateWindow = resolveLateWindow(lateUntil, due);
 
     const filePaths = await Promise.all(
       (req.files || []).map(f => uploadToCloud(f.path, f.filename, { folder: 'activity-files', contentType: f.mimetype }))
@@ -8653,8 +8718,7 @@ app.put('/api/teacher/activities/:activityId', async (req, res) => {
         where: { id: req.params.activityId }, select: { deadline: true }
       });
       const due = updateData.deadline !== undefined ? updateData.deadline : existing?.deadline;
-      const late = normalizeDateInput(lateUntil);
-      updateData.lateUntil = late && due && late >= due ? late : null;
+      updateData.lateUntil = resolveLateWindow(lateUntil, due);
     }
 
     const updated = await prisma.activity.update({
@@ -14206,8 +14270,17 @@ function submissionWindow(activity) {
     return { isLate: false, isClosed: false, acceptsLate: false };
   }
   const late = isPastDeadline(activity?.deadline);
-  const closesAt = activity?.lateUntil || activity?.deadline;
-  return { isLate: late, isClosed: isPastDeadline(closesAt), acceptsLate: !!activity?.lateUntil };
+  // A window that does not close strictly after the due date is not a window:
+  // a date-only deadline already runs to the end of its day. resolveLateWindow
+  // refuses to store one, but rows written before it did are still here, and
+  // this is the function that decides whether a child may still submit. Mirrors
+  // effectiveLateUntil() in src/utils/deadlines.js.
+  const lateUntil = activity?.lateUntil
+    && (!activity?.deadline || activity.lateUntil > activity.deadline)
+    ? activity.lateUntil
+    : null;
+  const closesAt = lateUntil || activity?.deadline;
+  return { isLate: late, isClosed: isPastDeadline(closesAt), acceptsLate: !!lateUntil };
 }
 
 app.post('/api/student/submit', submissionUpload.array('images', MAX_SUBMISSION_PAGES), async (req, res) => {

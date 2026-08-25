@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { deadlineInstant, isPastDeadline, submissionWindow } from '../../src/utils/deadlines.js';
+import { dayAfter, deadlineInstant, isPastDeadline, submissionWindow } from '../../src/utils/deadlines.js';
 
 /**
  * When an activity actually closes.
@@ -220,5 +220,82 @@ describe('work the teacher uploads has no submission window', () => {
     vi.setSystemTime(new Date(MAR_15_CLOSE_UTC + 1000));
     expect(submissionWindow(PAST_DUE)).toMatchObject({ isLate: true, isClosed: true });
     expect(submissionWindow({ ...PAST_DUE, submissionMode: null })).toMatchObject({ isClosed: true });
+  });
+});
+
+/**
+ * A late window that closes on the due date itself.
+ *
+ * The builder's "Accept late submissions" checkbox used to default the window
+ * to the deadline, and the server accepted it (`late >= due`). Both dates are
+ * bare calendar days and a date-only deadline runs to the END of its day, so
+ * that window is zero length — it can accept nothing that was not already on
+ * time. Yet acceptsLate was read off the mere presence of the field, so the
+ * student screen said "you can still submit until 2 September" on an activity
+ * that had shut at the end of 2 September, and the teacher believed they had
+ * left a grace period.
+ *
+ * The write path refuses such a window now (resolveLateWindow in server.js),
+ * but rows saved before that are still in the database — which is why the read
+ * path has to hold the line too.
+ */
+describe('a late window must close strictly after the due date', () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  const SAME_DAY = { deadline: '2025-03-15', lateUntil: '2025-03-15' };
+
+  it('does not advertise a grace period that is zero days long', () => {
+    vi.setSystemTime(new Date(MAR_15_CLOSE_UTC - 1000));   // still open
+    expect(submissionWindow(SAME_DAY)).toMatchObject({ acceptsLate: false });
+  });
+
+  it('closes such an activity exactly when its deadline passes', () => {
+    vi.setSystemTime(new Date(MAR_15_CLOSE_UTC + 1000));
+    expect(submissionWindow(SAME_DAY)).toMatchObject({ isLate: true, isClosed: true, acceptsLate: false });
+  });
+
+  it('ignores a window that closes BEFORE the due date', () => {
+    vi.setSystemTime(new Date(MAR_15_CLOSE_UTC + 1000));
+    const w = submissionWindow({ deadline: '2025-03-15', lateUntil: '2025-03-10' });
+    // Closing on the earlier date would refuse work that was never late.
+    expect(w).toMatchObject({ acceptsLate: false, closesOn: '2025-03-15' });
+  });
+
+  it('still honours a real window of one day', () => {
+    vi.setSystemTime(new Date(MAR_15_CLOSE_UTC + 1000));
+    const w = submissionWindow({ deadline: '2025-03-15', lateUntil: '2025-03-16' });
+    expect(w).toMatchObject({ isLate: true, isClosed: false, acceptsLate: true, closesOn: '2025-03-16' });
+  });
+
+  it('keeps a window on an activity that has no due date to be shorter than', () => {
+    // Incoherent, but it is the only closing date such a row has — dropping it
+    // would turn a closed activity into one that never closes.
+    vi.setSystemTime(new Date(Date.UTC(2030, 0, 1)));
+    const w = submissionWindow({ deadline: null, lateUntil: '2025-03-16' });
+    expect(w).toMatchObject({ acceptsLate: true, isClosed: true, closesOn: '2025-03-16' });
+  });
+});
+
+describe('dayAfter — the earliest a late window may close', () => {
+  it('steps one calendar day', () => {
+    expect(dayAfter('2025-03-15')).toBe('2025-03-16');
+  });
+
+  it('rolls month and year ends', () => {
+    expect(dayAfter('2025-03-31')).toBe('2025-04-01');
+    expect(dayAfter('2025-12-31')).toBe('2026-01-01');
+  });
+
+  it('handles a leap day', () => {
+    expect(dayAfter('2024-02-28')).toBe('2024-02-29');
+    expect(dayAfter('2025-02-28')).toBe('2025-03-01');
+  });
+
+  it('returns blank for anything that is not a date, so the input just has no floor', () => {
+    expect(dayAfter('')).toBe('');
+    expect(dayAfter(null)).toBe('');
+    expect(dayAfter(undefined)).toBe('');
+    expect(dayAfter('not a date')).toBe('');
   });
 });

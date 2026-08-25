@@ -5,7 +5,7 @@ import { API_URL, apiFetch } from '../../config';
 import { ACTIVITY_TYPES } from '../../constants/activityTypes';
 import { parseTopicIds, formatTopicIds, lessonTopicId, lessonIdFromTopicId, isLessonTopicId, termForWeek, readCompetencies, lessonDisplayName } from '../../utils/topics';
 import { showAlert } from '../../utils/dialog';
-import { todayInPH } from '../../utils/deadlines';
+import { todayInPH, dayAfter } from '../../utils/deadlines';
 import {
   badgeLook, BADGE_ICON_KEYS, BADGE_COLOR_KEYS,
   DEFAULT_BADGE_ICON, DEFAULT_BADGE_COLOR,
@@ -88,6 +88,18 @@ function normalizeRangeCriteria(criteria, rubricType, defaultBands) {
     const top = Math.max(...scores, 0);
     return { ...c, bands, points: top };
   });
+}
+
+/**
+ * The late window to show in the form for an activity being edited — blank
+ * unless it closes strictly after the due date. See resolveLateWindow in
+ * server/server.js for why a same-day window is no window.
+ */
+function loadedLateUntil(activity) {
+  const late = activity?.lateUntil ? String(activity.lateUntil).split('T')[0] : '';
+  const due = activity?.deadline ? String(activity.deadline).split('T')[0] : '';
+  if (!late) return '';
+  return !due || late > due ? late : '';
 }
 
 export default function ActivityBuilder() {
@@ -702,7 +714,11 @@ export default function ActivityBuilder() {
           term: activity.term == null ? '' : String(activity.term),
           points: activity.points || 100,
           deadline: activity.deadline ? String(activity.deadline).split('T')[0] : '',
-          lateUntil: activity.lateUntil ? String(activity.lateUntil).split('T')[0] : '',
+          // Dropped when it does not close strictly after the due date. Such
+          // rows exist from before the server refused them, and loading one
+          // would tick "Accept late submissions" over a date the form's own
+          // min now rejects — a box the teacher cannot save and did not set.
+          lateUntil: loadedLateUntil(activity),
           instructions: activity.instructions || '',
           submissionMode: activity.submissionMode || 'TEACHER_UPLOAD',
           maxAttempts: activity.maxAttempts || 1,
@@ -1681,10 +1697,16 @@ export default function ActivityBuilder() {
             <input type="date" value={form.deadline}
               onChange={e => {
                 const deadline = e.target.value;
-                // A late window that closes before the due date would refuse
-                // work that was never late, so drop it rather than keep a
-                // combination the server will silently discard anyway.
-                setForm(f => ({ ...f, deadline, lateUntil: f.lateUntil && deadline && f.lateUntil < deadline ? '' : f.lateUntil }));
+                // A late window must close AFTER the due date. On the due date
+                // itself it is zero length — the deadline already runs to the
+                // end of that day — and before it, it would refuse work that
+                // was never late. Either way the server discards it, so drop it
+                // here rather than keep a combination that only looks saved.
+                setForm(f => ({
+                  ...f,
+                  deadline,
+                  lateUntil: f.lateUntil && deadline && f.lateUntil <= deadline ? '' : f.lateUntil,
+                }));
               }}
               min={form.submissionMode === 'STUDENT_SUBMIT' ? todayInPH() : undefined}
               required={form.submissionMode === 'STUDENT_SUBMIT'}
@@ -1701,7 +1723,10 @@ export default function ActivityBuilder() {
                 <input
                   type="checkbox"
                   checked={!!form.lateUntil}
-                  onChange={e => setForm(f => ({ ...f, lateUntil: e.target.checked ? f.deadline : '' }))}
+                  // Opens on the day AFTER the due date. Defaulting to the
+                  // deadline itself handed back a window of zero length that
+                  // every screen then advertised as a grace period.
+                  onChange={e => setForm(f => ({ ...f, lateUntil: e.target.checked ? dayAfter(f.deadline) : '' }))}
                   className="w-4 h-4 accent-royal-500"
                 />
                 <span className="text-sm font-medium text-slate-700">Accept late submissions</span>
@@ -1710,7 +1735,7 @@ export default function ActivityBuilder() {
                 <div className="mt-3">
                   <label className="block text-xs font-medium text-slate-500 mb-1">Accept late work until</label>
                   <input type="date" value={form.lateUntil}
-                    min={form.deadline}
+                    min={dayAfter(form.deadline)}
                     onChange={e => setForm({ ...form, lateUntil: e.target.value })}
                     className="w-full px-4 py-2 border border-slate-200 rounded-lg bg-white focus:ring-2 focus:ring-brand-navy outline-none" />
                   <p className="text-xs text-slate-500 mt-1.5">
