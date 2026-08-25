@@ -92,6 +92,7 @@ const ROUTE_MANIFEST = {
   'GET /api/teacher/activities/:activityId/release': { needsCheck: true },
   'POST /api/teacher/activities/:activityId/release': { needsCheck: true },
   'POST /api/teacher/submissions/:id/release': { needsCheck: true },
+  'POST /api/teacher/submissions/:id/reopen': { needsCheck: true },
   'POST /api/teacher/submissions/excuse': { needsCheck: true },
   'GET /api/teacher/submissions/:id/history': { needsCheck: true },
   'POST /api/teacher/assistant': { needsCheck: false, note: 'chats about / rewrites feedback text passed in the body, no resource id' },

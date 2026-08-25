@@ -592,7 +592,7 @@ export default function RubricManager() {
                                 newC[i] = { ...newC[i], skill: v === 'auto' ? undefined : v };
                                 setEditingRubric({...editingRubric, criteria: newC});
                               }}
-                              className="flex-1 p-1.5 text-xs border border-slate-200 rounded focus:outline-none focus:ring-1 focus:ring-brand-navy"
+                              className="flex-1 min-w-0 p-1.5 text-xs border border-slate-200 rounded focus:outline-none focus:ring-1 focus:ring-brand-navy"
                             >
                               <option value="auto">
                                 {autoSkill ? `Auto-detect (currently: ${autoSkill.label})` : 'Auto-detect (no match yet)'}
