@@ -891,10 +891,20 @@ const LITE_MODEL_ID = process.env.GEMINI_LITE_MODEL || 'gemini-3.5-flash-lite';
 // a different real ceiling, which is the lever to reach for regardless of what
 // that ceiling turns out to be.
 //
-// Order is preference order: the pool is tried in sequence from a rotating start
-// offset, so put the model whose vision quality you trust most first.
-const GRADING_MODEL_IDS = (process.env.GEMINI_GRADING_MODELS || `${PRIMARY_MODEL_ID},${LITE_MODEL_ID}`)
-  .split(',').map(s => s.trim()).filter(Boolean);
+// Order is preference order, and it is honoured strictly: gradingRotation tries
+// EVERY credential on the first model before it touches the second, so put the
+// model whose vision quality you trust most first. The rotating start offset
+// moves along credentials within a model, never across models.
+// De-duplicated, because a repeated id is not a repeated budget. Google meters
+// per project per model, so naming a model twice builds two pool entries over
+// ONE real bucket: the capacity snapshot reports a budget that does not exist,
+// and gradingTiers would hand the rotation the same credentials twice under the
+// same model. Easy to do by hand in a comma list, silent until a teacher is
+// told there are checks left that there are not.
+const GRADING_MODEL_IDS = [...new Set(
+  (process.env.GEMINI_GRADING_MODELS || `${PRIMARY_MODEL_ID},${LITE_MODEL_ID}`)
+    .split(',').map(s => s.trim()).filter(Boolean)
+)];
 
 // Ceiling on one grading response, shared by every bucket in the pool. Sized
 // for a single paper's full JSON payload (transcription-driven quotes, per-
@@ -1177,6 +1187,23 @@ const gradingPool = GRADING_MODEL_IDS.flatMap(id =>
     failed: 0
   }))
 );
+/**
+ * gradingPool grouped into one tier per model, in GRADING_MODEL_IDS preference
+ * order — [[3.6@k1, 3.6@k2], [lite@k1, lite@k2]].
+ *
+ * The pool array is already built model-major, but the rotation's guarantee is
+ * that the WHOLE first tier is spent before the second is touched, and reading
+ * that guarantee off a flat array's construction order makes it something a
+ * later edit can break silently. Grouped once, here, so the ordering rule is
+ * stated rather than implied.
+ */
+const gradingTiers = GRADING_MODEL_IDS
+  .map(id => gradingPool.filter(e => e.id === id))
+  .filter(tier => tier.length);
+
+/** Which CREDENTIAL the next grading opens on — an index into a tier, not into
+ *  the flat pool. See gradingRotation for why that distinction is the whole
+ *  fix. */
 let gradingPoolCursor = 0;
 let gradingPoolDay = new Date().toDateString();
 
@@ -2005,15 +2032,60 @@ async function generateContentWithRetry(genModel, parts, { retries = 2, baseDela
   throw lastErr;
 }
 
-/** The pool in the order this call should try it: a round-robin start offset so
- *  consecutive gradings open on different budgets, minus any model that has
- *  already told us its daily quota is gone. */
+/**
+ * The pool in the order this call should try it: every credential on the best
+ * model first, then every credential on the next, minus any bucket that has
+ * already told us its daily quota is gone.
+ *
+ * The rotation used to advance a cursor across the FLAT pool — [3.6@k1, 3.6@k2,
+ * lite@k1, lite@k2] stepped one slot per paper — so papers three and four of
+ * every four OPENED on 3.5-flash-lite while both 3.6 buckets sat healthy and
+ * unspent. That reads like a fallback in the request log and is not one:
+ * nothing had failed. It was the start offset, doing exactly what it was
+ * written to do, on the wrong axis.
+ *
+ * Both axes exist for real reasons and they are not interchangeable:
+ *
+ *   MODEL is a QUALITY axis. GRADING_MODEL_IDS is a preference order — 3.6
+ *   Flash is first because its vision quality is what decides whether a Grade 6
+ *   pupil's handwriting is read correctly, and lite is behind it because it is
+ *   a cheaper reader, not an equal one. Spreading across it hands some
+ *   children in a class a better reader than others, on nothing but their
+ *   position in the queue.
+ *
+ *   CREDENTIAL is a BUDGET axis. Quota is metered per project per model, so two
+ *   keys on 3.6 are two independent daily budgets of the SAME reader. Spreading
+ *   across it costs nothing in quality and is the thing the offset was after.
+ *
+ * So the offset moves along credentials, inside a tier, and the tiers stay in
+ * preference order. Consecutive papers still open on different budgets —
+ * 3.6@k1, 3.6@k2, 3.6@k1, … — and lite is reached only when every 3.6 bucket is
+ * resting or has failed on this paper, which is what "fallback" was always
+ * supposed to mean.
+ *
+ * What this costs, honestly: the pool's total daily capacity is unchanged, but
+ * its SHAPE is. The 3.6 budgets are now spent first and lite is held in
+ * reserve, so a deployment that checks more papers in a day than 3.6 can cover
+ * meets the fallback as a cliff partway through the day rather than as a
+ * gentle mix throughout it. On this deployment's measurements 3.6 is also the
+ * slower reader (~25-36s a paper against lite's ~5-10s), so a batch that used
+ * to average the two now runs at 3.6's pace until 3.6 runs out. Both are the
+ * price of every paper in a class being read by the same model, which is the
+ * trade this function is making on purpose.
+ */
 function gradingRotation() {
   rollPoolDayIfNeeded();
   if (!gradingPool.length) return [];
   const now = Date.now();
-  const ordered = gradingPool.map((_, i) => gradingPool[(gradingPoolCursor + i) % gradingPool.length]);
-  gradingPoolCursor = (gradingPoolCursor + 1) % gradingPool.length;
+  // Widest tier, so a pool whose models hold different numbers of live
+  // credentials still advances one credential per paper rather than stalling
+  // on the narrowest.
+  const stride = Math.max(...gradingTiers.map(t => t.length), 1);
+  const offset = gradingPoolCursor;
+  gradingPoolCursor = (gradingPoolCursor + 1) % stride;
+  const ordered = gradingTiers.flatMap(tier =>
+    tier.map((_, i) => tier[(offset + i) % tier.length])
+  );
   return ordered.filter(e => e.unavailableUntil <= now);
 }
 
