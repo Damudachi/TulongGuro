@@ -2,12 +2,13 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import {
   ArrowLeft, Loader2, Pencil, Trash2, Check, X, UserPlus,
-  BookOpen, Users, GraduationCap, AlertTriangle, KeyRound,
+  BookOpen, Users, GraduationCap, AlertTriangle, KeyRound, ArrowRightLeft,
 } from 'lucide-react';
 import { API_URL, apiFetch } from '../../config';
 import { GRADE_LEVELS } from '../../constants/school';
 import StudentCredentials from '../../components/StudentCredentials';
 import SectionMoveConfirm from '../../components/SectionMoveConfirm';
+import StudentTransferDialog from '../../components/StudentTransferDialog';
 import RosterEditor from '../../components/RosterEditor';
 import { rowsFromExtraction, isFilledRow, rosterPayload, emptyRoster, withBlankRow, normalizeRosterName } from '../../utils/roster';
 
@@ -43,6 +44,14 @@ export default function AdminSectionDetail() {
   const rosterFileRef = useRef(null);
   const [newAccounts, setNewAccounts] = useState([]);
   const [moveRequest, setMoveRequest] = useState(null);
+  /** The learner whose transfer dialog is open, or null. */
+  const [transferring, setTransferring] = useState(null);
+  /**
+   * The server's "you have to answer this first" response, held so the dialog
+   * can render step 2. Null while step 1 is showing — for a learner with no
+   * submitted work it stays null, because the first call already did the move.
+   */
+  const [transferChoice, setTransferChoice] = useState(null);
 
   // Both banners sit above a roster that can run to forty rows, so a message
   // raised by a control near the bottom needs bringing into view — otherwise
@@ -180,6 +189,41 @@ export default function AdminSectionDetail() {
     );
   };
 
+  /**
+   * One call, used by both steps of the transfer dialog.
+   *
+   * `migrateActivities` is left off on the first attempt, exactly like
+   * `allowMove` above: the server answers `needsChoice` with a preview and
+   * writes nothing, and only a chosen answer replays it for real. A learner
+   * with no submitted work has nothing to decide, so that same first call
+   * comes back done — which is why the success path here handles both.
+   */
+  const transferStudent = async (toSectionId, migrateActivities) => {
+    if (!transferring || !toSectionId) return;
+    const d = await call(
+      `${API_URL}/api/admin/${admin.id}/sections/${sectionId}/students/${transferring.id}/transfer`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          toSectionId,
+          ...(migrateActivities === undefined ? {} : { migrateActivities }),
+        }),
+      },
+    );
+    if (!d?.success) return;
+    if (d.needsChoice) {
+      // Hold the destination alongside the preview: step 2's buttons carry the
+      // answer, not the section, and re-picking it from a select that is no
+      // longer on screen is not possible.
+      setTransferChoice({ ...d, toSectionId });
+      return;
+    }
+    setTransferring(null);
+    setTransferChoice(null);
+    setNotice(d.message);
+  };
+
   const removeStudent = async (student) => {
     if (!(await showConfirm(`Remove ${student.name} from ${data.section.name}?`,
       { confirmLabel: 'Remove from section', danger: true }))) return;
@@ -256,6 +300,19 @@ export default function AdminSectionDetail() {
           addStudents({ allowMove: true, studentsList: req.studentsList });
         }}
         onCancel={() => { setMoveRequest(null); setStudentRows(emptyRoster()); setAddOpen(false); }}
+      />
+
+      <StudentTransferDialog
+        // Remounts per learner, which is what clears the destination select —
+        // see the note in the component.
+        key={transferring?.id || 'none'}
+        student={transferring}
+        sections={data.siblingSections || []}
+        choice={transferChoice}
+        busy={busy}
+        onPick={(toSectionId) => transferStudent(toSectionId)}
+        onDecide={(migrate) => transferStudent(transferChoice.toSectionId, migrate)}
+        onCancel={() => { setTransferring(null); setTransferChoice(null); }}
       />
 
       {error && (
@@ -445,6 +502,11 @@ export default function AdminSectionDetail() {
                   <AlertTriangle className="w-3 h-3" /> {s._count.submissions} submitted
                 </span>
               )}
+              <button onClick={() => { setTransferChoice(null); setTransferring(s); }} disabled={busy}
+                title="Transfer to another section"
+                className="p-1.5 rounded-md text-slate-300 hover:text-brand-navy hover:bg-blue-50 reveal-on-hover shrink-0 disabled:opacity-30">
+                <ArrowRightLeft className="w-3.5 h-3.5" />
+              </button>
               <button onClick={() => renameStudent(s)} disabled={busy} title="Correct the spelling of this name"
                 className="p-1.5 rounded-md text-slate-300 hover:text-brand-navy hover:bg-blue-50 reveal-on-hover shrink-0 disabled:opacity-30">
                 <Pencil className="w-3.5 h-3.5" />

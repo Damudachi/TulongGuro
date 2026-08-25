@@ -4778,7 +4778,7 @@ app.get('/api/admin/:adminId/sections/:sectionId', async (req, res) => {
     const admin = await requireAdminSchool(req.params.adminId);
     await sectionInSchool(admin, req.params.sectionId);
 
-    const [section, teachers] = await Promise.all([
+    const [section, teachers, siblingSections] = await Promise.all([
       prisma.section.findUnique({
         where: { id: req.params.sectionId },
         include: {
@@ -4802,10 +4802,25 @@ app.get('/api/admin/:adminId/sections/:sectionId', async (req, res) => {
         where: { schoolId: admin.schoolId, role: 'TEACHER' },
         select: { id: true, name: true, email: true },
         orderBy: { name: 'asc' }
+      }),
+      // Where a learner on this roster can be transferred to. Same school
+      // ladder as sectionInSchool, which is what the transfer route re-checks
+      // server-side — this list is the picker's convenience, never the guard.
+      prisma.section.findMany({
+        where: {
+          id: { not: req.params.sectionId },
+          OR: [{ schoolId: admin.schoolId }, { schoolId: null, teacher: { schoolId: admin.schoolId } }],
+        },
+        select: {
+          id: true, name: true, gradeLevel: true, schoolYear: true,
+          teacher: { select: { name: true } },
+          _count: { select: { students: true } },
+        },
+        orderBy: [{ gradeLevel: 'asc' }, { name: 'asc' }]
       })
     ]);
 
-    res.json({ success: true, section, teachers });
+    res.json({ success: true, section, teachers, siblingSections });
   } catch (e) { sendAdminError(res, e); }
 });
 
@@ -4932,6 +4947,164 @@ app.delete('/api/admin/:adminId/sections/:sectionId/students/:studentId', async 
     }
     await prisma.user.delete({ where: { id: student.id } });
     res.json({ success: true, detached: false, message: `${student.name} was removed.` });
+  } catch (e) { sendAdminError(res, e); }
+});
+
+/**
+ * Move one learner to another section, from the roster row that names them.
+ *
+ * The move itself was already possible — retyping the learner's name into the
+ * destination's Add Students box does it, because a User has exactly one
+ * Section. That path works but reads as an enrolment, is name-matched (so a
+ * typo silently creates a second account for the same child), and gives the
+ * admin no say over what happens to the work left behind. This addresses the
+ * student by id and asks.
+ *
+ * ── The question, and why it is asked in two round trips ──
+ *
+ * `migrateActivities` is deliberately tri-state. Absent means "the admin has
+ * not been asked yet": if the learner has work in the section they are
+ * leaving, the route writes nothing, returns `needsChoice` with a preview of
+ * what each answer costs, and waits. `true` and `false` are answers. The same
+ * shape as the `allowMove` replay the roster import already uses, and for the
+ * same reason — a destructive default is not something to infer from a missing
+ * field.
+ *
+ * A learner with no work is never asked. There is nothing to decide.
+ *
+ * ── What each answer does ──
+ *
+ * MIGRATE — nothing extra is written. The SectionTransfer row this creates is
+ * itself what makes the work follow: carriedOverForClass walks it back to the
+ * section they left and merges any class matching on
+ * (subject, gradeLevel, schoolYear). Subjects the destination does not teach
+ * cannot carry, which is why the preview names them before the admin decides
+ * rather than leaving it to be discovered at report-card time.
+ *
+ * DO NOT MIGRATE — their submissions in the old section are archived. One
+ * write does the whole job, because `archivedAt` is already the state every
+ * reader agrees means "not part of this any more": countsAsGrade drops it out
+ * of every average, carriedOverForClass filters it so it cannot follow them,
+ * and the gradebook, export and analytics all skip it. Archived, not deleted —
+ * the rows are a child's actual work, the retention machinery
+ * (/api/admin/purge-grades) is the only thing in this codebase that removes
+ * them for good, and a mis-click here has to be recoverable.
+ */
+app.post('/api/admin/:adminId/sections/:sectionId/students/:studentId/transfer', async (req, res) => {
+  try {
+    const admin = await requireAdminSchool(req.params.adminId);
+    const fromSection = await sectionInSchool(admin, req.params.sectionId);
+
+    const student = await prisma.user.findUnique({ where: { id: req.params.studentId } });
+    if (!student || student.sectionId !== fromSection.id || student.role !== 'STUDENT') {
+      return res.status(404).json({ success: false, error: 'Student not found in this section.' });
+    }
+
+    const toSectionId = String(req.body?.toSectionId || '').trim();
+    if (!toSectionId) {
+      return res.status(400).json({ success: false, error: 'Choose the section to transfer them to.' });
+    }
+    if (toSectionId === fromSection.id) {
+      return res.status(400).json({ success: false, error: `${student.name} is already in ${sectionLabel(fromSection)}.` });
+    }
+    // The same guard the adviser dropdown uses. A transfer may not cross
+    // schools: the destination has to be one this admin already administers,
+    // or their pupil and the whole grade history behind them lands on another
+    // school's roster.
+    const toSection = await sectionInSchool(admin, toSectionId);
+
+    const { activityCount, preview } = await describeStudentTransfer({ student, fromSection, toSection });
+
+    const choice = req.body?.migrateActivities;
+    if (activityCount > 0 && choice !== true && choice !== false) {
+      return res.json({
+        success: true,
+        needsChoice: true,
+        student: { id: student.id, name: student.name, username: student.username },
+        fromSection: sectionLabel(fromSection),
+        toSection: sectionLabel(toSection),
+        activityCount,
+        preview,
+      });
+    }
+    // Nothing to decide collapses to "migrate": with no work in the old
+    // section there is nothing to archive, and the branch below writes nothing.
+    const migrate = choice !== false;
+
+    const { archived, excused } = await prisma.$transaction(async (tx) => {
+      // Placeholder rows an *earlier* move invented in the section they are
+      // leaving. Deleted rather than archived, and only where all four of
+      // cleanUpTransferRows' conditions hold — nobody ever submitted against
+      // them, so they are not work anyone would want kept. Runs first so the
+      // archive below cannot sweep them up and report them as the learner's.
+      await cleanUpTransferRows(tx, { studentId: student.id, sectionId: fromSection.id });
+
+      let archivedCount = 0;
+      if (!migrate) {
+        ({ count: archivedCount } = await tx.submission.updateMany({
+          where: {
+            studentId: student.id,
+            archivedAt: null,
+            activity: { class: { sectionId: fromSection.id } },
+          },
+          data: { archivedAt: new Date() },
+        }));
+      }
+
+      await tx.user.update({
+        where: { id: student.id },
+        // schoolId alongside sectionId for the same reason enrolStudents sets
+        // it: an account predating students carrying one picks it up here.
+        data: { sectionId: toSection.id, ...(admin.schoolId ? { schoolId: admin.schoolId } : {}) },
+      });
+
+      const transfer = await recordTransfer(tx, {
+        studentId: student.id,
+        fromSectionId: fromSection.id,
+        toSectionId: toSection.id,
+        actorId: req.auth.sub,
+        schoolId: toSection.schoolId || admin.schoolId,
+        reason: migrate
+          ? 'Transferred by admin — earlier work carried over'
+          : 'Transferred by admin — earlier work archived with the old section',
+      });
+
+      // Work set in the destination before they arrived, already closed, that
+      // they have no submission for. Excused rather than left MISSING — a
+      // child is not marked down for not doing something they were not there
+      // for. Same call every other arrival path makes.
+      const excusedCount = await excusePreArrival(tx, {
+        studentId: student.id,
+        sectionId: toSection.id,
+        transferId: transfer.id,
+        transferredAt: transfer.transferredAt,
+        fromSectionLabel: sectionLabel(fromSection),
+      });
+
+      return { archived: archivedCount, excused: excusedCount };
+    });
+
+    const parts = [`${student.name} is now in ${sectionLabel(toSection)}.`];
+    if (migrate) {
+      const carried = preview.carries.reduce((n, c) => n + c.gradeCount, 0);
+      parts.push(carried > 0
+        ? `${carried} grade${carried === 1 ? '' : 's'} carried over.`
+        : 'Nothing from their old section matched a class here, so no grades carried over.');
+    } else if (archived > 0) {
+      parts.push(`${archived} submission${archived === 1 ? '' : 's'} stayed with ${sectionLabel(fromSection)} and no longer count anywhere.`);
+    }
+    if (excused > 0) {
+      parts.push(`${excused} activit${excused === 1 ? 'y' : 'ies'} set before they arrived ${excused === 1 ? 'was' : 'were'} excused.`);
+    }
+
+    res.json({
+      success: true,
+      needsChoice: false,
+      migrated: migrate,
+      archived,
+      excused,
+      message: parts.join(' '),
+    });
   } catch (e) { sendAdminError(res, e); }
 });
 
@@ -6801,6 +6974,97 @@ async function carriedOverForClass(prisma, { classId, studentIds, prefetch = nul
     byStudent.get(sub.studentId).push(sub);
   }
   return byStudent;
+}
+
+/** How a section is named to a person: "Grade 6 — Rose", or just "Rose". */
+function sectionLabel(section) {
+  if (!section) return '';
+  return section.gradeLevel ? `${section.gradeLevel} — ${section.name}` : section.name;
+}
+
+/**
+ * What moving one named learner would do, for the confirm dialog.
+ *
+ * The batched preview inside enrolStudents answers this for a whole pasted
+ * roster; this answers it for the single student an admin picked off a roster
+ * row. Both end at transfers.buildMovePreview, so the two dialogs cannot
+ * disagree about whether Science carries — which is the failure the shared
+ * carriedOverForClass exists to prevent on the grading side.
+ *
+ * Reads only. Nothing here decides anything; the route does, once the admin
+ * has answered.
+ */
+async function describeStudentTransfer({ student, fromSection, toSection }) {
+  const [sourceClasses, targetClasses, targetActivities, activityCount] = await Promise.all([
+    prisma.class.findMany({
+      where: { sectionId: fromSection.id },
+      select: { id: true, subject: true, gradeLevel: true, schoolYear: true },
+    }),
+    prisma.class.findMany({
+      where: { sectionId: toSection.id },
+      select: { id: true, subject: true, gradeLevel: true, schoolYear: true },
+    }),
+    prisma.activity.findMany({
+      where: { class: { sectionId: toSection.id } },
+      select: { id: true, createdAt: true, deadline: true },
+    }),
+    // What "do not migrate" would archive, and what decides whether the admin
+    // is asked at all. REAL_WORK rather than a bare count: the placeholder
+    // rows a previous transfer auto-excused are not work anybody did, and
+    // counting them would put "12 activities" in front of an admin whose
+    // learner has handed in nothing. It is also the number already on the
+    // roster row beside their name, so the dialog agrees with the screen that
+    // opened it.
+    prisma.submission.count({
+      where: {
+        studentId: student.id,
+        archivedAt: null,
+        activity: { class: { sectionId: fromSection.id } },
+        ...REAL_WORK,
+      },
+    }),
+  ]);
+
+  // Distinct graded *activities* per source class — the same unit the roster
+  // import's preview counts in, so "3 grades carry over" means one thing.
+  const gradedRows = sourceClasses.length
+    ? await prisma.submission.findMany({
+        where: {
+          studentId: student.id, status: 'GRADED', archivedAt: null, excusedAt: null,
+          activity: { classId: { in: sourceClasses.map(c => c.id) } },
+        },
+        select: { activityId: true, activity: { select: { classId: true } } },
+      })
+    : [];
+  const perClass = new Map();
+  for (const row of gradedRows) {
+    const classId = row.activity?.classId;
+    if (!classId) continue;
+    if (!perClass.has(classId)) perClass.set(classId, new Set());
+    perClass.get(classId).add(row.activityId);
+  }
+  const gradeCountByClassId = {};
+  for (const [classId, ids] of perClass) gradeCountByClassId[classId] = ids.size;
+
+  // Work they already hold against the destination — a learner returning to a
+  // section they were in before. preArrivalActivityIds uses it to leave their
+  // own work alone rather than excusing them from it a second time.
+  const existingThere = targetActivities.length
+    ? await prisma.submission.findMany({
+        where: { studentId: student.id, activityId: { in: targetActivities.map(a => a.id) } },
+        select: { activityId: true },
+      })
+    : [];
+  const preArrivalCount = transfers.preArrivalActivityIds(
+    targetActivities, new Date(), existingThere.map(s => s.activityId), isPastDeadline
+  ).length;
+
+  return {
+    activityCount,
+    preview: transfers.buildMovePreview({
+      sourceClasses, targetClasses, gradeCountByClassId, preArrivalCount,
+    }),
+  };
 }
 
 async function enrolStudents(section, studentsList, { schoolId, teacherId, actorId = null, allowMove = false }) {
