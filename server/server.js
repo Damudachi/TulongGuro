@@ -4047,7 +4047,7 @@ function sendAdminError(res, e) {
 app.get('/api/admin/:adminId/overview', async (req, res) => {
   try {
     const admin = await requireAdminSchool(req.params.adminId);
-    const [teachers, sections, curriculums, rubricCount] = await Promise.all([
+    const [teachers, sections, curriculums, rubricCount, classCount] = await Promise.all([
       prisma.user.findMany({
         where: { schoolId: admin.schoolId, role: 'TEACHER' },
         select: { id: true, name: true, email: true, username: true, createdAt: true, _count: { select: { taughtClasses: true, ownedSections: true } } },
@@ -4065,9 +4065,20 @@ app.get('/api/admin/:adminId/overview', async (req, res) => {
         include: { _count: { select: { lessons: true } } },
         orderBy: [{ gradeLevel: 'asc' }, { subject: 'asc' }]
       }),
-      prisma.rubricTemplate.count({ where: { schoolId: admin.schoolId } })
+      prisma.rubricTemplate.count({ where: { schoolId: admin.schoolId } }),
+      // Counted, not listed: this screen only needs the number for its tile,
+      // and the tile is a link to /admin/classes, which fetches the shells
+      // themselves. Same tenancy ladder as the sections query above.
+      prisma.class.count({
+        where: {
+          OR: [
+            { section: { schoolId: admin.schoolId } },
+            { section: { schoolId: null }, teacher: { schoolId: admin.schoolId } },
+          ],
+        },
+      })
     ]);
-    res.json({ success: true, school: admin.school, teachers, sections, curriculums, rubricCount });
+    res.json({ success: true, school: admin.school, teachers, sections, curriculums, rubricCount, classCount });
   } catch (e) { sendAdminError(res, e); }
 });
 
@@ -4915,6 +4926,85 @@ app.put('/api/admin/:adminId/teachers/:teacherId', async (req, res) => {
     const updated = await prisma.user.update({ where: { id: teacher.id }, data });
     const { password: _pw, ...safeTeacher } = updated;
     res.json({ success: true, teacher: safeTeacher });
+  } catch (e) { sendAdminError(res, e); }
+});
+
+/**
+ * Every course shell in the school, with what the "new shell" form needs.
+ *
+ * The per-teacher list on GET .../teachers/:teacherId answers "what does this
+ * one person carry". This answers the timetable question — which subjects are
+ * running, in which blocks, taught by whom — which is the one an admin arrives
+ * with and could previously only assemble by opening every teacher in turn.
+ *
+ * Tenancy runs on the same ladder as the analytics route and access.js:
+ * the section's school first, the owning teacher's as the fallback. Keying on
+ * the section alone would hide exactly the shells whose section predates
+ * Section.schoolId, which are the ones most likely to need attention.
+ *
+ * The pickers ride along so the page is one request rather than four. They are
+ * the same three lists the teacher-detail route returns, for the same form.
+ */
+app.get('/api/admin/:adminId/classes', async (req, res) => {
+  try {
+    const admin = await requireAdminSchool(req.params.adminId);
+    const inThisSchool = {
+      OR: [
+        { section: { schoolId: admin.schoolId } },
+        { section: { schoolId: null }, teacher: { schoolId: admin.schoolId } },
+      ],
+    };
+
+    const [classes, teachers, sections, curriculums] = await Promise.all([
+      prisma.class.findMany({
+        where: inThisSchool,
+        include: {
+          teacher: { select: { id: true, name: true, email: true } },
+          section: { select: { id: true, name: true, gradeLevel: true, _count: { select: { students: true } } } },
+          _count: { select: { activities: true, lessons: true } },
+          // Counted through the activities rather than with a nested filter so
+          // the "can this be deleted?" number here means the same thing as the
+          // one the teacher-detail route reports.
+          activities: { select: { id: true, _count: { select: { submissions: true } } } },
+        },
+        orderBy: { createdAt: 'desc' },
+      }),
+      prisma.user.findMany({
+        where: { schoolId: admin.schoolId, role: 'TEACHER' },
+        select: { id: true, name: true, email: true },
+        orderBy: { name: 'asc' },
+      }),
+      prisma.section.findMany({
+        where: { OR: [{ schoolId: admin.schoolId }, { schoolId: null, teacher: { schoolId: admin.schoolId } }] },
+        select: {
+          id: true, name: true, gradeLevel: true, schoolYear: true,
+          teacher: { select: { id: true, name: true } },
+          _count: { select: { students: true } },
+        },
+        orderBy: [{ gradeLevel: 'asc' }, { name: 'asc' }],
+      }),
+      prisma.curriculum.findMany({
+        where: { schoolId: admin.schoolId },
+        select: { id: true, title: true, subject: true, gradeLevel: true, _count: { select: { lessons: true } } },
+        orderBy: [{ gradeLevel: 'asc' }, { subject: 'asc' }],
+      }),
+    ]);
+
+    res.json({
+      success: true,
+      classes: classes.map(c => ({
+        id: c.id, name: c.name, gradeLevel: c.gradeLevel, subject: c.subject,
+        schoolYear: c.schoolYear, createdAt: c.createdAt,
+        teacher: c.teacher,
+        section: c.section,
+        activityCount: c._count.activities,
+        lessonCount: c._count.lessons,
+        submissionCount: c.activities.reduce((n, a) => n + a._count.submissions, 0),
+      })),
+      teachers,
+      sections,
+      curriculums,
+    });
   } catch (e) { sendAdminError(res, e); }
 });
 

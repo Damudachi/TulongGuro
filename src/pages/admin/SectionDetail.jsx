@@ -271,7 +271,7 @@ export default function AdminSectionDetail() {
     if (!(await showConfirm(`Delete the empty section "${data.section.name}"? This cannot be undone.`,
       { confirmLabel: 'Delete section', danger: true }))) return;
     const d = await call(`${API_URL}/api/admin/${admin.id}/sections/${sectionId}`, { method: 'DELETE' });
-    if (d?.success) navigate('/admin/teachers');
+    if (d?.success) navigate('/admin/sections');
   };
 
   if (isLoading) {
@@ -281,7 +281,7 @@ export default function AdminSectionDetail() {
     return (
       <div className="p-8 max-w-3xl mx-auto text-center">
         <p className="text-slate-500 mb-4">{error || 'Section not found.'}</p>
-        <button onClick={() => navigate('/admin/teachers')} className="text-brand-navy font-semibold hover:underline">Back</button>
+        <button onClick={() => navigate('/admin/sections')} className="text-brand-navy font-semibold hover:underline">Back to Sections</button>
       </div>
     );
   }

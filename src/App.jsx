@@ -12,6 +12,8 @@ import DialogHost from './components/DialogHost';
 
 // Admin Pages
 import AdminTeachers from './pages/admin/Teachers';
+import AdminSections from './pages/admin/Sections';
+import AdminClasses from './pages/admin/Classes';
 import AdminAdmins from './pages/admin/Admins';
 import AdminTeacherDetail from './pages/admin/TeacherDetail';
 import AdminSectionDetail from './pages/admin/SectionDetail';
@@ -69,7 +71,11 @@ function App() {
           <Route index element={<Navigate to="teachers" />} />
           <Route path="teachers" element={<AdminTeachers />} />
           <Route path="teachers/:teacherId" element={<AdminTeacherDetail />} />
+          {/* The list before the detail: `sections` is a page in its own right
+              now, and `sections/:sectionId` is one row of it. */}
+          <Route path="sections" element={<AdminSections />} />
           <Route path="sections/:sectionId" element={<AdminSectionDetail />} />
+          <Route path="classes" element={<AdminClasses />} />
           <Route path="curriculum" element={<AdminCurriculum />} />
           <Route path="rubrics" element={<AdminRubrics />} />
           <Route path="grading" element={<AdminGrading />} />

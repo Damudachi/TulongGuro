@@ -611,6 +611,17 @@ literals `sections`, `quick-setup` and `extract-students` came out of
 `GET /api/teacher/:teacherId/sections` and `GET /api/teacher/:teacherId/classes`
 are untouched — removing the writes must not take the reads with them.
 
+### The school-wide list
+
+`GET /api/admin/:adminId/classes` answers the timetable question — which
+subjects are running, in which blocks, taught by whom — which an admin could
+previously only assemble by opening every teacher in turn. Tenancy is the
+section-then-teacher ladder from `access.js`, not the section alone: a shell
+whose section predates `Section.schoolId` is otherwise invisible to the school
+that owns it, and those are the ones most likely to need attention. The
+teacher / section / curriculum pickers ride along so the page is one request.
+`GET .../overview` also gained a `classCount` for the Teachers-page tile.
+
 ### The two new routes
 
 **`POST /api/admin/:adminId/sections`** is deliberately *stricter* than the
@@ -645,13 +656,35 @@ unchanged, `rubricTemplateId` and `competencies` included (see §8.7).
 
 ### Client
 
-- `src/pages/admin/Teachers.jsx` — "Add Section": name, adviser, grade level,
-  school year, and an optional roster through the same `RosterEditor` the
-  section page uses.
-- `src/pages/admin/TeacherDetail.jsx` — "Add Course Shell", on the page that
-  already shows everything that teacher carries. `GET .../teachers/:teacherId`
-  now also returns `schoolSections` (school-wide, for the picker) and
-  `curriculums`.
+- `src/pages/admin/Sections.jsx` *(new)* — every block section in the school,
+  grouped by grade level, searchable by section name **or adviser**, with "Add
+  Section": name, adviser, grade level, school year, and an optional roster
+  through the same `RosterEditor` the section page uses. Cards link to the
+  existing section page, which is still where a roster is actually managed.
+- `src/pages/admin/Classes.jsx` *(new)* — every course shell in the school,
+  grouped **by section** (the teacher page already groups the other way),
+  filterable by grade / subject / teacher / year, with "Add Course Shell" — the
+  same form as the teacher page's plus a teacher field, since nothing else here
+  says who it is for. Editing a shell deliberately stays on the teacher page,
+  where the consequences for that person are on screen.
+- `src/pages/admin/TeacherDetail.jsx` — "Add Course Shell" in context.
+  `GET .../teachers/:teacherId` now also returns `schoolSections` (school-wide,
+  for the picker) and `curriculums`.
+- `src/pages/admin/Teachers.jsx` — back to being about staff accounts. The
+  section list and its create form moved to the new Sections page rather than
+  being duplicated; the summary tiles are now links to the pages they count.
+
+### Navigation
+
+`AdminLayout`'s `NAV` gains **Sections** and **Course Shells**, ordered by what
+a school is built out of — people, then the blocks they are grouped into, then
+the classes taught to those blocks, which is also the order they have to be
+created in. Both were previously reachable only *through* a teacher's page, so
+the two things this console provisions had no entry in its own navigation.
+
+That takes the mobile dock to nine cells including sign-out, so its `gap-1`
+drops to `gap-0.5` — the teacher dock already runs at that spacing for the same
+reason.
 - `src/pages/teacher/ManageSections.jsx` — read-only. Search, grade-level
   segmentation, archived years and the rosters all stay; the create form, add
   students, rename and reset password are gone, and a banner says where they
@@ -673,4 +706,6 @@ rules worth guarding are different rules now (adviser required, name clash
 refused, shell lands on the *named* teacher, both sides inside the school), plus
 a table asserting the six removed routes refuse and write nothing — a control
 taken out of the UI is still reachable by an old bundle or a curl.
-`setup-steps.test.js` follows the checklist's new wording. Suite is 1290.
+`setup-steps.test.js` follows the checklist's new wording. Four more cover the
+school-wide class list — its tenancy `where`, the pickers it carries, the
+summed submission count, and that it is closed to teachers. Suite is 1295.

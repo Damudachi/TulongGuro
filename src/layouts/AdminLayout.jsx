@@ -1,5 +1,5 @@
 import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom';
-import { Users, BookOpen, ClipboardList, Scale, TrendingUp, ShieldCheck, LogOut } from 'lucide-react';
+import { Users, GraduationCap, Layers, BookOpen, ClipboardList, Scale, TrendingUp, ShieldCheck, LogOut } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import SchoolBadge from '../components/SchoolBadge';
 import Logo from '../components/Logo';
@@ -10,8 +10,17 @@ import ThemeToggle from '../components/ThemeToggle';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
 
+/**
+ * Ordered by what a school is built out of, not alphabetically: the people,
+ * then the blocks they are grouped into, then the classes taught to those
+ * blocks — which is also the order they have to be created in. Sections and
+ * Course Shells were reachable only through a teacher's page before, so the
+ * two things this console provisions had no entry in its own navigation.
+ */
 const NAV = [
   { name: 'Teachers', path: '/admin/teachers', icon: Users },
+  { name: 'Sections', path: '/admin/sections', icon: GraduationCap },
+  { name: 'Course Shells', path: '/admin/classes', icon: Layers },
   { name: 'Curriculum', path: '/admin/curriculum', icon: BookOpen },
   { name: 'Rubrics', path: '/admin/rubrics', icon: ClipboardList },
   { name: 'Grading', path: '/admin/grading', icon: Scale },
@@ -113,7 +122,10 @@ export default function AdminLayout() {
       {/* ── Mobile floating dock ──
           Icon-only, equal-width cells — see the note in TeacherLayout. */}
       <nav className="tg-bottom-nav fixed bottom-0 left-0 right-0 px-3 pt-2 md:hidden z-50 pointer-events-none">
-        <div className="pointer-events-auto flex items-stretch gap-1 bg-brand-chrome rounded-[1.5rem] p-1.5 shadow-card-lg">
+        {/* gap-0.5, not gap-1: Sections and Course Shells brought the dock to
+            nine cells including sign-out, and the teacher dock already runs at
+            this spacing for the same reason. */}
+        <div className="pointer-events-auto flex items-stretch gap-0.5 bg-brand-chrome rounded-[1.5rem] p-1.5 shadow-card-lg">
           {NAV.map(item => {
             const isActive = location.pathname.startsWith(item.path);
             return (

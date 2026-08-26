@@ -411,6 +411,74 @@ describe('POST /api/admin/:adminId/classes assigns the shell to a named teacher'
 });
 
 /**
+ * The school-wide list behind /admin/classes.
+ *
+ * It exists because course shells could previously only be reached one teacher
+ * at a time, which made "what is running in Sampaguita" a question you answered
+ * by opening every teacher in turn. The rule worth pinning is its tenancy: it
+ * runs on the same section-then-teacher ladder as access.js, so a shell whose
+ * section predates Section.schoolId is still reachable by the school that owns
+ * it — those are the shells most likely to need attention, and a section-only
+ * filter would hide exactly them.
+ */
+describe('GET /api/admin/:adminId/classes lists the whole school', () => {
+  it('asks on the section-then-teacher ladder, not the section alone', async () => {
+    await fetch(`${baseUrl}/api/admin/${ADMIN}/classes`, {
+      headers: { Authorization: `Bearer ${adminToken()}` },
+    });
+
+    const { where } = prismaFake.class.findMany.mock.calls[0][0];
+    expect(where).toEqual({
+      OR: [
+        { section: { schoolId: SCHOOL } },
+        { section: { schoolId: null }, teacher: { schoolId: SCHOOL } },
+      ],
+    });
+  });
+
+  it('carries the pickers the create form needs, so the page is one request', async () => {
+    const res = await fetch(`${baseUrl}/api/admin/${ADMIN}/classes`, {
+      headers: { Authorization: `Bearer ${adminToken()}` },
+    });
+    const body = await res.json();
+
+    expect(res.status).toBe(200);
+    for (const key of ['classes', 'teachers', 'sections', 'curriculums']) {
+      expect(body[key]).toBeInstanceOf(Array);
+    }
+  });
+
+  it('reports a submission count, which is what gates deleting a shell', async () => {
+    prismaFake.class.findMany.mockResolvedValue([{
+      id: 'class-1', name: 'Filipino 6', gradeLevel: 'Grade 6', subject: 'Filipino',
+      schoolYear: YEAR, createdAt: new Date(),
+      teacher: { id: SUBJECT_TEACHER, name: 'Mr. Santos' },
+      section: { id: SECTION, name: SECTION_NAME, gradeLevel: 'Grade 6', _count: { students: 40 } },
+      _count: { activities: 2, lessons: 8 },
+      activities: [{ id: 'a1', _count: { submissions: 30 } }, { id: 'a2', _count: { submissions: 11 } }],
+    }]);
+
+    const body = await (await fetch(`${baseUrl}/api/admin/${ADMIN}/classes`, {
+      headers: { Authorization: `Bearer ${adminToken()}` },
+    })).json();
+
+    // Summed across the activities rather than counted separately, so this
+    // number means the same thing as the teacher-detail route's.
+    expect(body.classes[0].submissionCount).toBe(41);
+    expect(body.classes[0].activityCount).toBe(2);
+    expect(body.classes[0].lessonCount).toBe(8);
+  });
+
+  it('is closed to teachers, like every other /api/admin route', async () => {
+    const res = await fetch(`${baseUrl}/api/admin/${ADMIN}/classes`, {
+      headers: { Authorization: `Bearer ${teacherToken(ADVISER)}` },
+    });
+
+    expect(res.status).toBe(403);
+  });
+});
+
+/**
  * The teacher-side routes are gone, not merely unlinked from the screens.
  *
  * A control removed from the UI is a control an old cached bundle, a bookmarked
