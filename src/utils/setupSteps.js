@@ -7,6 +7,17 @@
  * opinion. Roster first, because every later step needs student records to
  * hang off; releasing last, because that is the moment a learner sees anything.
  *
+ * ── Two of the four are no longer the teacher's to do ──
+ *
+ * Block sections, their rosters and the course shells are created in the admin
+ * console. They stay on this list rather than being dropped from it, because a
+ * teacher who cannot yet make an activity is owed the reason: without these
+ * rows there is nothing to attach one to, and the answer is "your admin has
+ * not set it up yet", not "you have not got round to it". A step that is
+ * waiting on somebody else carries `blockedBy` and no route, so the card shows
+ * a note where a button would be — the same treatment a step blocked by an
+ * earlier one already gets.
+ *
  * Nothing here reads a stored step number. `done` is a fact about the
  * database, so the checklist is right on any device and cannot claim a teacher
  * has done something their dashboard shows they have not.
@@ -28,26 +39,30 @@ export function buildSteps(setup) {
   return [
     {
       id: 'roster',
-      title: 'Add your block section and its class list',
-      body: 'Type or paste your learners\' names — last name first. TulongGuro makes an account for each of them and gives you a printable list of their sign-in details.',
+      title: 'Your block section and its class list',
+      body: 'Your school admin creates the block sections and enrols the learners, so each child gets an account and a Student ID to sign in with. You will see every section in your school here.',
       done: students > 0,
       progress: students > 0
         ? `${students} student${students === 1 ? '' : 's'} enrolled in ${sections} section${sections === 1 ? '' : 's'}`
         : sections > 0
-          ? `${sections} section${sections === 1 ? '' : 's'} created — no learners on the list yet`
+          ? `${sections} section${sections === 1 ? '' : 's'} set up — no learners on the list yet`
           : null,
-      to: '/teacher/sections',
-      cta: sections > 0 ? 'Add learners' : 'Create a block section',
+      // Only offered once there is something to look at. A link to an empty
+      // list is a dead end dressed up as the next thing to do.
+      to: sections > 0 ? '/teacher/sections' : null,
+      cta: 'View your block sections',
+      blockedBy: students === 0 ? 'Your school admin sets up sections and class lists' : null,
     },
     {
       id: 'class',
-      title: 'Create your first class',
-      body: 'A class is one subject taught to one block section — "English 6 – Sampaguita", for example. Your school\'s curriculum is filled in for you where there is one.',
+      title: 'Your classes',
+      body: 'A class is one subject taught to one block section — "English 6 – Sampaguita", for example. Your school admin creates these and assigns them to you, with the school\'s curriculum already applied where there is one.',
       done: classes > 0,
-      progress: classes > 0 ? `${classes} class${classes === 1 ? '' : 'es'} created` : null,
-      // No `to`: the class form is a modal on the dashboard itself, so the
-      // component supplies the handler instead of a route.
-      cta: 'Create a class',
+      progress: classes > 0 ? `${classes} class${classes === 1 ? '' : 'es'} assigned to you` : null,
+      // No route: the classes are on the dashboard this checklist sits on, so
+      // the only link there could be is to the page already open.
+      cta: 'Assigned by your school admin',
+      blockedBy: classes === 0 ? 'Your school admin assigns your classes' : null,
     },
     {
       id: 'activity',
@@ -57,9 +72,10 @@ export function buildSteps(setup) {
       progress: activities > 0 ? `${activities} activit${activities === 1 ? 'y' : 'ies'} created` : null,
       to: '/teacher/activity/new',
       cta: 'Create an activity',
-      // There is nothing to attach an activity to until a class exists. Said
-      // here rather than letting the teacher find out on the next screen.
-      blockedBy: classes === 0 ? 'Create a class first' : null,
+      // There is nothing to attach an activity to until a class exists, and a
+      // teacher cannot make one — so this names who can, rather than telling
+      // them to do something the app will not let them do.
+      blockedBy: classes === 0 ? 'Waiting for a class from your school admin' : null,
     },
     {
       id: 'grade',

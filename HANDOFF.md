@@ -350,7 +350,7 @@ The hard part for an elementary learner is the **login**, not the dashboard. All
 | **Birthday-password nudge** — a count before submitting: "12 of 40 learners have no birthday, so their passwords will be random digits shown only once." The per-row preview already existed; a 40-name roster scrolls, and the *count* is the decision. | `src/pages/teacher/ManageSections.jsx` |
 | **Forgiving student IDs** — `as-26-0001`, `AS 26 0001` and `as260001` all reach `AS-26-0001`. | `POST /api/auth/login` |
 | **Show-password toggle** | already existed on `src/pages/Login.jsx`; the placeholder now shows the real ID format and says punctuation does not matter |
-| **One-click password reset from the teacher's roster** | `PUT /api/teacher/sections/:sectionId/students/:studentId/password` |
+| **One-click password reset from the roster** ⚠️ *moved — see §9* | was `PUT /api/teacher/sections/:sectionId/students/:studentId/password`; now `PUT /api/admin/:adminId/sections/:sectionId/students/:studentId/password` |
 | **Student welcome cut to one screen**, held until the learner has released work | `src/pages/student/Dashboard.jsx` |
 
 Two of these are worth understanding before changing them.
@@ -373,7 +373,7 @@ Everything below landed after §7, in the same session. Ordered by how much dama
 
 ### 8.1 Section names were reused across school years ⚠️ *the worst one*
 
-`POST /api/teacher/sections` looked up an existing section by **name alone**. Schools reuse block names every year, so next June, creating "Grade 6 - Sampaguita" would have silently reopened **last year's** section and enrolled the new intake onto the leaving class's roster — alongside their grades.
+`POST /api/teacher/sections` (removed — see §9) looked up an existing section by **name alone**. Schools reuse block names every year, so next June, creating "Grade 6 - Sampaguita" would have silently reopened **last year's** section and enrolled the new intake onto the leaving class's roster — alongside their grades.
 
 Now scoped by school year as well. A `NULL` year still matches, so a roster created before the column existed is reused and stamped rather than duplicated.
 
@@ -475,8 +475,9 @@ the two copies were free to drift.
   now matched on name **and** criteria signature, and a same-name-different-
   criteria revision is written under a numbered name. This failure mode did not
   exist before the link — the embedded copy always won, so drift meant nothing.
-- **Both copy paths carry the id.** `POST /api/teacher/classes` (accepting a
-  curriculum at class creation — the dominant flow) and
+- **Both copy paths carry the id.** `POST /api/admin/:adminId/classes` (accepting a
+  curriculum at class creation — the dominant flow; was `POST /api/teacher/classes`
+  before §9) and
   `POST /api/teacher/classes/:id/parse-curriculum` both copy `rubricTemplateId`
   onto `ClassLesson`. Missing it on either leaves a null link and silently
   reinstates the pre-§8.7 behaviour for every class made that way.
@@ -580,3 +581,96 @@ and `bandScoreNumber`'s `"36-40" → 40` fallback both hold.
 **Tests.** `server/tests/admin-reassign.test.js` — the delete-teacher refusal,
 the proof it destroys nothing on the way to refusing, the rename clash, and the
 `UNGRADED_RESET` shape. Suite is 302, up from 297.
+
+---
+
+## 9. Provisioning moved to the admin
+
+A teacher no longer creates the structure they teach inside. Which blocks exist,
+who advises each one, who is on its roster and which subject each teacher takes
+into it are school-wide decisions, made once in the admin console — and every
+one of them was previously made, separately and inconsistently, by whichever
+teacher needed it first.
+
+### What was removed
+
+| Route | Replaced by |
+|---|---|
+| `POST /api/teacher/sections` | `POST /api/admin/:adminId/sections` |
+| `POST /api/teacher/classes` | `POST /api/admin/:adminId/classes` |
+| `POST /api/teacher/quick-setup` | the two above (it created a section + class in one shot; nothing in the client had called it for some time) |
+| `POST /api/teacher/extract-students` | `POST /api/admin/:adminId/extract-students` (the same handler; only the mount moved) |
+| `PUT /api/teacher/sections/:sectionId/students/:studentId` | `PUT /api/admin/:adminId/sections/:sectionId/students/:studentId` |
+| `PUT /api/teacher/sections/:sectionId/students/:studentId/password` | `PUT /api/admin/:adminId/sections/:sectionId/students/:studentId/password` |
+
+Every admin route on the right already existed except the two `POST`s. The
+literals `sections`, `quick-setup` and `extract-students` came out of
+`TEACHER_ROUTE_SEGMENTS` with them, so what is left of those paths is refused by
+`authorizePath` rather than merely unhandled.
+
+`GET /api/teacher/:teacherId/sections` and `GET /api/teacher/:teacherId/classes`
+are untouched — removing the writes must not take the reads with them.
+
+### The two new routes
+
+**`POST /api/admin/:adminId/sections`** is deliberately *stricter* than the
+teacher route it replaces, and that is the point of the change rather than a
+side effect of it. The old route resolved a section by
+`(name, school, school year)` and **reused** whatever it found, because "add my
+class list to Sampaguita" meant the existing roster. Correct for that job, and
+the source of both §8.1 and the adviser hole that
+`section-adviser-authorization.test.js` was written for: the lookup was scoped
+to the school and never to the caller, so any teacher who typed an existing name
+was writing into a roster somebody else advised.
+
+Creating and enrolling are now separate requests. A name already taken inside
+the school year is **refused**, naming the adviser of the section in the way;
+adding learners to a section that exists is `POST .../sections/:sectionId/students`,
+which names the roster by id. `teacherId` — the adviser — is required, because a
+section with none is a roster nobody is responsible for, and the adviser is read
+by the teacher's section list, the setup checklist and teacher handover.
+
+One consequence worth knowing: the create response can still carry
+`pendingMoves`, but the confirm-and-replay must go to the `/students` sibling.
+Sending the create again is the name-clash refusal, not a retry.
+
+**`POST /api/admin/:adminId/classes`** takes `teacherId` and `sectionId`, both
+checked through `teacherInSchool` / `sectionInSchool`. The section may be one the
+teacher does not advise — teaching a subject into a colleague's block is the
+ordinary shape of a subject teacher's week, and the picker offers every section
+in the school for that reason. `Class.teacherId` is what
+`GET /api/teacher/:teacherId/classes` reads, so setting it is the whole of
+"it shows up on their dashboard". Curriculum application is carried over
+unchanged, `rubricTemplateId` and `competencies` included (see §8.7).
+
+### Client
+
+- `src/pages/admin/Teachers.jsx` — "Add Section": name, adviser, grade level,
+  school year, and an optional roster through the same `RosterEditor` the
+  section page uses.
+- `src/pages/admin/TeacherDetail.jsx` — "Add Course Shell", on the page that
+  already shows everything that teacher carries. `GET .../teachers/:teacherId`
+  now also returns `schoolSections` (school-wide, for the picker) and
+  `curriculums`.
+- `src/pages/teacher/ManageSections.jsx` — read-only. Search, grade-level
+  segmentation, archived years and the rosters all stay; the create form, add
+  students, rename and reset password are gone, and a banner says where they
+  went. `isOwn` came off the payload with them: nothing on the page is editable,
+  so a field meaning "you may edit this" had nothing left to say. The adviser is
+  named on every row instead.
+- `src/pages/teacher/Dashboard.jsx` — the three-step first-run wizard and the
+  Add Class modal are gone. The empty state now says what is being waited on and
+  who to ask rather than offering a button that cannot work.
+- `src/utils/setupSteps.js` — the `roster` and `class` steps stay on the
+  checklist but carry `blockedBy` naming the admin. A teacher who cannot make an
+  activity is owed the reason, and the reason is not "you have not got round
+  to it".
+
+### Tests
+
+`section-adviser-authorization.test.js` was rewritten rather than deleted: the
+rules worth guarding are different rules now (adviser required, name clash
+refused, shell lands on the *named* teacher, both sides inside the school), plus
+a table asserting the six removed routes refuse and write nothing — a control
+taken out of the UI is still reachable by an old bundle or a curl.
+`setup-steps.test.js` follows the checklist's new wording. Suite is 1290.

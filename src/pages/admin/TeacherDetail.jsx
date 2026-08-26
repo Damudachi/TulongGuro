@@ -2,10 +2,10 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import {
   ArrowLeft, Loader2, Pencil, Trash2, Check, X, KeyRound, UserPlus, UserCog,
-  BookOpen, Users, GraduationCap, AlertTriangle, Copy,
+  BookOpen, Users, GraduationCap, AlertTriangle, Copy, Plus, Sparkles,
 } from 'lucide-react';
 import { API_URL, apiFetch } from '../../config';
-import { GRADE_LEVELS } from '../../constants/school';
+import { GRADE_LEVELS, SUBJECTS, SCHOOL_YEARS, DEFAULT_SCHOOL_YEAR } from '../../constants/school';
 import StudentCredentials from '../../components/StudentCredentials';
 import SectionMoveConfirm from '../../components/SectionMoveConfirm';
 import RosterSearch from '../../components/RosterSearch';
@@ -21,6 +21,20 @@ function cn(...cls) { return cls.filter(Boolean).join(' '); }
 function generatePassword() {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789';
   return Array.from({ length: 10 }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
+}
+
+/**
+ * The school curriculum published for a subject and grade level, if there is
+ * one.
+ *
+ * A plain function rather than a value computed in the component body, because
+ * both the form that offers it and the submit that sends its id need the same
+ * answer — and the submit runs from a closure that must not depend on where in
+ * the render a `const` happened to be declared.
+ */
+function curriculumFor(curriculums, subject, gradeLevel) {
+  if (!subject || !gradeLevel) return null;
+  return (curriculums || []).find(c => c.subject === subject && c.gradeLevel === gradeLevel) || null;
 }
 
 /**
@@ -42,6 +56,18 @@ export default function AdminTeacherDetail() {
   const [editingProfile, setEditingProfile] = useState(false);
   const [profileForm, setProfileForm] = useState({ name: '', email: '' });
   const [newCredentials, setNewCredentials] = useState(null);
+
+  // ── Creating a course shell for this teacher ──
+  // A class used to be something a teacher opened for themselves. Which
+  // subject is taught to which block, by whom, is a timetable decision made
+  // against the whole school — so it is made here, on the page that already
+  // shows everything this teacher carries, and the shell appears on their own
+  // dashboard the moment it exists.
+  const [showClassForm, setShowClassForm] = useState(false);
+  const [classForm, setClassForm] = useState({
+    name: '', subject: '', gradeLevel: '', schoolYear: DEFAULT_SCHOOL_YEAR, sectionId: '', useCurriculum: true,
+  });
+  const [classFormError, setClassFormError] = useState('');
 
   const [reassignClassId, setReassignClassId] = useState(null);
   const [reassignTo, setReassignTo] = useState('');
@@ -126,6 +152,66 @@ export default function AdminTeacherDetail() {
       { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password }) },
       () => setNewCredentials({ email: data.teacher.email, password })
     );
+  };
+
+  /**
+   * Open the shell form, with the fields that can be inferred filled in.
+   *
+   * Nothing here is a guess about what should be taught — only about what is
+   * tedious to retype. The section, subject and grade level are always the
+   * admin's to choose.
+   */
+  const openClassForm = () => {
+    setClassForm({
+      name: '', subject: '', gradeLevel: '', schoolYear: DEFAULT_SCHOOL_YEAR, sectionId: '', useCurriculum: true,
+    });
+    setClassFormError('');
+    setShowClassForm(true);
+  };
+
+  const createClass = async () => {
+    if (busy) return;                       // guards an impatient second click
+    if (!classForm.sectionId) return setClassFormError('Choose the block section this class is taught to.');
+    if (!classForm.subject || !classForm.gradeLevel) return setClassFormError('Choose a subject and grade level.');
+    setClassFormError('');
+    setBusy(true);
+    const curriculum = curriculumFor(data?.curriculums, classForm.subject, classForm.gradeLevel);
+    try {
+      const res = await apiFetch(`${API_URL}/api/admin/${admin.id}/classes`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: classForm.name,
+          subject: classForm.subject,
+          gradeLevel: classForm.gradeLevel,
+          schoolYear: classForm.schoolYear,
+          sectionId: classForm.sectionId,
+          teacherId,
+          ...(curriculum && classForm.useCurriculum ? { curriculumId: curriculum.id } : {}),
+        }),
+      });
+      const d = await res.json().catch(() => null);
+      if (!d?.success) {
+        // Kept in the form: the usual refusal is "this teacher already has
+        // that shell", which is only actionable while looking at the fields
+        // that would change it.
+        setClassFormError(d?.error || 'That course shell could not be created.');
+        return;
+      }
+      setShowClassForm(false);
+      setNotice(
+        `"${d.class.name}" is now assigned to ${data.teacher.name} for ${d.class.section?.name || 'the chosen section'}. `
+        + (d.appliedLessons
+          ? `${d.appliedLessons} lesson${d.appliedLessons === 1 ? '' : 's'} from the school curriculum were applied. `
+          : '')
+        + 'It appears on their dashboard straight away.'
+      );
+      load();
+    } catch {
+      setClassFormError('Network error. Please try again.');
+    } finally {
+      setBusy(false);
+    }
   };
 
   const deleteClass = async (cls) => {
@@ -294,9 +380,15 @@ export default function AdminTeacherDetail() {
     );
   }
 
-  const { teacher, classes, sections, teachers = [] } = data;
+  const { teacher, classes, sections, teachers = [], schoolSections = [], curriculums = [] } = data;
   const otherTeachers = teachers.filter(t => t.id !== teacher.id);
   const totalStudents = sections.reduce((n, s) => n + s.students.length, 0);
+
+  // Offered rather than applied silently: copying a curriculum's lessons in is
+  // what lets grading mark against what the school actually published instead
+  // of a one-line description, but it is also forty rows the admin should know
+  // they are creating.
+  const matchedCurriculum = curriculumFor(curriculums, classForm.subject, classForm.gradeLevel);
 
   /**
    * Each section's roster alphabetised and numbered once, then filtered.
@@ -435,11 +527,136 @@ export default function AdminTeacherDetail() {
       </div>
 
       {/* Course shells */}
-      <h2 className="text-sm font-bold text-slate-400 uppercase tracking-wider mb-3">Course Shells</h2>
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-3">
+        <h2 className="text-sm font-bold text-slate-400 uppercase tracking-wider">Course Shells</h2>
+        <button
+          onClick={() => (showClassForm ? setShowClassForm(false) : openClassForm())}
+          disabled={schoolSections.length === 0}
+          title={schoolSections.length === 0
+            ? 'Create a block section first — a class is taught to one'
+            : `Assign a new class to ${teacher.name}`}
+          className={cn('self-start sm:self-auto px-3 py-2 rounded-lg text-xs font-bold shadow-sm flex items-center gap-1.5 disabled:opacity-40',
+            showClassForm ? 'bg-slate-100 text-slate-600 hover:bg-slate-200' : 'bg-brand-navy text-white hover:bg-blue-900')}>
+          {showClassForm ? <><X className="w-3.5 h-3.5" /> Close</> : <><Plus className="w-3.5 h-3.5" /> Add Course Shell</>}
+        </button>
+      </div>
+
+      {showClassForm && (
+        <div className="bg-white border-2 border-blue-200 rounded-2xl p-5 mb-4">
+          <p className="text-sm font-bold text-brand-slate mb-1">New course shell for {teacher.name}</p>
+          <p className="text-xs text-slate-500 mb-4">
+            One subject taught to one block section. It appears on their dashboard straight away, and they
+            build the activities in it themselves.
+          </p>
+          <form onSubmit={(e) => { e.preventDefault(); createClass(); }} className="space-y-4" autoComplete="off">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs font-medium text-slate-600 mb-1">Subject *</label>
+                <select required value={classForm.subject}
+                  onChange={e => setClassForm({ ...classForm, subject: e.target.value })}
+                  className="w-full border border-slate-200 p-2 rounded-lg text-sm outline-none focus:ring-2 focus:ring-brand-navy">
+                  <option value="">-- Select --</option>
+                  {SUBJECTS.map(s => <option key={s} value={s}>{s}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-600 mb-1">Grade level *</label>
+                <select required value={classForm.gradeLevel}
+                  onChange={e => setClassForm({ ...classForm, gradeLevel: e.target.value })}
+                  className="w-full border border-slate-200 p-2 rounded-lg text-sm outline-none focus:ring-2 focus:ring-brand-navy">
+                  <option value="">-- Select --</option>
+                  {GRADE_LEVELS.map(g => <option key={g} value={g}>{g}</option>)}
+                </select>
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-slate-600 mb-1">Block section *</label>
+              <select required value={classForm.sectionId}
+                onChange={e => setClassForm({ ...classForm, sectionId: e.target.value })}
+                className="w-full border border-slate-200 p-2 rounded-lg text-sm outline-none focus:ring-2 focus:ring-brand-navy">
+                <option value="">-- Choose a section --</option>
+                {schoolSections.map(s => (
+                  <option key={s.id} value={s.id}>
+                    {s.name}{s.gradeLevel ? ` · ${s.gradeLevel}` : ''} · {s._count?.students ?? 0} students
+                    {s.teacher?.name ? ` · adviser ${s.teacher.name}` : ''}
+                  </option>
+                ))}
+              </select>
+              {/* Every section in the school, not only the ones this teacher
+                  advises: teaching a subject into a colleague's block is the
+                  ordinary shape of a subject teacher's week. */}
+              <p className="text-[11px] text-slate-400 mt-1">
+                Any section in your school — the adviser stays whoever it already is.
+              </p>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs font-medium text-slate-600 mb-1">School year *</label>
+                <select required value={classForm.schoolYear}
+                  onChange={e => setClassForm({ ...classForm, schoolYear: e.target.value })}
+                  className="w-full border border-slate-200 p-2 rounded-lg text-sm outline-none focus:ring-2 focus:ring-brand-navy">
+                  {SCHOOL_YEARS.map(sy => <option key={sy} value={sy}>{sy}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-600 mb-1">Class name</label>
+                <input type="text" value={classForm.name} autoComplete="off"
+                  onChange={e => setClassForm({ ...classForm, name: e.target.value })}
+                  placeholder={classForm.subject && classForm.gradeLevel ? `${classForm.subject} — ${classForm.gradeLevel}` : 'e.g. Filipino — Grade 6'}
+                  className="w-full border border-slate-200 p-2 rounded-lg text-sm outline-none focus:ring-2 focus:ring-brand-navy" />
+                <p className="text-[11px] text-slate-400 mt-1">Leave blank to use "Subject — Grade Level".</p>
+              </div>
+            </div>
+
+            {matchedCurriculum && (
+              <label className="flex items-start gap-3 p-3 bg-emerald-50 border-2 border-emerald-200 rounded-xl cursor-pointer">
+                <input type="checkbox" checked={classForm.useCurriculum}
+                  onChange={e => setClassForm({ ...classForm, useCurriculum: e.target.checked })}
+                  className="mt-0.5 w-4 h-4 accent-brand-green shrink-0" />
+                <div>
+                  <p className="text-sm font-bold text-emerald-800 flex items-center gap-1.5">
+                    <Sparkles className="w-4 h-4" /> Apply your school curriculum
+                  </p>
+                  <p className="text-xs text-emerald-700 mt-0.5 leading-relaxed">
+                    <span className="font-semibold">{matchedCurriculum.title}</span> is published for{' '}
+                    {matchedCurriculum.subject} · {matchedCurriculum.gradeLevel}. Applying it copies{' '}
+                    <span className="font-semibold">{matchedCurriculum._count?.lessons ?? 0} lesson(s)</span> and
+                    their competencies and rubrics into this class, so grading marks against what the school published.
+                  </p>
+                </div>
+              </label>
+            )}
+
+            {classFormError && (
+              <p className="text-[11px] font-medium text-red-700 bg-red-50 border border-red-200 rounded-lg px-2.5 py-2 flex items-start gap-1.5">
+                <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-px" /> {classFormError}
+              </p>
+            )}
+
+            <div className="flex gap-2">
+              <button type="button" onClick={() => setShowClassForm(false)} disabled={busy}
+                className="flex-1 py-2 rounded-lg border border-slate-200 text-slate-600 text-sm font-medium hover:bg-slate-50 disabled:opacity-40">Cancel</button>
+              <button type="submit" disabled={busy}
+                className={cn('flex-1 py-2 rounded-lg text-white text-sm font-bold flex items-center justify-center gap-2',
+                  busy ? 'bg-slate-300 cursor-not-allowed' : 'bg-brand-navy hover:bg-blue-900')}>
+                {busy ? <><Loader2 className="w-4 h-4 animate-spin" /> Creating...</> : <><Plus className="w-4 h-4" /> Create Course Shell</>}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
       {classes.length === 0 ? (
         <div className="text-center py-10 border-2 border-dashed border-slate-200 rounded-2xl text-slate-400 mb-8">
           <BookOpen className="w-10 h-10 mx-auto mb-2 opacity-30" />
           <p className="text-sm font-medium">No classes yet</p>
+          <p className="text-xs mt-1">
+            {schoolSections.length === 0
+              ? 'Create a block section first — a class is taught to one.'
+              : `Use "Add Course Shell" above to assign ${teacher.name} a class.`}
+          </p>
         </div>
       ) : (
         <div className="space-y-3 mb-8">

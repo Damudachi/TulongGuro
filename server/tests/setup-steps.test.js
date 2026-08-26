@@ -19,17 +19,30 @@ describe('a teacher who has just been given an account', () => {
     expect(buildSteps(NOTHING).every((s) => !s.done)).toBe(true);
   });
 
-  it('is asked for a block section first', () => {
+  it('is shown the roster first', () => {
     // Roster before everything else: student records are what the later steps
     // hang off, so any other order strands the teacher.
     expect(buildSteps(NOTHING)[0].id).toBe('roster');
-    expect(byId(NOTHING).roster.cta).toBe('Create a block section');
+  });
+
+  it('is told the first two steps belong to the admin, not the teacher', () => {
+    // Creating a section, enrolling learners and opening a course shell are
+    // admin work. A checklist that told a teacher to do them would be sending
+    // them at controls the app no longer has.
+    const steps = byId(NOTHING);
+    expect(steps.roster.blockedBy).toBe('Your school admin sets up sections and class lists');
+    expect(steps.class.blockedBy).toBe('Your school admin assigns your classes');
   });
 
   it('is told what is missing before being sent to a dead end', () => {
     const steps = byId(NOTHING);
-    expect(steps.activity.blockedBy).toBe('Create a class first');
+    expect(steps.activity.blockedBy).toBe('Waiting for a class from your school admin');
     expect(steps.grade.blockedBy).toBe('Create an activity first');
+  });
+
+  it('does not link to a section list that has nothing in it', () => {
+    // A link to an empty page is a dead end dressed up as the next thing to do.
+    expect(byId(NOTHING).roster.to).toBeNull();
   });
 
   it('survives being called with no data at all', () => {
@@ -48,9 +61,11 @@ describe('a section that exists but has no learners on it', () => {
     expect(byId(setup).roster.done).toBe(false);
   });
 
-  it('says so, and changes what it asks for', () => {
-    expect(byId(setup).roster.progress).toBe('1 section created — no learners on the list yet');
-    expect(byId(setup).roster.cta).toBe('Add learners');
+  it('says so, and offers the list now that there is one to look at', () => {
+    expect(byId(setup).roster.progress).toBe('1 section set up — no learners on the list yet');
+    expect(byId(setup).roster.to).toBe('/teacher/sections');
+    // Still not done, and still not the teacher's to fix.
+    expect(byId(setup).roster.blockedBy).toBe('Your school admin sets up sections and class lists');
   });
 });
 
@@ -83,6 +98,7 @@ describe('a teacher part-way through', () => {
     expect(steps.activity.done).toBe(false);
     expect(steps.grade.done).toBe(false);
     expect(steps.activity.blockedBy).toBeNull();     // a class exists now
+    expect(steps.class.blockedBy).toBeNull();        // nothing left to wait on
   });
 
   it('counts real rosters in the plural correctly', () => {
@@ -115,8 +131,12 @@ describe('every step is renderable', () => {
     });
   }
 
-  it('gives exactly one step no route, because its form is a modal', () => {
-    const withoutRoute = buildSteps(NOTHING).filter((s) => !s.to);
+  it('gives the class step no route, because the teacher does not create one', () => {
+    // The classes are on the dashboard this checklist sits on, so the only link
+    // there could be is to the page already open. `roster` also has no route
+    // until a section exists — see the dead-end test above.
+    const provisioned = { sections: 2, students: 41, classes: 0, activities: 0, graded: 0, released: 0 };
+    const withoutRoute = buildSteps(provisioned).filter((s) => !s.to);
     expect(withoutRoute.map((s) => s.id)).toEqual(['class']);
   });
 });

@@ -15,11 +15,13 @@
 /**
  * Which school a class belongs to, or null if that cannot be established.
  *
- * The section is the primary signal. It is nullable — POST
- * /api/teacher/sections sets Section.schoolId from the creator's own schoolId,
- * which is null for a teacher not yet attached to a school — so the owning
- * teacher's school is the fallback. Only when neither exists is a class
- * genuinely un-attributable.
+ * The section is the primary signal. It is nullable, and rows created before
+ * sections carried a school still are — so the owning teacher's school is the
+ * fallback. Only when neither exists is a class genuinely un-attributable.
+ * (POST /api/admin/:adminId/sections always stamps the admin's own schoolId,
+ * so nothing created now can add to the null pile; the teacher route that
+ * could, because it took the creator's schoolId and a teacher may have none,
+ * is gone.)
  */
 function classSchoolId(cls) {
   return cls?.section?.schoolId ?? cls?.teacher?.schoolId ?? null;

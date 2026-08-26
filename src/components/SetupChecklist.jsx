@@ -27,7 +27,7 @@ import { buildSteps } from '../utils/setupSteps';
  * a static sample. Nothing it shows can be validated into a grade.
  */
 
-function StepRow({ step, index, isCurrent, onCreateClass, onSeeExample }) {
+function StepRow({ step, index, isCurrent, onSeeExample }) {
   const showAction = isCurrent && !step.done;
 
   return (
@@ -74,12 +74,14 @@ function StepRow({ step, index, isCurrent, onCreateClass, onSeeExample }) {
                 {step.cta} <ChevronRight className="w-3.5 h-3.5" />
               </Link>
             ) : (
-              <button
-                onClick={onCreateClass}
-                className="text-xs font-bold text-white bg-brand-navy px-4 py-2 rounded-lg hover:bg-blue-900 transition-colors flex items-center gap-1"
-              >
-                {step.cta} <ChevronRight className="w-3.5 h-3.5" />
-              </button>
+              /* Neither blocked nor routable. There used to be a third branch
+                 here — a button that opened the class form on the dashboard —
+                 and it is gone with the form: a teacher does not create a
+                 class. A step in this state is describing where the work
+                 happens, not offering to take you there. */
+              <span className="text-xs font-semibold text-slate-500 bg-slate-50 border border-slate-200 px-3 py-1.5 rounded-lg">
+                {step.cta}
+              </span>
             )}
 
             {step.id === 'grade' && (
@@ -97,7 +99,7 @@ function StepRow({ step, index, isCurrent, onCreateClass, onSeeExample }) {
   );
 }
 
-export default function SetupChecklist({ setup, onCreateClass, onSeeExample, onDismiss }) {
+export default function SetupChecklist({ setup, onSeeExample, onDismiss }) {
   const steps = buildSteps(setup);
   const doneCount = steps.filter((s) => s.done).length;
   // The first unfinished step is the one being asked for. Everything after it
@@ -141,7 +143,6 @@ export default function SetupChecklist({ setup, onCreateClass, onSeeExample, onD
             step={step}
             index={i}
             isCurrent={i === currentIndex}
-            onCreateClass={onCreateClass}
             onSeeExample={onSeeExample}
           />
         ))}

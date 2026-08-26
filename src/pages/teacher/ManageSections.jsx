@@ -1,306 +1,62 @@
-import { useState, useEffect, useRef } from 'react';
-import { Users, Plus, ChevronDown, X, Pencil, UserPlus, Loader2, Search, KeyRound } from 'lucide-react';
+import { useState, useEffect } from 'react';
+import { Users, ChevronDown, Search, Info } from 'lucide-react';
 import { API_URL, apiFetch } from '../../config';
 import { GRADE_LEVELS } from '../../constants/school';
-import StudentCredentials from '../../components/StudentCredentials';
-import SectionMoveConfirm from '../../components/SectionMoveConfirm';
-import RosterEditor from '../../components/RosterEditor';
-import {
-  rowsFromExtraction, isFilledRow, rosterPayload, emptyRoster, withBlankRow, normalizeRosterName,
-  matchesRosterQuery, foldForSearch, sortRosterByName,
-} from '../../utils/roster';
+import { matchesRosterQuery, foldForSearch, sortRosterByName } from '../../utils/roster';
 
-import { showAlert, showConfirm, showPrompt } from '../../utils/dialog';
+/**
+ * The block sections a teacher works in, as a reference list.
+ *
+ * This screen used to create sections and their student accounts, add learners
+ * to an existing roster, correct a misspelt name and reset a learner's
+ * password. All four are the school admin's now, and the routes behind them are
+ * gone — a section, its adviser and its roster are decisions made once for the
+ * whole school rather than separately by each teacher who needs them.
+ *
+ * What remains is the question this page was most used for anyway: which block
+ * is this child in, and who advises it. So the search, the grade-level
+ * segmentation and the rosters all stay, and the controls that wrote are gone
+ * rather than left on screen to fail. The banner names where the work moved to,
+ * because a teacher who came here to fix a spelling needs to be told who can.
+ */
 export default function ManageSections() {
   const [sections, setSections] = useState([]);
   const [searchQuery, setSearchQuery] = useState('');
-  const [name, setName] = useState('');
-  const [gradeLevel, setGradeLevel] = useState('');
-  const [studentRows, setStudentRows] = useState(emptyRoster);
-  const [isLoading, setIsLoading] = useState(false);
   const [expandedId, setExpandedId] = useState(null);
-  const [showForm, setShowForm] = useState(false);
-  const [isExtracting, setIsExtracting] = useState(false);
-  const fileInputRef = useRef(null);
-  const [editingSectionId, setEditingSectionId] = useState(null);
-  const [addStudentRows, setAddStudentRows] = useState(emptyRoster);
-  const [isAddingStudents, setIsAddingStudents] = useState(false);
-  const [isExtractingEdit, setIsExtractingEdit] = useState(false);
-  const editFileRef = useRef(null);
-  // Sign-in details for the accounts just created, and the plain summary line.
-  const [newAccounts, setNewAccounts] = useState([]);
-  const [notice, setNotice] = useState('');
-  // Set when the server refused to re-home names already enrolled elsewhere.
-  // Holds everything needed to replay the same request with allowMove.
-  const [moveRequest, setMoveRequest] = useState(null);
-  // The learner whose password was last reset, and what it now is. One at a
-  // time on purpose — this is read out loud to one child at a keyboard.
-  const [resetResult, setResetResult] = useState(null);
-  const [resettingId, setResettingId] = useState(null);
   // Past school years are collapsed by default; the server flags them rather
   // than withholding them, so this is purely a view toggle.
   const [showArchived, setShowArchived] = useState(false);
   const archivedCount = sections.filter(s => s.isArchived).length;
 
-  /**
-   * Fix a misspelt name. The student ID is their login and is left alone —
-   * see the route's comment.
-   */
-  const renameStudent = async (sectionId, student) => {
-    const name = await showPrompt(
-      `Their Student ID (${student.username}) will not change, so they sign in exactly as before.`,
-      { title: 'Correct the spelling', defaultValue: student.name, confirmLabel: 'Save name' }
-    );
-    if (name === null) return;                       // cancelled
-    // Match the roster editor — a typed surname comma is kept, since it is
-    // what first-name extraction (the student greeting) reads.
-    const trimmed = normalizeRosterName(name).trim();
-    if (!trimmed || trimmed === student.name) return;
-
-    try {
-      const res = await apiFetch(
-        `${API_URL}/api/teacher/sections/${sectionId}/students/${student.id}`,
-        {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name: trimmed }),
-        }
-      );
-      const data = await res.json();
-      if (data.success) fetchSections();
-      else showAlert('Could not rename: ' + (data.error || 'unknown error'));
-    } catch {
-      showAlert('Cannot reach the server. Check your connection and try again.');
-    }
-  };
-
-  /**
-   * Give one learner a new password, in front of them.
-   *
-   * Confirmed first because it ends their current session: a learner who is
-   * signed in on another machine is signed out by this, which is the right
-   * behaviour for a forgotten password and a surprise for anything else.
-   */
-  const resetStudentPassword = async (sectionId, student) => {
-    const goAhead = await showConfirm(
-      'They will be signed out everywhere, and you will need to read the new password to them.',
-      { title: `Give ${student.name} a new password?`, confirmLabel: 'Give a new password', danger: true }
-    );
-    if (!goAhead) return;
-
-    setResettingId(student.id);
-    setResetResult(null);
-    try {
-      const res = await apiFetch(
-        `${API_URL}/api/teacher/sections/${sectionId}/students/${student.id}/password`,
-        { method: 'PUT' }
-      );
-      const data = await res.json();
-      if (data.success) {
-        setResetResult({ id: student.id, password: data.password, source: data.passwordSource });
-      } else {
-        showAlert('Could not reset the password: ' + (data.error || 'unknown error'));
-      }
-    } catch {
-      showAlert('Cannot reach the server. Check your connection and try again.');
-    } finally {
-      setResettingId(null);
-    }
-  };
-
-  const fetchSections = async () => {
-    try {
-      const user = JSON.parse(localStorage.getItem('user'));
-      if (!user) return;
-      const res = await apiFetch(`${API_URL}/api/teacher/${user.id}/sections`);
-      const data = await res.json();
-      if (data.success) setSections(data.sections);
-    } catch (e) { console.error(e); }
-  };
-
-  // Declared after fetchSections on purpose. It used to sit near the top of the
-  // component and call a `const` defined 60 lines below it — which happens to
-  // work only because effects run after render, and is a temporal-dead-zone
-  // error the moment anything calls it earlier.
-  useEffect(() => { fetchSections(); }, []);
-
-  /** Rows to send, or null once the teacher has been asked to fix a date. */
-  const payloadFrom = (rows) => rosterPayload(rows, showAlert);
-
-  /**
-   * The one call both "create a section" and "add students" make.
-   *
-   * `allowMove` is off on the first attempt, so the server reports names that
-   * already belong to another section instead of quietly re-homing them. When
-   * the teacher confirms, the identical request is replayed with it on.
-   */
-  const submitRoster = async ({ sectionName, grade, studentsList, allowMove, onDone }) => {
-    const user = JSON.parse(localStorage.getItem('user'));
-    const res = await apiFetch(`${API_URL}/api/teacher/sections`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: sectionName, gradeLevel: grade, teacherId: user.id, studentsList, allowMove })
-    });
-    const data = await res.json();
-    if (!data.success) { showAlert('Error: ' + data.error); return null; }
-
-    fetchSections();
-    // Appended, not replaced: the confirm-and-replay path runs this twice, and
-    // the second pass reports only the moves — replacing would throw away the
-    // passwords the first pass generated, which are unrecoverable.
-    setNewAccounts(prev => [...prev, ...(data.createdStudents || [])]);
-
-    const lines = [data.message].filter(Boolean);
-    if (data.skippedStudents?.length) {
-      lines.push(`Already in this section, so left alone: ${data.skippedStudents.map(s => s.name).join(', ')}.`);
-    }
-    if (data.linkedStudents?.length) {
-      lines.push(`Moved into this section: ${data.linkedStudents.map(s => `${s.name} (${s.username})`).join(', ')}.`);
-    }
-    setNotice(lines.join(' '));
-
-    if (data.pendingMoves?.length) {
-      // Nothing was written for these — hold the request so it can be replayed.
-      setMoveRequest({ sectionName, grade, studentsList, moves: data.pendingMoves, onDone });
-    } else {
-      onDone?.();
-    }
-    return data;
-  };
-
-  const handleCreate = async (e) => {
-    e.preventDefault();
-    // The input is marked `required`, which HTML5 satisfies with a single
-    // space — so a name of nothing but whitespace reached the server, trimmed
-    // to '' and created a section with no name at all. The server refuses that
-    // now; this only saves the round trip and keeps the typed roster in place.
-    const sectionName = name.trim();
-    if (!sectionName) return showAlert('Please give this section a name — for example "Grade 6 - Sampaguita".');
-    const studentsList = payloadFrom(studentRows);
-    if (!studentsList) return;
-    if (!studentsList.length) return showAlert('Please add at least one learner.');
-    setIsLoading(true);
-    setNewAccounts([]);
-    try {
-      await submitRoster({
-        sectionName, grade: gradeLevel, studentsList, allowMove: false,
-        onDone: () => { setName(''); setGradeLevel(''); setStudentRows(emptyRoster()); setShowForm(false); }
-      });
-    } catch { showAlert('Network error.'); }
-    finally { setIsLoading(false); }
-  };
-
-  /** The teacher confirmed the move — replay the same roster with allowMove. */
-  const confirmMoves = async () => {
-    const req = moveRequest;
-    if (!req) return;
-    setIsLoading(true);
-    try {
-      // submitRoster runs onDone itself once nothing is left pending.
-      await submitRoster({ ...req, allowMove: true });
-      setMoveRequest(null);
-    } catch { showAlert('Network error.'); }
-    finally { setIsLoading(false); }
-  };
-
-  const handleFileUpload = async (e) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    
-    setIsExtracting(true);
-    const formData = new FormData();
-    formData.append('file', file);
-    
-    try {
-      const res = await apiFetch(`${API_URL}/api/teacher/extract-students`, {
-        method: 'POST',
-        body: formData
-      });
-      const data = await res.json();
-      const extracted = data.success ? rowsFromExtraction(data) : [];
-      if (extracted.length) {
-        // Appended to whatever is already typed, so an upload adds to the class
-        // list rather than replacing work the teacher has already done.
-        setStudentRows(prev => withBlankRow([...prev.filter(isFilledRow), ...extracted]));
-      } else {
-        showAlert("Extraction failed: " + (data.error || 'No learners were found in that file.'));
-      }
-    } catch {
-      showAlert("Network error during extraction.");
-    } finally {
-      setIsExtracting(false);
-      if (fileInputRef.current) fileInputRef.current.value = '';
-    }
-  };
+  useEffect(() => {
+    const user = JSON.parse(localStorage.getItem('user') || 'null');
+    if (!user?.id) return;
+    apiFetch(`${API_URL}/api/teacher/${user.id}/sections`)
+      .then(r => r.json())
+      .then(d => { if (d.success) setSections(d.sections); })
+      .catch(() => {}); /* a failed read leaves the empty state, which is what renders */
+  }, []);
 
   const toggleSection = (id) => setExpandedId(prev => prev === id ? null : id);
 
-  const handleAddStudents = async (section) => {
-    const studentsList = payloadFrom(addStudentRows);
-    if (!studentsList) return;
-    if (!studentsList.length) return showAlert('Please enter at least one student name.');
-    setIsAddingStudents(true);
-    setNewAccounts([]);
-    try {
-      await submitRoster({
-        sectionName: section.name, grade: section.gradeLevel, studentsList, allowMove: false,
-        onDone: () => { setAddStudentRows(emptyRoster()); setEditingSectionId(null); }
-      });
-    } catch { showAlert('Network error.'); }
-    finally { setIsAddingStudents(false); }
-  };
-
-  const handleEditFileUpload = async (e) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    setIsExtractingEdit(true);
-    const formData = new FormData();
-    formData.append('file', file);
-    try {
-      const res = await apiFetch(`${API_URL}/api/teacher/extract-students`, { method: 'POST', body: formData });
-      const data = await res.json();
-      const extracted = data.success ? rowsFromExtraction(data) : [];
-      if (extracted.length) {
-        setAddStudentRows(prev => withBlankRow([...prev.filter(isFilledRow), ...extracted]));
-      } else { showAlert('Extraction failed: ' + (data.error || 'No learners were found in that file.')); }
-    } catch { showAlert('Network error during extraction.'); }
-    finally {
-      setIsExtractingEdit(false);
-      if (editFileRef.current) editFileRef.current.value = '';
-    }
-  };
-
   return (
     <div className="p-4 md:p-8 max-w-5xl mx-auto">
-      <div className="flex items-center justify-between mb-6">
-        <div>
-          <h1 className="text-2xl font-bold text-brand-slate">Block Sections</h1>
-          <p className="text-slate-500 text-sm">Shared school-wide sections and student accounts</p>
-        </div>
-        <button onClick={() => setShowForm(!showForm)}
-          className={`flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium transition-all shadow-sm ${showForm ? 'bg-slate-100 text-slate-600 hover:bg-slate-200' : 'bg-brand-navy text-white hover:bg-blue-900'}`}>
-          {showForm ? <><X className="w-4 h-4" /> Close</> : <><Plus className="w-4 h-4" /> Create Section</>}
-        </button>
+      <div className="mb-6">
+        <h1 className="text-2xl font-bold text-brand-slate">Block Sections</h1>
+        <p className="text-slate-500 text-sm">The sections and class lists your school has set up</p>
       </div>
 
-      {notice && (
-        <div className="bg-blue-50 border border-blue-200 text-blue-800 text-sm rounded-xl p-3 mb-4 flex items-start justify-between gap-3">
-          <span>{notice}</span>
-          <button onClick={() => setNotice('')} aria-label="Dismiss" className="text-blue-400 hover:text-blue-600 shrink-0">
-            <X className="w-4 h-4" />
-          </button>
+      <div className="bg-blue-50 border border-blue-200 text-blue-800 text-sm rounded-xl p-4 mb-6 flex items-start gap-3">
+        <Info className="w-4 h-4 shrink-0 mt-0.5" />
+        <div>
+          <p className="font-semibold">Your school admin manages these</p>
+          <p className="mt-0.5 leading-relaxed">
+            Sections, class lists and student sign-in details are set up in the admin console —
+            including adding a learner, correcting a misspelt name and resetting a forgotten
+            password. Ask your school admin if something here needs changing.
+          </p>
         </div>
-      )}
-
-      <StudentCredentials students={newAccounts} onClose={() => setNewAccounts([])} />
-
-      <SectionMoveConfirm
-        moves={moveRequest?.moves}
-        targetSection={moveRequest?.sectionName}
-        busy={isLoading || isAddingStudents}
-        onConfirm={confirmMoves}
-        onCancel={() => { setMoveRequest(null); moveRequest?.onDone?.(); }}
-      />
+      </div>
 
       <div className="mb-6 flex flex-col sm:flex-row gap-3">
         <div className="relative flex-1">
@@ -330,73 +86,6 @@ export default function ManageSections() {
         )}
       </div>
 
-      {/* Collapsible Create Form */}
-      {showForm && (
-        <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm mb-8 animate-in slide-in-from-top">
-          <h2 className="text-lg font-bold text-brand-slate mb-4 flex items-center">
-            <Plus className="w-5 h-5 mr-2 text-brand-navy" /> New Section
-          </h2>
-          {/* Two columns, separated and numbered: naming the section and
-              listing forty learners are different jobs, and running them
-              together down one page made the roster box look like one more
-              field on the same form. Stacks on a narrow screen, where a
-              divider would be meaningless. */}
-          <form onSubmit={handleCreate} className="space-y-5">
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-
-              {/* ── Column 1: the section itself ── */}
-              <div className="space-y-4 lg:border-r lg:border-slate-200 lg:pr-6">
-                <p className="text-xs font-extrabold uppercase tracking-wider text-brand-navy">
-                  Step 1 · About the section
-                </p>
-                <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-1">Section Name</label>
-                  <input type="text" required value={name} onChange={(e) => setName(e.target.value)}
-                    className="w-full px-4 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-brand-navy outline-none"
-                    placeholder="e.g. Rizal" />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-1">Grade Level *</label>
-                  <select required value={gradeLevel} onChange={(e) => setGradeLevel(e.target.value)}
-                    className="w-full px-4 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-brand-navy outline-none">
-                    <option value="">-- Select --</option>
-                    {GRADE_LEVELS.map(g => <option key={g} value={g}>{g}</option>)}
-                  </select>
-                </div>
-                <p className="text-xs text-slate-400">
-                  Sections are shared with everyone at your school and grouped by grade level. If this
-                  section already exists, students will be added to it.
-                </p>
-              </div>
-
-              {/* ── Column 2: who is in it ── */}
-              <div className="space-y-2">
-                <p className="text-xs font-extrabold uppercase tracking-wider text-brand-navy">
-                  Step 2 · Who is in it
-                </p>
-                <RosterEditor
-                  rows={studentRows}
-                  onChange={setStudentRows}
-                  onPickFile={() => fileInputRef.current?.click()}
-                  isExtracting={isExtracting}
-                  fileRef={fileInputRef}
-                  onFileChange={handleFileUpload}
-                />
-              </div>
-            </div>
-
-            <div className="flex gap-3">
-              <button type="button" onClick={() => setShowForm(false)}
-                className="flex-1 py-2.5 border border-slate-200 text-slate-600 rounded-lg font-medium hover:bg-slate-50">Cancel</button>
-              <button type="submit" disabled={isLoading}
-                className="flex-1 py-2.5 bg-brand-navy text-white rounded-lg font-medium hover:bg-blue-900 transition-colors disabled:opacity-50">
-                {isLoading ? 'Creating...' : 'Create Section & Accounts'}
-              </button>
-            </div>
-          </form>
-        </div>
-      )}
-
       {/* Sections List */}
       <div className="space-y-3">
         {(() => {
@@ -408,8 +97,7 @@ export default function ManageSections() {
           // sides of the app agree on what a query means: accents dropped
           // ("pena" finds "Peña"), punctuation reduced to spaces, and each
           // term matched independently so word order is not a rule the
-          // teacher has to guess at. This used to be a raw
-          // `name.toLowerCase().includes(q)`, which missed both.
+          // teacher has to guess at.
           const q = foldForSearch(searchQuery);
           const sectionNameMatches = (s) => foldForSearch(s.name).includes(q);
           const filteredSections = sections
@@ -434,7 +122,9 @@ export default function ManageSections() {
               <div className="text-center p-12 border-2 border-dashed border-slate-200 rounded-2xl text-slate-500">
                 <Users className="w-10 h-10 mx-auto mb-3 text-slate-300" />
                 <p className="font-medium">No sections yet</p>
-                <p className="text-sm mt-1">Click "Create Section" above to get started.</p>
+                <p className="text-sm mt-1">
+                  They appear here as soon as your school admin creates them.
+                </p>
               </div>
             );
           }
@@ -470,31 +160,17 @@ export default function ManageSections() {
           {byGrade[grade].map(section => {
             const isOpen = expandedId === section.id || studentMatchedIds.includes(section.id);
             const studentCount = section._count?.students || section.students?.length || 0;
-            // ── Whose roster this is ──
-            // Every section in the school is listed, because colleagues teach
-            // the same blocks and need to see them. Changing one is the
-            // adviser's alone, and the server has always said so — adding a
-            // learner, correcting a spelling and resetting a password all come
-            // back 403 for anybody else. The controls were rendered anyway, so
-            // the only way to discover that was to fill the form in and press
-            // the button. Compared against false so a payload without the
-            // field still behaves as it did.
-            const canEdit = section.isOwn !== false;
             return (
               <div key={section.id} className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
-                <div className="w-full p-4 flex justify-between items-center hover:bg-slate-50 transition-colors">
-                  <button onClick={() => toggleSection(section.id)} className="flex items-center gap-3 flex-1 text-left">
-                    <div className="w-10 h-10 rounded-full bg-blue-50 text-brand-navy flex items-center justify-center font-bold text-sm">
+                <button onClick={() => toggleSection(section.id)}
+                  className="w-full p-4 flex justify-between items-center hover:bg-slate-50 transition-colors text-left">
+                  <div className="flex items-center gap-3 flex-1 min-w-0">
+                    <div className="w-10 h-10 rounded-full bg-blue-50 text-brand-navy flex items-center justify-center font-bold text-sm shrink-0">
                       {studentCount}
                     </div>
-                    <div>
-                      <h3 className="font-bold text-brand-slate flex items-center gap-2">
+                    <div className="min-w-0">
+                      <h3 className="font-bold text-brand-slate flex items-center gap-2 flex-wrap">
                         {section.name}
-                        {section.isOwn === false && (
-                          <span className="text-[10px] font-bold text-slate-500 bg-slate-100 px-2 py-0.5 rounded-full">
-                            {section.teacher?.name || 'Colleague'}
-                          </span>
-                        )}
                         {/* Named, not just dimmed: a teacher looking at two
                             same-named blocks needs to know which year each is. */}
                         {section.isArchived && (
@@ -503,50 +179,23 @@ export default function ManageSections() {
                           </span>
                         )}
                       </h3>
-                      <p className="text-xs text-slate-500">{studentCount} student{studentCount !== 1 ? 's' : ''}</p>
+                      <p className="text-xs text-slate-500">
+                        {studentCount} student{studentCount !== 1 ? 's' : ''}
+                        {/* Every section in the school is listed, because
+                            colleagues teach the same blocks. The adviser is
+                            named on all of them now rather than only on
+                            somebody else's: with nothing on this page editable,
+                            "whose roster is this" stopped being about
+                            permission and became the useful fact — they are who
+                            a teacher takes a correction to. */}
+                        {section.teacher?.name && <> · Adviser: {section.teacher.name}</>}
+                      </p>
                     </div>
-                  </button>
-                  <div className="flex items-center gap-2">
-                    {canEdit && (
-                      <button onClick={(e) => { e.stopPropagation(); setEditingSectionId(prev => prev === section.id ? null : section.id); setAddStudentRows(emptyRoster()); if (expandedId !== section.id) setExpandedId(section.id); }}
-                        className={`p-2 rounded-lg transition-colors ${editingSectionId === section.id ? 'bg-brand-navy text-white' : 'text-slate-400 hover:text-brand-navy hover:bg-blue-50'}`}
-                        title="Add students to this section">
-                        <Pencil className="w-4 h-4" />
-                      </button>
-                    )}
-                    <button onClick={() => toggleSection(section.id)}>
-                      <ChevronDown className={`w-5 h-5 text-slate-400 transition-transform duration-200 ${isOpen ? 'rotate-180' : ''}`} />
-                    </button>
                   </div>
-                </div>
+                  <ChevronDown className={`w-5 h-5 text-slate-400 transition-transform duration-200 shrink-0 ${isOpen ? 'rotate-180' : ''}`} />
+                </button>
                 {isOpen && section.students && (
                   <div className="border-t border-slate-100 px-4 pb-4 pt-2">
-                    {/* Add Students Form */}
-                    {editingSectionId === section.id && (
-                      <div className="mb-4 p-4 bg-blue-50/50 border border-blue-200 rounded-xl">
-                        <h4 className="text-sm font-bold text-brand-navy mb-3 flex items-center gap-2">
-                          <UserPlus className="w-4 h-4" /> Add Students to {section.name}
-                        </h4>
-                        <div className="space-y-3">
-                          <RosterEditor
-                            rows={addStudentRows}
-                            onChange={setAddStudentRows}
-                            onPickFile={() => editFileRef.current?.click()}
-                            isExtracting={isExtractingEdit}
-                            fileRef={editFileRef}
-                            onFileChange={handleEditFileUpload}
-                          />
-                          <div className="flex gap-2">
-                            <button onClick={() => { setEditingSectionId(null); setAddStudentRows(emptyRoster()); }}
-                              className="flex-1 py-2 border border-slate-200 text-slate-600 rounded-lg text-sm font-medium hover:bg-white">Cancel</button>
-                            <button onClick={() => handleAddStudents(section)} disabled={isAddingStudents || !addStudentRows.some(isFilledRow)}
-                              className="flex-1 py-2 bg-brand-navy text-white rounded-lg text-sm font-medium hover:bg-blue-900 transition-colors disabled:opacity-50 flex items-center justify-center gap-2">
-                              {isAddingStudents ? <><Loader2 className="w-4 h-4 animate-spin" /> Adding...</> : <><UserPlus className="w-4 h-4" /> Add Students</>}
-                            </button>
-                          </div>
-                        </div>
-                      </div>
-                    )}
                     {section.students.length === 0 ? (
                       <p className="text-sm text-slate-400 py-2">No students in this section.</p>
                     ) : (
@@ -573,39 +222,7 @@ export default function ManageSections() {
                                   matched. */}
                               <p className="text-sm font-medium text-brand-slate truncate">{q && matchesRosterQuery(s, searchQuery) ? <span className="bg-yellow-200 rounded px-0.5">{s.name}</span> : s.name}</p>
                               <p className="text-[11px] text-slate-400 font-mono">ID: {s.username}</p>
-                              {/* Shown inline and left on screen until the next
-                                  reset: the teacher has to read it out to the
-                                  learner, and a toast that fades is exactly the
-                                  mistake the old window.alert made. */}
-                              {resetResult?.id === s.id && (
-                                <p className="mt-1 text-[11px] font-bold text-green-700 bg-green-50 border border-green-200 rounded px-2 py-1 inline-block">
-                                  New password: <span className="font-mono select-all">{resetResult.password}</span>
-                                  {resetResult.source === 'birthday' ? ' (their birthday)' : ' — write this down, it is random'}
-                                </p>
-                              )}
                             </div>
-                            {canEdit && (
-                              <>
-                                <button
-                                  type="button"
-                                  onClick={() => renameStudent(section.id, s)}
-                                  className="shrink-0 text-[11px] font-bold text-brand-navy border border-slate-200 bg-white px-2.5 py-1.5 rounded-lg hover:bg-slate-50 flex items-center gap-1"
-                                  title={`Correct ${s.name}'s spelling`}
-                                >
-                                  <Pencil className="w-3 h-3" /> Rename
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => resetStudentPassword(section.id, s)}
-                                  disabled={resettingId === s.id}
-                                  className="shrink-0 text-[11px] font-bold text-brand-navy border border-slate-200 bg-white px-2.5 py-1.5 rounded-lg hover:bg-slate-50 disabled:opacity-50 flex items-center gap-1"
-                                  title={`Reset ${s.name}'s password`}
-                                >
-                                  <KeyRound className="w-3 h-3" />
-                                  {resettingId === s.id ? 'Resetting…' : 'Reset password'}
-                                </button>
-                              </>
-                            )}
                           </div>
                         ))}
                       </div>

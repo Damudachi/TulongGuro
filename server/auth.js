@@ -353,8 +353,15 @@ const TEACHER_ROUTE_SEGMENTS = new Set([
   // so there is nothing here for an ownership check to compare against. The
   // rename shipped without adding 'assistant' here, which made every chat
   // message 403 with "You can only access your own classes."
+  // 'sections', 'quick-setup' and 'extract-students' were here while teachers
+  // built their own rosters and course shells. Creating a section or a class,
+  // enrolling a learner, renaming one and resetting their password are all the
+  // admin's now, and the teacher routes behind those three literals are gone —
+  // so the literals go too, rather than sitting here keeping a door open onto
+  // nothing. /api/teacher/:teacherId/sections is unaffected: seg[2] there is
+  // the caller's own id, which is the case this set exists to except.
   'classes', 'activities', 'rubric-templates', 'rubric', 'upload', 'assistant', 'refine',
-  'sections', 'quick-setup', 'submissions', 'extract-students', 'demo-data', 'student',
+  'submissions', 'demo-data', 'student',
   // Batch AI checking: 'ai-jobs' addresses a job id and 'ai-capacity' takes no
   // id at all, so neither is a teacher id. Ownership of the underlying activity
   // and job is checked in the handlers.

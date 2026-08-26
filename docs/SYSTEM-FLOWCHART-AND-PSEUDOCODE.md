@@ -13,8 +13,8 @@ flowchart TD
     V -- No --> X[Display error or<br/>pending-approval notice]
     X --> E1([END])
     V -- Yes --> R{User role?}
-    R -- Admin --> AD[[Manage teachers, sections,<br/>curriculum, rubrics and<br/>grading policy]]
-    R -- Teacher --> TE[[Create class and section,<br/>upload roster, build activity<br/>with rubric and deadline]]
+    R -- Admin --> AD[[Manage teachers, sections and rosters,<br/>assign course shells, curriculum,<br/>rubrics and grading policy]]
+    R -- Teacher --> TE[[Open an assigned class,<br/>build activity with rubric<br/>and deadline]]
     R -- Student --> SO{Activity<br/>still open?}
     SO -- No --> SC[Display:<br/>activity closed]
     SC --> E1
@@ -50,9 +50,11 @@ double-sided rectangle = predefined process):
              /               |                    \
           Admin           Teacher               Student
             |                |                     |
-   [[Manage teachers,  [[Create class,      < Activity still open? > --No--> [Closed] --> (END)
-     curriculum,         roster, activity          |Yes
-     rubrics, policy]]   + rubric]]         [/ Capture photo and submit (PENDING) /]
+   [[Manage teachers,  [[Open assigned      < Activity still open? > --No--> [Closed] --> (END)
+     sections, rosters,   class, build            |Yes
+     course shells,       activity + rubric]] [/ Capture photo and submit (PENDING) /]
+     curriculum,
+     rubrics, policy]]
             \                |                     /
              \               |                    /
               +----------> ((DATABASE)) <--------+

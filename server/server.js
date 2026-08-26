@@ -617,8 +617,8 @@ const isImageMime = (m) => (m || '').startsWith('image/');
  * What the generic `upload` instance below may accept: everything
  * SUBMISSION_MIME_TYPES allows (school logos, curriculum files, activity
  * reference material, rubric uploads all move through images/PDF/.docx),
- * plus the two spreadsheet types /api/teacher/extract-students reads via
- * exceljs.
+ * plus the two spreadsheet types /api/admin/:adminId/extract-students reads
+ * via exceljs.
  *
  * Unlike submissionUpload, this instance previously had no fileFilter at
  * all — any file up to MAX_UPLOAD_BYTES, any content-type, was accepted and
@@ -2321,8 +2321,10 @@ async function runDailyQuotaSelfCheck() {
 // AUTH
 // ─────────────────────────────────────────
 // Public sign-up now registers a SCHOOL and its first ADMIN. Teacher accounts
-// are created by that admin (see /api/admin/:adminId/teachers) and student
-// accounts by teachers (see /api/teacher/sections) — neither can self-register.
+// are created by that admin (see /api/admin/:adminId/teachers) and so are
+// student accounts, through the section roster (see
+// /api/admin/:adminId/sections and its /students sibling) — neither can
+// self-register.
 // Accepts JSON, or multipart/form-data when the admin attaches a school logo or
 // a proof-of-existence document.
 //
@@ -4811,7 +4813,7 @@ app.get('/api/admin/:adminId/teachers/:teacherId', async (req, res) => {
     const admin = await requireAdminSchool(req.params.adminId);
     const teacher = await teacherInSchool(admin, req.params.teacherId);
 
-    const [classes, sections, teachers] = await Promise.all([
+    const [classes, sections, teachers, schoolSections, curriculums] = await Promise.all([
       prisma.class.findMany({
         where: { teacherId: teacher.id },
         include: {
@@ -4841,6 +4843,27 @@ app.get('/api/admin/:adminId/teachers/:teacherId', async (req, res) => {
         where: { schoolId: admin.schoolId, role: 'TEACHER' },
         select: { id: true, name: true, email: true },
         orderBy: { name: 'asc' }
+      }),
+      // Every section in the school, for the "new course shell" picker —
+      // deliberately not the teacher's own list above. Teaching a subject into
+      // a block somebody else advises is the ordinary shape of a subject
+      // teacher's week, and offering only the sections they advise would make
+      // most real timetables impossible to enter.
+      prisma.section.findMany({
+        where: { OR: [{ schoolId: admin.schoolId }, { schoolId: null, teacher: { schoolId: admin.schoolId } }] },
+        select: {
+          id: true, name: true, gradeLevel: true, schoolYear: true,
+          teacher: { select: { id: true, name: true } },
+          _count: { select: { students: true } },
+        },
+        orderBy: [{ gradeLevel: 'asc' }, { name: 'asc' }]
+      }),
+      // Offered on the same form: a shell created without its school's
+      // published lessons grades against a one-line description instead.
+      prisma.curriculum.findMany({
+        where: { schoolId: admin.schoolId },
+        select: { id: true, title: true, subject: true, gradeLevel: true, _count: { select: { lessons: true } } },
+        orderBy: [{ gradeLevel: 'asc' }, { subject: 'asc' }]
       })
     ]);
 
@@ -4858,7 +4881,9 @@ app.get('/api/admin/:adminId/teachers/:teacherId', async (req, res) => {
         // Drives the "can this be deleted?" guard in the UI.
         submissionCount: c.activities.reduce((n, a) => n + a._count.submissions, 0)
       })),
-      sections
+      sections,
+      schoolSections,
+      curriculums
     });
   } catch (e) { sendAdminError(res, e); }
 });
@@ -4890,6 +4915,105 @@ app.put('/api/admin/:adminId/teachers/:teacherId', async (req, res) => {
     const updated = await prisma.user.update({ where: { id: teacher.id }, data });
     const { password: _pw, ...safeTeacher } = updated;
     res.json({ success: true, teacher: safeTeacher });
+  } catch (e) { sendAdminError(res, e); }
+});
+
+/**
+ * Create a course shell and hand it to a named teacher.
+ *
+ * This replaces POST /api/teacher/classes. A teacher no longer opens a shell
+ * for themselves: the school decides who teaches which subject to which block,
+ * and that decision is an admin one made against the whole timetable rather
+ * than one teacher's view of it. Nothing about the shell itself changed — the
+ * teacher opens it from their dashboard the moment it exists, because
+ * GET /api/teacher/:teacherId/classes has always read Class.teacherId.
+ *
+ * `teacherId` is required and is the whole point: a shell with no teacher is
+ * not a course, and inferring one from the section's adviser would quietly
+ * make every subject teacher the homeroom adviser.
+ */
+app.post('/api/admin/:adminId/classes', async (req, res) => {
+  try {
+    const admin = await requireAdminSchool(req.params.adminId);
+    const { name, gradeLevel, subject, schoolYear, sectionId, teacherId, curriculumId } = req.body;
+
+    if (!teacherId) return res.status(400).json({ success: false, error: 'Choose the teacher who will teach this class.' });
+    if (!sectionId) return res.status(400).json({ success: false, error: 'Choose the block section this class is taught to.' });
+
+    // Both sides of the assignment have to be inside this admin's school, and
+    // both are proved by helpers that already throw the right status — the
+    // same ones the reassign and roster routes below use.
+    const teacher = await teacherInSchool(admin, teacherId);
+    const section = await sectionInSchool(admin, sectionId);
+
+    const trimmedName = typeof name === 'string' ? name.trim() : '';
+    const resolvedName = trimmedName || [subject, gradeLevel].filter(Boolean).join(' — ');
+    if (!resolvedName) {
+      return res.status(400).json({ success: false, error: 'Give this class a name, or choose a subject and grade level to build one from.' });
+    }
+    const targetYear = typeof schoolYear === 'string' && schoolYear.trim() ? schoolYear.trim() : currentSchoolYear();
+
+    // The same shell twice for one teacher is never intended — it splits their
+    // gradebook for that section in half. Guarded on the same tuple the
+    // reassign route refuses on, so the two agree about what "the same shell"
+    // means.
+    const duplicate = await prisma.class.findFirst({
+      where: {
+        teacherId: teacher.id, sectionId: section.id, schoolYear: targetYear,
+        subject: subject || null, gradeLevel: gradeLevel || null,
+      },
+    });
+    if (duplicate) {
+      return res.status(400).json({
+        success: false,
+        error: `${teacher.name} already has "${duplicate.name}" for ${section.name} in ${targetYear}.`,
+      });
+    }
+
+    const newClass = await prisma.class.create({
+      data: {
+        name: resolvedName,
+        gradeLevel: gradeLevel || null,
+        subject: subject || null,
+        schoolYear: targetYear,
+        teacherId: teacher.id,
+        sectionId: section.id,
+      },
+    });
+
+    // Apply the school curriculum, if one was chosen: copy its lesson templates
+    // into the shell so the teacher's activities can be mapped to them. Same
+    // copy the teacher's own create path did, competencies and rubric link
+    // included — a lesson that arrives without those grades against a one-line
+    // description instead of what the school actually published.
+    let appliedLessons = 0;
+    if (curriculumId) {
+      const curriculum = await prisma.curriculum.findUnique({
+        where: { id: curriculumId },
+        include: { lessons: true },
+      });
+      if (curriculum && curriculum.schoolId === admin.schoolId && curriculum.lessons.length) {
+        await prisma.classLesson.createMany({
+          data: curriculum.lessons.map(l => ({
+            classId: newClass.id,
+            title: l.title,
+            description: l.description,
+            outputType: l.outputType,
+            weekNumber: l.weekNumber,
+            competencies: l.competencies,
+            defaultRubric: l.defaultRubric,
+            rubricTemplateId: l.rubricTemplateId,
+          })),
+        });
+        appliedLessons = curriculum.lessons.length;
+      }
+    }
+
+    res.json({
+      success: true,
+      class: { ...newClass, teacher: { id: teacher.id, name: teacher.name }, section: { id: section.id, name: section.name } },
+      appliedLessons,
+    });
   } catch (e) { sendAdminError(res, e); }
 });
 
@@ -5030,6 +5154,119 @@ async function sectionInSchool(admin, sectionId) {
   return section;
 }
 
+/**
+ * Create a block section, with its adviser and optionally its first roster.
+ *
+ * This replaces POST /api/teacher/sections, and it is deliberately a stricter
+ * route than the one it replaces. That one resolved a section by
+ * (name, school, school year) and *reused* whatever it found, because a teacher
+ * typing "Grade 6 - Sampaguita" to add their class list meant the existing
+ * roster rather than a second one. Every hazard that path carried — §8.1's two
+ * indistinguishable rows, a previous adviser enrolling learners into a section
+ * an admin had handed to somebody else — came from create and enrol being the
+ * same request.
+ *
+ * Here they are separate. Creating is creating: a name already taken inside the
+ * school year is refused rather than silently reopened, and adding learners to
+ * an existing section is POST .../sections/:sectionId/students, which is a
+ * different URL naming the roster by id.
+ *
+ * The adviser is required. A section with none is a roster nobody is
+ * responsible for, and the adviser is read all over the app — the teacher's
+ * section list, the setup checklist, teacher handover — so leaving it to be
+ * filled in later means those all read wrong until somebody notices.
+ */
+app.post('/api/admin/:adminId/sections', async (req, res) => {
+  try {
+    const admin = await requireAdminSchool(req.params.adminId);
+    const { name, gradeLevel, schoolYear, teacherId, studentsList, allowMove } = req.body;
+
+    const sectionName = typeof name === 'string' ? name.trim() : '';
+    if (!sectionName) {
+      return res.status(400).json({
+        success: false,
+        error: 'Please give this section a name — for example "Grade 6 - Sampaguita".',
+      });
+    }
+    if (!teacherId) {
+      return res.status(400).json({ success: false, error: 'Choose the teacher who will advise this section.' });
+    }
+    const adviser = await teacherInSchool(admin, teacherId);
+
+    // Checked before the section is created, not after: a roster refused
+    // halfway would otherwise leave an empty section behind that nobody asked
+    // for and now has to notice and delete.
+    const birthdayProblem = rosterBirthdayProblem(studentsList);
+    if (birthdayProblem) return res.status(422).json({ success: false, error: birthdayProblem });
+
+    const targetYear = typeof schoolYear === 'string' && schoolYear.trim() ? schoolYear.trim() : currentSchoolYear();
+
+    // Same clash rule the rename route enforces, and for the same reason:
+    // enrolment resolves a section by name within a year in more than one
+    // place, so two rows sharing a name inside one year make it a coin toss
+    // which roster a learner lands on. A row predating the schoolYear column
+    // still counts as a clash — that is exactly the ambiguity being closed.
+    const clash = await prisma.section.findFirst({
+      where: {
+        name: sectionName,
+        OR: [{ schoolId: admin.schoolId }, { schoolId: null, teacher: { schoolId: admin.schoolId } }],
+        AND: [{ OR: [{ schoolYear: targetYear }, { schoolYear: null }] }],
+      },
+      include: { teacher: { select: { name: true } } },
+    });
+    if (clash) {
+      return res.status(400).json({
+        success: false,
+        error: `"${sectionName}" already exists${clash.schoolYear ? ` in ${clash.schoolYear}` : ''}`
+          + `${clash.teacher?.name ? `, advised by ${clash.teacher.name}` : ''}. `
+          + 'Open that section to add learners to it, or choose a different name.',
+      });
+    }
+
+    const section = await prisma.section.create({
+      data: {
+        name: sectionName,
+        teacherId: adviser.id,
+        schoolId: admin.schoolId,
+        gradeLevel: gradeLevel || null,
+        // Stamped at creation rather than inferred later: schools reuse block
+        // names every year, and a section with no year is reused across them.
+        schoolYear: targetYear,
+      },
+    });
+
+    // Optional. Creating the section and typing forty names are separate jobs
+    // and the form allows either, so an empty roster here is a normal outcome
+    // rather than a caller mistake.
+    //
+    // `pendingMoves` here reports names that already sit on another roster and
+    // were left alone, exactly as the roster route does — but the replay that
+    // confirms them must go to POST .../sections/:sectionId/students, not back
+    // through here. The section exists now, so a second call to this route is
+    // the clash refusal above, not a retry. The returned section carries the id
+    // that replay needs.
+    const result = await enrolStudents(section, studentsList, {
+      schoolId: admin.schoolId,
+      teacherId: adviser.id,
+      actorId: req.auth.sub,
+      allowMove: !!allowMove,
+    });
+
+    const parts = [`Created section "${section.name}" with ${adviser.name} as adviser`];
+    if (result.createdStudents.length) parts.push(`${result.createdStudents.length} new account(s) created`);
+    if (result.linkedStudents.length) parts.push(`${result.linkedStudents.length} existing account(s) moved here`);
+    if (result.skippedStudents.length) parts.push(`${result.skippedStudents.length} already in this section`);
+    if (result.pendingMoves.length) parts.push(`${result.pendingMoves.length} enrolled elsewhere and left alone`);
+
+    res.json({
+      success: true,
+      section: { ...section, teacher: { id: adviser.id, name: adviser.name } },
+      ...result,
+      message: `${parts.join(', ')}.`,
+    });
+  } catch (e) { sendAdminError(res, e); }
+});
+
 /** Everything about one section: roster, classes using it, and the adviser. */
 app.get('/api/admin/:adminId/sections/:sectionId', async (req, res) => {
   try {
@@ -5096,13 +5333,14 @@ app.put('/api/admin/:adminId/sections/:sectionId', async (req, res) => {
       if (!name.trim()) return res.status(400).json({ success: false, error: 'Section name cannot be empty.' });
       const trimmed = name.trim();
       if (trimmed !== section.name) {
-        // The create path (POST /api/teacher/sections) reuses a section by
-        // (name, school, school year) with findFirst and no orderBy — that is
-        // how block names stop being recycled between years, and it holds only
-        // while the name is unique inside a year. Renaming enforced nothing, so
-        // this door led straight back to §8.1: two indistinguishable rows, and
-        // the next teacher to add a learner enrolling them onto whichever one
-        // the planner happened to return.
+        // Enrolment resolves a section by (name, school, school year) with
+        // findFirst and no orderBy — that is how block names stop being
+        // recycled between years, and it holds only while the name is unique
+        // inside a year. POST /api/admin/:adminId/sections refuses a clash at
+        // creation for exactly that reason; renaming enforced nothing, so this
+        // door led straight back to §8.1: two indistinguishable rows, and the
+        // next learner enrolled onto whichever one the planner happened to
+        // return.
         const clash = await prisma.section.findFirst({
           where: {
             name: trimmed,
@@ -6416,58 +6654,6 @@ app.get('/api/teacher/:teacherId/setup-status', async (req, res) => {
 });
 
 // ─────────────────────────────────────────
-// ONBOARDING: Quick Setup (creates Section + Class in one shot)
-// ─────────────────────────────────────────
-app.post('/api/teacher/quick-setup', async (req, res) => {
-  try {
-    // The acting teacher comes from the session. authorizePath already
-    // proved the caller is a teacher; this stops one teacher creating or
-    // attributing data under another teacher's id.
-    const teacherId = req.auth.sub;
-    const { sectionName, subject, gradeLevel, schoolYear } = req.body;
-    if (!teacherId || !sectionName || !subject || !gradeLevel) {
-      return res.status(400).json({ success: false, error: 'Missing required fields' });
-    }
-    // Without this, a section created through onboarding never gets a
-    // schoolId at all (unlike POST /api/teacher/sections, which already sets
-    // it) — leaving every submission under it exempt from the same-school
-    // scoping GET /api/submissions/:id now enforces.
-    const creator = await prisma.user.findUnique({ where: { id: teacherId }, select: { schoolId: true } });
-    const schoolId = creator?.schoolId || null;
-
-    const result = await prisma.$transaction(async (tx) => {
-      const section = await tx.section.create({
-        // Stamped here for the same reason POST /api/teacher/sections stamps
-        // it: a section with no year is reused across years by the name lookup
-        // there, so next June's intake would be enrolled onto this year's
-        // roster alongside their grades.
-        data: { name: sectionName.trim(), teacherId, schoolId, schoolYear: currentSchoolYear() }
-      });
-      const cls = await tx.class.create({
-        data: {
-          name: `${subject} — ${gradeLevel}`,
-          gradeLevel,
-          subject,
-          // Was hard-coded to '2024-2025'. Not cosmetic: computeRetainUntil
-          // reads this to decide when a class's work may be deleted, so a
-          // wrong year moves that date — and it is also what the exported
-          // gradebook prints as the school year on the sheet.
-          schoolYear: schoolYear || currentSchoolYear(),
-          teacherId,
-          sectionId: section.id
-        }
-      });
-      return { section, class: cls };
-    });
-
-    res.json({ success: true, ...result });
-  } catch (e) {
-    console.error('Quick setup error:', e);
-    res.status(500).json({ success: false, error: e.message });
-  }
-});
-
-// ─────────────────────────────────────────
 // ONBOARDING: Delete Demo Data (child-first to avoid FK crash)
 // ─────────────────────────────────────────
 app.delete('/api/teacher/demo-data/:classId', async (req, res) => {
@@ -6548,7 +6734,13 @@ app.get('/api/teacher/:teacherId/sections', async (req, res) => {
   // would do — see compareSchoolYearsDesc.
   const ordered = [...sections].sort((a, b) => compareSchoolYearsDesc(a.schoolYear, b.schoolYear));
 
-  // `isOwn` lets the UI show which sections this teacher may edit.
+  // `isOwn` used to be here, so the screen could tell which sections this
+  // teacher was allowed to write to. Nothing on that screen writes any more —
+  // enrolling, renaming and password resets are the admin's — so the field said
+  // "you may edit this" about a page with nothing editable on it. The adviser
+  // is on each row instead, which is the fact that still matters: they are who
+  // a correction goes to.
+  //
   // `isArchived` is advisory: the whole list is still returned, and the client
   // decides what to show. Filtering here would leave a teacher no way to reach
   // last year's rosters at all, and last year's marks are still records.
@@ -6557,7 +6749,6 @@ app.get('/api/teacher/:teacherId/sections', async (req, res) => {
     currentSchoolYear: currentSchoolYear(),
     sections: ordered.map(s => ({
       ...s,
-      isOwn: s.teacherId === req.params.teacherId,
       isArchived: !isCurrentSchoolYear(s.schoolYear),
     }))
   });
@@ -6801,11 +6992,12 @@ const extractStudentsHandler = async (req, res) => {
   }
 };
 
-app.post('/api/teacher/extract-students', upload.single('file'), extractStudentsHandler);
-// The admin's roster editor is the teacher's, so it needs the same auto-fill.
-// Mounted under /api/admin/:adminId/ rather than shared on the teacher path
-// because authorizePath gates that whole area on role === 'TEACHER' — an
-// admin calling it there is refused before the handler is reached.
+// The only mount left. There was a twin on /api/teacher/extract-students while
+// teachers built their own rosters; enrolment is the admin's now, so the
+// teacher copy went with the routes that used it. Mounted under
+// /api/admin/:adminId/ rather than on a shared path because authorizePath
+// gates /api/teacher/* on role === 'TEACHER' — an admin calling it there is
+// refused before the handler is reached.
 app.post('/api/admin/:adminId/extract-students', upload.single('file'), extractStudentsHandler);
 
 /**
@@ -7622,210 +7814,6 @@ async function enrolStudents(section, studentsList, { schoolId, teacherId, actor
   return { createdStudents, skippedStudents, linkedStudents, pendingMoves };
 }
 
-/**
- * Reset one learner's password, for the teacher who advises their section.
- *
- * The same reset already existed for admins. That was the wrong shape for the
- * situation it is actually needed in: a child at a shared classroom computer
- * who cannot sign in, in front of the person who enrolled them. Routing that
- * through an admin — one per school, not in the room — meant the learner sat
- * out the lesson, and it is why a random six-digit password is worse than it
- * looks. The teacher who owns the roster can now do it in one click and read
- * the new password straight off the screen.
- *
- * Reuses the admin route's rules exactly: birthday when the roster has one so
- * the learner gets something memorable back, random otherwise, and every
- * existing session for that account is revoked — a forgotten password is
- * indistinguishable from a shared one.
- */
-/**
- * Correct the spelling of a learner's name, for the teacher who advises them.
- * Same rules as the admin route above — the username is the login and is left
- * alone. The teacher is the one holding the class list, so they are usually
- * the one who spots the typo.
- */
-app.put('/api/teacher/sections/:sectionId/students/:studentId', async (req, res) => {
-  try {
-    const section = await prisma.section.findUnique({ where: { id: req.params.sectionId } });
-    if (!section) return res.status(404).json({ success: false, error: 'Section not found.' });
-    if (section.teacherId !== req.auth.sub) {
-      return res.status(403).json({ success: false, error: 'You can only edit learners in your own sections.' });
-    }
-    const student = await prisma.user.findUnique({ where: { id: req.params.studentId } });
-    if (!student || student.sectionId !== section.id || student.role !== 'STUDENT') {
-      return res.status(404).json({ success: false, error: 'Student not found in this section.' });
-    }
-    const name = String(req.body?.name ?? '').trim();
-    if (!name) return res.status(400).json({ success: false, error: 'A name is required.' });
-
-    const updated = await prisma.user.update({ where: { id: student.id }, data: { name } });
-    res.json({ success: true, student: { id: updated.id, name: updated.name, username: updated.username } });
-  } catch (e) {
-    res.status(500).json({ success: false, error: e.message });
-  }
-});
-
-app.put('/api/teacher/sections/:sectionId/students/:studentId/password', async (req, res) => {
-  try {
-    const section = await prisma.section.findUnique({ where: { id: req.params.sectionId } });
-    if (!section) return res.status(404).json({ success: false, error: 'Section not found.' });
-    if (section.teacherId !== req.auth.sub) {
-      return res.status(403).json({ success: false, error: 'You can only reset passwords for your own sections.' });
-    }
-
-    const student = await prisma.user.findUnique({ where: { id: req.params.studentId } });
-    if (!student || student.sectionId !== section.id || student.role !== 'STUDENT') {
-      return res.status(404).json({ success: false, error: 'Student not found in this section.' });
-    }
-
-    const newPassword = student.birthdate ? birthdayPassword(student.birthdate) : randomStudentPassword();
-    const revokedAt = new Date();
-    await prisma.user.update({
-      where: { id: student.id },
-      data: {
-        password: await bcrypt.hash(newPassword, BCRYPT_SALT_ROUNDS),
-        sessionsValidFrom: revokedAt,
-      },
-    });
-    markRevoked(student.id, revokedAt);
-
-    res.json({
-      success: true,
-      password: newPassword,
-      passwordSource: student.birthdate ? 'birthday' : 'random',
-      student: { id: student.id, name: student.name, username: student.username },
-    });
-  } catch (e) {
-    res.status(500).json({ success: false, error: e.message });
-  }
-});
-
-app.post('/api/teacher/sections', async (req, res) => {
-  try {
-    // The acting teacher comes from the session. authorizePath already
-    // proved the caller is a teacher; this stops one teacher creating or
-    // attributing data under another teacher's id.
-    const teacherId = req.auth.sub;
-    const { name, studentsList, gradeLevel, allowMove, schoolYear } = req.body;
-
-    // Before anything else touches it. `name.trim()` used to run first, so a
-    // missing or non-string name threw a TypeError that surfaced as a 500,
-    // while a name of nothing but spaces — which the form's `required`
-    // attribute accepts — trimmed to '' and was created, leaving a real
-    // section with no name in every picker and gradebook on the platform.
-    const sectionName = typeof name === 'string' ? name.trim() : '';
-    if (!sectionName) {
-      return res.status(400).json({
-        success: false,
-        error: 'Please give this section a name — for example "Grade 6 - Sampaguita".',
-      });
-    }
-
-    // Checked before the section is created, not after: a roster refused
-    // halfway would otherwise leave an empty section behind that the teacher
-    // did not ask for and now has to notice and delete.
-    const birthdayProblem = rosterBirthdayProblem(studentsList);
-    if (birthdayProblem) return res.status(422).json({ success: false, error: birthdayProblem });
-
-    const creator = await prisma.user.findUnique({ where: { id: teacherId } });
-    const schoolId = creator?.schoolId || null;
-    const targetYear = typeof schoolYear === 'string' && schoolYear.trim()
-      ? schoolYear.trim()
-      : currentSchoolYear();
-
-    // 1) Reuse an existing section with this name from the same school (or from
-    //    this teacher when they have no school). Scoped so two schools can both
-    //    have a "Grade 6 - Sampaguita" without sharing one section record.
-    //
-    // Scoped by year as well, which is the point of storing one: schools reuse
-    // block names every year, so matching on name alone meant that next June,
-    // creating "Grade 6 - Sampaguita" would silently reopen *last* year's
-    // section and enrol the new intake into the leaving class's roster,
-    // alongside their grades. Sections carrying a NULL year still match, so a
-    // roster created before this column existed is reused rather than
-    // duplicated the first time it is touched.
-    let section = await prisma.section.findFirst({
-      where: {
-        name: sectionName,
-        ...(schoolId ? { schoolId } : { teacherId }),
-        OR: [{ schoolYear: targetYear }, { schoolYear: null }],
-      },
-      // Only so a refusal below can say whose section it is. A teacher told
-      // "that name is taken" with no name attached has nobody to go and ask.
-      include: { teacher: { select: { id: true, name: true } } },
-    });
-    let isExisting = false;
-
-    if (section) {
-      // ── Reuse is not the same as ownership ──
-      // The lookup above is scoped to the school, not to the caller, which is
-      // deliberate: colleagues teach the same block and the section is shared.
-      // But *writing* to one is the adviser's alone — PUT .../students/:id and
-      // its /password sibling have always enforced that, and the section list
-      // marks each row `isOwn` so the client can too. This path enforced
-      // nothing, so it was the way around both.
-      //
-      // The case that surfaced it: an admin reassigns a section (PUT
-      // /api/admin/:adminId/sections/:sectionId takes a teacherId), and the
-      // previous adviser — who can no longer so much as fix a spelling there —
-      // could still enrol learners onto it by submitting the same name. With
-      // allowMove that also pulls those learners off whichever roster they
-      // were on. Nothing in the UI offered it; typing a name that already
-      // exists was enough.
-      if (section.teacherId !== teacherId) {
-        const adviser = section.teacher?.name;
-        return res.status(403).json({
-          success: false,
-          error: `"${section.name}" is already a section here, advised by ${adviser || 'another teacher'}. `
-            + 'Only its adviser or a school admin can add learners to it. '
-            + 'Ask them to add these names, or use a different section name.',
-        });
-      }
-      isExisting = true;
-      // Backfill grade level and school year if the section predates either
-      // field. Only ever fills a blank — an existing year is left alone, since
-      // overwriting it would move a whole roster between years as a side
-      // effect of adding one learner to it.
-      const backfill = {};
-      if (gradeLevel && !section.gradeLevel) backfill.gradeLevel = gradeLevel;
-      if (!section.schoolYear) backfill.schoolYear = targetYear;
-      if (Object.keys(backfill).length) {
-        section = await prisma.section.update({ where: { id: section.id }, data: backfill });
-      }
-    } else {
-      section = await prisma.section.create({
-        data: {
-          name: sectionName, teacherId, schoolId, gradeLevel: gradeLevel || null,
-          // Stamped at creation rather than left to be inferred later: a
-          // section carries forward across years otherwise, and last year's
-          // rosters end up sitting beside this year's with nothing telling
-          // them apart. The caller may name a year (a teacher setting up next
-          // June's blocks in April); otherwise it is the one in progress.
-          schoolYear: targetYear,
-        }
-      });
-    }
-
-    const { createdStudents, skippedStudents, linkedStudents, pendingMoves } =
-      await enrolStudents(section, studentsList, { schoolId, teacherId, actorId: req.auth.sub, allowMove: !!allowMove });
-
-    let message = isExisting
-      ? `Section "${section.name}" already exists. `
-      : `Created section "${section.name}". `;
-    if (createdStudents.length > 0) message += `${createdStudents.length} new account(s) created. `;
-    if (linkedStudents.length > 0) message += `${linkedStudents.length} existing account(s) moved here. `;
-    if (skippedStudents.length > 0) message += `${skippedStudents.length} already in section. `;
-    if (pendingMoves.length > 0) message += `${pendingMoves.length} already enrolled elsewhere — not added.`;
-
-    res.json({
-      success: true, section, createdStudents, skippedStudents, linkedStudents, pendingMoves,
-      message: message.trim()
-    });
-  } catch (e) {
-    res.status(500).json({ success: false, error: e.message });
-  }
-});
-
 // ─────────────────────────────────────────
 // CLASSES
 // ─────────────────────────────────────────
@@ -7844,106 +7832,6 @@ app.get('/api/teacher/:teacherId/classes', async (req, res) => {
     }
   });
   res.json({ success: true, classes });
-});
-
-// Class creation: accepts BOTH multipart/form-data (with curriculum file) and JSON
-app.post('/api/teacher/classes', (req, res, next) => {
-  const ct = req.headers['content-type'] || '';
-  if (ct.includes('multipart/form-data')) {
-    upload.single('curriculumFile')(req, res, next);
-  } else {
-    next();
-  }
-}, async (req, res) => {
-  try {
-    // The acting teacher comes from the session. authorizePath already
-    // proved the caller is a teacher; this stops one teacher creating or
-    // attributing data under another teacher's id.
-    const teacherId = req.auth.sub;
-    const { name, gradeLevel, subject, schoolYear, sectionId, curriculumId } = req.body;
-    if (!sectionId || !teacherId) {
-      return res.status(400).json({ success: false, error: 'Missing required fields: sectionId and teacherId are required.' });
-    }
-
-    // ── The section has to be one this teacher could legitimately teach ──
-    // Deliberately *not* an adviser check: teaching into a section somebody
-    // else advises is the normal shape of a subject teacher's week, and the
-    // class picker offers every section in the school for exactly that reason.
-    // The bar is the school, and it was missing entirely — sectionId was taken
-    // on trust and written straight onto the class, so a section id belonging
-    // to another school would attach that school's roster to this teacher's
-    // gradebook and analytics, both of which read class.section.students.
-    const [creator, targetSection] = await Promise.all([
-      prisma.user.findUnique({ where: { id: teacherId }, select: { schoolId: true } }),
-      prisma.section.findUnique({ where: { id: sectionId }, select: { id: true, schoolId: true, teacherId: true } }),
-    ]);
-    if (!targetSection) {
-      return res.status(404).json({ success: false, error: 'Section not found.' });
-    }
-    // Their own section counts however it is labelled — a roster created
-    // before sections carried a schoolId would otherwise become unusable to
-    // the very teacher who made it.
-    const mayTeachHere = targetSection.teacherId === teacherId
-      || (creator?.schoolId && targetSection.schoolId === creator.schoolId);
-    if (!mayTeachHere) {
-      return res.status(403).json({ success: false, error: 'That section belongs to another school.' });
-    }
-
-    // Guard against double-submits (impatient click, retried request): the same
-    // teacher + section + subject + school year is always the same course shell.
-    const duplicate = await prisma.class.findFirst({
-      where: { teacherId, sectionId, schoolYear, subject: subject || null, gradeLevel: gradeLevel || null }
-    });
-    if (duplicate) {
-      return res.json({ success: true, class: duplicate, duplicate: true });
-    }
-
-    const curriculumFile = req.file
-      ? await uploadToCloud(req.file.path, req.file.filename, { folder: 'curriculum', contentType: req.file.mimetype })
-      : null;
-    const newClass = await prisma.class.create({
-      data: { name, gradeLevel, subject, schoolYear, teacherId, sectionId, curriculumFile }
-    });
-
-    // Apply the school curriculum the teacher accepted: copy its lesson
-    // templates into this class so activities can be mapped to them.
-    let appliedLessons = 0;
-    if (curriculumId) {
-      const teacher = await prisma.user.findUnique({ where: { id: teacherId } });
-      const curriculum = await prisma.curriculum.findUnique({
-        where: { id: curriculumId },
-        include: { lessons: true }
-      });
-      if (curriculum && teacher?.schoolId === curriculum.schoolId && curriculum.lessons.length) {
-        await prisma.classLesson.createMany({
-          data: curriculum.lessons.map(l => ({
-            classId: newClass.id,
-            title: l.title,
-            description: l.description,
-            outputType: l.outputType,
-            weekNumber: l.weekNumber,
-            // Carried over with the rest of the lesson. Without it a class
-            // created through the school-curriculum flow got lessons whose
-            // competencies were left behind in CurriculumLesson, and its
-            // grading silently fell back to the one-line description.
-            competencies: l.competencies,
-            defaultRubric: l.defaultRubric,
-            // Carried over with the rest of the lesson. Missing here, every
-            // class created through the main "accept the school curriculum"
-            // flow got a null link, and the Activity Builder fell back to the
-            // unnamed embedded copy — the behaviour §8.7 exists to remove.
-            rubricTemplateId: l.rubricTemplateId
-          }))
-        });
-        appliedLessons = curriculum.lessons.length;
-      }
-    }
-
-    res.json({ success: true, class: newClass, appliedLessons });
-  } catch (e) {
-    console.error('❌ Class creation error:', e);
-    res.status(500).json({ success: false, error: e.message });
-  }
 });
 
 // Parse uploaded curriculum file and generate ClassLesson records with default rubrics

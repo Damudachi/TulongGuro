@@ -1,11 +1,17 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import { Users, Plus, Loader2, Trash2, KeyRound, X, Copy, Check, GraduationCap, BookOpen, ClipboardList, ChevronRight, Search } from 'lucide-react';
 import { API_URL, apiFetch } from '../../config';
-import { GRADE_LEVELS } from '../../constants/school';
+import { GRADE_LEVELS, SCHOOL_YEARS, DEFAULT_SCHOOL_YEAR } from '../../constants/school';
 import { TEACHER_EMAIL_DOMAIN, buildAccountEmail } from '../../constants/accountEmails';
 import DomainEmailField from '../../components/DomainEmailField';
 import TeacherHandover from '../../components/TeacherHandover';
+import RosterEditor from '../../components/RosterEditor';
+import SectionMoveConfirm from '../../components/SectionMoveConfirm';
+import StudentCredentials from '../../components/StudentCredentials';
+import {
+  rowsFromExtraction, isFilledRow, rosterPayload, emptyRoster, withBlankRow,
+} from '../../utils/roster';
 
 import { showAlert, showConfirm } from '../../utils/dialog';
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
@@ -35,6 +41,27 @@ export default function AdminTeachers() {
   // the server that raised the question, and null when the roster counts on
   // screen were enough to know in advance.
   const [handover, setHandover] = useState(null);
+
+  // ── Creating a block section ──
+  // This used to be a teacher screen. It sits here because a section is a
+  // school-wide fact — one adviser, one roster, shared by every colleague who
+  // teaches that block — and because the adviser has to be *chosen* rather
+  // than inferred from whoever happened to type the names in.
+  const [showSectionForm, setShowSectionForm] = useState(false);
+  const [sectionForm, setSectionForm] = useState({ name: '', gradeLevel: '', schoolYear: DEFAULT_SCHOOL_YEAR, teacherId: '' });
+  const [sectionRows, setSectionRows] = useState(emptyRoster);
+  const [isSavingSection, setIsSavingSection] = useState(false);
+  const [sectionError, setSectionError] = useState('');
+  const [isExtracting, setIsExtracting] = useState(false);
+  const rosterFileRef = useRef(null);
+  // Sign-in details for the accounts just created, and the plain summary line.
+  // Shown once or never — a generated password cannot be recovered.
+  const [newAccounts, setNewAccounts] = useState([]);
+  const [notice, setNotice] = useState('');
+  // Set when the server left names alone because they are enrolled elsewhere.
+  // Holds the new section's id, because the replay goes to the roster endpoint
+  // rather than back through create — see the note on the section route.
+  const [moveRequest, setMoveRequest] = useState(null);
 
   const load = useCallback(() => {
     if (!admin.id) return;
@@ -79,6 +106,125 @@ export default function AdminTeachers() {
       setError('Network error. Please try again.');
     } finally {
       setIsSaving(false);
+    }
+  };
+
+  const openSectionForm = () => {
+    setSectionForm({
+      name: '', gradeLevel: '', schoolYear: DEFAULT_SCHOOL_YEAR,
+      // Pre-selected when there is exactly one teacher, since there is no
+      // choice to make — but never guessed at when there is.
+      teacherId: (data?.teachers || []).length === 1 ? data.teachers[0].id : '',
+    });
+    setSectionRows(emptyRoster());
+    setSectionError('');
+    setShowSectionForm(true);
+  };
+
+  /**
+   * Create the section, and enrol whatever names were typed with it.
+   *
+   * The roster is optional: naming the block and typing forty learners are
+   * different jobs and an admin may well do them a week apart. What is not
+   * optional is the adviser — the server refuses without one, and the form
+   * marks it required so that refusal never has to be seen.
+   */
+  const createSection = async () => {
+    if (isSavingSection) return;              // guards an impatient second click
+    const name = sectionForm.name.trim();
+    if (!name) return setSectionError('Please give this section a name — for example "Grade 6 - Sampaguita".');
+    if (!sectionForm.teacherId) return setSectionError('Choose the teacher who will advise this section.');
+    // Returns null once the admin has been asked to fix an unreadable birthday.
+    const studentsList = rosterPayload(sectionRows, showAlert);
+    if (!studentsList) return;
+
+    setIsSavingSection(true);
+    setSectionError('');
+    try {
+      const res = await apiFetch(`${API_URL}/api/admin/${admin.id}/sections`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...sectionForm, name, studentsList }),
+      });
+      const d = await res.json().catch(() => null);
+      if (!d?.success) {
+        // Kept in the form rather than raised as a page banner: the usual
+        // refusal is "that name is already taken", which is only actionable
+        // while looking at the field you would change.
+        setSectionError(d?.error || 'That section could not be created.');
+        return;
+      }
+      setNewAccounts(d.createdStudents || []);
+      setNotice(d.message);
+      load();
+      if (d.pendingMoves?.length) {
+        // The section exists now, so the confirm-and-replay goes to its roster
+        // by id. Sending the same create request again would hit the
+        // name-already-exists refusal, not retry the enrolment.
+        setMoveRequest({ section: d.section, studentsList, moves: d.pendingMoves });
+      } else {
+        setShowSectionForm(false);
+      }
+    } catch {
+      setSectionError('Network error. Please try again.');
+    } finally {
+      setIsSavingSection(false);
+    }
+  };
+
+  /** The admin confirmed the moves — replay the same roster against the new section. */
+  const confirmMoves = async () => {
+    const req = moveRequest;
+    if (!req) return;
+    setIsSavingSection(true);
+    try {
+      const res = await apiFetch(`${API_URL}/api/admin/${admin.id}/sections/${req.section.id}/students`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ studentsList: req.studentsList, allowMove: true }),
+      });
+      const d = await res.json().catch(() => null);
+      if (d?.success) {
+        // Appended, not replaced: the first pass generated passwords that
+        // cannot be recovered, and this pass reports only the moves.
+        setNewAccounts(prev => [...prev, ...(d.createdStudents || [])]);
+        setNotice(d.message);
+        load();
+      } else {
+        showAlert(d?.error || 'Those learners could not be moved.', { variant: 'error' });
+      }
+    } catch {
+      showAlert('Could not reach the server. Nothing was moved.', { variant: 'error' });
+    } finally {
+      setIsSavingSection(false);
+      setMoveRequest(null);
+      setShowSectionForm(false);
+    }
+  };
+
+  /** Auto-fill the roster from a spreadsheet or a photo of one. */
+  const handleRosterFile = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setIsExtracting(true);
+    const formData = new FormData();
+    formData.append('file', file);
+    try {
+      const res = await apiFetch(`${API_URL}/api/admin/${admin.id}/extract-students`, { method: 'POST', body: formData });
+      const d = await res.json().catch(() => null);
+      const extracted = d?.success ? rowsFromExtraction(d) : [];
+      if (extracted.length) {
+        // Appended to whatever is already typed, so an upload adds to the list
+        // rather than replacing work already done.
+        setSectionRows(prev => withBlankRow([...prev.filter(isFilledRow), ...extracted]));
+      } else {
+        setSectionError(d?.error || 'No learners were found in that file.');
+      }
+    } catch {
+      setSectionError('Network error while reading the file.');
+    } finally {
+      setIsExtracting(false);
+      e.target.value = '';   // so picking the same file again still fires
     }
   };
 
@@ -197,7 +343,7 @@ export default function AdminTeachers() {
     (acc[key] = acc[key] || []).push(s);
     return acc;
   }, {});
-  // Ordered by the canonical grade list, the same way Manage Block Sections
+  // Ordered by the canonical grade list, the same way the teacher-side Block Sections list
   // does it — a plain sort puts "Grade 10" between "Grade 1" and "Grade 2".
   const gradeOrder = [...GRADE_LEVELS, 'Unassigned grade level'];
   const gradeKeys = Object.keys(sectionsByGrade)
@@ -231,6 +377,26 @@ export default function AdminTeachers() {
           </div>
         ))}
       </div>
+
+      {notice && (
+        <div className="bg-blue-50 border border-blue-200 text-blue-800 text-sm rounded-xl p-3 mb-4 flex items-start justify-between gap-3">
+          <span>{notice}</span>
+          <button onClick={() => setNotice('')} aria-label="Dismiss" className="text-blue-400 hover:text-blue-600 shrink-0">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
+
+      {/* Student sign-in details for accounts just created, shown once. */}
+      <StudentCredentials students={newAccounts} onClose={() => setNewAccounts([])} />
+
+      <SectionMoveConfirm
+        moves={moveRequest?.moves}
+        targetSection={moveRequest?.section?.name}
+        busy={isSavingSection}
+        onConfirm={confirmMoves}
+        onCancel={() => { setMoveRequest(null); setShowSectionForm(false); }}
+      />
 
       {/* Credentials handoff */}
       {createdCredentials && (
@@ -328,11 +494,25 @@ export default function AdminTeachers() {
       )}
 
       {/* School sections, segmented by grade level */}
-      <h2 className="text-sm font-bold text-slate-400 uppercase tracking-wider mb-3">Sections by grade level</h2>
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-3">
+        <h2 className="text-sm font-bold text-slate-400 uppercase tracking-wider">Sections by grade level</h2>
+        <button
+          onClick={openSectionForm}
+          disabled={allTeachers.length === 0}
+          title={allTeachers.length === 0 ? 'Add a teacher first — every section needs an adviser' : 'Create a block section'}
+          className="self-start sm:self-auto bg-brand-navy text-white px-3 py-2 rounded-lg text-xs font-bold hover:bg-blue-900 shadow-sm flex items-center gap-1.5 disabled:opacity-40 disabled:hover:bg-brand-navy"
+        >
+          <Plus className="w-3.5 h-3.5" /> Add Section
+        </button>
+      </div>
       {sections.length === 0 ? (
         <div className="text-center py-10 border-2 border-dashed border-slate-200 rounded-2xl text-slate-400">
           <p className="text-sm font-medium">No sections yet</p>
-          <p className="text-xs mt-1">Teachers create these from Manage Block Sections.</p>
+          <p className="text-xs mt-1">
+            {allTeachers.length === 0
+              ? 'Add a teacher first — every section needs an adviser.'
+              : 'Use "Add Section" above to create one and name its adviser.'}
+          </p>
         </div>
       ) : (
         <div className="space-y-5">
@@ -402,6 +582,105 @@ export default function AdminTeachers() {
                   className={cn('flex-1 py-2.5 rounded-lg text-white font-bold flex items-center justify-center gap-2',
                     isSaving ? 'bg-slate-300 cursor-not-allowed' : 'bg-brand-navy hover:bg-blue-900')}>
                   {isSaving ? <><Loader2 className="w-4 h-4 animate-spin" /> Creating...</> : 'Create Account'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Add section modal */}
+      {showSectionForm && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4 overflow-y-auto">
+          <div className="bg-white rounded-2xl p-6 w-full max-w-2xl shadow-xl my-8">
+            <h2 className="text-xl font-bold text-brand-slate mb-1">Create a block section</h2>
+            <p className="text-slate-500 text-sm mb-5">
+              A homeroom group with one adviser. Every teacher in the school can teach a subject into it.
+            </p>
+            <form onSubmit={(e) => { e.preventDefault(); createSection(); }} className="space-y-5" autoComplete="off">
+              {/* Two columns, separated and numbered: naming the section and
+                  listing forty learners are different jobs, and running them
+                  together down one page made the roster box look like one more
+                  field on the same form. Stacks on a narrow screen, where a
+                  divider would be meaningless. */}
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                <div className="space-y-4 lg:border-r lg:border-slate-200 lg:pr-6">
+                  <p className="text-xs font-extrabold uppercase tracking-wider text-brand-navy">
+                    Step 1 · About the section
+                  </p>
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">Section name *</label>
+                    <input required type="text" value={sectionForm.name} autoComplete="off"
+                      onChange={e => setSectionForm({ ...sectionForm, name: e.target.value })}
+                      placeholder="e.g. Grade 6 - Sampaguita"
+                      className="w-full border border-slate-200 p-2.5 rounded-lg outline-none focus:ring-2 focus:ring-brand-navy text-sm" />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">Adviser *</label>
+                    <select required value={sectionForm.teacherId}
+                      onChange={e => setSectionForm({ ...sectionForm, teacherId: e.target.value })}
+                      className="w-full border border-slate-200 p-2.5 rounded-lg outline-none focus:ring-2 focus:ring-brand-navy text-sm">
+                      <option value="">-- Choose a teacher --</option>
+                      {allTeachers.map(t => <option key={t.id} value={t.id}>{t.name} ({t.email})</option>)}
+                    </select>
+                    <p className="text-xs text-slate-400 mt-1">
+                      The homeroom teacher responsible for this block. You can change it later from the section page.
+                    </p>
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-sm font-medium text-slate-700 mb-1">Grade level</label>
+                      <select value={sectionForm.gradeLevel}
+                        onChange={e => setSectionForm({ ...sectionForm, gradeLevel: e.target.value })}
+                        className="w-full border border-slate-200 p-2.5 rounded-lg outline-none focus:ring-2 focus:ring-brand-navy text-sm">
+                        <option value="">-- Select --</option>
+                        {GRADE_LEVELS.map(g => <option key={g} value={g}>{g}</option>)}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-slate-700 mb-1">School year *</label>
+                      <select required value={sectionForm.schoolYear}
+                        onChange={e => setSectionForm({ ...sectionForm, schoolYear: e.target.value })}
+                        className="w-full border border-slate-200 p-2.5 rounded-lg outline-none focus:ring-2 focus:ring-brand-navy text-sm">
+                        {SCHOOL_YEARS.map(sy => <option key={sy} value={sy}>{sy}</option>)}
+                      </select>
+                    </div>
+                  </div>
+                  <p className="text-xs text-slate-400">
+                    Section names have to be unique within a school year, so next June's intake gets its own
+                    roster rather than joining this year's.
+                  </p>
+                </div>
+
+                <div className="space-y-2">
+                  <p className="text-xs font-extrabold uppercase tracking-wider text-brand-navy">
+                    Step 2 · Who is in it <span className="font-semibold normal-case tracking-normal text-slate-400">(optional)</span>
+                  </p>
+                  <RosterEditor
+                    rows={sectionRows}
+                    onChange={setSectionRows}
+                    onPickFile={() => rosterFileRef.current?.click()}
+                    isExtracting={isExtracting}
+                    fileRef={rosterFileRef}
+                    onFileChange={handleRosterFile}
+                  />
+                  <p className="text-[11px] text-slate-400">
+                    Leave this empty to create the section on its own — you can add learners from the section
+                    page at any time. Anyone already enrolled elsewhere is listed for you to confirm before
+                    being moved.
+                  </p>
+                </div>
+              </div>
+
+              {sectionError && <p className="text-xs text-red-600 bg-red-50 border border-red-200 rounded-lg p-2.5">{sectionError}</p>}
+
+              <div className="flex gap-2">
+                <button type="button" onClick={() => setShowSectionForm(false)} disabled={isSavingSection}
+                  className="flex-1 py-2.5 rounded-lg border border-slate-200 text-slate-600 font-medium hover:bg-slate-50 disabled:opacity-40">Cancel</button>
+                <button type="submit" disabled={isSavingSection}
+                  className={cn('flex-1 py-2.5 rounded-lg text-white font-bold flex items-center justify-center gap-2',
+                    isSavingSection ? 'bg-slate-300 cursor-not-allowed' : 'bg-brand-navy hover:bg-blue-900')}>
+                  {isSavingSection ? <><Loader2 className="w-4 h-4 animate-spin" /> Creating...</> : 'Create Section'}
                 </button>
               </div>
             </form>

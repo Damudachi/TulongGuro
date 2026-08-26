@@ -62,11 +62,11 @@ flowchart LR
     E1 -- "credentials,<br/>photographed written output" --> P0
     P0 -- "released score and feedback,<br/>badges, notification" --> E1
 
-    E2 -- "roster, activity and rubric,<br/>AI-check request, validated grade,<br/>release command" --> P0
+    E2 -- "activity and rubric,<br/>AI-check request, validated grade,<br/>release command" --> P0
     P0 -- "AI draft score and feedback,<br/>analytics, gradebook export" --> E2
 
-    E3 -- "teacher accounts, curriculum,<br/>rubric library, grading policy" --> P0
-    P0 -- "school-wide analytics,<br/>account and audit records" --> E3
+    E3 -- "teacher accounts, sections and rosters,<br/>course-shell assignments, curriculum,<br/>rubric library, grading policy" --> P0
+    P0 -- "school-wide analytics, learner<br/>credentials, account and audit records" --> E3
 
     E4 -- "approval or rejection decision" --> P0
     P0 -- "school registration and<br/>DepEd School ID proof" --> E4
@@ -113,13 +113,13 @@ flowchart LR
     P1 -- "account records" --> D1
     D1 -- "stored credentials" --> P1
 
-    E2 -- "roster, activity,<br/>rubric, deadline" --> P2
-    E3 -- "curriculum, rubric library,<br/>grading policy" --> P2
-    P2 -- "class and roster" --> D2
+    E2 -- "activity, rubric, deadline" --> P2
+    E3 -- "section, roster, course-shell assignment,<br/>curriculum, rubric library,<br/>grading policy" --> P2
+    P2 -- "section, class and roster" --> D2
     P2 -- "curriculum, rubric,<br/>policy" --> D3
     P2 -- "activity and rubric" --> D4
     P2 -- "learner accounts" --> D1
-    P2 -- "learner credentials" --> E2
+    P2 -- "learner credentials" --> E3
 
     E1 -- "photographed output" --> P3
     E2 -- "scanned class set" --> P3
@@ -179,10 +179,10 @@ every flow on the drawing is labelled.
 
 | # | From | Data flow | To |
 |---|------|-----------|-----|
-| 2.1 | E2 Teacher | Section details and class roster | 2.0 |
+| 2.1 | E3 School Administrator | Section details, adviser, class roster, course-shell assignment | 2.0 |
 | 2.2 | 2.0 | Section, class and roster record | D2 |
 | 2.3 | 2.0 | Generated learner account and password hash | D1 |
-| 2.4 | 2.0 | Learner login credentials (one-time display) | E2 Teacher |
+| 2.4 | 2.0 | Learner login credentials (one-time display) | E3 School Administrator |
 | 2.5 | E3 School Administrator | Curriculum, lessons, rubric library, grading policy weights | 2.0 |
 | 2.6 | 2.0 | Curriculum, rubric template and policy record | D3 |
 | 2.7 | D3 | Rubric template, curriculum lesson, competency list | 2.0 |
