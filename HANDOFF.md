@@ -709,3 +709,85 @@ taken out of the UI is still reachable by an old bundle or a curl.
 `setup-steps.test.js` follows the checklist's new wording. Four more cover the
 school-wide class list — its tenancy `where`, the pickers it carries, the
 summed submission count, and that it is closed to teachers. Suite is 1295.
+
+## 10. Rubric shapes reached the admin side
+
+A rubric is one of two shapes, and only one of them ever worked for an admin.
+
+- **standard** — each criterion takes a share of the mark and the shares total
+  100.
+- **range** — each criterion is scored on its own band ladder (Excellent 4,
+  Good 2, Needs Improvement 1). There is no total to hit.
+
+Range is what most DepEd rubrics on paper are. `validateRubric` has always
+branched on this correctly, and so has the extractor — `respondWithExtractedRubric`
+deliberately does **not** rebase a banded rubric's points, because re-pointing
+the criteria while the bands still read the document's scale hands the grader
+two different answers for what a criterion is out of. Everything above it
+disagreed.
+
+### The server kept its own copy of the rule
+
+`schoolRubricRefusal` enforced `total === 100` unconditionally instead of
+delegating to `validateRubric`. So `POST /api/admin/:adminId/rubrics` refused
+every banded rubric. It now calls `validateRubric` and both call sites pass
+`type` through. **The duplicate is the whole defect** — two statements of one
+rule, drifting the moment either moved.
+
+### The School Rubrics page could only author one shape
+
+No upload button (the `/rubrics/extract` route existed with no UI) and no shape
+picker. Both now match the teacher's dashboard. `DEFAULT_RANGE_BANDS`,
+`detectRubricType` and `rescaleBands` moved out of `RubricManager` into
+`utils/rubric.js`, and `RubricEditor` takes a `type` prop with a band
+sub-editor, so the two pages read one definition rather than two.
+
+### The curriculum form threw the shape away four times over
+
+Worth spelling out, because each layer hid the next:
+
+1. `readFile` mapped extracted criteria to `{name, points, description}` —
+   **`bands` is not in that list**, so every ladder was dropped before it was
+   drawn.
+2. `RubricDraftCard` rendered `RubricEditor` with no `type`, so it defaulted to
+   standard and put an amber `10% / 100%` badge on a rubric with no total.
+3. `draftReady` demanded `totalWeight === 100` whatever the shape.
+4. Neither save path sent `type`.
+
+(3) is what made this unpublishable rather than merely ugly: the card could
+never be ready, so `blockingMessage` held the entire **Publish** at *"still
+needs criteria weights totalling 100%"* — satisfiable only by retyping the
+ladder as percentages, which misstates the rubric. The bands were gone by then
+anyway.
+
+`draftBlocker` now returns each card's own reason as a sentence, because the two
+shapes fail differently and naming the 100% rule at a range rubric sends the
+admin to correct the one thing they must not touch.
+
+### Two smaller things found on the way
+
+- **Bands beat the model's label.** The extractor returns `rubricType` from the
+  model, but its prompt asks for bands whenever levels are visible *whichever*
+  type it decided on — so `standard` and "has bands" co-occur. Both clients now
+  infer from the bands and fall back to the label, matching what the extractor
+  itself does with `hasBands`.
+- **Readiness was judged on criteria that were never sent.** The save filters
+  unnamed rows; `draftReady` counted them. A card of 60 + an unnamed 40 was
+  ready on screen, sent the 60 alone, and was refused by the server for not
+  totalling 100. Both sides now use `draftCriteria`.
+
+### Tests
+
+`school-rubric-shapes.test.js` (7) drives the admin route over real HTTP —
+banded rubric accepted without a 100 total, bands surviving the round trip,
+shape inferred with no `type` sent, and the 100% rule still holding for
+standard. A pure test of `validateRubric` would have noticed none of it: the
+defect was a *route* enforcing its own copy.
+
+`rubric-draft-shapes.test.js` (12) pins the client rule to the server's, using
+the 4/3/3 rubric from the bug report. Three of them fail against the old
+`draftReady`, which is checked rather than assumed. The last three are source
+checks — a rule agreed in the hook and then not sent over the wire is exactly
+how (4) hid behind (3).
+
+Suite is 1317.

@@ -3,7 +3,7 @@ import { BookOpen, Plus, Loader2, Trash2, UploadCloud, FileText, X, ChevronDown,
 import { API_URL, apiFetch } from '../../config';
 import { GRADE_LEVELS, SUBJECTS } from '../../constants/school';
 import { ACTIVITY_TYPES } from '../../constants/activityTypes';
-import { useRubricDrafts } from '../../utils/useRubricDrafts';
+import { useRubricDrafts, draftCriteria } from '../../utils/useRubricDrafts';
 import { RubricDraftCard, RubricDraftButtons } from '../../components/RubricDrafts';
 import CurriculumEditor from '../../components/CurriculumEditor';
 import { lessonDisplayName } from '../../utils/topics';
@@ -109,7 +109,12 @@ export default function AdminCurriculum() {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               name,
-              criteria: draft.criteria.filter(c => c.name.trim())
+              criteria: draftCriteria(draft),
+              // Without this the server infers the shape from the criteria, and
+              // it infers it from the FIRST one only — a rubric whose opening
+              // criterion happens to carry no ladder would be held to the 100%
+              // rule its other criteria were never written for.
+              type: draft.type
             })
           });
           const rd = await rubricRes.json();
@@ -443,7 +448,7 @@ export default function AdminCurriculum() {
                 <RubricDraftButtons count={drafts.drafts.length}
                   className={drafts.drafts.length > 0 ? 'mt-3' : ''}
                   onUpload={picked => drafts.readFile(drafts.add('upload'), picked)}
-                  onManual={() => drafts.add('manual')} />
+                  onManual={type => drafts.add('manual', type)} />
               </div>
 
               {error && <p className="text-xs text-red-600 bg-red-50 border border-red-200 rounded-lg p-2.5">{error}</p>}

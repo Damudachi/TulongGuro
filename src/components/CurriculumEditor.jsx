@@ -16,7 +16,7 @@ import { useState } from 'react';
 import { Loader2, UploadCloud, FileText, X, Trash2, ClipboardList, AlertTriangle, Check } from 'lucide-react';
 import { API_URL, apiFetch } from '../config';
 import { showAlert, showConfirm } from '../utils/dialog';
-import { useRubricDrafts } from '../utils/useRubricDrafts';
+import { useRubricDrafts, draftCriteria } from '../utils/useRubricDrafts';
 import { RubricDraftCard, RubricDraftButtons } from './RubricDrafts';
 import { lessonDisplayName } from '../utils/topics';
 
@@ -173,7 +173,7 @@ export default function CurriculumEditor({ adminId, curriculum, onClose, onSaved
         const res = await apiFetch(`${API_URL}/api/admin/${adminId}/curriculums/${curriculum.id}/rubrics`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name, criteria: draft.criteria.filter(c => c.name.trim()) })
+          body: JSON.stringify({ name, criteria: draftCriteria(draft), type: draft.type })
         });
         const d = await res.json();
         if (d.success) saved.push({ name, id: draft.id });
@@ -458,7 +458,7 @@ export default function CurriculumEditor({ adminId, curriculum, onClose, onSaved
 
             <RubricDraftButtons count={drafts.drafts.length}
               onUpload={picked => drafts.readFile(drafts.add('upload'), picked)}
-              onManual={() => drafts.add('manual')} />
+              onManual={type => drafts.add('manual', type)} />
 
             {rubricError && <p className="text-xs text-red-600 bg-red-50 border border-red-200 rounded-lg p-2.5">{rubricError}</p>}
             {rubricNotice && <p className="text-xs text-emerald-800 bg-emerald-50 border border-emerald-200 rounded-lg p-2.5">{rubricNotice}</p>}

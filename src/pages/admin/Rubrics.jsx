@@ -147,7 +147,11 @@ export default function AdminRubrics() {
         return;
       }
 
-      setRubricType(d.rubricType || detectRubricType(d.criteria));
+      // Bands first, the model's own label second. The extractor's prompt asks
+      // for bands whenever levels are visible, whichever type it decided the
+      // document was, so a ladder can arrive labelled 'standard' — and taking
+      // the label there draws it in a table measured against a 100% total.
+      setRubricType(detectRubricType(d.criteria) === 'range' ? 'range' : (d.rubricType || 'standard'));
       setCriteria(d.criteria);
       // The filename with its extension dropped: it is almost always what the
       // school calls this rubric, and it is editable in the very next field.

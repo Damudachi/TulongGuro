@@ -8,13 +8,19 @@
  *
  * State lives in useRubricDrafts; these two only draw it.
  */
-import { Loader2, Trash2, UploadCloud, FileText, PenLine } from 'lucide-react';
+import { useState } from 'react';
+import { Loader2, Trash2, UploadCloud, FileText, PenLine, Percent, ListOrdered, ArrowLeft } from 'lucide-react';
 import RubricEditor from './RubricEditor';
 import { draftReady } from '../utils/useRubricDrafts';
+import { detectRubricType } from '../utils/rubric';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
 
 export function RubricDraftCard({ draft, index, onChange, onRemove }) {
+  // Read off the draft rather than taken as a prop: an uploaded card does not
+  // know its shape until the extraction comes back, and the card is on screen
+  // before then.
+  const type = detectRubricType(draft);
   return (
     <div className="border border-slate-200 rounded-xl p-3 space-y-3">
       <div className="flex items-center justify-between gap-2">
@@ -42,7 +48,11 @@ export function RubricDraftCard({ draft, index, onChange, onRemove }) {
         <>
           {draft.mode === 'upload' && !draft.error && (
             <p className="text-xs text-slate-500 bg-blue-50 border border-blue-100 rounded-lg p-2.5 leading-relaxed">
-              Check these against your document before saving — correct anything that came out wrong.
+              {/* Which shape it was read as is said out loud, because it decides
+                  what the columns below mean and it is the one thing on this
+                  card nobody chose. */}
+              Read as a <strong>{type === 'range' ? 'range rubric — scored on bands' : 'standard rubric — percentage weights'}</strong>.
+              {' '}Check these against your document before saving — correct anything that came out wrong.
             </p>
           )}
           {draft.error && (
@@ -74,7 +84,7 @@ export function RubricDraftCard({ draft, index, onChange, onRemove }) {
               placeholder="e.g. Grade 6 English — Written Output"
               className="w-full border border-slate-200 p-2 rounded-lg outline-none focus:ring-2 focus:ring-brand-navy text-sm" />
           </div>
-          <RubricEditor criteria={draft.criteria} onChange={next => onChange({ criteria: next })} />
+          <RubricEditor criteria={draft.criteria} onChange={next => onChange({ criteria: next })} type={type} />
         </>
       )}
     </div>
@@ -84,8 +94,52 @@ export function RubricDraftCard({ draft, index, onChange, onRemove }) {
 /**
  * Both entry points stay on screen whatever is already added — the second
  * rubric is added exactly the way the first was.
+ *
+ * Typing one in asks for its shape first. The two are different units and the
+ * table's columns change with the answer, so asking here is cheaper than an
+ * admin filling in five criteria and then finding they are in the wrong ones.
+ * Uploading asks nothing: the document says which shape it is, and the
+ * extractor has already worked it out by the time the card is drawn.
+ *
+ * The choice is revealed in place rather than in a dialog, because both callers
+ * render these inside a modal already and a dialog over a dialog is a stacking
+ * problem for a two-way question.
  */
 export function RubricDraftButtons({ count, onUpload, onManual, className }) {
+  const [picking, setPicking] = useState(false);
+
+  if (picking) {
+    return (
+      <div className={cn('border-2 border-dashed border-slate-200 rounded-lg p-3', className)}>
+        <div className="flex items-center gap-2 mb-2">
+          <button type="button" onClick={() => setPicking(false)} aria-label="Back"
+            className="text-slate-400 hover:text-slate-600 shrink-0">
+            <ArrowLeft className="w-4 h-4" />
+          </button>
+          <p className="text-xs font-bold text-slate-600">How is this rubric marked?</p>
+        </div>
+        <div className="grid grid-cols-2 gap-2">
+          <button type="button" onClick={() => { setPicking(false); onManual('standard'); }}
+            className="border border-slate-200 rounded-lg p-2.5 text-left hover:border-brand-navy hover:bg-blue-50 transition-colors">
+            <Percent className="w-4 h-4 mb-1 text-green-600" />
+            <span className="block text-xs font-bold text-slate-600">Percentage weights</span>
+            <span className="block text-[11px] text-slate-400 mt-0.5 leading-relaxed">
+              Each criterion takes a share of the mark, totalling 100%.
+            </span>
+          </button>
+          <button type="button" onClick={() => { setPicking(false); onManual('range'); }}
+            className="border border-slate-200 rounded-lg p-2.5 text-left hover:border-brand-navy hover:bg-blue-50 transition-colors">
+            <ListOrdered className="w-4 h-4 mb-1 text-purple-600" />
+            <span className="block text-xs font-bold text-slate-600">Scoring bands</span>
+            <span className="block text-[11px] text-slate-400 mt-0.5 leading-relaxed">
+              A ladder per criterion — Excellent down to Needs Improvement.
+            </span>
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className={cn('grid grid-cols-2 gap-2', className)}>
       <label className="border-2 border-dashed border-slate-200 rounded-lg p-3 text-center cursor-pointer hover:border-brand-navy hover:bg-blue-50 transition-colors">
@@ -93,7 +147,7 @@ export function RubricDraftButtons({ count, onUpload, onManual, className }) {
         <span className="block text-xs font-medium text-slate-600">
           {count ? 'Upload another' : 'Upload our rubric'}
         </span>
-        <span className="block text-[11px] text-slate-400 mt-0.5">Read out for you to check</span>
+        <span className="block text-[11px] text-slate-400 mt-0.5">Weights or bands, read out for you</span>
         <input type="file" accept=".pdf,.docx,image/*" className="hidden"
           onChange={e => {
             const input = e.target;
@@ -106,7 +160,7 @@ export function RubricDraftButtons({ count, onUpload, onManual, className }) {
             onUpload(picked);
           }} />
       </label>
-      <button type="button" onClick={onManual}
+      <button type="button" onClick={() => setPicking(true)}
         className="border-2 border-dashed border-slate-200 rounded-lg p-3 text-center hover:border-brand-navy hover:bg-blue-50 transition-colors">
         <PenLine className="w-5 h-5 mx-auto mb-1 text-slate-400" />
         <span className="block text-xs font-medium text-slate-600">
