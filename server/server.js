@@ -5968,14 +5968,24 @@ app.delete('/api/admin/:adminId/curriculums/:curriculumId/lessons/:lessonId', as
  * Returns the refusal instead of sending it, so each caller keeps its own
  * response shape.
  */
-async function schoolRubricRefusal({ name, criteria }, schoolId) {
+async function schoolRubricRefusal({ name, criteria, type }, schoolId) {
   if (!name?.trim() || !Array.isArray(criteria) || criteria.length === 0) {
     return { status: 400, body: { success: false, error: 'A name and at least one criterion are required.' } };
   }
-  const total = criteria.reduce((sum, c) => sum + (parseInt(c.points) || 0), 0);
-  if (total !== 100) {
-    return { status: 400, body: { success: false, error: `Criteria weights must total 100%. They currently total ${total}%.` } };
-  }
+  // Delegated rather than restated. This used to enforce `total === 100`
+  // unconditionally, which is the standard shape's rule and not the range
+  // shape's: a banded rubric scores each criterion on its own ladder, so its
+  // weights have no total to hit. A school whose rubric is a band ladder —
+  // which most DepEd rubrics on paper are — could not be published here at all,
+  // and the workaround was to have a teacher type it in, leaving the copy owned
+  // by that teacher rather than by the school.
+  //
+  // validateRubric already draws the line in the one place every other rubric
+  // write goes through, including the teacher's own templates and an activity's
+  // inline rubric. A second copy of the rule here is exactly how the two came
+  // to disagree.
+  const rubricError = validateRubric({ criteria, type });
+  if (rubricError) return { status: 400, body: { success: false, error: rubricError } };
   // School-wide names must be unique within the school — the rubric picker
   // shows names, so two identical ones cannot be told apart when choosing.
   // See the matching guard on the teacher route.
@@ -6525,8 +6535,8 @@ app.post('/api/admin/:adminId/curriculums/:curriculumId/rubrics', async (req, re
     if (!curriculum || curriculum.schoolId !== admin.schoolId) {
       return res.status(404).json({ success: false, error: 'Curriculum not found in your school.' });
     }
-    const { name, criteria, outputType } = req.body;
-    const refusal = await schoolRubricRefusal({ name, criteria }, admin.schoolId);
+    const { name, criteria, outputType, type } = req.body;
+    const refusal = await schoolRubricRefusal({ name, criteria, type }, admin.schoolId);
     if (refusal) return res.status(refusal.status).json(refusal.body);
 
     const rubric = await prisma.rubricTemplate.create({
@@ -6594,8 +6604,8 @@ app.post('/api/admin/:adminId/rubrics/extract', upload.single('rubricFile'), asy
 app.post('/api/admin/:adminId/rubrics', async (req, res) => {
   try {
     const admin = await requireAdminSchool(req.params.adminId);
-    const { name, criteria, gradeLevel, subject, outputType } = req.body;
-    const refusal = await schoolRubricRefusal({ name, criteria }, admin.schoolId);
+    const { name, criteria, gradeLevel, subject, outputType, type } = req.body;
+    const refusal = await schoolRubricRefusal({ name, criteria, type }, admin.schoolId);
     if (refusal) return res.status(refusal.status).json(refusal.body);
 
     const rubric = await prisma.rubricTemplate.create({

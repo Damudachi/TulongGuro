@@ -332,7 +332,7 @@ export default function AdminClasses() {
 
       {/* Add course shell modal */}
       {showForm && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4 overflow-y-auto">
+        <div className="fixed inset-0 bg-black/50 flex items-start justify-center z-50 p-4 overflow-y-auto">
           <div className="bg-white rounded-2xl p-6 w-full max-w-lg shadow-xl my-8">
             <h2 className="text-xl font-bold text-brand-slate mb-1">Create a course shell</h2>
             <p className="text-slate-500 text-sm mb-5">

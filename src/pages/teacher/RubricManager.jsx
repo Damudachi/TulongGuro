@@ -5,6 +5,10 @@ import { getStoredUser } from '../../utils/session';
 
 import { showAlert, showConfirm } from '../../utils/dialog';
 import { SKILLS, classifyCriterion, getSkillById, resolveCriterionSkill } from '../../utils/skillTaxonomy';
+// Shared with the admin's School Rubrics page, which can now author a banded
+// rubric too. One definition of what a band is, and of what happens to the
+// ladder when a criterion is re-pointed.
+import { DEFAULT_RANGE_BANDS, detectRubricType, rescaleBands } from '../../utils/rubric';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
 
@@ -39,65 +43,6 @@ const getBandColor = (label, index, totalBands) => {
   }
   
   return { bg: 'bg-slate-100', text: 'text-slate-700', border: 'border-slate-200' };
-};
-
-const detectRubricType = (rubric) => {
-  if (rubric.type) return rubric.type;
-  if (!rubric.criteria || !rubric.criteria.length) return 'standard';
-  return rubric.criteria.some(c => c.bands && c.bands.length > 0) ? 'range' : 'standard';
-};
-
-const DEFAULT_RANGE_BANDS = [
-  { label: 'Excellent', score: 5, description: 'Exceeds expectations.' },
-  { label: 'Very Good', score: 4, description: 'Meets expectations.' },
-  { label: 'Good', score: 3, description: 'Meets most expectations.' },
-  { label: 'Satisfactory', score: 2, description: 'Partially meets.' },
-  { label: 'Needs Improvement', score: 1, description: 'Does not meet.' },
-];
-
-/**
- * Re-point a criterion's scoring bands onto a new criterion maximum.
- *
- * A banded criterion states the same scale twice: once as its Points box and
- * once as the ladder underneath it. The grader is handed BOTH — formatRubricCriteria
- * prints "CRITERION 1: … (30 points maximum)" and then every band's own points —
- * so a criterion raised to 30 while its bands still read 1-5 hands the model two
- * different answers for what the criterion is out of. Teachers were left to fix
- * that by retyping five numbers the app can work out exactly.
- *
- * Proportional, anchored on the top band. The ladder's SHAPE is the teacher's
- * judgement — a 5/4/3/2/1 Likert and a 30/25/15/5/0 weighted ladder say
- * different things about how much a middling answer is worth — so only the
- * scale moves: the highest band lands exactly on the new maximum and the rest
- * keep their share of it. Rounding is plain and monotone, so the ladder never
- * inverts; it can flatten (five bands into a 3-point criterion cannot stay
- * distinct) and that is visible in the editor for the teacher to overrule.
- *
- * `range` is cleared where it existed. It is free text read off an uploaded
- * document ("27-30"), it wins over `score` in the grading prompt, and it
- * describes a scale that no longer exists once this has run — a stale range is
- * exactly the contradiction this function is here to remove.
- */
-const rescaleBands = (bands, newPoints, basisScores) => {
-  if (!Array.isArray(bands) || bands.length === 0) return bands;
-  const target = Number(newPoints) || 0;
-  if (target <= 0) return bands;
-
-  const basis = Array.isArray(basisScores) && basisScores.length === bands.length
-    ? basisScores.map(n => Number(n) || 0)
-    : bands.map(b => Number(b.score) || 0);
-  const basisMax = Math.max(...basis);
-  // Nothing to keep the proportions of. Bands that have never been pointed
-  // (a fresh criterion at 0) are left for the teacher rather than invented.
-  if (basisMax <= 0) return bands;
-
-  const topIndex = basis.indexOf(basisMax);
-  return bands.map((b, i) => {
-    const scaled = i === topIndex ? target : Math.round((basis[i] / basisMax) * target);
-    const next = { ...b, score: scaled };
-    if (next.range) next.range = '';
-    return next;
-  });
 };
 
 export default function RubricManager() {
