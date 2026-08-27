@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { BookOpen, Eye, EyeOff, UploadCloud, X, Image as ImageIcon, ArrowLeft, Clock, Pipette,
-  CheckCircle2, AlertTriangle, Loader2, FileText, ShieldCheck } from 'lucide-react';
+  CheckCircle2, AlertTriangle, Loader2, FileText, ShieldCheck, Check, Lock,
+  ArrowRight } from 'lucide-react';
 import { API_URL, apiFetch } from '../config';
 import { accountDomain, localPartOf, buildAccountEmail } from '../constants/accountEmails';
 import {
@@ -37,6 +38,32 @@ const COLOR_PRESETS = [
 
 /** Fallback swatch when the school picks no colour of its own. */
 const DEFAULT_BRAND = '#2B59C3';
+
+/**
+ * The three steps this form is divided into.
+ *
+ * It was one page of fourteen fields, two consent boxes and three uploads, and
+ * the length was doing real damage: the school code sat halfway down, so a
+ * registrant met the field that decides every login their school will ever have
+ * while scrolling past it on the way to a password box.
+ *
+ * The split follows what each step is *about*, not an even count of fields:
+ *
+ *   1. The school — is it real, and what is it called here.
+ *   2. The person — who is registering, and how they will sign in.
+ *   3. The branding — how it looks, which is the only step nothing depends on.
+ *
+ * That order is also a dependency order. The admin's address is built on the
+ * school code (principal@admin.mes-maba.edu.ph), and the code is derived from
+ * the school name, which the DepEd lookup fills in — so step 2 cannot be asked
+ * before step 1 is settled without showing an address that changes underneath
+ * the person typing it.
+ */
+const STEPS = [
+  { number: 1, label: 'Your School' },
+  { number: 2, label: 'Admin Account' },
+  { number: 3, label: 'Branding' },
+];
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
 
@@ -204,6 +231,12 @@ export default function Register() {
   // The name field's own complaint, shown under it rather than in the form-wide
   // error banner at the bottom — it belongs next to the field it is about.
   const [nameError, setNameError] = useState(null);
+  // Which of STEPS is on screen. 1-based, to match what the indicator shows.
+  const [step, setStep] = useState(1);
+  // Whether the registrant has asked to correct the name the DepEd lookup
+  // filled in. The field is read-only until they do — see the School Name
+  // block for why it is locked by default and why the escape hatch exists.
+  const [editingSchoolName, setEditingSchoolName] = useState(false);
 
   useEffect(() => () => { if (logoPreview) URL.revokeObjectURL(logoPreview); }, [logoPreview]);
   useEffect(() => () => { if (registrantIdPreview) URL.revokeObjectURL(registrantIdPreview); },
@@ -233,6 +266,7 @@ export default function Register() {
           // record is out of date has to be able to say so.
           setFormData(prev => ({ ...prev, schoolName: data.school.name }));
           setNameFromLookup(true);
+          setEditingSchoolName(false);
         } else setLookup({ state: 'missing' });
       } catch {
         // A lookup that could not run must not read as "your school isn't
@@ -343,6 +377,74 @@ export default function Register() {
   // one case a human has to judge by hand.
   const showProofField = lookup?.state === 'missing' || proofRequired;
 
+  /**
+   * What is still missing on one step, or null if it is complete.
+   *
+   * The server re-checks every one of these — this only decides whether
+   * "Continue" moves. It returns the sentence to show rather than a boolean,
+   * for the same reason fullNameProblem does: "please complete this step" makes
+   * someone hunt for the gap, and the gap is usually one field.
+   *
+   * Ordered the way each step reads, so the message names the first gap rather
+   * than an arbitrary one.
+   */
+  const stepProblem = (which) => {
+    if (which === 1) {
+      if (schoolId.replace(/\D/g, '').length < 5) return 'Please enter your DepEd School ID.';
+      if (lookup?.state === 'taken') {
+        return 'That school is already registered. Ask its admin to create your account instead.';
+      }
+      if (showProofField && !proof) {
+        return 'Your School ID is not in our copy of the DepEd list — please attach a document that shows your school exists.';
+      }
+      if (!formData.schoolName.trim()) return 'Please enter your school name.';
+      const codeProblem = schoolCodeProblem(schoolCodeValue);
+      if (codeProblem) return codeProblem;
+      if (schoolCode.state === 'taken') return 'That school code is taken. Please choose another.';
+      return null;
+    }
+    if (which === 2) {
+      const nameProblem = fullNameProblem(formData.name);
+      if (nameProblem) return nameProblem;
+      if (!formData.email.trim()) return 'Please choose the name part of your admin email address.';
+      if (!idConsent) return 'Please tick the box agreeing to upload your ID, then attach it.';
+      if (!registrantId) return 'Please attach a photo of your school or employee ID.';
+      if (!formData.contactEmail.trim()) return 'Please give a school contact email we can reach you on.';
+      if (!formData.password) return 'Please set a password.';
+      return null;
+    }
+    if (!logoConsent) return 'Please tick the box allowing us to display your school logo, then upload it.';
+    if (!logo) return 'Please upload your school logo.';
+    return null;
+  };
+
+  /**
+   * Move to the next step, or refuse and say why.
+   *
+   * The name field marks itself as well as the banner — a message about the
+   * name that only appears at the bottom of the step names a problem the reader
+   * then has to go looking for.
+   */
+  const goNext = () => {
+    const problem = stepProblem(step);
+    if (problem) {
+      if (step === 2) setNameError(fullNameProblem(formData.name));
+      return setError(problem);
+    }
+    setError('');
+    setStep(s => Math.min(s + 1, STEPS.length));
+    // A step change is a page change as far as the reader is concerned, and the
+    // card is taller than most screens — without this, step 2 opens scrolled to
+    // wherever step 1 was left.
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const goBack = () => {
+    setError('');
+    setStep(s => Math.max(s - 1, 1));
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
   /** Mirrors the server's own rules so a too-large photo is caught before it is
    *  uploaded over a phone connection rather than after. */
   const handleRegistrantIdPick = (e) => {
@@ -388,29 +490,22 @@ export default function Register() {
   const handleRegister = async (e) => {
     e.preventDefault();
     if (isSubmitting) return;
-    // Checked here as well as on the server: these sit far enough down a long
-    // form that "you missed one" is worth saying without a round trip. Ordered
-    // the way the form reads, so the message points at the first gap rather
-    // than the last.
-    // Runs before the consent checks so the form is corrected top to bottom,
-    // and marks the field itself rather than only the banner — otherwise the
-    // message names a problem the reader has to go hunting for.
-    const nameProblem = fullNameProblem(formData.name);
-    if (nameProblem) {
-      setNameError(nameProblem);
-      return setError(nameProblem);
-    }
-    if (!idConsent) {
-      return setError('Please tick the box agreeing to upload your ID, then attach it.');
-    }
-    if (!registrantId) {
-      return setError('Please attach a photo of your school or employee ID before submitting.');
-    }
-    if (!logoConsent) {
-      return setError('Please tick the box allowing us to display your school logo, then upload it.');
-    }
-    if (!logo) {
-      return setError('Please upload your school logo.');
+    // Enter in a text box submits the form, whichever step is showing. On the
+    // first two that has to mean "next", not "register" — otherwise a pressed
+    // Enter posts a half-filled registration, and the fields that would have
+    // caught it are unmounted so the browser never validates them.
+    if (step < STEPS.length) return goNext();
+    // Every step is re-checked here, not just the last one. The steps guard
+    // each other on the way forward, but nothing stops someone stepping back
+    // and emptying a field, and this is the last point before the request.
+    for (const { number } of STEPS) {
+      const problem = stepProblem(number);
+      if (problem) {
+        setStep(number);
+        if (number === 2) setNameError(fullNameProblem(formData.name));
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+        return setError(problem);
+      }
     }
     setError('');
     setIsSubmitting(true);
@@ -541,44 +636,165 @@ export default function Register() {
             </div>
           </div>
 
+          {/* ── Step indicator ──
+              Says how far in and how far left. On a form that now hides most of
+              itself, the reader otherwise cannot tell whether "Continue" leads
+              to one more screen or six — and the count is what makes a
+              three-screen form feel shorter than the one page it replaced,
+              rather than longer. */}
+          <div className="flex items-center gap-2 px-7 sm:px-9 py-4 border-b-2 border-cream-200 bg-cream-100/60">
+            {STEPS.map(({ number, label }) => (
+              <div key={number} className="flex items-center gap-2 min-w-0">
+                <span className={cn(
+                  'w-6 h-6 shrink-0 rounded-full grid place-items-center text-[11px] font-extrabold transition-colors',
+                  step === number && 'bg-royal-500 text-white',
+                  step > number && 'bg-emerald-500 text-white',
+                  step < number && 'bg-navy-200/60 text-navy-500',
+                )}>
+                  {step > number ? <Check className="w-3.5 h-3.5" /> : number}
+                </span>
+                <span className={cn(
+                  'text-xs font-bold truncate',
+                  step === number ? 'text-navy-700' : 'text-navy-400',
+                  // The two inactive labels are dropped on the narrowest
+                  // screens rather than being allowed to squeeze the current
+                  // one down to an ellipsis.
+                  step !== number && 'hidden sm:inline',
+                )}>
+                  {label}
+                </span>
+                {number < STEPS.length && <span className="w-4 h-0.5 shrink-0 rounded-full bg-navy-200/60" />}
+              </div>
+            ))}
+          </div>
+
           <div className="p-7 sm:p-9">
-            <div className="bg-sky-100 border-2 border-sky-200 rounded-2xl p-4 mb-6 text-xs text-navy-700 leading-relaxed">
-              As the school admin you'll create teacher accounts, publish the curriculum for each grade
-              level and subject, and set the rubrics your teachers grade with. Teachers and students
-              can't sign themselves up — you create teachers, and they create their students.
-              This first account is also the school's <strong>super admin</strong>: the only one who
-              can add or remove other admins later.
-            </div>
+            {/* Shown on the first step only. It explains what registering gets
+                you, which is worth reading once — repeating it on every step
+                would push the actual fields below the fold each time. */}
+            {step === 1 && (
+              <div className="bg-sky-100 border-2 border-sky-200 rounded-2xl p-4 mb-6 text-xs text-navy-700 leading-relaxed">
+                As the school admin you'll create teacher accounts, publish the curriculum for each grade
+                level and subject, and set the rubrics your teachers grade with. Teachers and students
+                can't sign themselves up — you create teachers, and they create their students.
+                This first account is also the school's <strong>super admin</strong>: the only one who
+                can add or remove other admins later.
+              </div>
+            )}
 
             <form onSubmit={handleRegister} className="space-y-5" autoComplete="off">
+              {step === 1 && (<>
+              {/* ── DepEd School ID ──
+                  The field that makes registration cost something. Everything
+                  else on this form is free to invent; this one has to name a
+                  school DepEd has actually recorded. */}
               <div>
-                <label className="tg-label">Your Full Name</label>
+                <label className="tg-label">DepEd School ID</label>
                 <input
                   type="text"
                   required
-                  className="tg-input"
-                  placeholder="Dela Cruz, Juan A."
-                  aria-describedby="full-name-hint"
-                  // Controlled, which it was not before — without `value` the
-                  // filtered string never made it back to the field, so a typed
-                  // digit would have stayed on screen.
-                  value={formData.name}
-                  onChange={(e) => setFormData({ ...formData, name: sanitizeName(e.target.value) })}
-                  // Checked on blur, not per keystroke: "Dela" is an incomplete
-                  // name, not a wrong one, and saying so while someone is still
-                  // typing it is nagging rather than helping.
-                  onBlur={() => setNameError(fullNameProblem(formData.name))}
+                  inputMode="numeric"
+                  className="tg-input tracking-[0.2em] font-mono"
+                  /* No placeholder. It used to show 136353, which is a real
+                     school's ID (Tanulong Elementary School) — a live value
+                     sitting in the one field on this form that is supposed to
+                     be proof, greyed out and one autofill away from being
+                     submitted as someone's answer. The hint below says what
+                     belongs here without naming anybody's school. */
+                  value={schoolId}
+                  aria-describedby="school-id-hint"
+                  onChange={(e) => handleSchoolIdChange(e.target.value)}
                 />
-                {nameError ? (
-                  <p className="flex items-start gap-1.5 text-xs font-semibold text-red-600 mt-1.5">
-                    <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" /> {nameError}
-                  </p>
-                ) : (
-                  <p id="full-name-hint" className="text-xs text-navy-400 mt-1.5 font-semibold">
-                    Lastname, First Name MI — as it appears on your DepEd records.
+
+                {lookup?.state === 'checking' && (
+                  <p className="flex items-center gap-1.5 text-xs font-semibold text-navy-400 mt-1.5">
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" /> Checking DepEd records…
                   </p>
                 )}
+
+                {lookup?.state === 'found' && (
+                  <div className="flex items-start gap-2 mt-2 p-3 rounded-2xl bg-emerald-50 border-2 border-emerald-200">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
+                    <div className="min-w-0 text-xs">
+                      <p className="font-extrabold text-emerald-800">{lookup.school.name}</p>
+                      {(lookup.school.division || lookup.school.region) && (
+                        <p className="text-emerald-700 font-semibold">
+                          {[lookup.school.division, lookup.school.region].filter(Boolean).join(' · ')}
+                        </p>
+                      )}
+                      {/* Now a way back rather than a way in: the name is
+                          filled automatically on a match, so this only appears
+                          once the registrant has edited it away from DepEd's
+                          spelling, and its job is to undo that in one tap. */}
+                      {formData.schoolName.trim() !== lookup.school.name && (
+                        <button type="button"
+                          onClick={() => {
+                            setFormData({ ...formData, schoolName: lookup.school.name });
+                            setNameFromLookup(true);
+                            setEditingSchoolName(false);
+                          }}
+                          className="mt-1 font-extrabold text-emerald-700 underline hover:text-emerald-900">
+                          Use this name
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {lookup?.state === 'taken' && (
+                  <div className="flex items-start gap-2 mt-2 p-3 rounded-2xl bg-amber-50 border-2 border-amber-200 text-xs">
+                    <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                    <p className="font-semibold text-amber-800">
+                      <strong className="font-extrabold">{lookup.school.name}</strong> is already on TulongGuro.
+                      Ask your school's admin to create your account instead of registering again.
+                    </p>
+                  </div>
+                )}
+
+                {lookup?.state === 'missing' && (
+                  <div className="flex items-start gap-2 mt-2 p-3 rounded-2xl bg-amber-50 border-2 border-amber-200 text-xs">
+                    <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                    <p className="font-semibold text-amber-800">
+                      We couldn't find this ID in the DepEd masterlist. Double-check it — and if it's
+                      right, attach a permit below and we'll review your school by hand.
+                    </p>
+                  </div>
+                )}
+
+                <p id="school-id-hint" className="text-xs text-navy-400 mt-1.5 font-semibold">
+                  The six-digit number on your school's DepEd records. We check it against the DepEd
+                  Masterlist of Schools so real schools get through quickly.
+                </p>
               </div>
+
+              {/* Shown only when the ID isn't on the list — the one case that
+                  needs a person to look at it. */}
+              {showProofField && (
+                <div className="p-4 rounded-2xl bg-cream-100 border-2 border-navy-700/10">
+                  <label className="tg-label">Proof your school exists</label>
+                  <p className="text-xs text-navy-500 font-semibold mb-3 leading-relaxed">
+                    A DepEd Government Permit, Certificate of Recognition, or similar document.
+                    New, recently renamed and private schools often aren't in our copy of the list yet.
+                  </p>
+                  {proof ? (
+                    <div className="flex items-center gap-2 p-3 rounded-xl bg-white border-2 border-navy-700/10">
+                      <FileText className="w-4 h-4 text-navy-500 shrink-0" />
+                      <span className="text-xs font-bold text-navy-700 truncate flex-1 min-w-0">{proof.name}</span>
+                      <button type="button" onClick={() => setProof(null)} title="Remove document"
+                        className="shrink-0 text-navy-400 hover:text-red-600">
+                        <X className="w-4 h-4" />
+                      </button>
+                    </div>
+                  ) : (
+                    <label className="flex items-center justify-center gap-2 p-4 border-2 border-dashed border-navy-300 rounded-xl cursor-pointer hover:border-royal-400 hover:bg-royal-50 transition-colors">
+                      <UploadCloud className="w-4 h-4 text-navy-400" />
+                      <span className="text-xs font-bold text-navy-500">Attach document</span>
+                      <input type="file" accept="image/*,.pdf,.docx" className="hidden" onChange={handleProofPick} />
+                    </label>
+                  )}
+                  <p className="text-[10px] text-navy-400 mt-1.5 font-semibold">Photo, PDF or Word — max 10MB</p>
+                </div>
+              )}
 
               {/* ── School name, then code, then the admin's address ──
                   This order is load-bearing, not cosmetic. The code is derived
@@ -589,25 +805,61 @@ export default function Register() {
                   Each field now depends only on the ones above it. */}
               <div>
                 <label className="tg-label">School Name</label>
-                <input
-                  type="text"
-                  required
-                  className="tg-input"
-                  placeholder="Manila Science High School"
-                  value={formData.schoolName}
-                  onChange={(e) => {
-                    setFormData({ ...formData, schoolName: e.target.value });
-                    setNameFromLookup(false);
-                  }}
-                />
+                {/* ── Read-only once DepEd has answered ──
+                    The name an operator checks against DepEd's records should
+                    be DepEd's own spelling, so once the lookup fills it in the
+                    box stops accepting typing. Locking it is not only tidiness:
+                    the school code is derived from this name, so a stray
+                    keystroke here silently changes every login the school will
+                    ever have.
+
+                    Not locked *shut*, though. A school that has been renamed
+                    since our copy of the masterlist was taken has to be able to
+                    say so, and that case is exactly the one an operator most
+                    needs to see. The button below reopens it, which makes
+                    correcting the name a deliberate act rather than an
+                    accident. */}
+                <div className="relative">
+                  <input
+                    type="text"
+                    required
+                    readOnly={nameFromLookup && !editingSchoolName}
+                    className={cn('tg-input', nameFromLookup && !editingSchoolName && 'pr-11 bg-cream-100 text-navy-500 cursor-not-allowed')}
+                    placeholder="Manila Science High School"
+                    value={formData.schoolName}
+                    aria-describedby="school-name-hint"
+                    onChange={(e) => {
+                      setFormData({ ...formData, schoolName: e.target.value });
+                      setNameFromLookup(false);
+                    }}
+                  />
+                  {nameFromLookup && !editingSchoolName && (
+                    <Lock className="w-4 h-4 text-navy-300 absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none" />
+                  )}
+                </div>
+
                 {/* Says where the value came from, because a field that fills
                     itself is otherwise indistinguishable from one the browser
-                    autocompleted — and this one is the name an operator will
-                    check against DepEd's records. */}
-                {nameFromLookup && (
-                  <p className="flex items-center gap-1.5 text-xs font-semibold text-emerald-700 mt-1.5">
-                    <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
-                    Filled from DepEd records — edit it if your school's name has changed.
+                    autocompleted. */}
+                {nameFromLookup && !editingSchoolName ? (
+                  <p id="school-name-hint" className="flex items-start gap-1.5 text-xs font-semibold text-emerald-700 mt-1.5">
+                    <CheckCircle2 className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                    <span>
+                      Filled from DepEd records and locked, so it matches the name we check against.{' '}
+                      <button
+                        type="button"
+                        onClick={() => setEditingSchoolName(true)}
+                        className="font-extrabold text-royal-500 hover:text-royal-600 underline decoration-dotted underline-offset-2"
+                      >
+                        My school's name has changed
+                      </button>
+                    </span>
+                  </p>
+                ) : (
+                  <p id="school-name-hint" className="text-xs text-navy-400 mt-1.5 font-semibold">
+                    {nameFromLookup || editingSchoolName
+                      ? 'Editing the name here — a reviewer will see it next to what DepEd has on record.'
+                      : 'Enter your DepEd School ID above and we will fill this in for you.'}
                   </p>
                 )}
               </div>
@@ -684,10 +936,47 @@ export default function Register() {
                   </div>
                 )}
 
-                <p id="school-code-hint" className="text-xs text-navy-400 mt-1.5 font-semibold">
-                  Suggested from your school's name — the initials plus the first four letters of the
-                  first word. You can change it now; once your school is approved it is permanent.
+                <p id="school-code-hint" className="text-xs text-navy-400 mt-1.5 font-semibold leading-relaxed">
+                  <strong className="text-navy-500">This code goes inside every account's email address at your school.</strong>{' '}
+                  It is suggested from your school's name — the initials, then the first four letters
+                  of the first word{suggestedCode && formData.schoolName.trim()
+                    ? <> (so <span className="font-mono font-bold text-navy-500">{formData.schoolName.trim()}</span> gives{' '}
+                        <span className="font-mono font-bold text-navy-500">{suggestedCode}</span>)</>
+                    : ''}.
+                  You can change it now; once your school is approved it is permanent.
                 </p>
+              </div>
+
+              </>)}
+
+              {step === 2 && (<>
+              <div>
+                <label className="tg-label">Your Full Name</label>
+                <input
+                  type="text"
+                  required
+                  className="tg-input"
+                  placeholder="Dela Cruz, Juan A."
+                  aria-describedby="full-name-hint"
+                  // Controlled, which it was not before — without `value` the
+                  // filtered string never made it back to the field, so a typed
+                  // digit would have stayed on screen.
+                  value={formData.name}
+                  onChange={(e) => setFormData({ ...formData, name: sanitizeName(e.target.value) })}
+                  // Checked on blur, not per keystroke: "Dela" is an incomplete
+                  // name, not a wrong one, and saying so while someone is still
+                  // typing it is nagging rather than helping.
+                  onBlur={() => setNameError(fullNameProblem(formData.name))}
+                />
+                {nameError ? (
+                  <p className="flex items-start gap-1.5 text-xs font-semibold text-red-600 mt-1.5">
+                    <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" /> {nameError}
+                  </p>
+                ) : (
+                  <p id="full-name-hint" className="text-xs text-navy-400 mt-1.5 font-semibold">
+                    Lastname, First Name MI — as it appears on your DepEd records.
+                  </p>
+                )}
               </div>
 
               <div>
@@ -722,117 +1011,6 @@ export default function Register() {
                   Teachers you create later get @{accountDomain('TEACHER', schoolCodeValue)} addresses.
                 </p>
               </div>
-
-              {/* ── DepEd School ID ──
-                  The field that makes registration cost something. Everything
-                  else on this form is free to invent; this one has to name a
-                  school DepEd has actually recorded. */}
-              <div>
-                <label className="tg-label">DepEd School ID</label>
-                <input
-                  type="text"
-                  required
-                  inputMode="numeric"
-                  className="tg-input tracking-[0.2em] font-mono"
-                  /* No placeholder. It used to show 136353, which is a real
-                     school's ID (Tanulong Elementary School) — a live value
-                     sitting in the one field on this form that is supposed to
-                     be proof, greyed out and one autofill away from being
-                     submitted as someone's answer. The hint below says what
-                     belongs here without naming anybody's school. */
-                  value={schoolId}
-                  aria-describedby="school-id-hint"
-                  onChange={(e) => handleSchoolIdChange(e.target.value)}
-                />
-
-                {lookup?.state === 'checking' && (
-                  <p className="flex items-center gap-1.5 text-xs font-semibold text-navy-400 mt-1.5">
-                    <Loader2 className="w-3.5 h-3.5 animate-spin" /> Checking DepEd records…
-                  </p>
-                )}
-
-                {lookup?.state === 'found' && (
-                  <div className="flex items-start gap-2 mt-2 p-3 rounded-2xl bg-emerald-50 border-2 border-emerald-200">
-                    <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
-                    <div className="min-w-0 text-xs">
-                      <p className="font-extrabold text-emerald-800">{lookup.school.name}</p>
-                      {(lookup.school.division || lookup.school.region) && (
-                        <p className="text-emerald-700 font-semibold">
-                          {[lookup.school.division, lookup.school.region].filter(Boolean).join(' · ')}
-                        </p>
-                      )}
-                      {/* Now a way back rather than a way in: the name is
-                          filled automatically on a match, so this only appears
-                          once the registrant has edited it away from DepEd's
-                          spelling, and its job is to undo that in one tap. */}
-                      {formData.schoolName.trim() !== lookup.school.name && (
-                        <button type="button"
-                          onClick={() => {
-                            setFormData({ ...formData, schoolName: lookup.school.name });
-                            setNameFromLookup(true);
-                          }}
-                          className="mt-1 font-extrabold text-emerald-700 underline hover:text-emerald-900">
-                          Use this name
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                )}
-
-                {lookup?.state === 'taken' && (
-                  <div className="flex items-start gap-2 mt-2 p-3 rounded-2xl bg-amber-50 border-2 border-amber-200 text-xs">
-                    <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
-                    <p className="font-semibold text-amber-800">
-                      <strong className="font-extrabold">{lookup.school.name}</strong> is already on TulongGuro.
-                      Ask your school's admin to create your account instead of registering again.
-                    </p>
-                  </div>
-                )}
-
-                {lookup?.state === 'missing' && (
-                  <div className="flex items-start gap-2 mt-2 p-3 rounded-2xl bg-amber-50 border-2 border-amber-200 text-xs">
-                    <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
-                    <p className="font-semibold text-amber-800">
-                      We couldn't find this ID in the DepEd masterlist. Double-check it — and if it's
-                      right, attach a permit below and we'll review your school by hand.
-                    </p>
-                  </div>
-                )}
-
-                <p id="school-id-hint" className="text-xs text-navy-400 mt-1.5 font-semibold">
-                  The six-digit number on your school's DepEd records. We check it against the DepEd
-                  Masterlist of Schools so real schools get through quickly.
-                </p>
-              </div>
-
-              {/* Shown only when the ID isn't on the list — the one case that
-                  needs a person to look at it. */}
-              {showProofField && (
-                <div className="p-4 rounded-2xl bg-cream-100 border-2 border-navy-700/10">
-                  <label className="tg-label">Proof your school exists</label>
-                  <p className="text-xs text-navy-500 font-semibold mb-3 leading-relaxed">
-                    A DepEd Government Permit, Certificate of Recognition, or similar document.
-                    New, recently renamed and private schools often aren't in our copy of the list yet.
-                  </p>
-                  {proof ? (
-                    <div className="flex items-center gap-2 p-3 rounded-xl bg-white border-2 border-navy-700/10">
-                      <FileText className="w-4 h-4 text-navy-500 shrink-0" />
-                      <span className="text-xs font-bold text-navy-700 truncate flex-1 min-w-0">{proof.name}</span>
-                      <button type="button" onClick={() => setProof(null)} title="Remove document"
-                        className="shrink-0 text-navy-400 hover:text-red-600">
-                        <X className="w-4 h-4" />
-                      </button>
-                    </div>
-                  ) : (
-                    <label className="flex items-center justify-center gap-2 p-4 border-2 border-dashed border-navy-300 rounded-xl cursor-pointer hover:border-royal-400 hover:bg-royal-50 transition-colors">
-                      <UploadCloud className="w-4 h-4 text-navy-400" />
-                      <span className="text-xs font-bold text-navy-500">Attach document</span>
-                      <input type="file" accept="image/*,.pdf,.docx" className="hidden" onChange={handleProofPick} />
-                    </label>
-                  )}
-                  <p className="text-[10px] text-navy-400 mt-1.5 font-semibold">Photo, PDF or Word — max 10MB</p>
-                </div>
-              )}
 
               {/* ── The registrant's own ID ──
                   Always shown, unlike the permit above. The School ID field
@@ -951,13 +1129,18 @@ export default function Register() {
                   </button>
                 </div>
               </div>
+              </>)}
 
+              {step === 3 && (<>
               {/* ── Branding ──
                   The logo is required; the colour is not. They are shown
                   together because they are the same decision to a school, but
                   only one of them is a file we would be storing and displaying
                   on their behalf, and only that one needs permission. */}
-              <div className="pt-5 border-t-2 border-cream-200">
+              {/* No top divider any more — it separated branding from the
+                  fields above it when this was one long page, and now there is
+                  nothing above it to separate from. */}
+              <div>
                 <div className="flex items-baseline justify-between mb-4">
                   <span className="text-sm font-bold text-navy-700">School Branding</span>
                   <span className="text-xs text-navy-400 font-semibold">Logo required · colour optional</span>
@@ -1066,6 +1249,7 @@ export default function Register() {
                   </div>
                 )}
               </div>
+              </>)}
 
               {error && (
                 <div role="alert" className="bg-red-50 border-2 border-red-200 text-red-700 text-sm font-bold rounded-2xl p-3.5 flex items-start gap-2">
@@ -1074,15 +1258,50 @@ export default function Register() {
                 </div>
               )}
 
-              <button
-                type="submit"
-                disabled={isSubmitting}
-                className="w-full rounded-full py-4 font-bold text-sm text-white bg-brand-chrome shadow-pop
-                           hover:bg-ink-800 active:translate-y-1 active:shadow-none transition-all
-                           disabled:opacity-50 disabled:pointer-events-none"
-              >
-                {isSubmitting ? 'Registering school...' : 'Register School & Create Admin'}
-              </button>
+              {/* ── Step navigation ──
+                  "Continue" is a plain button, not a submit: only the last step
+                  carries the one that registers, so there is exactly one control
+                  on the whole form that can create a school. Nothing here is
+                  disabled for being incomplete — a greyed-out button that will
+                  not say what is missing is the worst of both, so it stays live
+                  and goNext() names the gap instead. */}
+              <div className="flex items-center gap-3 pt-1">
+                {step > 1 && (
+                  <button
+                    type="button"
+                    onClick={goBack}
+                    disabled={isSubmitting}
+                    className="shrink-0 inline-flex items-center gap-1.5 rounded-full px-5 py-4 font-bold text-sm
+                               text-navy-600 bg-cream-100 border-2 border-navy-700/10
+                               hover:bg-cream-200 active:translate-y-0.5 transition-all
+                               disabled:opacity-50 disabled:pointer-events-none"
+                  >
+                    <ArrowLeft className="w-4 h-4" /> Back
+                  </button>
+                )}
+
+                {step < STEPS.length ? (
+                  <button
+                    type="button"
+                    onClick={goNext}
+                    className="flex-1 inline-flex items-center justify-center gap-1.5 rounded-full py-4 font-bold text-sm
+                               text-white bg-brand-chrome shadow-pop hover:bg-ink-800
+                               active:translate-y-1 active:shadow-none transition-all"
+                  >
+                    Continue <ArrowRight className="w-4 h-4" />
+                  </button>
+                ) : (
+                  <button
+                    type="submit"
+                    disabled={isSubmitting}
+                    className="flex-1 rounded-full py-4 font-bold text-sm text-white bg-brand-chrome shadow-pop
+                               hover:bg-ink-800 active:translate-y-1 active:shadow-none transition-all
+                               disabled:opacity-50 disabled:pointer-events-none"
+                  >
+                    {isSubmitting ? 'Registering school...' : 'Register School & Create Admin'}
+                  </button>
+                )}
+              </div>
             </form>
 
             <p className="text-center mt-7 pt-6 border-t-2 border-cream-200 text-sm text-navy-500">
