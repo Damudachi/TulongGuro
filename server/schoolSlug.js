@@ -30,12 +30,12 @@
  * is what keeps this workable for a teacher on a shared classroom PC and for a
  * Grade 1 pupil copying an ID off the board.
  *
- * ── Why initials *and* the first word ──
+ * ── Why initials *and* four letters of the name ──
  * Initials alone are not enough: most Philippine public elementary schools are
  * named "<Place> Elementary School", which collapses to three letters, so a few
  * hundred codes would have to cover tens of thousands of schools. Adding the
- * first four letters of the first word separates the common case — Mabalacat
- * and Mabiga are both MES but differ at the fourth letter.
+ * first four letters of the name separates the common case — Mabalacat and
+ * Mabiga are both MES but differ at the fourth letter.
  *
  * It does not separate schools with genuinely identical names, of which this
  * country has many: there are San Jose Elementary Schools in most provinces and
@@ -80,8 +80,9 @@ const RESERVED_SLUGS = new Set([
  */
 const FILLER_WORDS = new Set(['of', 'the', 'and', 'de', 'del', 'da', 'las', 'los', 'sa', 'ng', 'para']);
 
-/** How many characters of the first word are taken. Four separates Mabalacat
- *  from Mabiga while keeping `MES-MABA-26-0001` short enough to copy by hand. */
+/** How many characters of the name are taken for the second half of the code.
+ *  Four separates Mabalacat from Mabiga while keeping `MES-MABA-26-0001` short
+ *  enough for a Grade 1 learner to copy off the board. */
 const PLACE_LENGTH = 4;
 
 /** Bounds on a code someone types themselves. The upper bound is about the
@@ -128,11 +129,26 @@ function initialsOf(schoolName) {
   return words.map((word) => word[0]).join('').toLowerCase().slice(0, 4);
 }
 
-/** The place half: the first four letters of the first significant word. */
+/**
+ * The second half of the code: the first four letters of the *name*, with the
+ * significant words run together.
+ *
+ * Taken across the whole name rather than from the first word alone, which is
+ * what this did at first. The difference only shows on a first word shorter
+ * than four letters — and Philippine school names are full of them: San, Sta,
+ * Sto, Our. "San Joaquin Elementary School" gave `sjes-san`, spending a
+ * four-character budget on three characters and throwing away the only part of
+ * the name that says which San it is. Running the words together spends all
+ * four: `sjes-sanj`.
+ *
+ * Note this does not, on its own, separate San Joaquin from San Jose — both
+ * still reduce to `sanj`. Nothing four characters long could; what tells those
+ * two apart is the second word, which is what suggestAlternatives offers first.
+ */
 function placeOf(schoolName) {
   const words = significantWords(schoolName);
   if (words.length === 0) return '';
-  return words[0].toLowerCase().slice(0, PLACE_LENGTH);
+  return words.join('').toLowerCase().slice(0, PLACE_LENGTH);
 }
 
 /**

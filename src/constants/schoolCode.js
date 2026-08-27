@@ -1,13 +1,14 @@
 /**
  * How a school's code is derived from its name.
  *
- *   Mabalacat Elementary School  ->  mes-maba
- *   Angeles Elementary School    ->  aes-ange
- *   Doña Aurora Elementary School -> daes-dona
+ *   Mabalacat Elementary School   ->  mes-maba
+ *   Angeles Elementary School     ->  aes-ange
+ *   San Joaquin Elementary School ->  sjes-sanj
+ *   Doña Aurora Elementary School ->  daes-dona
  *
  * The initials of the significant words, then the first four letters of the
- * first word. See server/schoolSlug.js for what the code is for and why it is
- * shaped this way — that copy is the one that decides.
+ * name with those words run together. See server/schoolSlug.js for what the
+ * code is for and why it is shaped this way — that copy is the one that decides.
  *
  * ── Why a client copy exists ──
  * The suggestion is a pure function of the school name, so it does not need the
@@ -27,11 +28,11 @@
  * validates the code again on submit.
  */
 
-/** Words that carry no identity, so they neither contribute an initial nor get
- *  to be the "first word". Must match FILLER_WORDS in server/schoolSlug.js. */
+/** Words that carry no identity, so they contribute neither an initial nor any
+ *  letters. Must match FILLER_WORDS in server/schoolSlug.js. */
 const FILLER_WORDS = new Set(['of', 'the', 'and', 'de', 'del', 'da', 'las', 'los', 'sa', 'ng', 'para']);
 
-/** How many characters of the first word are taken. */
+/** How many characters of the name are taken for the second half of the code. */
 const PLACE_LENGTH = 4;
 
 export const MIN_SCHOOL_CODE_LENGTH = 3;
@@ -65,7 +66,12 @@ export function suggestSchoolCode(schoolName) {
   const initials = words.length === 1
     ? words[0].toLowerCase().slice(0, 4)
     : words.map((word) => word[0]).join('').toLowerCase().slice(0, 4);
-  const place = words[0].toLowerCase().slice(0, PLACE_LENGTH);
+  // Four letters of the *name*, with the significant words run together — not
+  // of the first word alone. The two differ only when the first word is shorter
+  // than four letters, which in Philippine school names is common (San, Sta,
+  // Sto, Our): "San Joaquin Elementary School" would otherwise spend a
+  // four-character budget on `san` and drop the part that says which San it is.
+  const place = words.join('').toLowerCase().slice(0, PLACE_LENGTH);
 
   // Nothing to join when the two halves are the same string — a one-word school
   // would otherwise get `tulo-tulo`, repeating itself and lengthening every

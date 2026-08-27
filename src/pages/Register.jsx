@@ -939,7 +939,7 @@ export default function Register() {
                 <p id="school-code-hint" className="text-xs text-navy-400 mt-1.5 font-semibold leading-relaxed">
                   <strong className="text-navy-500">This code goes inside every account's email address at your school.</strong>{' '}
                   It is suggested from your school's name — the initials, then the first four letters
-                  of the first word{suggestedCode && formData.schoolName.trim()
+                  of the name{suggestedCode && formData.schoolName.trim()
                     ? <> (so <span className="font-mono font-bold text-navy-500">{formData.schoolName.trim()}</span> gives{' '}
                         <span className="font-mono font-bold text-navy-500">{suggestedCode}</span>)</>
                     : ''}.
