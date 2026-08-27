@@ -141,6 +141,14 @@ export default function PlatformApprovals() {
   // A credential handed over once — a new operator's password, or a reset one.
   const [opDone, setOpDone] = useState(null);        // { name, email, password }
   const [opCopied, setOpCopied] = useState(false);
+  // Changing your *own* password. Separate from the reset above because it asks
+  // for the current one first — the reset route deliberately refuses self, so
+  // without this an operator had nowhere to change the password they were
+  // handed on a slip of paper.
+  const [showMyPassword, setShowMyPassword] = useState(false);
+  const [myPassword, setMyPassword] = useState({ currentPassword: '', newPassword: '' });
+  const [myPwSaving, setMyPwSaving] = useState(false);
+  const [myPwError, setMyPwError] = useState('');
 
   /**
    * fetch with the operator's session attached.
@@ -585,6 +593,50 @@ export default function PlatformApprovals() {
       showAlert('Network error. Is the API reachable?');
     } finally {
       setOpBusyId(null);
+    }
+  };
+
+  /**
+   * Change your own password.
+   *
+   * Goes to /api/auth/change-password, the same route every school account
+   * uses — it works off the session's own id and asks for the current password,
+   * so it needs no platform-specific handling. The operator reset route refuses
+   * to act on yourself precisely so this check cannot be skipped.
+   *
+   * The session is re-issued rather than kept: the server revokes every session
+   * for the account on a password change, which would otherwise sign the
+   * operator out of the tab they are standing in.
+   */
+  const changeMyPassword = async (e) => {
+    e.preventDefault();
+    if (myPwSaving) return;
+    setMyPwSaving(true);
+    setMyPwError('');
+    try {
+      const res = await opFetch(`${API_URL}/api/auth/change-password`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(myPassword),
+      });
+      const data = await res.json().catch(() => null);
+      if (!data?.success) return setMyPwError(data?.error || 'The password was not changed.');
+      if (data.token) {
+        sessionStorage.setItem(TOKEN_STORAGE, data.token);
+        setKey(data.token);
+      } else {
+        // No fresh token came back, so the session this tab holds has just been
+        // revoked. Signing out is the honest outcome — better than leaving a
+        // console whose next request will fail with no explanation.
+        signOut();
+      }
+      setShowMyPassword(false);
+      setMyPassword({ currentPassword: '', newPassword: '' });
+      showAlert('Your password has been changed.');
+    } catch {
+      setMyPwError('Network error. Is the API reachable?');
+    } finally {
+      setMyPwSaving(false);
     }
   };
 
@@ -1257,6 +1309,14 @@ export default function PlatformApprovals() {
               className="px-3.5 py-2 rounded-lg bg-ink-900 text-white text-xs font-bold hover:bg-ink-800">
               Add operator
             </button>
+            {/* The other half of the reset control on each row. That one
+                refuses your own account on purpose — changing your own password
+                has to ask for the current one — so this is where you do it. */}
+            <button
+              onClick={() => { setMyPassword({ currentPassword: '', newPassword: '' }); setMyPwError(''); setShowMyPassword(true); }}
+              className="px-3.5 py-2 rounded-lg bg-white border border-slate-200 text-slate-600 text-xs font-bold hover:bg-slate-50">
+              Change my password
+            </button>
             <button onClick={loadOperators} title="Refresh"
               className="ml-auto p-2 rounded-lg bg-white border border-slate-200 text-slate-500 hover:bg-slate-50">
               <RefreshCw className={cn('w-4 h-4', operatorsLoading && 'animate-spin')} />
@@ -1318,6 +1378,44 @@ export default function PlatformApprovals() {
                   )}
                 </div>
               ))}
+            </div>
+          )}
+
+          {showMyPassword && (
+            <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4">
+              <form onSubmit={changeMyPassword} className="w-full max-w-sm bg-white rounded-2xl border border-slate-200 shadow-lg p-6">
+                <h2 className="text-base font-bold text-slate-900 mb-1">Change your password</h2>
+                <p className="text-xs text-slate-500 mb-4 leading-relaxed">
+                  Signing in as <span className="font-mono">{operator?.email}</span>. Do this
+                  as soon as you have been given a generated password — a credential somebody
+                  read out to you should not stay in use.
+                </p>
+
+                <label className="block text-xs font-bold text-slate-500 mb-1.5" htmlFor="cur-pw">Current password</label>
+                <input id="cur-pw" type="password" required autoComplete="current-password"
+                  value={myPassword.currentPassword}
+                  onChange={e => setMyPassword({ ...myPassword, currentPassword: e.target.value })}
+                  className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-slate-900 mb-3" />
+
+                <label className="block text-xs font-bold text-slate-500 mb-1.5" htmlFor="new-pw">New password</label>
+                <input id="new-pw" type="password" required autoComplete="new-password"
+                  value={myPassword.newPassword}
+                  onChange={e => setMyPassword({ ...myPassword, newPassword: e.target.value })}
+                  className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-slate-900 mb-3" />
+
+                {myPwError && <p className="text-xs text-red-600 mb-3">{myPwError}</p>}
+
+                <div className="flex gap-2">
+                  <button type="button" onClick={() => setShowMyPassword(false)}
+                    className="flex-1 py-2.5 rounded-lg border border-slate-200 text-slate-600 font-bold text-sm hover:bg-slate-50">
+                    Cancel
+                  </button>
+                  <button type="submit" disabled={myPwSaving || myPassword.newPassword.length < 8}
+                    className="flex-1 py-2.5 rounded-lg bg-ink-900 text-white font-bold text-sm hover:bg-ink-800 disabled:opacity-40">
+                    {myPwSaving ? 'Changing…' : 'Change password'}
+                  </button>
+                </div>
+              </form>
             </div>
           )}
 
