@@ -3213,6 +3213,204 @@ app.post('/api/platform/schools/:schoolId/reject', platformRateLimit, async (req
   }
 });
 
+// ─────────────────────────────────────────
+// PLATFORM — admin accounts across schools
+// ─────────────────────────────────────────
+//
+// The super admin of this system is the platform operator, not anybody inside a
+// school. Schools used to carry their own super admin — the account that
+// registered them — and that account alone could add or remove other admins.
+// The tier is gone: every admin of a school is now a peer of every other, and
+// the authority that used to sit with the registrant sits here instead.
+//
+// That trade is what these three routes pay for. Peer admins can lock each
+// other out, and a school with one admin who has forgotten their password, or
+// left, has no way back on its own. Before, the answer was "a developer edits
+// the database". Now it is a screen.
+//
+// ── What guards these ──
+// PLATFORM_ADMIN_KEY, checked by requirePlatformKey, and nothing else — there
+// is no user account behind an operator. That key is bearer authority over
+// every school on the platform, which is exactly why these routes are narrow:
+// they read and change *admin accounts* and nothing else. No route here can
+// touch a grade, a submission, or a learner's record.
+//
+// Each one takes a schoolId in the path as well as the user id, and checks that
+// the target actually belongs to it. The user id alone would be enough to find
+// the row; requiring both means a mistyped or stale id fails as "not found in
+// that school" instead of quietly acting on somebody at another school.
+
+/** Loads an admin, asserting they belong to the named school. Shared by the two
+ *  routes that change an account, so "which admin, at which school" is decided
+ *  in one place rather than twice. */
+async function platformAdminInSchool(schoolId, userId) {
+  const school = await prisma.school.findUnique({ where: { id: schoolId } });
+  if (!school) {
+    const err = new Error('School not found.');
+    err.status = 404;
+    throw err;
+  }
+  const target = await prisma.user.findUnique({ where: { id: userId } });
+  if (!target || target.schoolId !== schoolId || target.role !== 'ADMIN') {
+    const err = new Error('That admin was not found in this school.');
+    err.status = 404;
+    throw err;
+  }
+  return { school, target };
+}
+
+/**
+ * The admin accounts of one school.
+ *
+ * Separate from the school list, which already embeds admins, because that list
+ * is a queue read once and this is a panel that has to be re-read after every
+ * action. Sharing the list route would mean refetching every school on the
+ * platform to redraw one row.
+ *
+ * Never returns the password hash — `select` is an allowlist here rather than
+ * an omission, so a column added to User later cannot leak by default.
+ */
+app.get('/api/platform/schools/:schoolId/admins', platformRateLimit, async (req, res) => {
+  try {
+    requirePlatformKey(req);
+    const school = await prisma.school.findUnique({
+      where: { id: req.params.schoolId },
+      select: { id: true, name: true, slug: true, status: true, ownerId: true },
+    });
+    if (!school) return res.status(404).json({ success: false, error: 'School not found.' });
+
+    const admins = await prisma.user.findMany({
+      where: { schoolId: school.id, role: 'ADMIN' },
+      select: { id: true, name: true, email: true, username: true, createdAt: true, sessionsValidFrom: true },
+      orderBy: { createdAt: 'asc' },
+    });
+
+    res.json({
+      success: true,
+      school,
+      // `registeredSchool` is a label, not a permission — it says who filled in
+      // the registration form, which is useful context for an operator deciding
+      // whose access to restore, and means nothing to the authorisation code.
+      admins: admins.map(a => ({ ...a, registeredSchool: a.id === school.ownerId })),
+    });
+  } catch (e) {
+    res.status(e.status || 500).json({ success: false, error: e.message });
+  }
+});
+
+/**
+ * Set an admin's password.
+ *
+ * The route that actually answers "our only admin is locked out". Whoever sets
+ * a password can sign in as that account, so this is the most powerful thing an
+ * operator can do to a school and is deliberately the plainest: one account,
+ * one new password, every existing session of theirs ended.
+ *
+ * Ending the sessions is not optional politeness. The reason to reset a
+ * password is usually that the old one is in the wrong hands, and a reset that
+ * left the current token working would change the lock while leaving the door
+ * open for up to a week.
+ */
+app.put('/api/platform/schools/:schoolId/admins/:userId/password', platformRateLimit, async (req, res) => {
+  try {
+    requirePlatformKey(req);
+    const { school, target } = await platformAdminInSchool(req.params.schoolId, req.params.userId);
+    const { password } = req.body || {};
+    if (!password) return res.status(400).json({ success: false, error: 'A new password is required.' });
+    if (String(password).length < 6) {
+      return res.status(400).json({ success: false, error: 'The password must be at least 6 characters.' });
+    }
+
+    const revokedAt = new Date();
+    await prisma.user.update({
+      where: { id: target.id },
+      data: { password: await bcrypt.hash(password, BCRYPT_SALT_ROUNDS), sessionsValidFrom: revokedAt },
+    });
+    markRevoked(target.id, revokedAt);
+
+    // Written into the school's own access history, so the change is visible to
+    // the school rather than only to us. An admin who finds their password has
+    // changed should be able to see that it was the platform operator and when
+    // — a silent change by an outside party is indistinguishable from a
+    // compromise. actorId is null because an operator is not a User row; the
+    // column is nullable for exactly this.
+    await prisma.adminAuditLog.create({
+      data: {
+        schoolId: school.id,
+        event: 'ADMIN_PASSWORD_RESET',
+        actorId: null,
+        actorName: 'TulongGuro platform operator',
+        targetId: target.id,
+        targetName: target.name,
+        targetEmail: target.email,
+      },
+    }).catch(() => { /* the reset already happened; losing the note is the lesser harm */ });
+
+    console.log(`🔑 Platform reset password for admin "${target.email}" at "${school.name}"`);
+    res.json({ success: true });
+  } catch (e) {
+    res.status(e.status || 500).json({ success: false, error: e.message });
+  }
+});
+
+/**
+ * Remove an admin — by demoting them to teacher, not by deleting them.
+ *
+ * Deleting the row is the wrong tool and the school-side route already learned
+ * this: an account carries classes, sections, rubrics and grading history, and
+ * dropping it would take a school's records with it. Demotion removes the
+ * console and keeps the person, which is what "remove admin" actually means.
+ * An account that should also stop existing goes through the ordinary
+ * remove-teacher flow afterwards, which knows how to refuse while real learners
+ * still hang off it.
+ *
+ * The last-admin guard is the one that matters. A school with no admin cannot
+ * add teachers, publish a curriculum or recover itself — and an operator
+ * clearing out a school's admin list one row at a time would not notice they
+ * had reached the last one until it was gone.
+ */
+app.put('/api/platform/schools/:schoolId/admins/:userId/demote', platformRateLimit, async (req, res) => {
+  try {
+    requirePlatformKey(req);
+    const { school, target } = await platformAdminInSchool(req.params.schoolId, req.params.userId);
+
+    const adminCount = await prisma.user.count({ where: { schoolId: school.id, role: 'ADMIN' } });
+    if (adminCount <= 1) {
+      return res.status(400).json({
+        success: false,
+        error: `${school.name} would be left with no admin. Add or restore another admin before removing this one.`,
+      });
+    }
+
+    const revokedAt = new Date();
+    await prisma.user.update({
+      where: { id: target.id },
+      // Their token still says ADMIN until it expires, and the token is what
+      // authorises every request — so without this the removal would not take
+      // effect for up to a week.
+      data: { role: 'TEACHER', sessionsValidFrom: revokedAt },
+    });
+    markRevoked(target.id, revokedAt);
+
+    await prisma.adminAuditLog.create({
+      data: {
+        schoolId: school.id,
+        event: 'ADMIN_DEMOTED',
+        actorId: null,
+        actorName: 'TulongGuro platform operator',
+        targetId: target.id,
+        targetName: target.name,
+        targetEmail: target.email,
+      },
+    }).catch(() => { /* see the note on the password route */ });
+
+    console.log(`👤 Platform removed admin "${target.email}" at "${school.name}" (now a teacher)`);
+    res.json({ success: true });
+  } catch (e) {
+    res.status(e.status || 500).json({ success: false, error: e.message });
+  }
+});
+
 /**
  * Sign out, for real.
  *
@@ -4623,19 +4821,30 @@ app.delete('/api/admin/:adminId/teachers/:teacherId', async (req, res) => {
 // where it is, on the PLATFORM_ADMIN_KEY routes that no school account can
 // reach.
 //
-// ── Who may use these four routes: the super admin, and nobody else ──
+// ── Every admin of a school is a peer ──
 //
-// "Any admin may add and remove any admin" is symmetric, and symmetry is the
-// problem: a co-admin added for one term could remove the head teacher who
-// added them, and the head teacher would find out by being unable to log in.
-// The school has no way back from that on its own — the remaining admin is a
-// legitimate admin, so nothing looks wrong from the outside.
+// There used to be a super admin inside each school — the account that
+// registered it — and it alone could add, promote, demote or reset another
+// admin. That tier is gone. All admins of a school now hold the same powers
+// over each other, and School.ownerId is a record of who registered the school
+// rather than a permission.
 //
-// The account that registered the school (School.ownerId, see the schema note)
-// is therefore the only one that may change the set of admins. Every other
-// admin power stays exactly where it was: a co-admin still runs teachers,
-// curriculum, rubrics, grading policy and every grade in the school. What they
-// cannot do is change who else holds the keys.
+// The risk the tier existed to cover is real and has not disappeared: "any
+// admin may remove any admin" is symmetric, so a co-admin added for one term
+// can demote the head teacher who added them, and the head teacher finds out by
+// losing the console. What changed is that the school is no longer alone with
+// that problem. The platform operator — us, holding PLATFORM_ADMIN_KEY — can
+// now see every school's admins and reset or restore access from outside
+// (see the /api/platform/schools/:schoolId/admins routes). A dispute inside a
+// school is answerable by the operator instead of by whoever registered first,
+// which is the right place for it: the registrant was never chosen for the job,
+// they simply filled in a form.
+//
+// Two guards are load-bearing and stay:
+//   • Nobody may demote or reset *themselves* here (coAdminInSchool).
+//   • A school must always keep at least one admin (the demote route).
+// Together those mean no sequence of calls on these routes can leave a school
+// with nobody who can reach it.
 //
 // Every route below reads the school from the *calling admin's* row and never
 // from the request. That is the one mistake here that would actually matter: a
@@ -4649,59 +4858,6 @@ app.delete('/api/admin/:adminId/teachers/:teacherId', async (req, res) => {
  * raised by an operator; nobody has yet.
  */
 const MAX_ADMINS_PER_SCHOOL = 5;
-
-/**
- * Who the school's super admin is — the account that registered it.
- *
- * School.ownerId is the stored answer, but it is nullable and every school that
- * existed before the column did has NULL there. Treating NULL as "nobody" would
- * lock those schools out of admin management entirely at the moment this
- * deploys, so it falls back to the earliest ADMIN row of the school, which is
- * who registered it — the same person ownerId would have named.
- *
- * The fallback is a read, not a write: scripts/backfill-school-owner.js exists
- * to make the answer permanent, and until it is run this is recomputed per
- * request. That is one indexed lookup on a route nobody calls in a loop.
- *
- * Returns null only for a school with no admins at all, which cannot happen
- * through any code path here — the demote guard keeps at least one — but is
- * treated as "no super admin" rather than "everyone is one" if it ever does.
- */
-async function resolveSuperAdminId(schoolId, school) {
-  if (school?.ownerId) return school.ownerId;
-  const first = await prisma.user.findFirst({
-    where: { schoolId, role: 'ADMIN' },
-    orderBy: { createdAt: 'asc' },
-    select: { id: true },
-  });
-  return first?.id || null;
-}
-
-/**
- * Refuses anyone but the super admin.
- *
- * Guards the four routes that change *who can reach the school*: create an
- * admin, promote a teacher into one, demote one, reset one's password. Every
- * other admin power is untouched — a co-admin still runs the school's
- * curriculum, teachers, rubrics and grading policy in full.
- *
- * The reason to draw the line exactly here: those four are the only actions
- * whose effect is on the set of admins itself, which makes them the only ones a
- * co-admin could use to remove the person who added them. Everything else is
- * authority over data, which co-admins are supposed to have.
- */
-async function requireSuperAdmin(admin) {
-  const superAdminId = await resolveSuperAdminId(admin.schoolId, admin.school);
-  if (!superAdminId || admin.id !== superAdminId) {
-    const err = new Error(
-      'Only the super admin — the account that registered this school — can add or remove admins. '
-      + 'Ask them to make the change.'
-    );
-    err.status = 403;
-    throw err;
-  }
-  return superAdminId;
-}
 
 /** Fire-and-forget: a failure to write history must not fail the action. */
 async function logAdminEvent(event, actor, target) {
@@ -4742,21 +4898,17 @@ async function coAdminInSchool(admin, userId) {
     err.status = 404;
     throw err;
   }
-  // The super admin cannot be demoted or have their password reset from here.
+  // Removed: the rule that protected the account which registered the school.
   //
-  // Strictly this is already unreachable: both routes are behind
-  // requireSuperAdmin, so the only caller is the super admin themselves, and
-  // the self-check above has already refused them. It is stated anyway because
-  // the guarantee "the account that registered the school cannot be removed by
-  // anyone inside it" should not rest on a second guard elsewhere continuing to
-  // be applied — if requireSuperAdmin is ever relaxed on one of these routes,
-  // this is what stops the relaxation from also handing over the school.
-  const superAdminId = await resolveSuperAdminId(admin.schoolId, admin.school);
-  if (superAdminId && target.id === superAdminId) {
-    const err = new Error('This is the super admin who registered the school. Their access cannot be changed here.');
-    err.status = 400;
-    throw err;
-  }
+  // It read "this is the super admin who registered the school, their access
+  // cannot be changed here", and it made the registrant permanently
+  // un-removable by their own colleagues. With the super-admin tier gone that
+  // is no longer a distinction the school recognises — the registrant is an
+  // admin like any other, and a school whose registrant has left needs to be
+  // able to take their access away without a support ticket.
+  //
+  // What still cannot happen is a school locking itself out: the self-check
+  // above and the last-admin count on the demote route cover that between them.
   return target;
 }
 
@@ -4780,9 +4932,6 @@ app.get('/api/admin/:adminId/admins', async (req, res) => {
       select: { id: true, name: true, email: true, createdAt: true },
       orderBy: { createdAt: 'asc' }
     });
-    // Sent so the page can label the row and hide the controls the caller
-    // cannot use, rather than offering four buttons that all end in a 403.
-    const superAdminId = await resolveSuperAdminId(admin.schoolId, admin.school);
     // 200, not 20: the console filters this feed by age — last day, week,
     // month, or all of it — and a twenty-row cap made "all" mean "the twenty
     // most recent", so a school that reshuffled its admins in September could
@@ -4807,8 +4956,6 @@ app.get('/api/admin/:adminId/admins', async (req, res) => {
       // which would be a claim it cannot support.
       historyUnavailable: history === null,
       maxAdmins: MAX_ADMINS_PER_SCHOOL,
-      superAdminId,
-      isSuperAdmin: !!superAdminId && admin.id === superAdminId,
       // The frontend puts these in front of the person typing an address; the
       // server is still what decides. Sent rather than hardcoded twice so a
       // change to the rule reaches an already-loaded page on its next request.
@@ -4822,7 +4969,6 @@ app.get('/api/admin/:adminId/admins', async (req, res) => {
 app.post('/api/admin/:adminId/admins', async (req, res) => {
   try {
     const admin = await requireAdminSchool(req.params.adminId);
-    await requireSuperAdmin(admin);
     const { name, email, password } = req.body || {};
     if (!name?.trim() || !email?.trim() || !password) {
       return res.status(400).json({ success: false, error: 'Name, email and a temporary password are required.' });
@@ -4889,7 +5035,6 @@ app.post('/api/admin/:adminId/admins', async (req, res) => {
 app.post('/api/admin/:adminId/admins/promote', async (req, res) => {
   try {
     const admin = await requireAdminSchool(req.params.adminId);
-    await requireSuperAdmin(admin);
     const { teacherId, adminEmail } = req.body || {};
     if (!teacherId) return res.status(400).json({ success: false, error: 'Choose a teacher to promote.' });
 
@@ -5005,7 +5150,6 @@ app.post('/api/admin/:adminId/admins/promote', async (req, res) => {
 app.put('/api/admin/:adminId/admins/:userId/demote', async (req, res) => {
   try {
     const admin = await requireAdminSchool(req.params.adminId);
-    await requireSuperAdmin(admin);
     const target = await coAdminInSchool(admin, req.params.userId);
 
     // The guard that matters most on this route. A school with no admin cannot
@@ -5041,10 +5185,6 @@ app.put('/api/admin/:adminId/admins/:userId/demote', async (req, res) => {
 app.put('/api/admin/:adminId/admins/:userId/password', async (req, res) => {
   try {
     const admin = await requireAdminSchool(req.params.adminId);
-    // Behind the same gate as add and remove, and for the same reason: whoever
-    // sets an admin's password can sign in as them, so this changes who can
-    // reach the school just as surely as creating an account does.
-    await requireSuperAdmin(admin);
     const target = await coAdminInSchool(admin, req.params.userId);
     const { password } = req.body || {};
     if (!password) return res.status(400).json({ success: false, error: 'A new password is required.' });

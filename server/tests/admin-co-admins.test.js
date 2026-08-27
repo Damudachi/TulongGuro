@@ -19,8 +19,10 @@ import { createRequire } from 'node:module';
  *   - a role change that the target's existing token outlives, since the token
  *     is what authorizes every request for up to another twelve hours;
  *   - promoting a teacher who still holds classes an admin cannot open;
- *   - any admin but the super admin changing who else can reach the school,
- *     which is how a co-admin could remove the head teacher who added them;
+ *   - the two guards that survived the removal of the per-school super admin:
+ *     an admin acting on their own account, and a school reaching zero admins.
+ *     Admins are peers now, so those two are the whole of what stops a school
+ *     locking itself out from the inside;
  *   - a staff account landing on the wrong email domain, which is what now
  *     tells a teacher account from an admin one by looking at it.
  *
@@ -481,8 +483,18 @@ describe('PUT /api/users/:userId/name', () => {
 // could remove the head teacher who added them, and the school had no way back
 // — the remaining admin is a perfectly legitimate admin, so nothing looks wrong
 // from outside.
-describe('the super admin gate', () => {
-  /** A co-admin — an ordinary admin of the same school who did not register it. */
+describe('every admin of a school is a peer', () => {
+  /**
+   * A co-admin — an ordinary admin of the same school who did not register it.
+   *
+   * These four routes used to be the registrant's alone, behind a super-admin
+   * gate. That tier is gone: a school's admins are peers, and the authority
+   * that used to sit with whoever filled in the registration form now sits with
+   * the platform operator, outside the school entirely.
+   *
+   * What is pinned here is that removing the tier did not also remove the two
+   * guards that stop a school locking itself out.
+   */
   const coAdminToken = () => signToken({ id: CO_ADMIN, role: 'ADMIN', schoolId: SCHOOL });
 
   const asCoAdmin = (method, path, body) =>
@@ -495,96 +507,69 @@ describe('the super admin gate', () => {
       ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
     });
 
-  it('refuses all four admin-management routes to a co-admin', async () => {
-    const attempts = [
-      ['POST', `/api/admin/${CO_ADMIN}/admins`, { name: 'X', email: 'x@admin.com', password: 'temp-pass-1' }],
-      ['POST', `/api/admin/${CO_ADMIN}/admins/promote`, { teacherId: FREE_TEACHER, adminEmail: 'x@admin.com' }],
-      ['PUT', `/api/admin/${CO_ADMIN}/admins/${ADMIN}/demote`, undefined],
-      ['PUT', `/api/admin/${CO_ADMIN}/admins/${ADMIN}/password`, { password: 'new-pass-1' }],
-    ];
-    for (const [method, path, body] of attempts) {
-      const res = await asCoAdmin(method, path, body);
-      expect(res.status, `${method} ${path}`).toBe(403);
-      expect((await res.json()).error).toMatch(/super admin/i);
-    }
-    // Nothing was written by any of them — the gate runs before every guard
-    // that could have let one through.
-    expect(prismaFake.user.create).not.toHaveBeenCalled();
+  it('lets a co-admin demote the admin who registered the school', async () => {
+    // The case the old tier existed to forbid, now allowed on purpose: a school
+    // whose registrant has left must be able to take their access away without
+    // a support ticket.
+    prismaFake.user.findUnique
+      .mockResolvedValueOnce({ id: CO_ADMIN, role: 'ADMIN', schoolId: SCHOOL, school: { id: SCHOOL } })
+      .mockResolvedValueOnce({ id: ADMIN, role: 'ADMIN', schoolId: SCHOOL });
+    prismaFake.user.count.mockResolvedValue(2);
+
+    const res = await asCoAdmin('PUT', `/api/admin/${CO_ADMIN}/admins/${ADMIN}/demote`);
+    expect(res.status).toBe(200);
+    expect(prismaFake.user.update).toHaveBeenCalledWith(expect.objectContaining({
+      where: { id: ADMIN },
+      data: expect.objectContaining({ role: 'TEACHER' }),
+    }));
+  });
+
+  it('still refuses to leave a school with no admin', async () => {
+    // The guard that replaced the tier as the thing standing between a school
+    // and being locked out of itself.
+    prismaFake.user.findUnique
+      .mockResolvedValueOnce({ id: CO_ADMIN, role: 'ADMIN', schoolId: SCHOOL, school: { id: SCHOOL } })
+      .mockResolvedValueOnce({ id: ADMIN, role: 'ADMIN', schoolId: SCHOOL });
+    prismaFake.user.count.mockResolvedValue(1);
+
+    const res = await asCoAdmin('PUT', `/api/admin/${CO_ADMIN}/admins/${ADMIN}/demote`);
+    expect(res.status).toBe(400);
     expect(prismaFake.user.update).not.toHaveBeenCalled();
   });
 
-  it('still lets a co-admin read the list', async () => {
-    // Refusing to *change* who can reach the school is the point; refusing to
-    // show them would leave an admin unable to see who else holds the keys.
+  it('still refuses an admin acting on their own account', async () => {
+    // The other half of that guarantee. Without it, peer admins would be able
+    // to demote themselves one after another until nobody was left.
+    prismaFake.user.findUnique
+      .mockResolvedValue({ id: CO_ADMIN, role: 'ADMIN', schoolId: SCHOOL, school: { id: SCHOOL } });
+
+    for (const [method, path, body] of [
+      ['PUT', `/api/admin/${CO_ADMIN}/admins/${CO_ADMIN}/demote`, undefined],
+      ['PUT', `/api/admin/${CO_ADMIN}/admins/${CO_ADMIN}/password`, { password: 'new-pass-1' }],
+    ]) {
+      const res = await asCoAdmin(method, path, body);
+      expect(res.status, `${method} ${path}`).toBe(400);
+    }
+    expect(prismaFake.user.update).not.toHaveBeenCalled();
+  });
+
+  it('no longer reports a super admin on the list', async () => {
+    prismaFake.user.findUnique.mockResolvedValue({
+      id: CO_ADMIN, role: 'ADMIN', schoolId: SCHOOL, school: { id: SCHOOL },
+    });
     prismaFake.user.findMany.mockResolvedValue([
       { id: ADMIN, name: 'Head Admin', email: 'head@admin.com', createdAt: new Date() },
     ]);
+    prismaFake.adminAuditLog.findMany.mockResolvedValue([]);
+
     const res = await asCoAdmin('GET', `/api/admin/${CO_ADMIN}/admins`);
-    expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body.admins).toHaveLength(1);
-    // Sent so the page can hide the controls this caller cannot use instead of
-    // offering four buttons that all end in the 403 above.
-    expect(body.superAdminId).toBe(ADMIN);
-    expect(body.isSuperAdmin).toBe(false);
-  });
-
-  it('reports the caller as super admin when they are', async () => {
-    const res = await call('GET', `/api/admin/${ADMIN}/admins`);
-    const body = await res.json();
-    expect(body.superAdminId).toBe(ADMIN);
-    expect(body.isSuperAdmin).toBe(true);
-  });
-
-  it('falls back to the earliest admin for a school registered before ownerId existed', async () => {
-    // Every school that already existed has ownerId NULL. Treating that as
-    // "nobody" would lock those schools out of admin management the moment this
-    // deploys, so the earliest ADMIN row — who registered it — stands in.
-    const legacy = { ...usersById.get(ADMIN), school: { id: SCHOOL, name: 'Test ES', status: 'APPROVED', ownerId: null } };
-    usersById.set(ADMIN, legacy);
-    // findFirst serves two questions on this route — "who is the super admin"
-    // and "is this address taken" — and answering both with the same row makes
-    // every new admin look like a duplicate of the founder. The ordered lookup
-    // is the super-admin one.
-    prismaFake.user.findFirst.mockImplementation(async (args) => (args?.orderBy ? { id: ADMIN } : null));
-
-    const res = await call('POST', `/api/admin/${ADMIN}/admins`, {
-      name: 'Principal', email: 'principal@admin.com', password: 'temp-pass-1',
-    });
     expect(res.status).toBe(200);
-    expect(prismaFake.user.findFirst).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: { schoolId: SCHOOL, role: 'ADMIN' },
-        orderBy: { createdAt: 'asc' },
-      }),
-    );
-  });
-
-  it('refuses everyone when a legacy school resolves to a different first admin', async () => {
-    const legacy = { ...usersById.get(ADMIN), school: { id: SCHOOL, name: 'Test ES', status: 'APPROVED', ownerId: null } };
-    usersById.set(ADMIN, legacy);
-    prismaFake.user.findFirst.mockImplementation(async (args) => (args?.orderBy ? { id: CO_ADMIN } : null));   // somebody else registered it
-
-    const res = await call('POST', `/api/admin/${ADMIN}/admins`, {
-      name: 'Principal', email: 'principal@admin.com', password: 'temp-pass-1',
-    });
-    expect(res.status).toBe(403);
-    expect(prismaFake.user.create).not.toHaveBeenCalled();
-  });
-
-  it('cannot have its own access taken away from inside the school', async () => {
-    // Unreachable through the gate above — only the super admin gets this far,
-    // and the self-check refuses them. Pinned anyway: "the account that
-    // registered the school cannot be removed by anyone inside it" must not
-    // depend on a guard somewhere else continuing to be applied.
-    for (const [method, path, body] of [
-      ['PUT', `/api/admin/${ADMIN}/admins/${ADMIN}/demote`, undefined],
-      ['PUT', `/api/admin/${ADMIN}/admins/${ADMIN}/password`, { password: 'new-pass-1' }],
-    ]) {
-      const res = await call(method, path, body);
-      expect(res.status).toBe(400);
-    }
-    expect(prismaFake.user.update).not.toHaveBeenCalled();
+    expect(body.success).toBe(true);
+    // The two fields the console used to hide its controls behind. Their
+    // absence is what tells the client every admin may now use them.
+    expect(body.superAdminId).toBeUndefined();
+    expect(body.isSuperAdmin).toBeUndefined();
   });
 });
 

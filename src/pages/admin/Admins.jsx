@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import {
   Plus, Loader2, KeyRound, X, Copy, Check, ArrowUpCircle,
-  UserMinus, History, Info, Pencil, ShieldCheck
+  UserMinus, History, Info, Pencil
 } from 'lucide-react';
 import { API_URL, apiFetch } from '../../config';
 import { getStoredUser, updateStoredUser } from '../../utils/session';
@@ -318,14 +318,13 @@ export default function AdminAdmins() {
       });
   const maxAdmins = data?.maxAdmins || 5;
   const atCap = admins.length >= maxAdmins;
-  // Who may change the set of admins. Defaults to false when the list could not
-  // be read: offering controls that will 403 is worse than hiding controls that
-  // would have worked, and the load-failure banner already says the page is not
-  // showing the state of the school.
-  const superAdminId = data?.superAdminId || null;
-  const iAmSuperAdmin = !!data?.isSuperAdmin;
-  const superAdmin = admins.find(a => a.id === superAdminId) || null;
-  const canManage = iAmSuperAdmin && !loadFailed;
+  // Every admin of a school may now change the set of admins — the super-admin
+  // tier inside a school is gone, and School.ownerId is a record of who
+  // registered rather than a permission. The only thing that still withholds
+  // these controls is a failed load: offering buttons while the page does not
+  // know the state of the school is worse than showing none, and the
+  // load-failure banner below already says so.
+  const canManage = !loadFailed;
   // Mirrors the server's promotion guard so the reason is visible before the
   // click, not only after it. The server still decides — this is only the copy.
   const eligible = teachers.filter(t => !(t._count?.taughtClasses || t._count?.ownedSections));
@@ -358,39 +357,26 @@ export default function AdminAdmins() {
       {/* What the role actually means. Admin is total authority over the
           school's data, and someone adding a colleague should be told that
           before they do it rather than discover it afterwards. */}
-      {canManage ? (
-        <div className="bg-blue-50 border border-blue-200 rounded-2xl p-4 mb-6 flex gap-3">
-          <Info className="w-5 h-5 text-brand-navy shrink-0 mt-0.5" />
-          <div className="text-sm text-blue-900">
-            <p className="font-bold mb-1">An admin can do everything you can, except this page.</p>
-            <p className="text-blue-800 text-xs leading-relaxed">
-              An admin adds and removes teachers, changes the grading policy, and reads every
-              learner's grades. Give it only to people who run the school — colleagues who teach
-              need a teacher account instead. Adding and removing admins stays with you as the
-              super admin, so nobody you add here can remove you. A school can have up to{' '}
-              {maxAdmins} admins, and must always keep at least one. Admin accounts sign in on{' '}
-              @{accountDomain('ADMIN', school?.slug)}.
-            </p>
-          </div>
+      <div className="bg-blue-50 border border-blue-200 rounded-2xl p-4 mb-6 flex gap-3">
+        <Info className="w-5 h-5 text-brand-navy shrink-0 mt-0.5" />
+        <div className="text-sm text-blue-900">
+          <p className="font-bold mb-1">Everyone on this list can also change this list.</p>
+          <p className="text-blue-800 text-xs leading-relaxed">
+            An admin adds and removes teachers, changes the grading policy, and reads every
+            learner's grades. Give it only to people who run the school — colleagues who teach
+            need a teacher account instead. Every admin here is a peer: each one can add or
+            remove any of the others, including you, so add people you would trust with the
+            whole school. A school can have up to {maxAdmins} admins and must always keep at
+            least one. Admin accounts sign in on @{accountDomain('ADMIN', school?.slug)}.
+          </p>
+          {/* Named because peer admins can lock each other out, and a school
+              that does not know there is a way back will treat it as final. */}
+          <p className="text-blue-800 text-xs leading-relaxed mt-2">
+            Locked out, or need an admin restored? Contact TulongGuro support — a platform
+            operator can reset any admin's password or remove admin access from outside the school.
+          </p>
         </div>
-      ) : (
-        /* Not a refusal to read — every admin should be able to see who else can
-           reach their school. It is a refusal to *change* it, and saying whose
-           job that is beats leaving them to guess why the buttons are missing. */
-        <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4 mb-6 flex gap-3">
-          <ShieldCheck className="w-5 h-5 text-slate-400 shrink-0 mt-0.5" />
-          <div className="text-sm text-slate-700">
-            <p className="font-bold mb-1">Only the super admin can change this list.</p>
-            <p className="text-slate-600 text-xs leading-relaxed">
-              {superAdmin
-                ? <>Admin accounts are added and removed by <strong>{superAdmin.name}</strong>{superAdmin.email ? ` (${superAdmin.email})` : ''}, who registered this school. Ask them to make the change.</>
-                : <>Admin accounts are added and removed by whoever registered this school. Ask them to make the change.</>}
-              {' '}Everything else an admin does — teachers, curriculum, rubrics, grading policy —
-              is fully yours.
-            </p>
-          </div>
-        </div>
-      )}
+      </div>
 
       {loadFailed && (
         <div className="bg-red-50 border border-red-200 rounded-2xl p-4 mb-6">
@@ -447,7 +433,6 @@ export default function AdminAdmins() {
           // The last admin cannot be demoted; saying so on the button is
           // friendlier than letting the server refuse after a confirm dialog.
           const isLast = admins.length <= 1;
-          const isSuper = !!superAdminId && a.id === superAdminId;
           return (
             <div key={a.id}
               className="bg-white border border-slate-200 rounded-xl p-4 flex items-center gap-4">
@@ -474,12 +459,6 @@ export default function AdminAdmins() {
                 ) : (
                   <p className="font-semibold text-brand-slate truncate flex items-center gap-2">
                     <span className="truncate">{a.name}</span>
-                    {isSuper && (
-                      <span title="Registered this school — the only account that can add or remove admins"
-                        className="text-[10px] font-bold uppercase tracking-wide text-amber-700 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-full shrink-0 flex items-center gap-1">
-                        <ShieldCheck className="w-3 h-3" /> Super admin
-                      </span>
-                    )}
                     {isMe && (
                       <>
                         <span className="text-[10px] font-bold uppercase tracking-wide text-brand-navy bg-blue-50 px-2 py-0.5 rounded-full shrink-0">You</span>
@@ -508,7 +487,7 @@ export default function AdminAdmins() {
                   </button>
                   <button onClick={() => handleDemote(a)}
                     disabled={isMe || isLast || busyId === a.id}
-                    title={isMe ? 'The super admin cannot remove their own access' : isLast ? 'A school must keep at least one admin' : 'Remove admin access'}
+                    title={isMe ? 'You cannot remove your own admin access — ask another admin' : isLast ? 'A school must keep at least one admin' : 'Remove admin access'}
                     className="p-2 rounded-lg bg-slate-100 text-slate-600 hover:bg-red-100 hover:text-red-600 disabled:opacity-30">
                     {busyId === a.id ? <Loader2 className="w-4 h-4 animate-spin" /> : <UserMinus className="w-4 h-4" />}
                   </button>

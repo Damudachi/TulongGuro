@@ -1,7 +1,7 @@
 ﻿import { useState, useEffect, useCallback } from 'react';
 import { ShieldCheck, Loader2, Check, X, Building2, Mail, RefreshCw, AlertTriangle,
   BadgeCheck, HelpCircle, FileText, Copy, Globe, Trash2, CheckSquare, Square,
-  ChevronDown } from 'lucide-react';
+  ChevronDown, KeyRound, UserMinus, Users, Search, ClipboardCheck } from 'lucide-react';
 import { API_URL, apiFetch } from '../config';
 
 import { showAlert, showConfirm } from '../utils/dialog';
@@ -19,6 +19,33 @@ function cn(...cls) { return cls.filter(Boolean).join(' '); }
  * treat it like a password, not like a URL.
  */
 const KEY_STORAGE = 'tg_platform_key';
+
+/**
+ * The two things an operator does here, as top-level views.
+ *
+ * They were one screen when approvals were the only job. Admin-account
+ * management is not a variation on approving a school — it is opened for a
+ * different reason (a school locked out, an admin who left), acts on a
+ * different object, and is mostly used on schools that were approved months
+ * ago. Sharing one list would mean a status filter that means two things at
+ * once, so they get a switch instead.
+ */
+const VIEWS = [
+  { key: 'approvals', label: 'Approvals', Icon: ClipboardCheck },
+  { key: 'admins', label: 'Admin accounts', Icon: Users },
+];
+
+/**
+ * A temporary password, in the same alphabet the school-facing screens use.
+ *
+ * No look-alike characters (0/O, 1/l/I): this is read off one screen and typed
+ * into another, often over a phone call, and a password that cannot be
+ * dictated is a support ticket of its own.
+ */
+function generatePassword() {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789';
+  return Array.from({ length: 12 }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
+}
 
 const STATUS_STYLES = {
   PENDING: 'bg-amber-100 text-amber-800',
@@ -63,6 +90,28 @@ export default function PlatformApprovals() {
   // the collapsed row still carries the two facts that identify a school â€”
   // its name and its DepEd ID.
   const [expanded, setExpanded] = useState(() => new Set());
+
+  // ── Admin-accounts view ──
+  //
+  // Its own school list rather than a filter on the approvals one: this view
+  // asks "which school", not "which queue", so it reads every school at once
+  // and narrows by typing. `adminsBySchool` is keyed by school id so an action
+  // can redraw one school's rows without refetching the platform.
+  const [view, setView] = useState('approvals');
+  const [adminSchools, setAdminSchools] = useState([]);
+  const [adminsBySchool, setAdminsBySchool] = useState({});
+  const [adminQuery, setAdminQuery] = useState('');
+  const [openSchoolId, setOpenSchoolId] = useState(null);
+  const [adminBusyId, setAdminBusyId] = useState(null);
+  const [adminsLoading, setAdminsLoading] = useState(false);
+  // The set-password dialog: which admin, and the value being handed over.
+  // Held here rather than per row so only one can ever be open — two open at
+  // once is how the wrong password reaches the right person.
+  const [pwFor, setPwFor] = useState(null);          // { school, admin }
+  const [pwValue, setPwValue] = useState('');
+  const [pwSaving, setPwSaving] = useState(false);
+  const [pwDone, setPwDone] = useState(null);        // { admin, password }
+  const [pwCopied, setPwCopied] = useState(false);
 
   const load = useCallback(async () => {
     if (!key) return;
@@ -231,6 +280,139 @@ export default function PlatformApprovals() {
   };
 
   // â”€â”€ Key gate â”€â”€
+  /**
+   * Every school, for the admin-accounts view.
+   *
+   * `status=ALL` on purpose. Admin trouble is not confined to approved schools
+   * - a pending one whose registrant typed their own password wrong is exactly
+   * the case an operator gets called about - and hiding those would leave the
+   * screen unable to answer the question it exists for. Each row carries its
+   * status so nothing reads as approved that is not.
+   *
+   * The list endpoint already embeds each school's admins, so opening a row
+   * costs nothing; the per-school route is only used to redraw after an action.
+   */
+  const loadAdminSchools = useCallback(async () => {
+    if (!key) return;
+    setAdminsLoading(true);
+    setError('');
+    try {
+      const res = await apiFetch(`${API_URL}/api/platform/schools?status=ALL`, {
+        headers: { 'x-platform-key': key },
+      });
+      const data = await res.json();
+      if (!data.success) {
+        setError(data.error || 'Could not load schools.');
+        if (res.status === 401) { sessionStorage.removeItem(KEY_STORAGE); setKey(''); }
+        return;
+      }
+      const list = data.schools || [];
+      setAdminSchools(list);
+      // Seeded from what the list already returned, so a row opens filled in
+      // rather than spinning on a request that would return the same thing.
+      setAdminsBySchool(Object.fromEntries(list.map(s => [s.id, s.users || []])));
+    } catch {
+      setError('Network error. Is the API reachable?');
+    } finally {
+      setAdminsLoading(false);
+    }
+  }, [key]);
+
+  // eslint-disable-next-line react-hooks/set-state-in-effect -- same shape as the approvals load above: a loading flag ahead of an async read
+  useEffect(() => { if (view === 'admins') loadAdminSchools(); }, [view, loadAdminSchools]);
+
+  /** Re-read one school's admins after an action, so the row reflects what the
+   *  server now holds rather than what the client assumed it would. */
+  const refreshAdmins = async (schoolId) => {
+    try {
+      const res = await apiFetch(`${API_URL}/api/platform/schools/${schoolId}/admins`, {
+        headers: { 'x-platform-key': key },
+      });
+      const data = await res.json();
+      if (data.success) setAdminsBySchool(prev => ({ ...prev, [schoolId]: data.admins || [] }));
+    } catch { /* the action landed; a stale row is the lesser problem */ }
+  };
+
+  const openSetPassword = (school, admin) => {
+    setPwFor({ school, admin });
+    setPwValue(generatePassword());
+    setPwDone(null);
+    setPwCopied(false);
+  };
+
+  /**
+   * Set an admin's password.
+   *
+   * The new password is shown once, afterwards, with a copy button - never
+   * mailed, because there is no SMTP and the address it would go to is a
+   * synthetic login domain with no mailbox behind it. The operator reads it to
+   * the school. That is also why it is generated rather than typed: an operator
+   * inventing passwords under time pressure invents weak ones.
+   */
+  const submitPassword = async (e) => {
+    e.preventDefault();
+    if (!pwFor || pwSaving) return;
+    setPwSaving(true);
+    try {
+      const { school, admin } = pwFor;
+      const res = await apiFetch(
+        `${API_URL}/api/platform/schools/${school.id}/admins/${admin.id}/password`,
+        {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json', 'x-platform-key': key },
+          body: JSON.stringify({ password: pwValue }),
+        },
+      );
+      const data = await res.json().catch(() => null);
+      if (!data?.success) return showAlert(data?.error || 'The password was not changed.');
+      setPwDone({ admin, password: pwValue });
+      setPwFor(null);
+      await refreshAdmins(school.id);
+    } catch {
+      showAlert('Network error. Is the API reachable?');
+    } finally {
+      setPwSaving(false);
+    }
+  };
+
+  /**
+   * Remove admin access - a demotion to teacher, not a deletion.
+   *
+   * The dialog says which of those it is. "Remove admin" reads as "delete the
+   * person" to anyone who has not read the server code, and an operator who
+   * believes they are deleting an account will hesitate over the wrong thing.
+   */
+  const removeAdmin = async (school, admin) => {
+    const ok = await showConfirm(
+      `${admin.name} keeps their account and their teaching data - they become a teacher at `
+      + `${school.name} and lose the admin console. Any session they have open ends immediately.`,
+      { title: `Remove admin access from ${admin.name}?`, confirmLabel: 'Remove admin access', danger: true },
+    );
+    if (!ok) return;
+    setAdminBusyId(admin.id);
+    try {
+      const res = await apiFetch(
+        `${API_URL}/api/platform/schools/${school.id}/admins/${admin.id}/demote`,
+        { method: 'PUT', headers: { 'x-platform-key': key } },
+      );
+      const data = await res.json().catch(() => null);
+      if (!data?.success) return showAlert(data?.error || 'That did not work.');
+      await refreshAdmins(school.id);
+    } catch {
+      showAlert('Network error. Is the API reachable?');
+    } finally {
+      setAdminBusyId(null);
+    }
+  };
+
+  /** Schools narrowed by the search box - name, school code or DepEd ID, since
+   *  an operator is usually reading one of the three off a support message. */
+  const adminQ = adminQuery.trim().toLowerCase();
+  const filteredAdminSchools = !adminQ ? adminSchools : adminSchools.filter(s =>
+    (s.name || '').toLowerCase().includes(adminQ)
+    || (s.slug || '').toLowerCase().includes(adminQ)
+    || (s.depedSchoolId || '').includes(adminQ));
+
   if (!key) {
     return (
       <div className="min-h-screen bg-slate-100 flex items-center justify-center p-4">
@@ -272,22 +454,46 @@ export default function PlatformApprovals() {
   return (
     <div className="min-h-screen bg-slate-100 p-4 md:p-8">
       <div className="max-w-3xl mx-auto">
-        <div className="flex items-start justify-between gap-4 mb-6">
-          <div>
+        {/* The header names the authority rather than the task, now that there
+            is more than one task. An operator holding this key is the platform
+            super admin - the only super admin the system has since the per-school
+            tier was removed - and the screen should say so, because the powers
+            below only make sense in that light. */}
+        <div className="flex items-start justify-between gap-4 mb-5">
+          <div className="min-w-0">
             <h1 className="text-2xl font-bold text-slate-900 flex items-center gap-2">
-              <ShieldCheck className="w-6 h-6" /> School approvals
+              <ShieldCheck className="w-6 h-6 shrink-0" /> Platform console
             </h1>
             <p className="text-slate-500 text-sm mt-0.5">
-              Nobody at a school can sign in until it is approved.
+              TulongGuro operators. Approve schools, and manage admin accounts across every school.
             </p>
           </div>
           <button
             onClick={() => { sessionStorage.removeItem(KEY_STORAGE); setKey(''); setKeyInput(''); }}
-            className="text-xs font-bold text-slate-500 hover:text-slate-800 underline shrink-0 mt-1">
+            className="shrink-0 mt-1 px-3 py-1.5 rounded-lg text-xs font-bold text-slate-600 bg-white border border-slate-200 hover:bg-slate-50">
             Lock
           </button>
         </div>
 
+        {/* Segmented switch rather than links: there is no router behind this
+            page, and the two views share the key, the error banner and the
+            school data underneath them. */}
+        <div className="inline-flex p-1 rounded-xl bg-white border border-slate-200 mb-5">
+          {VIEWS.map(({ key: v, label, Icon }) => (
+            <button
+              key={v}
+              onClick={() => { setView(v); setError(''); }}
+              className={cn(
+                'inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-bold transition-colors',
+                view === v ? 'bg-ink-900 text-white' : 'text-slate-600 hover:bg-slate-50',
+              )}
+            >
+              <Icon className="w-3.5 h-3.5" /> {label}
+            </button>
+          ))}
+        </div>
+
+        {view === 'approvals' && (<>
         <div className="flex items-center gap-2 mb-5">
           {/* Switching tabs drops any ticks: those ids are about to leave the
               screen, and a selection you cannot see is one you cannot check
@@ -602,6 +808,218 @@ export default function PlatformApprovals() {
             })}
           </div>
         )}
+        </>)}
+
+        {view === 'admins' && (<>
+          <div className="flex items-center gap-2 mb-5">
+            <div className="relative flex-1 min-w-0">
+              <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+              <input
+                type="search"
+                value={adminQuery}
+                onChange={e => setAdminQuery(e.target.value)}
+                placeholder="Search by school name, school code or DepEd ID"
+                className="w-full pl-9 pr-3 py-2 rounded-lg bg-white border border-slate-200 text-sm outline-none focus:ring-2 focus:ring-slate-900"
+              />
+            </div>
+            <button onClick={loadAdminSchools} title="Refresh"
+              className="shrink-0 p-2 rounded-lg bg-white border border-slate-200 text-slate-500 hover:bg-slate-50">
+              <RefreshCw className={cn('w-4 h-4', adminsLoading && 'animate-spin')} />
+            </button>
+          </div>
+
+          {/* Said once, at the top, because it is the thing an operator most
+              needs to have straight: these controls reach inside a live school.
+              Everything below acts on real people's logins. */}
+          <div className="mb-5 flex items-start gap-2 bg-slate-900 text-slate-100 rounded-xl p-3.5 text-sm">
+            <ShieldCheck className="w-4 h-4 shrink-0 mt-0.5 text-slate-300" />
+            <div>
+              <p className="font-bold">You are the super admin for every school here.</p>
+              <p className="text-xs text-slate-300 mt-0.5 leading-relaxed">
+                Schools have no super admin of their own - their admins are peers and can remove
+                each other. This is the only way back when a school locks itself out. Setting a
+                password lets you sign in as that person, so do it on request and tell them what
+                you changed.
+              </p>
+            </div>
+          </div>
+
+          {adminsLoading && adminSchools.length === 0 ? (
+            <div className="bg-white border border-slate-200 rounded-xl p-10 text-center text-slate-400">
+              <Loader2 className="w-5 h-5 animate-spin mx-auto" />
+            </div>
+          ) : filteredAdminSchools.length === 0 ? (
+            <div className="bg-white border border-slate-200 rounded-xl p-10 text-center">
+              <Building2 className="w-7 h-7 text-slate-300 mx-auto mb-2" />
+              <p className="text-sm font-bold text-slate-600">
+                {adminQuery ? 'No school matches that search.' : 'No schools yet.'}
+              </p>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {filteredAdminSchools.map(s => {
+                const rows = adminsBySchool[s.id] || s.users || [];
+                const isOpen = openSchoolId === s.id;
+                // The last admin cannot be removed, and saying so on the button
+                // beats a server refusal after a confirm dialog.
+                const isLastAdmin = rows.length <= 1;
+                return (
+                  <div key={s.id} className="bg-white border border-slate-200 rounded-xl overflow-hidden">
+                    <button
+                      onClick={() => setOpenSchoolId(isOpen ? null : s.id)}
+                      className="w-full flex items-center gap-3 p-4 text-left hover:bg-slate-50 transition-colors"
+                    >
+                      <ChevronDown className={cn('w-4 h-4 text-slate-400 shrink-0 transition-transform', isOpen && 'rotate-180')} />
+                      <div className="flex-1 min-w-0">
+                        <p className="font-bold text-slate-900 truncate">{s.name}</p>
+                        <p className="text-xs text-slate-500 truncate font-mono">
+                          {s.slug || 'no school code'}
+                          {s.depedSchoolId ? ` · DepEd ${s.depedSchoolId}` : ''}
+                        </p>
+                      </div>
+                      <span className={cn('shrink-0 text-[10px] font-bold uppercase tracking-wide px-2 py-0.5 rounded-full',
+                        STATUS_STYLES[s.status] || 'bg-slate-200 text-slate-600')}>
+                        {s.status}
+                      </span>
+                      <span className="shrink-0 text-xs font-bold text-slate-500 inline-flex items-center gap-1">
+                        <Users className="w-3.5 h-3.5" />{rows.length}
+                      </span>
+                    </button>
+
+                    {isOpen && (
+                      <div className="border-t border-slate-200 divide-y divide-slate-100">
+                        {rows.length === 0 ? (
+                          /* Reachable, and worth naming rather than showing an
+                             empty box: a school in this state cannot add
+                             teachers or publish anything and needs a developer
+                             to put an admin back. */
+                          <p className="p-4 text-sm text-red-600 font-bold">
+                            This school has no admin account. Nobody can reach its console.
+                          </p>
+                        ) : rows.map(a => (
+                          <div key={a.id} className="flex items-center gap-3 p-4">
+                            <div className="w-9 h-9 rounded-full bg-amber-50 text-amber-700 font-bold flex items-center justify-center shrink-0">
+                              {(a.name || 'A').charAt(0).toUpperCase()}
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <p className="font-semibold text-slate-900 truncate flex items-center gap-2">
+                                <span className="truncate">{a.name}</span>
+                                {/* A label, not a power. It says who filled in
+                                    the registration form, which helps an
+                                    operator decide whose access to restore. */}
+                                {a.registeredSchool && (
+                                  <span title="Filled in this school's registration"
+                                    className="shrink-0 text-[10px] font-bold uppercase tracking-wide text-slate-600 bg-slate-100 border border-slate-200 px-2 py-0.5 rounded-full">
+                                    Registered it
+                                  </span>
+                                )}
+                              </p>
+                              <p className="text-xs text-slate-500 truncate font-mono">{a.email || a.username}</p>
+                            </div>
+                            <div className="flex gap-1 shrink-0">
+                              <button
+                                onClick={() => openSetPassword(s, a)}
+                                disabled={adminBusyId === a.id}
+                                title="Set a new password"
+                                className="p-2 rounded-lg bg-slate-100 text-slate-600 hover:bg-slate-200 disabled:opacity-30">
+                                <KeyRound className="w-4 h-4" />
+                              </button>
+                              <button
+                                onClick={() => removeAdmin(s, a)}
+                                disabled={isLastAdmin || adminBusyId === a.id}
+                                title={isLastAdmin
+                                  ? 'A school must keep at least one admin'
+                                  : 'Remove admin access (they stay as a teacher)'}
+                                className="p-2 rounded-lg bg-slate-100 text-slate-600 hover:bg-red-100 hover:text-red-600 disabled:opacity-30">
+                                {adminBusyId === a.id
+                                  ? <Loader2 className="w-4 h-4 animate-spin" />
+                                  : <UserMinus className="w-4 h-4" />}
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {/* ── Set-password dialog ── */}
+          {pwFor && (
+            <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4">
+              <form onSubmit={submitPassword} className="w-full max-w-sm bg-white rounded-2xl border border-slate-200 shadow-lg p-6">
+                <h2 className="text-base font-bold text-slate-900 mb-1">Set a new password</h2>
+                <p className="text-xs text-slate-500 mb-4 leading-relaxed">
+                  For <strong className="text-slate-700">{pwFor.admin.name}</strong>{' '}
+                  ({pwFor.admin.email || pwFor.admin.username}) at {pwFor.school.name}.
+                  Their current sessions end immediately.
+                </p>
+                <label className="block text-xs font-bold text-slate-500 mb-1.5" htmlFor="pw-value">New password</label>
+                <div className="flex gap-2 mb-4">
+                  <input
+                    id="pw-value"
+                    value={pwValue}
+                    onChange={e => setPwValue(e.target.value)}
+                    autoComplete="off"
+                    className="flex-1 min-w-0 px-3 py-2 border border-slate-200 rounded-lg text-sm font-mono outline-none focus:ring-2 focus:ring-slate-900"
+                  />
+                  <button type="button" onClick={() => setPwValue(generatePassword())} title="Generate another"
+                    className="shrink-0 px-3 rounded-lg bg-slate-100 text-slate-600 hover:bg-slate-200">
+                    <RefreshCw className="w-4 h-4" />
+                  </button>
+                </div>
+                <div className="flex gap-2">
+                  <button type="button" onClick={() => setPwFor(null)}
+                    className="flex-1 py-2.5 rounded-lg border border-slate-200 text-slate-600 font-bold text-sm hover:bg-slate-50">
+                    Cancel
+                  </button>
+                  <button type="submit" disabled={pwValue.trim().length < 6 || pwSaving}
+                    className="flex-1 py-2.5 rounded-lg bg-ink-900 text-white font-bold text-sm hover:bg-ink-800 disabled:opacity-40">
+                    {pwSaving ? 'Setting…' : 'Set password'}
+                  </button>
+                </div>
+              </form>
+            </div>
+          )}
+
+          {/* ── The password, once, afterwards ──
+              Shown after the change rather than before it, so what is on screen
+              is what the account actually has. There is no second chance to
+              read it: nothing here stores the plaintext. */}
+          {pwDone && (
+            <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4">
+              <div className="w-full max-w-sm bg-white rounded-2xl border border-slate-200 shadow-lg p-6">
+                <div className="w-10 h-10 rounded-xl bg-emerald-100 text-emerald-700 grid place-items-center mb-3">
+                  <Check className="w-5 h-5" />
+                </div>
+                <h2 className="text-base font-bold text-slate-900 mb-1">Password set</h2>
+                <p className="text-xs text-slate-500 mb-4 leading-relaxed">
+                  Give this to {pwDone.admin.name} now — it is not shown again, and nothing
+                  emails it to them.
+                </p>
+                <div className="flex items-center gap-2 p-3 rounded-lg bg-slate-100 mb-4">
+                  <code className="flex-1 min-w-0 text-sm font-mono font-bold text-slate-800 break-all">{pwDone.password}</code>
+                  <button
+                    onClick={() => {
+                      navigator.clipboard?.writeText(pwDone.password);
+                      setPwCopied(true);
+                      setTimeout(() => setPwCopied(false), 1500);
+                    }}
+                    title="Copy"
+                    className="shrink-0 p-2 rounded-lg bg-white border border-slate-200 text-slate-500 hover:bg-slate-50">
+                    {pwCopied ? <Check className="w-4 h-4 text-emerald-600" /> : <Copy className="w-4 h-4" />}
+                  </button>
+                </div>
+                <button onClick={() => setPwDone(null)}
+                  className="w-full py-2.5 rounded-lg bg-ink-900 text-white font-bold text-sm hover:bg-ink-800">
+                  Done
+                </button>
+              </div>
+            </div>
+          )}
+        </>)}
       </div>
     </div>
   );
