@@ -86,3 +86,15 @@ public/.well-known/
 
 # Screenshots attached to a bug report, like /bugs screenshots above.
 /gradebook issues
+
+# The per-page cache scripts/crawl-ebeis-masterlist.js writes as it walks the
+# EBEIS report — ~2,900 small files. It exists so an interrupted crawl resumes
+# instead of restarting, and so a doubted page can be deleted and refetched;
+# it rebuilds from the network and is worthless to anyone who did not run the
+# crawl. server/data/deped-schools.json is the artefact worth committing.
+server/data/ebeis-raw/
+
+# Copies of a previous masterlist kept while replacing it. Same 6 MB as the
+# real file, with none of its authority — git history is the right place to
+# reach an older one from.
+server/data/*-backup.json
