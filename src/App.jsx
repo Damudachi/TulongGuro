@@ -11,6 +11,7 @@ import UpdatePrompt from './components/UpdatePrompt';
 import DialogHost from './components/DialogHost';
 
 // Admin Pages
+import AdminDashboard from './pages/admin/Dashboard';
 import AdminTeachers from './pages/admin/Teachers';
 import AdminSections from './pages/admin/Sections';
 import AdminClasses from './pages/admin/Classes';
@@ -68,7 +69,8 @@ function App() {
 
         {/* Admin Routes */}
         <Route path="/admin" element={<RequireRole role="ADMIN"><AdminLayout /></RequireRole>}>
-          <Route index element={<Navigate to="teachers" />} />
+          <Route index element={<Navigate to="dashboard" replace />} />
+          <Route path="dashboard" element={<AdminDashboard />} />
           <Route path="teachers" element={<AdminTeachers />} />
           <Route path="teachers/:teacherId" element={<AdminTeacherDetail />} />
           {/* The list before the detail: `sections` is a page in its own right

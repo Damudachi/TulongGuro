@@ -1,11 +1,11 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import {
-  ArrowLeft, Loader2, Pencil, Trash2, Check, X, KeyRound, UserPlus, UserCog,
-  BookOpen, Users, GraduationCap, AlertTriangle, Copy, Plus, Sparkles,
+  ArrowLeft, ArrowRightLeft, Loader2, Pencil, Trash2, Check, X, KeyRound, UserPlus,
+  BookOpen, Users, GraduationCap, AlertTriangle, Copy, Plus, Sparkles, ChevronDown,
 } from 'lucide-react';
 import { API_URL, apiFetch } from '../../config';
-import { GRADE_LEVELS, SUBJECTS, SCHOOL_YEARS, DEFAULT_SCHOOL_YEAR } from '../../constants/school';
+import { GRADE_LEVELS, SUBJECTS, SCHOOL_YEARS, DEFAULT_SCHOOL_YEAR, formatSectionName } from '../../constants/school';
 import StudentCredentials from '../../components/StudentCredentials';
 import SectionMoveConfirm from '../../components/SectionMoveConfirm';
 import RosterSearch from '../../components/RosterSearch';
@@ -21,6 +21,24 @@ function cn(...cls) { return cls.filter(Boolean).join(' '); }
 function generatePassword() {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789';
   return Array.from({ length: 10 }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
+}
+
+/**
+ * Hand a course shell to a colleague.
+ *
+ * This was a lone cog, which is what a settings control looks like — nobody
+ * reads "gear beside a person" as "give this class to someone else", and the
+ * only way to find out was to press it. People plus the same left-right arrows
+ * the roster already uses for moving a learner between sections: one mark for
+ * transfer, used in both places it means transfer.
+ */
+function HandoverIcon() {
+  return (
+    <span className="relative inline-grid place-items-center w-4 h-4" aria-hidden="true">
+      <Users className="w-4 h-4" />
+      <ArrowRightLeft className="absolute -bottom-1.5 -right-1.5 w-2.5 h-2.5" strokeWidth={3.5} />
+    </span>
+  );
 }
 
 /**
@@ -95,6 +113,21 @@ export default function AdminTeacherDetail() {
    * inputs on screen to do it.
    */
   const [rosterQuery, setRosterQuery] = useState('');
+  /**
+   * Which section cards have their roster open.
+   *
+   * Closed by default. A teacher with four sections of forty put a hundred and
+   * sixty names on this page before the admin had said which section they came
+   * for, and the section controls — edit, add, delete — were separated from
+   * each other by a screenful of roster each time. The cards are the index;
+   * the roster is what one of them opens.
+   */
+  const [openSectionIds, setOpenSectionIds] = useState(() => new Set());
+  const toggleSection = (id) => setOpenSectionIds(prev => {
+    const next = new Set(prev);
+    if (!next.delete(id)) next.add(id);
+    return next;
+  });
   // Reassignment failures (the target teacher already has this shell) are shown
   // where the control is, not only in the page banner far above it.
   const [reassignError, setReassignError] = useState('');
@@ -260,9 +293,15 @@ export default function AdminTeacherDetail() {
     }
   };
 
+  // Same grade-level formatting as the create form, so a rename here cannot
+  // walk a section back out of the house style — see formatSectionName.
   const saveSection = (section) => call(
     `${API_URL}/api/admin/${admin.id}/sections/${section.id}`,
-    { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(sectionForm) },
+    {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...sectionForm, name: formatSectionName(sectionForm.name, sectionForm.gradeLevel) }),
+    },
     () => setEditingSectionId(null)
   );
 
@@ -533,8 +572,8 @@ export default function AdminTeacherDetail() {
           onClick={() => (showClassForm ? setShowClassForm(false) : openClassForm())}
           disabled={schoolSections.length === 0}
           title={schoolSections.length === 0
-            ? 'Create a block section first — a class is taught to one'
-            : `Assign a new class to ${teacher.name}`}
+            ? 'Create a block section first — a course shell is taught to one'
+            : `Assign a new course shell to ${teacher.name}`}
           className={cn('self-start sm:self-auto px-3 py-2 rounded-lg text-xs font-bold shadow-sm flex items-center gap-1.5 disabled:opacity-40',
             showClassForm ? 'bg-slate-100 text-slate-600 hover:bg-slate-200' : 'bg-brand-navy text-white hover:bg-blue-900')}>
           {showClassForm ? <><X className="w-3.5 h-3.5" /> Close</> : <><Plus className="w-3.5 h-3.5" /> Add Course Shell</>}
@@ -651,11 +690,11 @@ export default function AdminTeacherDetail() {
       {classes.length === 0 ? (
         <div className="text-center py-10 border-2 border-dashed border-slate-200 rounded-2xl text-slate-400 mb-8">
           <BookOpen className="w-10 h-10 mx-auto mb-2 opacity-30" />
-          <p className="text-sm font-medium">No classes yet</p>
+          <p className="text-sm font-medium">No course shells yet</p>
           <p className="text-xs mt-1">
             {schoolSections.length === 0
-              ? 'Create a block section first — a class is taught to one.'
-              : `Use "Add Course Shell" above to assign ${teacher.name} a class.`}
+              ? 'Create a block section first — a course shell is taught to one.'
+              : `Use "Add Course Shell" above to assign ${teacher.name} a course shell.`}
           </p>
         </div>
       ) : (
@@ -711,9 +750,10 @@ export default function AdminTeacherDetail() {
                       }}
                       disabled={otherTeachers.length === 0}
                       title={otherTeachers.length === 0 ? 'No other teacher in this school to move it to' : 'Move to another teacher'}
+                      aria-label={otherTeachers.length === 0 ? 'No other teacher in this school to move it to' : 'Move to another teacher'}
                       className={cn('p-2 rounded-lg disabled:opacity-30',
                         reassignClassId === cls.id ? 'bg-brand-navy text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200')}>
-                      <UserCog className="w-4 h-4" />
+                      <HandoverIcon />
                     </button>
                     <button onClick={() => deleteClass(cls)} disabled={busy || cls.submissionCount > 0}
                       title={cls.submissionCount > 0 ? 'Has student submissions — cannot be deleted' : 'Delete course shell'}
@@ -780,7 +820,14 @@ export default function AdminTeacherDetail() {
               placeholder={`Search ${totalStudents} students across ${sections.length} section${sections.length === 1 ? '' : 's'}…`}
             />
           )}
-          {searchedSections.map(section => (
+          {searchedSections.map(section => {
+            // A search is a reason to open the card without being asked: the
+            // whole point of typing a name is to see the row it matched, and a
+            // count with nothing under it reads as a broken search.
+            const rosterOpen = openSectionIds.has(section.id)
+              || (!!rosterQuery.trim() && section.roster.length > 0)
+              || addingToSectionId === section.id;
+            return (
             <div key={section.id} className="bg-white border border-slate-200 rounded-2xl overflow-hidden">
               <div className="p-4 flex items-start justify-between gap-3 border-b border-slate-100">
                 {editingSectionId === section.id ? (
@@ -805,28 +852,48 @@ export default function AdminTeacherDetail() {
                   </div>
                 ) : (
                   <>
-                    <Link to={`/admin/sections/${section.id}`} className="min-w-0 group">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <p className="font-bold text-brand-slate group-hover:text-brand-navy">{section.name}</p>
-                        <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-blue-50 text-brand-navy">
-                          {section.gradeLevel || 'No grade level'}
+                    {/* The card itself opens the roster; the arrow beside the
+                        name is the way to the section's own page. A button
+                        rather than a wrapping link because a link cannot
+                        contain another link, and both jobs belong here. */}
+                    <button type="button"
+                      onClick={() => toggleSection(section.id)}
+                      aria-expanded={rosterOpen}
+                      aria-controls={`roster-${section.id}`}
+                      className="flex items-start gap-2 min-w-0 flex-1 text-left group">
+                      <ChevronDown className={cn('w-4 h-4 mt-0.5 shrink-0 text-slate-400 transition-transform group-hover:text-brand-navy',
+                        rosterOpen && 'rotate-180')} />
+                      <span className="min-w-0">
+                        <span className="flex items-center gap-2 flex-wrap">
+                          <span className="font-bold text-brand-slate group-hover:text-brand-navy">{section.name}</span>
+                          <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-blue-50 text-brand-navy">
+                            {section.gradeLevel || 'No grade level'}
+                          </span>
                         </span>
-                      </div>
-                      <p className="text-xs text-slate-500 mt-0.5">
-                        {section.students.length} student{section.students.length === 1 ? '' : 's'} ·{' '}
-                        {section._count.classes} class{section._count.classes === 1 ? '' : 'es'} ·{' '}
-                        <span className="text-brand-navy font-medium group-hover:underline">open section →</span>
-                      </p>
-                    </Link>
-                    <div className="flex gap-1 shrink-0">
+                        <span className="block text-xs text-slate-500 mt-0.5">
+                          {section.students.length} student{section.students.length === 1 ? '' : 's'} ·{' '}
+                          {section._count.classes} course shell{section._count.classes === 1 ? '' : 's'} ·{' '}
+                          {rosterOpen ? 'hide the class list' : 'show the class list'}
+                        </span>
+                      </span>
+                    </button>
+                    <div className="flex items-center gap-1 shrink-0">
+                      <Link to={`/admin/sections/${section.id}`}
+                        title="Open the section page"
+                        className="text-xs font-semibold text-brand-navy hover:underline px-1.5 hidden sm:inline">
+                        open →
+                      </Link>
+                      {/* Edit, then add, then delete — the order they are
+                          reached for, and the destructive one last rather than
+                          between the two everyday controls. */}
+                      <button onClick={() => { setSectionForm({ name: section.name, gradeLevel: section.gradeLevel || '' }); setEditingSectionId(section.id); }}
+                        title="Edit section" className="p-2 rounded-lg bg-slate-100 text-slate-600 hover:bg-slate-200">
+                        <Pencil className="w-4 h-4" />
+                      </button>
                       <button onClick={() => { setAddingToSectionId(addingToSectionId === section.id ? null : section.id); setStudentRows(emptyRoster()); }}
                         title="Add students"
                         className={cn('p-2 rounded-lg', addingToSectionId === section.id ? 'bg-brand-navy text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200')}>
                         <UserPlus className="w-4 h-4" />
-                      </button>
-                      <button onClick={() => { setSectionForm({ name: section.name, gradeLevel: section.gradeLevel || '' }); setEditingSectionId(section.id); }}
-                        title="Edit section" className="p-2 rounded-lg bg-slate-100 text-slate-600 hover:bg-slate-200">
-                        <Pencil className="w-4 h-4" />
                       </button>
                       {(() => {
                         // Signalled on the control itself, not only when it is
@@ -837,7 +904,7 @@ export default function AdminTeacherDetail() {
                         return (
                           <button onClick={() => deleteSection(section)} disabled={busy}
                             title={blocked
-                              ? `Still in use — ${section.students.length} student(s) and ${section._count.classes} class(es). Click to see what to clear first.`
+                              ? `Still in use — ${section.students.length} student(s) and ${section._count.classes} course shell(s). Click to see what to clear first.`
                               : 'Delete section'}
                             className={cn('p-2 rounded-lg disabled:opacity-40',
                               blocked
@@ -877,6 +944,7 @@ export default function AdminTeacherDetail() {
                 </div>
               )}
 
+              <div id={`roster-${section.id}`} hidden={!rosterOpen}>
               {section.students.length === 0 ? (
                 <p className="px-4 py-6 text-sm text-slate-400 text-center">No students in this section.</p>
               ) : section.roster.length === 0 ? (
@@ -909,8 +977,10 @@ export default function AdminTeacherDetail() {
                   ))}
                 </div>
               )}
+              </div>
             </div>
-          ))}
+            );
+          })}
         </div>
       )}
 

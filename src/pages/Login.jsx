@@ -30,7 +30,7 @@ const ROLES = {
     accent: 'text-navy-700', chip: 'bg-brand-chrome', panel: 'bg-brand-chrome',
     button: 'bg-brand-chrome hover:bg-ink-800 text-white',
     idLabel: 'Email Address', idPlaceholder: 'name@admin.com', idType: 'email',
-    home: '/admin/teachers',
+    home: '/admin/dashboard',
     blurb: 'Manage teachers, sections, curricula, and rubrics.',
   },
 };

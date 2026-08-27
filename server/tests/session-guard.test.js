@@ -96,7 +96,7 @@ describe('guardVerdict decides what a role area should do', () => {
 
   it('sends a signed-in admin away from the student area', () => {
     signedInAs('ADMIN');
-    expect(guardVerdict('STUDENT')).toEqual({ allow: false, to: '/admin/teachers' });
+    expect(guardVerdict('STUDENT')).toEqual({ allow: false, to: '/admin/dashboard' });
   });
 
   it('treats an unrecognised stored role as signed out', () => {
@@ -137,7 +137,7 @@ describe('resumeTo decides whether a public page should step aside', () => {
 
   it('sends a signed-in admin to their own home', () => {
     signedInAs('ADMIN');
-    expect(resumeTo()).toBe('/admin/teachers');
+    expect(resumeTo()).toBe('/admin/dashboard');
   });
 
   it('renders the public page when the token is gone but the user blob is not', () => {

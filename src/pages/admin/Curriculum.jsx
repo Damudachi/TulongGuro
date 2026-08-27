@@ -154,7 +154,7 @@ export default function AdminCurriculum() {
   };
 
   const handleDelete = async (curriculum) => {
-    if (!(await showConfirm(`Delete the ${curriculum.subject} curriculum for ${curriculum.gradeLevel}? Classes already created keep their copied lessons, and its rubrics stay in your School Rubrics.`,
+    if (!(await showConfirm(`Delete the ${curriculum.subject} curriculum for ${curriculum.gradeLevel}? Course shells already created keep their copied lessons, and its rubrics stay in your School Rubrics.`,
       { confirmLabel: 'Delete curriculum', danger: true }))) return;
     setBusy(true);
     try {
@@ -191,7 +191,7 @@ export default function AdminCurriculum() {
     // Confirmed, like every other delete on this page. This one alone removed a
     // lesson on a single click — and a curriculum lesson carries the rubric
     // that new classes are built from.
-    if (!(await showConfirm(`Delete the lesson "${lessonTitle || 'this lesson'}"? Classes already created from it keep their own copy.`,
+    if (!(await showConfirm(`Delete the lesson "${lessonTitle || 'this lesson'}"? Course shells already created from it keep their own copy.`,
       { confirmLabel: 'Delete lesson', danger: true }))) return;
     setBusy(true);
     try {

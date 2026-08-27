@@ -296,7 +296,7 @@ export default function AdminTeachers() {
                   <p className="font-semibold text-brand-slate truncate group-hover:text-brand-navy">{t.name}</p>
                   <p className="text-xs text-slate-500 truncate">{t.email}</p>
                   <p className="text-[11px] text-slate-400 mt-0.5">
-                    {t._count?.taughtClasses || 0} class(es) · {t._count?.ownedSections || 0} section(s)
+                    {t._count?.taughtClasses || 0} course shell(s) · {t._count?.ownedSections || 0} section(s)
                   </p>
                 </div>
                 <ChevronRight className="w-4 h-4 text-slate-300 group-hover:text-brand-navy transition-colors shrink-0" />

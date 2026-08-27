@@ -1,6 +1,6 @@
 import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom';
-import { Users, GraduationCap, Layers, BookOpen, ClipboardList, Scale, TrendingUp, ShieldCheck, LogOut } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { LayoutDashboard, Users, GraduationCap, Layers, BookOpen, ClipboardList, Scale, TrendingUp, ShieldCheck, LogOut } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
 import SchoolBadge from '../components/SchoolBadge';
 import Logo from '../components/Logo';
 import { useSchoolTheme } from '../utils/useSchool';
@@ -16,8 +16,13 @@ function cn(...cls) { return cls.filter(Boolean).join(' '); }
  * blocks — which is also the order they have to be created in. Sections and
  * Course Shells were reachable only through a teacher's page before, so the
  * two things this console provisions had no entry in its own navigation.
+ *
+ * Dashboard leads because the console now opens on it. It used to open on
+ * Teachers purely because that was first in this list, which made a staff
+ * directory the answer to "how is my school doing".
  */
 const NAV = [
+  { name: 'Dashboard', path: '/admin/dashboard', icon: LayoutDashboard },
   { name: 'Teachers', path: '/admin/teachers', icon: Users },
   { name: 'Sections', path: '/admin/sections', icon: GraduationCap },
   { name: 'Course Shells', path: '/admin/classes', icon: Layers },
@@ -49,6 +54,14 @@ export default function AdminLayout() {
     if (user.role !== 'ADMIN') navigate('/login', { replace: true });
   }, [user.role, navigate]);
 
+  // The mobile dock scrolls now (see the note on it), so the cell for the page
+  // you just opened can start off-screen. `nearest` keeps the dock still when
+  // it is already visible, which is the usual case.
+  const activeDockRef = useRef(null);
+  useEffect(() => {
+    activeDockRef.current?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  }, [location.pathname]);
+
   if (user.role !== 'ADMIN') return null;
 
   return (
@@ -59,7 +72,7 @@ export default function AdminLayout() {
       {/* Pinned to the viewport, not stretched to the content — see the note in
           TeacherLayout for why this is sticky rather than fixed. */}
       <nav className="hidden md:flex flex-col w-64 bg-brand-chrome shrink-0 rounded-r-[2rem] overflow-hidden sticky top-0 h-screen">
-        <Link to="/admin/teachers" className="flex items-center gap-3 px-5 py-6">
+        <Link to="/admin/dashboard" className="flex items-center gap-3 px-5 py-6">
           <Logo size="lg" />
           <span className="flex flex-col leading-none min-w-0">
             <span className="font-display text-lg font-extrabold text-white truncate">TulongGuro</span>
@@ -124,16 +137,24 @@ export default function AdminLayout() {
       <nav className="tg-bottom-nav fixed bottom-0 left-0 right-0 px-3 pt-2 md:hidden z-50 pointer-events-none">
         {/* gap-0.5, not gap-1: Sections and Course Shells brought the dock to
             nine cells including sign-out, and the teacher dock already runs at
-            this spacing for the same reason. */}
-        <div className="pointer-events-auto flex items-stretch gap-0.5 bg-brand-chrome rounded-[1.5rem] p-1.5 shadow-card-lg">
+            this spacing for the same reason.
+
+            Dashboard made it ten, which is where dividing the width evenly
+            stops working — ten equal cells on a 375px phone are about 32px
+            each, well under the 44px a finger needs. So each cell holds a
+            floor of 44px and the dock scrolls sideways instead of shrinking
+            past it. The active cell is scrolled into view on arrival, so the
+            page you are on is never the one off-screen. */}
+        <div className="tg-dock-scroll pointer-events-auto flex items-stretch gap-0.5 bg-brand-chrome rounded-[1.5rem] p-1.5 shadow-card-lg overflow-x-auto">
           {NAV.map(item => {
             const isActive = location.pathname.startsWith(item.path);
             return (
               <Link key={item.name} to={item.path}
                 aria-label={item.name}
                 aria-current={isActive ? 'page' : undefined}
+                ref={isActive ? activeDockRef : undefined}
                 className={cn(
-                  'flex-1 min-w-0 grid place-items-center rounded-2xl min-h-12 transition-colors',
+                  'flex-1 min-w-11 grid place-items-center rounded-2xl min-h-12 transition-colors',
                   isActive
                     ? 'bg-sun-400 text-ink-900 shadow-pop'
                     : 'text-white/55 active:bg-sheen/10'

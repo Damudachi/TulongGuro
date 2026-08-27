@@ -5,7 +5,7 @@ import {
   BookOpen, Users, GraduationCap, AlertTriangle, KeyRound, ArrowRightLeft,
 } from 'lucide-react';
 import { API_URL, apiFetch } from '../../config';
-import { GRADE_LEVELS } from '../../constants/school';
+import { GRADE_LEVELS, formatSectionName } from '../../constants/school';
 import StudentCredentials from '../../components/StudentCredentials';
 import SectionMoveConfirm from '../../components/SectionMoveConfirm';
 import StudentTransferDialog from '../../components/StudentTransferDialog';
@@ -97,9 +97,15 @@ export default function AdminSectionDetail() {
     }
   };
 
+  // Renaming runs the name through the same grade-level formatting the create
+  // form uses, so editing a section cannot walk it back out of the house style.
   const save = () => call(
     `${API_URL}/api/admin/${admin.id}/sections/${sectionId}`,
-    { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(form) },
+    {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...form, name: formatSectionName(form.name, form.gradeLevel) }),
+    },
     () => { setEditing(false); setNotice('Section updated.'); }
   );
 
@@ -375,7 +381,7 @@ export default function AdminSectionDetail() {
                 {teachers.map(t => <option key={t.id} value={t.id}>{t.name} ({t.email})</option>)}
               </select>
               <p className="text-[11px] text-slate-400 mt-1">
-                Changing the adviser does not move the classes taught in this section — those keep their own teacher.
+                Changing the adviser does not move the course shells taught into this section — those keep their own teacher.
               </p>
             </div>
             <div className="flex gap-2">
@@ -416,7 +422,7 @@ export default function AdminSectionDetail() {
                   control beats saying it after the click. */}
               <button onClick={deleteSection} disabled={busy}
                 title={section.students.length > 0 || section.classes.length > 0
-                  ? `Still in use — ${section.students.length} student(s) and ${section.classes.length} class(es). Click to see what to clear first.`
+                  ? `Still in use — ${section.students.length} student(s) and ${section.classes.length} course shell(s). Click to see what to clear first.`
                   : 'Delete section'}
                 className={cn('p-2 rounded-lg disabled:opacity-40',
                   section.students.length > 0 || section.classes.length > 0
@@ -431,7 +437,7 @@ export default function AdminSectionDetail() {
         <div className="grid grid-cols-2 gap-3 mt-5 pt-4 border-t border-slate-100">
           {[
             { label: 'Students', value: section.students.length, icon: Users },
-            { label: 'Classes', value: section.classes.length, icon: BookOpen },
+            { label: 'Course Shells', value: section.classes.length, icon: BookOpen },
           ].map(t => (
             <div key={t.label} className="text-center">
               <t.icon className="w-4 h-4 text-slate-300 mx-auto mb-1" />
@@ -468,12 +474,12 @@ export default function AdminSectionDetail() {
         </div>
       )}
 
-      {/* Classes using this section */}
-      <h2 className="text-sm font-bold text-slate-400 uppercase tracking-wider mb-3">Classes in this section</h2>
+      {/* Course shells using this section */}
+      <h2 className="text-sm font-bold text-slate-400 uppercase tracking-wider mb-3">Course shells in this section</h2>
       {section.classes.length === 0 ? (
         <div className="text-center py-8 border-2 border-dashed border-slate-200 rounded-2xl text-slate-400 mb-8">
           <BookOpen className="w-8 h-8 mx-auto mb-2 opacity-30" />
-          <p className="text-sm font-medium">No classes use this section yet</p>
+          <p className="text-sm font-medium">No course shells use this section yet</p>
         </div>
       ) : (
         <div className="space-y-2 mb-8">

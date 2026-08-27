@@ -176,14 +176,14 @@ export default function AdminClasses() {
         <div>
           <h1 className="text-2xl font-bold text-brand-slate">Course Shells</h1>
           <p className="text-slate-500 text-sm">
-            {allClasses.length} class{allClasses.length === 1 ? '' : 'es'} running across{' '}
+            {allClasses.length} course shell{allClasses.length === 1 ? '' : 's'} running across{' '}
             {sections.length} section{sections.length === 1 ? '' : 's'}
           </p>
         </div>
         <button onClick={openForm} disabled={sections.length === 0 || teachers.length === 0}
           title={sections.length === 0
-            ? 'Create a block section first — a class is taught to one'
-            : teachers.length === 0 ? 'Add a teacher first — a class needs one' : 'Create a course shell'}
+            ? 'Create a block section first — a course shell is taught to one'
+            : teachers.length === 0 ? 'Add a teacher first — a course shell needs one' : 'Create a course shell'}
           className="bg-brand-navy text-white px-4 py-2.5 rounded-lg text-sm font-bold hover:bg-blue-900 shadow-md flex items-center gap-2 shrink-0 disabled:opacity-40 disabled:hover:bg-brand-navy">
           <Plus className="w-4 h-4" /> Add Course Shell
         </button>
@@ -255,10 +255,10 @@ export default function AdminClasses() {
           <p className="font-medium text-slate-500">No course shells yet</p>
           <p className="text-sm mt-1">
             {sections.length === 0
-              ? <>A class is taught to a block section. <Link to="/admin/sections" className="text-brand-navy font-semibold hover:underline">Create one first</Link>.</>
+              ? <>A course shell is taught to a block section. <Link to="/admin/sections" className="text-brand-navy font-semibold hover:underline">Create one first</Link>.</>
               : teachers.length === 0
-                ? <>A class needs a teacher. <Link to="/admin/teachers" className="text-brand-navy font-semibold hover:underline">Add one first</Link>.</>
-                : 'Use "Add Course Shell" above to assign a teacher their first class.'}
+                ? <>A course shell needs a teacher. <Link to="/admin/teachers" className="text-brand-navy font-semibold hover:underline">Add one first</Link>.</>
+                : 'Use "Add Course Shell" above to assign a teacher their first course shell.'}
           </p>
         </div>
       ) : classes.length === 0 ? (
@@ -286,7 +286,7 @@ export default function AdminClasses() {
                   <span className="text-xs text-slate-400">{bySection[sectionName][0].section.gradeLevel}</span>
                 )}
                 <span className="text-xs text-slate-400">
-                  · {bySection[sectionName].length} class{bySection[sectionName].length === 1 ? '' : 'es'}
+                  · {bySection[sectionName].length} course shell{bySection[sectionName].length === 1 ? '' : 's'}
                 </span>
                 {bySection[sectionName][0]?.section?.id && (
                   <Link to={`/admin/sections/${bySection[sectionName][0].section.id}`}

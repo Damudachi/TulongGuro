@@ -117,8 +117,10 @@ export default function RosterEditor({
         You can paste a whole list into the first box.
       </p>
 
-      <div className="border border-slate-200 rounded-lg overflow-hidden">
-        <div className="grid grid-cols-[1fr_10rem_auto] gap-2 px-3 py-2 bg-slate-50 border-b border-slate-200">
+      {/* tg-roster makes this the query container the rows below size
+          themselves against — see the note beside the rules in index.css. */}
+      <div className="tg-roster border border-slate-200 rounded-lg overflow-hidden">
+        <div className="tg-roster-row tg-roster-head px-3 py-2 bg-slate-50 border-b border-slate-200">
           <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500">
             Learner&apos;s name <span className="text-red-500">*</span>
           </span>
@@ -130,22 +132,29 @@ export default function RosterEditor({
 
         <div className="max-h-72 overflow-y-auto divide-y divide-slate-100">
           {rows.map((row, i) => (
-            <div key={i} className="grid grid-cols-[1fr_10rem_auto] gap-2 px-3 py-2 items-center">
+            <div key={i} className="tg-roster-row px-3 py-2">
               <input
                 type="text"
                 value={row.name}
                 onChange={(e) => setRow(i, { name: normalizeRosterName(e.target.value) })}
                 onPaste={(e) => handlePaste(i, e)}
-                placeholder={i === 0 ? 'Dela Cruz, Juan Miguel' : ''}
+                /* On every row, not only the first: once the columns collapse
+                   the header goes with them, so the placeholder is what says
+                   which box this is. */
+                placeholder="Dela Cruz, Juan Miguel"
                 aria-label={`Learner ${i + 1} name`}
-                className="w-full px-2 py-1.5 text-sm border border-slate-200 rounded-md focus:ring-2 focus:ring-brand-navy outline-none"
+                /* A name auto-filled from a spreadsheet can still be longer
+                   than the box in a tight layout, and this is the screen where
+                   the admin is checking it against the School Form. */
+                title={row.name || undefined}
+                className="tg-roster-name w-full px-2 py-1.5 text-sm border border-slate-200 rounded-md focus:ring-2 focus:ring-brand-navy outline-none"
               />
-              <div>
+              <div className="tg-roster-bday min-w-0">
                 <input
                   type="text"
                   value={row.birthday}
                   onChange={(e) => setRow(i, { birthday: e.target.value })}
-                  placeholder={i === 0 ? 'MM/DD/YYYY' : ''}
+                  placeholder="MM/DD/YYYY"
                   inputMode="numeric"
                   aria-label={`Learner ${i + 1} birthday, required`}
                   aria-required="true"
@@ -165,7 +174,7 @@ export default function RosterEditor({
                 onClick={() => removeRow(i)}
                 disabled={rows.length === 1}
                 aria-label={`Remove learner ${i + 1}`}
-                className="w-7 h-7 grid place-items-center rounded-md text-slate-300 hover:text-red-500 hover:bg-red-50 disabled:opacity-0 transition-colors"
+                className="tg-roster-drop w-7 h-7 grid place-items-center rounded-md text-slate-300 hover:text-red-500 hover:bg-red-50 disabled:opacity-0 transition-colors"
               >
                 <X className="w-4 h-4" />
               </button>

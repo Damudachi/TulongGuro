@@ -152,7 +152,7 @@ export default function AdminGrading() {
       <section className="mt-6 bg-white rounded-3xl border-2 border-slate-200 p-5">
         <h2 className="font-display text-lg font-extrabold text-navy-700 mb-1">Thresholds</h2>
         <p className="text-xs text-navy-400 mb-4">
-          Applies to every class in the school, so "needs help" means the same thing everywhere.
+          Applies to every course shell in the school, so "needs help" means the same thing everywhere.
         </p>
 
         <label className="block mb-5">

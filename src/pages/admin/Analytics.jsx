@@ -100,7 +100,7 @@ export default function AdminAnalytics() {
         <Stat label="School average" value={summary.schoolAverage ?? '—'}
           tone={toneFor(summary.schoolAverage, passingGrade)} hint={`Passing is ${passingGrade}`} />
         <Stat label="Students" value={summary.studentCount} />
-        <Stat label="Classes" value={summary.classCount} />
+        <Stat label="Course Shells" value={summary.classCount} />
         <Stat label="Need support" value={summary.atRiskCount}
           tone={summary.atRiskCount > 0 ? 'text-red-600' : 'text-aqua-700'}
           hint={`Below ${passingGrade}`} />
@@ -152,12 +152,12 @@ export default function AdminAnalytics() {
         )}
       </section>
 
-      {/* ── By class ── */}
+      {/* ── By course shell ── */}
       <section className="bg-white rounded-3xl border-2 border-slate-200 p-5 mb-6">
         <h2 className="font-display text-lg font-extrabold text-navy-700 mb-1 flex items-center gap-2">
-          <Users className="w-4 h-4 text-navy-400" /> By class
+          <Users className="w-4 h-4 text-navy-400" /> By course shell
         </h2>
-        <p className="text-xs text-navy-400 mb-4">Each class with its teacher and the weights in force.</p>
+        <p className="text-xs text-navy-400 mb-4">Each course shell with its teacher and the weights in force.</p>
         <div className="space-y-2">
           {classes.map(c => (
             <div key={c.classId} className="flex items-center gap-3 p-3 rounded-2xl border-2 border-slate-200">
@@ -204,8 +204,8 @@ export default function AdminAnalytics() {
             className="tg-input flex-1 min-w-[12rem] py-2 text-sm"
           />
           <select value={classFilter} onChange={e => setClassFilter(e.target.value)}
-            aria-label="Filter by class" className="tg-input w-auto py-2 text-sm">
-            <option value="">All classes</option>
+            aria-label="Filter by course shell" className="tg-input w-auto py-2 text-sm">
+            <option value="">All course shells</option>
             {classes.map(c => <option key={c.classId} value={c.classId}>{c.className}</option>)}
           </select>
           <button type="button" onClick={() => setOnlyRisk(v => !v)}

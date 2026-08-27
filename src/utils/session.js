@@ -156,7 +156,7 @@ export function updateStoredUser(patch) {
 
 /** Where each role belongs when it finds itself somewhere it does not. */
 const HOME_FOR = {
-  ADMIN: '/admin/teachers',
+  ADMIN: '/admin/dashboard',
   TEACHER: '/teacher/dashboard',
   STUDENT: '/student/dashboard',
 };

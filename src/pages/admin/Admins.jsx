@@ -17,6 +17,22 @@ function generatePassword() {
   return Array.from({ length: 10 }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
 }
 
+/**
+ * How far back the access feed reaches.
+ *
+ * "Who gave this person the keys" is usually asked about something that
+ * happened today, and the feed answered it by showing every change ever
+ * recorded — so the row being looked for sat under a year of noise. The
+ * default is a week: long enough to cover "since I was last in here", short
+ * enough to be one screen. `days: null` is the whole feed.
+ */
+const HISTORY_RANGES = [
+  { key: 'day', label: 'Last 24 hours', days: 1, empty: 'in the last 24 hours' },
+  { key: 'week', label: 'Last week', days: 7, empty: 'in the last week' },
+  { key: 'month', label: 'Last month', days: 30, empty: 'in the last month' },
+  { key: 'all', label: 'All', days: null, empty: 'yet' },
+];
+
 /** How each audit row reads in the feed. Unknown events fall back to the code. */
 const EVENT_LABEL = {
   ADMIN_CREATED: 'created an admin account for',
@@ -73,6 +89,10 @@ export default function AdminAdmins() {
   // selected teacher rather than a click that acts immediately.
   const [promoting, setPromoting] = useState(null);   // { teacher, email }
   const [promoteError, setPromoteError] = useState('');
+  // How far back the access feed reaches — see HISTORY_RANGES.
+  const [historyRange, setHistoryRange] = useState('week');
+  // When the feed was read, as the fixed point the age filter measures from.
+  const [fetchedAt, setFetchedAt] = useState(0);
 
   const load = useCallback(() => {
     if (!me.id) return;
@@ -87,6 +107,11 @@ export default function AdminAdmins() {
         setLoadFailed(!adminsRes?.success);
         if (adminsRes?.success) setData(adminsRes);
         if (overviewRes?.success) setTeachers(overviewRes.teachers || []);
+        // The clock the age filter measures against. Read here rather than
+        // during render: "last 24 hours" has to mean the same twenty-four
+        // hours for every row on screen, and re-reading it each render makes
+        // the boundary move under a feed nobody has refreshed.
+        setFetchedAt(Date.now());
       })
       .finally(() => setIsLoading(false));
   }, [me.id]);
@@ -272,7 +297,14 @@ export default function AdminAdmins() {
   }
 
   const admins = data?.admins || [];
-  const history = data?.history || [];
+  const allHistory = data?.history || [];
+  const range = HISTORY_RANGES.find(r => r.key === historyRange) || HISTORY_RANGES[1];
+  const history = range.days === null
+    ? allHistory
+    : allHistory.filter(h => {
+        const at = new Date(h.createdAt).getTime();
+        return Number.isFinite(at) && at >= fetchedAt - range.days * 86400000;
+      });
   const maxAdmins = data?.maxAdmins || 5;
   const atCap = admins.length >= maxAdmins;
   // Who may change the set of admins. Defaults to false when the list could not
@@ -478,15 +510,45 @@ export default function AdminAdmins() {
 
       {/* Access history. The account list only ever shows the current answer;
           "who gave this person the keys" is the question asked afterwards. */}
-      <h2 className="text-sm font-bold text-slate-400 uppercase tracking-wider mb-3 flex items-center gap-2">
-        <History className="w-4 h-4" /> Recent access changes
-      </h2>
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-3">
+        <h2 className="text-sm font-bold text-slate-400 uppercase tracking-wider flex items-center gap-2">
+          <History className="w-4 h-4" /> Recent access changes
+        </h2>
+        {/* Segmented rather than a dropdown: four options, and which one is in
+            force has to be readable without opening anything — the feed under
+            it is evidence, and evidence that quietly hides rows is worse than
+            no feed. */}
+        <div role="group" aria-label="How far back to show access changes"
+          className="flex items-center gap-0.5 bg-slate-100 rounded-xl p-0.5 self-start">
+          {HISTORY_RANGES.map(r => (
+            <button key={r.key} type="button" onClick={() => setHistoryRange(r.key)}
+              aria-pressed={historyRange === r.key}
+              className={cn('px-2.5 py-1.5 rounded-lg text-xs font-bold transition-colors',
+                historyRange === r.key
+                  ? 'bg-white text-brand-navy shadow-sm'
+                  : 'text-slate-500 hover:text-brand-slate')}>
+              {r.label}
+            </button>
+          ))}
+        </div>
+      </div>
       {history.length === 0 ? (
         <div className="text-center py-10 border-2 border-dashed border-slate-200 rounded-2xl text-slate-400">
           {data?.historyUnavailable ? (
             <>
               <p className="text-sm font-medium">History unavailable</p>
               <p className="text-xs mt-1">Access changes are still being recorded — this feed could not be read.</p>
+            </>
+          ) : allHistory.length > 0 ? (
+            // The distinction matters: nothing in this window is not the same
+            // claim as nothing ever, and only one of them is worth widening
+            // the range for.
+            <>
+              <p className="text-sm font-medium">No access changes {range.empty}</p>
+              <button type="button" onClick={() => setHistoryRange('all')}
+                className="text-xs mt-1 text-brand-navy font-semibold hover:underline">
+                Show all {allHistory.length} recorded change{allHistory.length === 1 ? '' : 's'}
+              </button>
             </>
           ) : (
             <>
@@ -509,6 +571,16 @@ export default function AdminAdmins() {
             </li>
           ))}
         </ol>
+      )}
+      {/* Says outright that rows are being withheld, so the feed is never read
+          as the complete record when it is not. */}
+      {history.length > 0 && history.length < allHistory.length && (
+        <p className="text-xs text-slate-400 mt-2">
+          Showing {history.length} of {allHistory.length} recorded changes.{' '}
+          <button type="button" onClick={() => setHistoryRange('all')} className="text-brand-navy font-semibold hover:underline">
+            Show all
+          </button>
+        </p>
       )}
 
       {/* Add admin modal */}
@@ -641,7 +713,7 @@ export default function AdminAdmins() {
                     <div key={t.id} className="bg-slate-50 border border-slate-200 rounded-xl p-3 mb-2 opacity-70">
                       <p className="font-semibold text-brand-slate text-sm truncate">{t.name}</p>
                       <p className="text-[11px] text-slate-500 mt-0.5">
-                        {t._count?.taughtClasses || 0} class(es) · {t._count?.ownedSections || 0} section(s) —
+                        {t._count?.taughtClasses || 0} course shell(s) · {t._count?.ownedSections || 0} section(s) —
                         reassign these before promoting
                       </p>
                     </div>

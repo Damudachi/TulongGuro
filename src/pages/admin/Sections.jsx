@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import { GraduationCap, Plus, Loader2, X, Search, ChevronRight, Users } from 'lucide-react';
 import { API_URL, apiFetch } from '../../config';
-import { GRADE_LEVELS, SCHOOL_YEARS, DEFAULT_SCHOOL_YEAR } from '../../constants/school';
+import { GRADE_LEVELS, SCHOOL_YEARS, DEFAULT_SCHOOL_YEAR, formatSectionName } from '../../constants/school';
 import RosterEditor from '../../components/RosterEditor';
 import SectionMoveConfirm from '../../components/SectionMoveConfirm';
 import StudentCredentials from '../../components/StudentCredentials';
@@ -75,18 +75,25 @@ export default function AdminSections() {
   };
 
   /**
-   * Create the section, and enrol whatever names were typed with it.
+   * Create the section, and enrol the names typed with it.
    *
-   * The roster is optional: naming the block and typing forty learners are
-   * different jobs and an admin may well do them a week apart. What is not
-   * optional is the adviser — the server refuses without one, and the form
-   * marks it required so that refusal never has to be seen.
+   * The roster used to be optional. It is not: a block with no learners in it
+   * is not yet a section, it is a name — nothing can be taught into it, no
+   * gradebook opens, and the empty ones simply accumulated in this list. The
+   * adviser is required for the same reason, and the server refuses without
+   * one either way.
+   *
+   * The name is normalised against the grade level rather than taken as typed,
+   * so every section in the school reads the same way — see formatSectionName.
    */
   const createSection = async () => {
     if (isSaving) return;                     // guards an impatient second click
-    const name = form.name.trim();
-    if (!name) return setError('Please give this section a name — for example "Grade 6 - Sampaguita".');
+    const name = formatSectionName(form.name, form.gradeLevel);
+    if (!name) return setError('Please give this section a name — for example "Sampaguita".');
     if (!form.teacherId) return setError('Choose the teacher who will advise this section.');
+    if (!rows.some(isFilledRow)) {
+      return setError('Add at least one learner. A section is created with the class list that is in it.');
+    }
     // Returns null once the admin has been asked to fix an unreadable birthday.
     const studentsList = rosterPayload(rows, showAlert);
     if (!studentsList) return;
@@ -316,7 +323,10 @@ export default function AdminSections() {
       {/* Add section modal */}
       {showForm && (
         <div className="fixed inset-0 bg-black/50 flex items-start justify-center z-50 p-4 overflow-y-auto">
-          <div className="bg-white rounded-2xl p-6 w-full max-w-2xl shadow-xl my-8">
+          {/* max-w-4xl, not 2xl: at two columns the roster editor was getting
+              about half of 42rem, which left the learner's name box narrower
+              than the names going into it. */}
+          <div className="bg-white rounded-2xl p-6 w-full max-w-4xl shadow-xl my-8">
             <h2 className="text-xl font-bold text-brand-slate mb-1">Create a block section</h2>
             <p className="text-slate-500 text-sm mb-5">
               A homeroom group with one adviser. Every teacher in the school can teach a subject into it.
@@ -336,8 +346,18 @@ export default function AdminSections() {
                     <label className="block text-sm font-medium text-slate-700 mb-1">Section name *</label>
                     <input required type="text" value={form.name} autoComplete="off"
                       onChange={e => setForm({ ...form, name: e.target.value })}
-                      placeholder="e.g. Grade 6 - Sampaguita"
+                      placeholder="e.g. Sampaguita"
                       className="w-full border border-slate-200 p-2.5 rounded-lg outline-none focus:ring-2 focus:ring-brand-navy text-sm" />
+                    {/* The grade level below is prepended on save, so the name
+                        that will actually exist is shown while it is being
+                        typed rather than discovered afterwards in the list. */}
+                    {form.name.trim() && (
+                      <p className="text-xs text-slate-500 mt-1.5">
+                        {form.gradeLevel
+                          ? <>Saved as <span className="font-semibold text-brand-navy">{formatSectionName(form.name, form.gradeLevel)}</span> — the grade level is added for you.</>
+                          : <>Saved as <span className="font-semibold text-brand-navy">{formatSectionName(form.name, '')}</span>. Choose a grade level below and it is added to the front.</>}
+                      </p>
+                    )}
                   </div>
                   <div>
                     <label className="block text-sm font-medium text-slate-700 mb-1">Adviser *</label>
@@ -378,7 +398,7 @@ export default function AdminSections() {
 
                 <div className="space-y-2">
                   <p className="text-xs font-extrabold uppercase tracking-wider text-brand-navy">
-                    Step 2 · Who is in it <span className="font-semibold normal-case tracking-normal text-slate-400">(optional)</span>
+                    Step 2 · Who is in it <span className="text-red-500">*</span>
                   </p>
                   <RosterEditor
                     rows={rows}
@@ -388,11 +408,6 @@ export default function AdminSections() {
                     fileRef={rosterFileRef}
                     onFileChange={handleRosterFile}
                   />
-                  <p className="text-[11px] text-slate-400">
-                    Leave this empty to create the section on its own — you can add learners from the section
-                    page at any time. Anyone already enrolled elsewhere is listed for you to confirm before
-                    being moved.
-                  </p>
                 </div>
               </div>
 

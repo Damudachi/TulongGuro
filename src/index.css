@@ -237,6 +237,60 @@
       opacity: 1;
     }
   }
+  /* A dock with more cells than fit scrolls rather than shrinking its targets
+     below a fingertip. The scrollbar itself would be a grey line across the
+     bottom of the dock on every desktop-class browser, so it is hidden — the
+     partially-visible cell at the edge is the affordance. */
+  .tg-dock-scroll {
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+  }
+  .tg-dock-scroll::-webkit-scrollbar { display: none; }
+
+  /* ── Roster editor rows ──
+
+     Name and birthday sit side by side, which is right in the modal that
+     creates a section and wrong everywhere the editor is narrow: inside a
+     section card on a phone the name box collapsed to about six characters,
+     so a roster auto-filled from a spreadsheet showed "Al-Ma" where the admin
+     was supposed to be checking "Almazan, Maria Clara". The name is the column
+     being read, so it is the one that gets the room.
+
+     A container query rather than a media query, because what matters is the
+     width of the editor, not of the window — the same component sits in a
+     half-width modal column on a desktop and full-bleed on a phone. */
+  .tg-roster {
+    container-type: inline-size;
+    container-name: roster;
+  }
+
+  .tg-roster-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 8.75rem auto;
+    gap: 0.5rem;
+    align-items: center;
+  }
+
+  @container roster (max-width: 25rem) {
+    /* Two lines per learner: the name across the full width, the birthday
+       under it. The header stops meaning anything once the columns are gone,
+       so it is dropped and every row keeps its placeholder instead. */
+    .tg-roster-head { display: none; }
+
+    .tg-roster-row {
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: start;
+      row-gap: 0.25rem;
+    }
+    .tg-roster-name { grid-column: 1; grid-row: 1; }
+    .tg-roster-bday { grid-column: 1; grid-row: 2; }
+    .tg-roster-drop {
+      grid-column: 2;
+      grid-row: 1 / span 2;
+      align-self: center;
+    }
+  }
+
   /* ── Confetti ──
      Purely decorative, and the one piece of motion in this app big enough to
      be a problem for somebody: a full-screen shower of moving objects is

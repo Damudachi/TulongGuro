@@ -4534,10 +4534,15 @@ app.get('/api/admin/:adminId/admins', async (req, res) => {
     // Sent so the page can label the row and hide the controls the caller
     // cannot use, rather than offering four buttons that all end in a 403.
     const superAdminId = await resolveSuperAdminId(admin.schoolId, admin.school);
+    // 200, not 20: the console filters this feed by age — last day, week,
+    // month, or all of it — and a twenty-row cap made "all" mean "the twenty
+    // most recent", so a school that reshuffled its admins in September could
+    // not see it in October. Still bounded, because this is a page and not an
+    // export.
     const history = await prisma.adminAuditLog.findMany({
       where: { schoolId: admin.schoolId },
       orderBy: { createdAt: 'desc' },
-      take: 20
+      take: 200
     }).catch((e) => {
       // Logged rather than swallowed silently: an empty feed is indistinguishable
       // from a school that has never changed an admin, so the only place this
