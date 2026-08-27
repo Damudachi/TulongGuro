@@ -5,7 +5,7 @@ import {
 } from 'lucide-react';
 import { API_URL, apiFetch } from '../../config';
 import { getStoredUser, updateStoredUser } from '../../utils/session';
-import { ADMIN_EMAIL_DOMAIN, buildAccountEmail, validateAccountEmail } from '../../constants/accountEmails';
+import { accountDomain, buildAccountEmail, validateAccountEmail } from '../../constants/accountEmails';
 import DomainEmailField from '../../components/DomainEmailField';
 
 import { showAlert, showConfirm } from '../../utils/dialog';
@@ -67,6 +67,7 @@ export default function AdminAdmins() {
   const me = getStoredUser();
   const [data, setData] = useState(null);
   const [teachers, setTeachers] = useState([]);
+  const [school, setSchool] = useState(null);
   const [isLoading, setIsLoading] = useState(() => !!me.id);
   const [showForm, setShowForm] = useState(false);
   const [showPromote, setShowPromote] = useState(false);
@@ -106,7 +107,15 @@ export default function AdminAdmins() {
       .then(([adminsRes, overviewRes]) => {
         setLoadFailed(!adminsRes?.success);
         if (adminsRes?.success) setData(adminsRes);
-        if (overviewRes?.success) setTeachers(overviewRes.teachers || []);
+        if (overviewRes?.success) {
+          setTeachers(overviewRes.teachers || []);
+          // Kept for its `slug`: every admin address on this screen is built on
+          // the school's code, so the domain shown beside the name box and the
+          // one the server will accept both come from here. Null for a school
+          // that has not been given a code yet, which falls back to the legacy
+          // flat domain on both sides.
+          setSchool(overviewRes.school || null);
+        }
         // The clock the age filter measures against. Read here rather than
         // during render: "last 24 hours" has to mean the same twenty-four
         // hours for every row on screen, and re-reading it each render makes
@@ -131,7 +140,7 @@ export default function AdminAdmins() {
     setError('');
     try {
       // form.email holds the part before the @ only; the domain is fixed.
-      const email = buildAccountEmail(form.email, 'ADMIN');
+      const email = buildAccountEmail(form.email, 'ADMIN', school?.slug);
       const res = await apiFetch(`${API_URL}/api/admin/${me.id}/admins`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -155,9 +164,11 @@ export default function AdminAdmins() {
   /**
    * Step one of promoting: choose the address the account will move to.
    *
-   * A teacher signs in on @teacher.edu.ph and an admin on @admin.com, so a
-   * promotion is also a change of login. Seeding the new local part from their
-   * existing one means the usual case is a confirmation rather than a decision.
+   * A teacher signs in on this school's @teacher.<code>.edu.ph and an admin on
+   * its @admin.<code>.edu.ph, so a promotion is also a change of login. Seeding
+   * the new local part from their existing one means the usual case is a
+   * confirmation rather than a decision — and only the local part moves, since
+   * both domains are the same school's.
    */
   const startPromote = (teacher) => {
     setPromoteError('');
@@ -171,9 +182,9 @@ export default function AdminAdmins() {
     e.preventDefault();
     if (!promoting || busyId) return;
     const { teacher } = promoting;
-    const email = buildAccountEmail(promoting.email, 'ADMIN');
+    const email = buildAccountEmail(promoting.email, 'ADMIN', school?.slug);
 
-    const check = validateAccountEmail(email, 'ADMIN');
+    const check = validateAccountEmail(email, 'ADMIN', school?.slug);
     if (!check.ok) { setPromoteError(check.error); return; }
 
     const goAhead = await showConfirm(
@@ -358,7 +369,7 @@ export default function AdminAdmins() {
               need a teacher account instead. Adding and removing admins stays with you as the
               super admin, so nobody you add here can remove you. A school can have up to{' '}
               {maxAdmins} admins, and must always keep at least one. Admin accounts sign in on{' '}
-              @{ADMIN_EMAIL_DOMAIN}.
+              @{accountDomain('ADMIN', school?.slug)}.
             </p>
           </div>
         </div>
@@ -600,9 +611,10 @@ export default function AdminAdmins() {
               <DomainEmailField
                 id="new-admin-email"
                 role="ADMIN"
+                schoolSlug={school?.slug}
                 value={form.email}
                 onChange={email => setForm({ ...form, email })}
-                hint={`Admin accounts always sign in on @${ADMIN_EMAIL_DOMAIN} — you only choose the name.`}
+                hint={`Admin accounts at this school sign in on @${accountDomain('ADMIN', school?.slug)} — you only choose the name.`}
               />
               <div>
                 <label className="block text-sm font-medium text-slate-700 mb-1">Temporary password *</label>
@@ -659,11 +671,12 @@ export default function AdminAdmins() {
                 <DomainEmailField
                   id="promote-admin-email"
                   role="ADMIN"
+                  schoolSlug={school?.slug}
                   autoFocus
                   value={promoting.email}
                   onChange={email => setPromoting(prev => ({ ...prev, email }))}
                   label="New admin email"
-                  hint={`Their teacher address stops working. From then on they sign in as ${buildAccountEmail(promoting.email, 'ADMIN') || `name@${ADMIN_EMAIL_DOMAIN}`}.`}
+                  hint={`Their teacher address stops working. From then on they sign in as ${buildAccountEmail(promoting.email, 'ADMIN', school?.slug) || `name@${accountDomain('ADMIN', school?.slug)}`}.`}
                 />
 
                 {promoteError && (

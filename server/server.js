@@ -34,8 +34,12 @@ const {
 } = require('./auth');
 const { classSchoolId, staffMayAccess, staffMayReadStudent, REAL_WORK } = require('./access');
 const {
-  TEACHER_EMAIL_DOMAIN, ADMIN_EMAIL_DOMAIN, validateAccountEmail, validateContactEmail,
+  TEACHER_EMAIL_DOMAIN, ADMIN_EMAIL_DOMAIN, accountDomain,
+  validateAccountEmail, validateContactEmail,
 } = require('./accountEmails');
+const {
+  suggestSlug, validateSlug, suggestAlternatives, resolveSlug, studentPrefixFor,
+} = require('./schoolSlug');
 const {
   NOT_FOUND: SCHOOL_NOT_FOUND, NO_MASTERLIST,
   normalizeSchoolId, verifySchool, describeVerification, nearDuplicateNames,
@@ -84,6 +88,27 @@ const prisma = require('./db');
 const port = process.env.PORT || 3000;
 
 const BCRYPT_SALT_ROUNDS = 10;
+
+/**
+ * Whether a school code is spoken for.
+ *
+ * The predicate the schoolSlug.js helpers take, bound to the database once here
+ * so the three places that need it — the live check the registration form
+ * calls, the claim the registration itself makes, and the backfill script's
+ * dry run — cannot disagree about what "taken" means.
+ *
+ * Counts a school in any status, and that is deliberate. A PENDING registration
+ * holds its code while an operator looks at it, or two schools would be shown
+ * the same code as free for however long the queue is. A REJECTED one holds it
+ * too — its admin row still carries an address built on the code, so handing
+ * the code to someone else would strand that address. Codes come free only when
+ * a school row is deleted outright. See schoolSlug.js.
+ */
+async function schoolSlugTaken(slug) {
+  if (!slug) return false;
+  const existing = await prisma.school.findUnique({ where: { slug }, select: { id: true } });
+  return Boolean(existing);
+}
 
 /**
  * Sort people by name, the way a class list is read.
@@ -2436,10 +2461,45 @@ app.post('/api/auth/register', registerRateLimit, registerDailyRateLimit, (req, 
       return refuse(400, { code: 'NAME_FORMAT', error: nameCheck.error });
     }
     const adminName = nameCheck.name;
+    const trimmedSchool = schoolName.trim();
+
+    // ── The school's code ──
+    //
+    // Settled before the admin's address, because the address is built on it:
+    // this registrant becomes principal@admin.<code>.edu.ph, and there is no
+    // way to check that address without first knowing which code the school is
+    // getting. See schoolSlug.js for what a code is and why.
+    //
+    // A code the form sent is honoured or refused, never quietly swapped. The
+    // registrant has been shown a preview of the logins it produces and has
+    // typed an admin address to match, so substituting a different code behind
+    // their back would invalidate the field they just filled in. A registration
+    // that sends no code at all — an API client that predates this — is
+    // resolved automatically instead, so it still completes.
+    const requestedSlug = req.body.schoolSlug;
+    let schoolSlug;
+    if (String(requestedSlug ?? '').trim()) {
+      const slugCheck = validateSlug(requestedSlug);
+      if (!slugCheck.ok) return refuse(400, { code: 'SCHOOL_CODE_INVALID', error: slugCheck.error });
+      if (await schoolSlugTaken(slugCheck.slug)) {
+        return refuse(400, {
+          code: 'SCHOOL_CODE_TAKEN',
+          // Never says *which* school holds it. That would answer "is this
+          // school on the platform" to anyone who can guess a code, which is a
+          // question a registration form has no business answering.
+          error: `The school code "${slugCheck.slug}" is already used by another school. Please choose another.`,
+          suggestions: await suggestAlternatives(trimmedSchool, schoolSlugTaken),
+        });
+      }
+      schoolSlug = slugCheck.slug;
+    } else {
+      schoolSlug = await resolveSlug(trimmedSchool, null, schoolSlugTaken);
+    }
+
     // This form creates an ADMIN, so the admin domain rule binds here too —
     // otherwise the one admin every school is guaranteed to have would be the
     // one account exempt from it, and the rule would mean nothing.
-    const emailCheck = validateAccountEmail(email, 'ADMIN');
+    const emailCheck = validateAccountEmail(email, 'ADMIN', schoolSlug);
     if (!emailCheck.ok) {
       return refuse(400, { error: emailCheck.error });
     }
@@ -2538,17 +2598,21 @@ app.post('/api/auth/register', registerRateLimit, registerDailyRateLimit, (req, 
       return refuse(400, { error: 'An account with this email already exists. Please log in instead.' });
     }
 
-    const trimmedSchool = schoolName.trim();
-    const existingSchool = await prisma.school.findUnique({ where: { name: trimmedSchool } });
-    if (existingSchool) {
-      return refuse(400, {
-        error: `"${trimmedSchool}" is already registered. Ask your school's admin to create a teacher account for you.`
-      });
-    }
+    // ── Removed: the refusal on a duplicate school *name* ──
+    //
+    // It read `"San Jose Elementary School" is already registered. Ask your
+    // school's admin to create a teacher account for you.` — advice that was
+    // simply wrong whenever the school already registered was a different San
+    // Jose in another province, which for the commonest Philippine school names
+    // is most of the time. The registrant was told to go and ask a stranger for
+    // an account. The DepEd School ID below is the guard that can tell those
+    // two apart, and it is checked immediately after this.
+    //
+    // The unique constraint on School.name went with it.
 
-    // The stronger of the two duplicate guards. School *names* repeat across
-    // divisions — there are many "San Jose Elementary School" — so the unique
-    // constraint on name is the loose one; an ID belongs to exactly one school.
+    // The real duplicate guard. School *names* repeat across divisions — there
+    // are many "San Jose Elementary School" — so a name says little; an ID
+    // belongs to exactly one school.
     const idTaken = await prisma.school.findUnique({ where: { depedSchoolId: schoolId } });
     if (idTaken) {
       return refuse(400, {
@@ -2597,6 +2661,13 @@ app.post('/api/auth/register', registerRateLimit, registerDailyRateLimit, (req, 
     const school = await prisma.school.create({
       data: {
         name: trimmedSchool, logoUrl, brandColor: brandColor || null, status: 'PENDING',
+        // Claimed here, at registration, rather than at approval. Two schools
+        // filling in the form the same afternoon would otherwise both be told
+        // the code was free and the second would break on approval, after a
+        // human had already reviewed it. The unique constraint on the column is
+        // what actually settles the race — the check above only keeps the
+        // common path off it.
+        slug: schoolSlug,
         depedSchoolId: schoolId,
         // The masterlist's own name and verdict, frozen as they were at
         // registration — describeVerification explains why they are not
@@ -2643,6 +2714,14 @@ app.post('/api/auth/register', registerRateLimit, registerDailyRateLimit, (req, 
       school: {
         name: school.name,
         status: school.status,
+        // The code the school ended up with, and the two domains built on it.
+        // The confirmation screen is the last moment this registrant is
+        // guaranteed to be looking, and the code is what every account they
+        // create from here on has to carry — a school that learns it later, from
+        // a rejected teacher-creation form, has already lost time to it.
+        slug: school.slug,
+        teacherDomain: accountDomain('TEACHER', school.slug),
+        adminDomain: accountDomain('ADMIN', school.slug),
         // Returned so the confirmation screen can tell a school whose ID matched
         // that the automatic check already passed, rather than leaving every
         // registrant with the same unqualified "we'll be in touch".
@@ -2653,6 +2732,74 @@ app.post('/api/auth/register', registerRateLimit, registerDailyRateLimit, (req, 
   } catch (e) {
     await deletePrivate(storedRegistrantIdPath);
     return refuse(400, { error: e.message });
+  }
+});
+
+/**
+ * Suggest and check a school code while the registration form is still open.
+ *
+ * The whole point of the school-code design is that the registrant settles the
+ * code *before* they submit, with a preview of the logins it produces in front
+ * of them, rather than discovering it afterwards from an address that will not
+ * validate. That needs a live answer, which is this.
+ *
+ * Two questions in one route because the form asks them together on every
+ * keystroke: "what code does this name suggest" and "is this code free". Given
+ * only a name it answers the first; given a code it answers the second and, if
+ * the answer is no, offers three that are free.
+ *
+ * ── What it deliberately does not say ──
+ * Never which school holds a taken code, and never anything about a school by
+ * name. The route is unauthenticated by necessity — nobody has an account yet —
+ * so anything it reveals is revealed to everyone. "Taken" is the whole answer.
+ * It is behind the same rate limiter as the DepEd ID lookup for the same
+ * reason: it is a public endpoint that reads the schools table, so enumeration
+ * has to cost something.
+ */
+app.get('/api/auth/school-code', schoolLookupRateLimit, async (req, res) => {
+  try {
+    const schoolName = String(req.query.schoolName ?? '').trim();
+    const requested = String(req.query.code ?? '').trim();
+
+    if (!schoolName && !requested) {
+      return res.json({ success: true, code: null, available: null, suggestions: [] });
+    }
+
+    // With no code typed yet, the name's own suggestion is the answer — and it
+    // is checked for availability too, so the form can show a school whose
+    // obvious code is already gone the alternatives immediately rather than
+    // waiting for them to accept the default and be refused.
+    const candidate = requested || suggestSlug(schoolName);
+    const check = validateSlug(candidate);
+    if (!check.ok) {
+      return res.json({
+        success: true,
+        code: check.slug,
+        available: false,
+        error: check.error,
+        suggestions: schoolName ? await suggestAlternatives(schoolName, schoolSlugTaken) : [],
+      });
+    }
+
+    const taken = await schoolSlugTaken(check.slug);
+    return res.json({
+      success: true,
+      code: check.slug,
+      available: !taken,
+      // The preview the form puts under the field. Built here rather than in
+      // the client so the two cannot disagree about what the finished addresses
+      // look like — the client's copy of the rule is a courtesy, this is the
+      // one that will judge the address on submit.
+      preview: {
+        admin: `principal@${accountDomain('ADMIN', check.slug)}`,
+        teacher: `juan.delacruz@${accountDomain('TEACHER', check.slug)}`,
+        student: `${studentPrefixFor(check.slug)}-${String(new Date().getFullYear()).slice(-2)}-0001`,
+      },
+      error: taken ? `"${check.slug}" is already used by another school.` : null,
+      suggestions: taken && schoolName ? await suggestAlternatives(schoolName, schoolSlugTaken) : [],
+    });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
   }
 });
 
@@ -2974,11 +3121,23 @@ app.post('/api/platform/schools/:schoolId/approve', platformRateLimit, async (re
     requirePlatformKey(req);
     const school = await prisma.school.findUnique({ where: { id: req.params.schoolId } });
     if (!school) return res.status(404).json({ success: false, error: 'School not found.' });
+
+    // A school registered before school codes existed, or one whose
+    // registration predates this deploy and is still sitting in the queue, has
+    // no code. Approval is the last moment to give it one: past here the school
+    // starts creating teacher accounts, and every one of them needs a domain to
+    // sit on. Derived rather than chosen, because nobody is at the form to
+    // choose — the registrant submitted before the field existed.
+    //
+    // Left alone when the school already has one. Re-deriving on approval would
+    // break rule 1: a code is assigned once and frozen.
+    const slug = school.slug || await resolveSlug(school.name, null, schoolSlugTaken);
+
     const updated = await prisma.school.update({
       where: { id: school.id },
-      data: { status: 'APPROVED', approvedAt: new Date(), rejectedReason: null }
+      data: { status: 'APPROVED', approvedAt: new Date(), rejectedReason: null, slug }
     });
-    console.log(`✅ Approved school "${updated.name}"`);
+    console.log(`✅ Approved school "${updated.name}" (code: ${updated.slug})`);
     res.json({ success: true, school: updated });
   } catch (e) {
     res.status(e.status || 500).json({ success: false, error: e.message });
@@ -2998,6 +3157,22 @@ app.post('/api/platform/schools/:schoolId/reject', platformRateLimit, async (req
       where: { id: school.id },
       // The rows are kept, not deleted: a refusal is often a "we couldn't verify
       // you yet" that gets reversed, and deleting takes the admin account with it.
+      // The school code is deliberately *not* released here, though a rejected
+      // registration has issued nothing under it and freeing it looks safe.
+      //
+      // Two reasons. The registrant's own admin row survives this rejection —
+      // the comment above says why the rows are kept — and it holds an address
+      // built on the code, `principal@admin.sjes-jose.edu.ph`. Free the code,
+      // let a real San Jose take it, and their principal cannot be created:
+      // the address is occupied by an account at a school that no longer holds
+      // the code. And a refusal here is often "we couldn't verify you yet",
+      // which gets reversed; a school that came back would need a second code
+      // and a second login for the same person.
+      //
+      // Codes are freed by deleting the school outright, which the platform
+      // route already allows for a PENDING or REJECTED school with no data. The
+      // row and its admin account go together there, so nothing is orphaned and
+      // the unique constraint frees the code on its own.
       data: { status: 'REJECTED', rejectedReason: reason.trim(), approvedAt: null }
     });
     // The login gate only stops *new* sign-ins. Anyone already holding a token
@@ -3168,6 +3343,51 @@ app.post('/api/auth/login', loginRateLimit, async (req, res) => {
         if (matches.length === 1) {
           user = await prisma.user.findUnique({
             where: { id: matches[0].id },
+            include: { section: true, school: true }
+          });
+        }
+      }
+    }
+
+    // ── Second chance for a staff address that predates school codes ──
+    //
+    // Teachers and admins created before School.slug existed signed in on the
+    // flat domains — irma@teacher.edu.ph, principal@admin.com. The backfill
+    // moves those accounts onto their school's coded domain, which means the
+    // address every one of them has memorised, saved in a browser and written
+    // on a handover sheet stops matching the row overnight. That is the one
+    // genuinely dangerous part of this change: it locks out working accounts,
+    // all of them, on the morning it deploys.
+    //
+    // So the old address keeps resolving. The lookup is by local part on the
+    // matching role's domain — "irma" + teacher — and it is allowed only when
+    // exactly one account answers to it. More than one is precisely the
+    // collision this whole change exists to make possible (two schools may now
+    // both employ an Irma), and guessing between them would sign somebody into
+    // the wrong school. Ambiguous is treated as no match, the same rule the
+    // relaxed student ID above follows.
+    //
+    // This is a transition, not a feature. Once schools have been told and the
+    // addresses are in use, deleting this block is what finally retires the
+    // flat domains — and until then it widens only how an account is *named*,
+    // never what proves it is yours: the password check below is untouched.
+    if (!user && (role === 'TEACHER' || role === 'ADMIN') && typeof username === 'string') {
+      const typed = username.trim().toLowerCase();
+      const legacyDomain = role === 'TEACHER' ? TEACHER_EMAIL_DOMAIN : ADMIN_EMAIL_DOMAIN;
+      const [localPart, domain] = typed.split('@');
+      if (localPart && domain === legacyDomain) {
+        const roleLabel = role === 'TEACHER' ? 'teacher' : 'admin';
+        const candidates = await prisma.user.findMany({
+          where: {
+            role,
+            username: { startsWith: `${localPart}@${roleLabel}.`, endsWith: '.edu.ph' },
+          },
+          select: { id: true },
+          take: 2,
+        });
+        if (candidates.length === 1) {
+          user = await prisma.user.findUnique({
+            where: { id: candidates[0].id },
             include: { section: true, school: true }
           });
         }
@@ -4090,12 +4310,19 @@ app.post('/api/admin/:adminId/teachers', async (req, res) => {
     if (!name?.trim() || !email?.trim() || !password) {
       return res.status(400).json({ success: false, error: 'Name, email and a temporary password are required.' });
     }
-    // A teacher account has to sit on the teacher domain — see accountEmails.js
-    // for why the domain carries the role.
-    const emailCheck = validateAccountEmail(email, 'TEACHER');
+    // A teacher account has to sit on this school's teacher domain — see
+    // accountEmails.js for why the domain carries both the role and the school.
+    // Passing the school's code is what stops two schools colliding on the same
+    // name: without it every teacher.edu.ph address in the country shared one
+    // namespace, and the second school to hire an Irma could not create her.
+    const emailCheck = validateAccountEmail(email, 'TEACHER', admin.school?.slug);
     if (!emailCheck.ok) return res.status(400).json({ success: false, error: emailCheck.error });
     const normalizedEmail = emailCheck.email;
     const clash = await prisma.user.findFirst({ where: { OR: [{ email: normalizedEmail }, { username: normalizedEmail }] } });
+    // A clash is now almost always this school's own doing — the address
+    // carries the school code, so another school's teacher cannot occupy it.
+    // The exception is a school with no code yet, still on the flat legacy
+    // domain, which is exactly the case the message has to stay vague for.
     if (clash) return res.status(400).json({ success: false, error: 'An account with this email already exists.' });
 
     const teacher = await prisma.user.create({
@@ -4581,7 +4808,7 @@ app.post('/api/admin/:adminId/admins', async (req, res) => {
     if (String(password).length < 6) {
       return res.status(400).json({ success: false, error: 'The temporary password must be at least 6 characters.' });
     }
-    const emailCheck = validateAccountEmail(email, 'ADMIN');
+    const emailCheck = validateAccountEmail(email, 'ADMIN', admin.school?.slug);
     if (!emailCheck.ok) return res.status(400).json({ success: false, error: emailCheck.error });
 
     const adminCount = await prisma.user.count({ where: { schoolId: admin.schoolId, role: 'ADMIN' } });
@@ -4695,17 +4922,24 @@ app.post('/api/admin/:adminId/admins/promote', async (req, res) => {
      * still be promoted without being asked to change address.
      */
     let emailMove = {};
-    const alreadyOnAdminDomain = String(teacher.email || '').endsWith(`@${ADMIN_EMAIL_DOMAIN}`);
+    // The domain to move them onto is this school's, not a platform-wide one.
+    // Both forms count as "already an admin address": the school's own coded
+    // domain, and the flat legacy one an account created before school codes
+    // existed still sits on. Treating the legacy form as wrong here would force
+    // an address change on a promotion that never needed one.
+    const schoolAdminDomain = accountDomain('ADMIN', admin.school?.slug);
+    const currentDomain = String(teacher.email || '').split('@')[1] || '';
+    const alreadyOnAdminDomain = currentDomain === schoolAdminDomain || currentDomain === ADMIN_EMAIL_DOMAIN;
     if (!alreadyOnAdminDomain) {
       if (!adminEmail?.trim()) {
         return res.status(400).json({
           success: false,
           code: 'ADMIN_EMAIL_REQUIRED',
           error: `${teacher.name} signs in as ${teacher.email}, which is a teacher address. `
-            + `Give them the @${ADMIN_EMAIL_DOMAIN} address they will use as an admin.`,
+            + `Give them the @${schoolAdminDomain} address they will use as an admin.`,
         });
       }
-      const emailCheck = validateAccountEmail(adminEmail, 'ADMIN');
+      const emailCheck = validateAccountEmail(adminEmail, 'ADMIN', admin.school?.slug);
       if (!emailCheck.ok) return res.status(400).json({ success: false, error: emailCheck.error });
 
       const clash = await prisma.user.findFirst({
@@ -7233,6 +7467,18 @@ function birthdayPassword(date) {
  *
  * Capped at four characters so the finished ID stays short enough for a Grade 1
  * learner to copy off the board.
+ *
+ * ── No longer the source of a school's prefix ──
+ * Kept only as the fallback for a school that has no code yet, and as the
+ * derivation schoolSlug.js grew out of. Two things were wrong with using it
+ * directly. It is *derived at enrolment time*, so a school that renamed
+ * silently began issuing pupils a different prefix from their older siblings;
+ * and it is not unique, so two schools sharing initials shared one number line
+ * and neither one's sequence meant anything (the loop in studentIdIssuer had to
+ * step past the other school's IDs, which is the bug wearing a workaround).
+ *
+ * School.slug fixes both: it is stored once and frozen, and it is unique. New
+ * enrolments take their prefix from there — see studentIdIssuer.
  */
 function schoolIdPrefix(schoolName) {
   // Filler words carry no identity and would only lengthen the code.
@@ -7269,15 +7515,27 @@ function schoolIdPrefix(schoolName) {
  * prefix rather than from a row count, so deleting a student never re-issues
  * their ID to somebody else.
  */
-async function studentIdIssuer(schoolName, fallbackName) {
-  const prefix = schoolIdPrefix(schoolName || fallbackName);
+async function studentIdIssuer(school, fallbackName) {
+  // The school's own frozen code, not a fresh derivation from its name. A
+  // school that renames keeps issuing the prefix its existing pupils carry, and
+  // two schools with the same initials no longer share a number line — see the
+  // note on schoolIdPrefix. Falls back to the derived form for a school with no
+  // code yet, which is what every school looked like before the backfill.
+  const prefix = studentPrefixFor(school?.slug) || schoolIdPrefix(school?.name || fallbackName);
   const yy = String(new Date().getFullYear()).slice(-2);
 
   const issued = await prisma.user.findMany({
     where: { role: 'STUDENT', username: { startsWith: `${prefix}-` } },
     select: { username: true }
   });
+  // `startsWith` is a cheap prefilter, not the test. It cannot distinguish
+  // "MES-26-0001" from "MES-MABA-26-0001", so a school still on the short
+  // legacy prefix would otherwise read a coded school's IDs as its own and
+  // start its sequence somewhere in the thousands. The anchored pattern is what
+  // decides which IDs belong to this prefix.
+  const belongs = new RegExp(`^${prefix}-\\d{2}-\\d+$`);
   let seq = issued.reduce((max, u) => {
+    if (!belongs.test(u.username)) return max;
     const match = /-(\d+)$/.exec(u.username);
     return match ? Math.max(max, Number(match[1])) : max;
   }, 0);
@@ -7680,9 +7938,9 @@ async function enrolStudents(section, studentsList, { schoolId, teacherId, actor
   });
 
   const school = schoolId
-    ? await prisma.school.findUnique({ where: { id: schoolId }, select: { name: true } })
+    ? await prisma.school.findUnique({ where: { id: schoolId }, select: { name: true, slug: true } })
     : null;
-  const nextStudentId = await studentIdIssuer(school?.name, section.name);
+  const nextStudentId = await studentIdIssuer(school, section.name);
 
   // Fetched once for the whole import, not per name: this is the section every
   // pending move would be arriving into.

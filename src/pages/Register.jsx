@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import { BookOpen, Eye, EyeOff, UploadCloud, X, Image as ImageIcon, ArrowLeft, Clock, Pipette,
   CheckCircle2, AlertTriangle, Loader2, FileText, ShieldCheck } from 'lucide-react';
 import { API_URL, apiFetch } from '../config';
-import { ADMIN_EMAIL_DOMAIN, localPartOf, buildAccountEmail } from '../constants/accountEmails';
+import { accountDomain, localPartOf, buildAccountEmail } from '../constants/accountEmails';
 
 /**
  * Suggested school colours — the admin can still pick any hex via the picker
@@ -111,18 +111,43 @@ function ConsentCheck({ checked, onChange, children }) {
 export default function Register() {
   // `email` holds only the part before the @. The domain is fixed and rendered
   // as a suffix on the field rather than left to be typed: an admin account has
-  // to sit on @admin.com, and a form that accepts anything and refuses it on
-  // submit teaches the rule one rejection at a time.
+  // to sit on this school's @admin.<code>.edu.ph, and a form that accepts
+  // anything and refuses it on submit teaches the rule one rejection at a time.
   const [formData, setFormData] = useState({
     name: '',
     email: '',
     password: '',
     schoolName: '',
-    // A mailbox that actually receives mail, unlike the @admin.com login above
-    // it. This is the only address on the record anyone can reach the school on.
+    // A mailbox that actually receives mail, unlike the login above it — that
+    // one sits on a synthetic domain with nothing behind it. This is the only
+    // address on the record anyone can reach the school on.
     contactEmail: '',
   });
-  const adminEmail = buildAccountEmail(formData.email, 'ADMIN');
+  // ── The school's code ──
+  //
+  // The short string that separates this school's accounts from every other
+  // school's: it becomes the middle label of every staff login domain
+  // (principal@admin.mes-maba.edu.ph) and the prefix of every student ID
+  // (MES-MABA-26-0001). See server/schoolSlug.js.
+  //
+  // Settled here, on the form, rather than assigned silently afterwards. The
+  // code is in every login the school will ever type, so the one moment they
+  // are certain to be paying attention is the moment to show it to them — and
+  // if the obvious code is already held by another school, this is where they
+  // choose a different one, with alternatives offered, instead of finding out
+  // from a teacher-creation form that will not accept the address they expect.
+  //
+  //   value       what will be sent, '' until the first check answers
+  //   state       'idle' | 'checking' | 'available' | 'taken' | 'invalid'
+  //   edited      whether the registrant has typed over the suggestion; once
+  //               true the school name no longer re-suggests, or their choice
+  //               would be overwritten by a lookup filling the name field in
+  //   preview     the three example logins, built by the server so the client
+  //               cannot disagree with what will actually be created
+  const [schoolCode, setSchoolCode] = useState({
+    value: '', state: 'idle', error: null, suggestions: [], preview: null, edited: false,
+  });
+  const adminEmail = buildAccountEmail(formData.email, 'ADMIN', schoolCode.value);
 
   // ── Does this school exist? ──
   // The DepEd School ID is checked against the published Masterlist of Schools
@@ -198,6 +223,66 @@ export default function Register() {
     }, 400);
     return () => { cancelled = true; clearTimeout(timer); };
   }, [schoolId]);
+
+  /**
+   * Ask the server what code this school gets, and whether it is free.
+   *
+   * Debounced the same way the School ID lookup is, and for the same reasons:
+   * one request per pause rather than one per keystroke, and a `cancelled` flag
+   * so a slow earlier answer cannot land on top of a later one and report the
+   * wrong verdict about the wrong code.
+   *
+   * Runs on the school name until the registrant edits the code themselves.
+   * After that the name no longer drives it — the DepEd lookup fills the name
+   * field in on its own, and having that overwrite a code somebody had
+   * deliberately chosen would undo their choice without telling them.
+   */
+  useEffect(() => {
+    const name = formData.schoolName.trim();
+    const typed = schoolCode.edited ? schoolCode.value : '';
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      if (cancelled) return;
+      // Emptying both fields clears the verdict, for the same reason clearing
+      // the School ID clears its own: a stale "✓ available" sitting under an
+      // empty box is worse than no answer. Done inside the debounce rather than
+      // in the effect body — a synchronous setState there cascades renders, and
+      // the delay is invisible against a field the registrant just emptied.
+      if (!name && !typed) {
+        setSchoolCode(prev => ({ ...prev, state: 'idle', error: null, suggestions: [], preview: null }));
+        return;
+      }
+      setSchoolCode(prev => ({ ...prev, state: 'checking' }));
+      try {
+        const query = new URLSearchParams({ schoolName: name, code: typed });
+        const res = await apiFetch(`${API_URL}/api/auth/school-code?${query}`);
+        const data = await res.json();
+        if (cancelled || !data.success) return;
+        setSchoolCode(prev => ({
+          ...prev,
+          // The suggestion is adopted only while the registrant has not typed
+          // their own — otherwise the box would rewrite itself under them.
+          value: prev.edited ? prev.value : (data.code || ''),
+          state: data.available === false ? (data.error ? 'taken' : 'invalid') : 'available',
+          error: data.error || null,
+          suggestions: data.suggestions || [],
+          preview: data.preview || null,
+        }));
+      } catch {
+        // A check that could not run must not read as "this code is taken".
+        // The server checks again on submit, so silence is the safe answer.
+        if (!cancelled) setSchoolCode(prev => ({ ...prev, state: 'idle' }));
+      }
+    }, 400);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [formData.schoolName, schoolCode.value, schoolCode.edited]);
+
+  /** The registrant typing their own code. Marks it edited, which stops the
+   *  school name from suggesting over the top of it from here on. */
+  const handleSchoolCodeChange = (value) => {
+    const cleaned = String(value).toLowerCase().replace(/[^a-z0-9-]/g, '').slice(0, 24);
+    setSchoolCode(prev => ({ ...prev, value: cleaned, edited: true, state: 'checking' }));
+  };
 
   // Clearing the field has to clear its verdict too, or a stale "✓ matched"
   // sits under an empty box.
@@ -301,6 +386,11 @@ export default function Register() {
       // The full address, not the local part the field holds.
       Object.entries({ ...formData, email: adminEmail }).forEach(([k, v]) => body.append(k, v));
       body.append('depedSchoolId', schoolId);
+      // The code the registrant settled on, sent explicitly rather than left to
+      // the server to derive. They have been shown the logins it produces and
+      // have typed an admin address to match, so the server honours this or
+      // refuses it — it never quietly substitutes a different one.
+      if (schoolCode.value) body.append('schoolSlug', schoolCode.value);
       if (brandColor) body.append('brandColor', brandColor);
       if (logo) body.append('logo', logo);
       if (proof) body.append('proof', proof);
@@ -457,34 +547,13 @@ export default function Register() {
                 )}
               </div>
 
-              <div>
-                <label className="tg-label">Admin Email Address</label>
-                {/* Split field: they type the name, the domain is shown and
-                    cannot be changed. localPartOf() cuts at any @ they type or
-                    paste, so pasting a whole address does the obvious thing
-                    instead of producing "principal@admin.com@admin.com". */}
-                <div className="flex items-stretch rounded-2xl border-2 border-navy-700/10 bg-white overflow-hidden focus-within:border-royal-400 transition-colors">
-                  <input
-                    type="text"
-                    required
-                    value={formData.email}
-                    inputMode="email"
-                    autoComplete="off"
-                    aria-describedby="admin-email-hint"
-                    className="flex-1 min-w-0 px-4 py-3 outline-none text-navy-700 font-semibold"
-                    placeholder="principal"
-                    onChange={(e) => setFormData({ ...formData, email: localPartOf(e.target.value) })}
-                  />
-                  <span className="shrink-0 px-3 grid place-items-center bg-cream-100 border-l-2 border-navy-700/10 text-sm font-extrabold text-navy-500 select-none">
-                    @{ADMIN_EMAIL_DOMAIN}
-                  </span>
-                </div>
-                <p id="admin-email-hint" className="text-xs text-navy-400 mt-1.5 font-semibold">
-                  Every admin account signs in on @{ADMIN_EMAIL_DOMAIN}. Teachers you create later
-                  get @teacher.edu.ph addresses.
-                </p>
-              </div>
-
+              {/* ── School name, then code, then the admin's address ──
+                  This order is load-bearing, not cosmetic. The code is derived
+                  from the name, and the admin's address is built on the code
+                  (principal@admin.mes-maba.edu.ph), so asking for the address
+                  first — as this form used to — showed a domain that changed
+                  under the registrant as soon as they typed their school name.
+                  Each field now depends only on the ones above it. */}
               <div>
                 <label className="tg-label">School Name</label>
                 <input
@@ -508,6 +577,113 @@ export default function Register() {
                     Filled from DepEd records — edit it if your school's name has changed.
                   </p>
                 )}
+              </div>
+
+              {/* ── School code ──
+                  Suggested from the name, editable, checked live. The preview
+                  below it is the part that actually teaches the rule: a
+                  registrant reading "principal@admin.mes-maba.edu.ph" grasps
+                  what the code is for instantly, where "initials plus the first
+                  four letters of the first word" has to be decoded first. */}
+              <div>
+                <label className="tg-label" htmlFor="school-code">School Code</label>
+                <div className="flex items-stretch rounded-2xl border-2 border-navy-700/10 bg-white overflow-hidden focus-within:border-royal-400 transition-colors">
+                  <input
+                    id="school-code"
+                    type="text"
+                    className="flex-1 min-w-0 px-4 py-3 outline-none text-navy-700 font-semibold font-mono lowercase"
+                    placeholder="mes-maba"
+                    autoComplete="off"
+                    spellCheck="false"
+                    aria-describedby="school-code-hint"
+                    value={schoolCode.value}
+                    onChange={(e) => handleSchoolCodeChange(e.target.value)}
+                  />
+                  <span className="shrink-0 px-3 grid place-items-center bg-cream-100 border-l-2 border-navy-700/10">
+                    {schoolCode.state === 'checking' && <Loader2 className="w-4 h-4 animate-spin text-navy-400" />}
+                    {schoolCode.state === 'available' && <CheckCircle2 className="w-4 h-4 text-emerald-600" />}
+                    {(schoolCode.state === 'taken' || schoolCode.state === 'invalid')
+                      && <AlertTriangle className="w-4 h-4 text-amber-600" />}
+                  </span>
+                </div>
+
+                {schoolCode.error && (
+                  <p className="flex items-start gap-1.5 text-xs font-semibold text-amber-700 mt-1.5">
+                    <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                    {/* Never names the school that holds it. This form is open
+                        to anyone, so anything it reveals about who is on the
+                        platform is revealed to everyone. */}
+                    {schoolCode.error}
+                  </p>
+                )}
+
+                {schoolCode.suggestions.length > 0 && (
+                  <div className="flex flex-wrap items-center gap-2 mt-2">
+                    <span className="text-xs font-semibold text-navy-400">Try:</span>
+                    {schoolCode.suggestions.map((option) => (
+                      <button
+                        key={option}
+                        type="button"
+                        onClick={() => handleSchoolCodeChange(option)}
+                        className="px-2.5 py-1 rounded-lg bg-royal-50 border border-royal-200 text-xs
+                                   font-mono font-bold text-royal-700 hover:bg-royal-100 transition-colors"
+                      >
+                        {option}
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                {schoolCode.state === 'available' && schoolCode.preview && (
+                  <div className="mt-2.5 rounded-xl bg-cream-100 border border-navy-700/10 p-3">
+                    <p className="text-xs font-extrabold text-navy-500 mb-1.5">
+                      Your school's sign-ins will look like this:
+                    </p>
+                    <ul className="space-y-1 text-xs font-mono text-navy-600 break-all">
+                      <li><span className="font-sans font-bold text-navy-400 mr-1.5">Admin</span>{schoolCode.preview.admin}</li>
+                      <li><span className="font-sans font-bold text-navy-400 mr-1.5">Teacher</span>{schoolCode.preview.teacher}</li>
+                      <li><span className="font-sans font-bold text-navy-400 mr-1.5">Student</span>{schoolCode.preview.student}</li>
+                    </ul>
+                  </div>
+                )}
+
+                <p id="school-code-hint" className="text-xs text-navy-400 mt-1.5 font-semibold">
+                  Suggested from your school's name — the initials plus the first four letters of the
+                  first word. You can change it now; once your school is approved it is permanent.
+                </p>
+              </div>
+
+              <div>
+                <label className="tg-label">Admin Email Address</label>
+                {/* Split field: they type the name, the domain is shown and
+                    cannot be changed. localPartOf() cuts at any @ they type or
+                    paste, so pasting a whole address does the obvious thing
+                    instead of doubling the domain. The suffix is allowed to
+                    truncate — it carries the school code now and no longer fits
+                    beside the box on a phone. */}
+                <div className="flex items-stretch rounded-2xl border-2 border-navy-700/10 bg-white overflow-hidden focus-within:border-royal-400 transition-colors">
+                  <input
+                    type="text"
+                    required
+                    value={formData.email}
+                    inputMode="email"
+                    autoComplete="off"
+                    aria-describedby="admin-email-hint"
+                    className="flex-1 min-w-0 px-4 py-3 outline-none text-navy-700 font-semibold"
+                    placeholder="principal"
+                    onChange={(e) => setFormData({ ...formData, email: localPartOf(e.target.value) })}
+                  />
+                  <span
+                    title={`@${accountDomain('ADMIN', schoolCode.value)}`}
+                    className="shrink min-w-0 truncate px-3 grid place-items-center bg-cream-100 border-l-2 border-navy-700/10 text-sm font-extrabold text-navy-500 select-none"
+                  >
+                    @{accountDomain('ADMIN', schoolCode.value)}
+                  </span>
+                </div>
+                <p id="admin-email-hint" className="text-xs text-navy-400 mt-1.5 font-semibold break-words">
+                  Your account will sign in as {adminEmail || `principal@${accountDomain('ADMIN', schoolCode.value)}`}.
+                  Teachers you create later get @{accountDomain('TEACHER', schoolCode.value)} addresses.
+                </p>
               </div>
 
               {/* ── DepEd School ID ──
@@ -714,7 +890,7 @@ export default function Register() {
                 />
                 <p id="contact-email-hint" className="text-xs text-navy-400 mt-1.5 font-semibold">
                   A real inbox we can reach you on while we review your school — not the
-                  @{ADMIN_EMAIL_DOMAIN} sign-in above, which is a username rather than a mailbox.
+                  @{accountDomain('ADMIN', schoolCode.value)} sign-in above, which is a username rather than a mailbox.
                 </p>
               </div>
 

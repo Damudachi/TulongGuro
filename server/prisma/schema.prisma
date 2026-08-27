@@ -11,7 +11,35 @@ datasource db {
 /// rubric templates all hang off one School so nothing leaks across schools.
 model School {
   id               String           @id @default(uuid())
-  name             String           @unique
+  /// No longer unique. School names repeat legitimately across divisions — the
+  /// comment on depedSchoolId below has always said so — and the constraint
+  /// meant the second "San Jose Elementary School" to register was refused as a
+  /// duplicate of a school in another province. depedSchoolId is the duplicate
+  /// guard that means something; this column is a label.
+  name             String
+  /// The school's code: the short string that separates this school's accounts
+  /// from every other school's. `mes-maba`, `sjes-jose`.
+  ///
+  /// It is the middle label of every staff login domain
+  /// (`irma@teacher.mes-maba.edu.ph`) and the prefix of every student ID
+  /// (`MES-MABA-26-0001`), which is what gives each school its own namespace in
+  /// the platform-wide unique columns on User. See schoolSlug.js for how one is
+  /// derived, offered and chosen.
+  ///
+  /// Unique, and that constraint is load-bearing rather than defensive: two
+  /// schools registering the same afternoon can both be *told* a code is free,
+  /// and this is the only thing that stops them both taking it.
+  ///
+  /// Nullable because every school registered before codes existed has none,
+  /// and refusing to serve them until someone backfills would be a worse
+  /// failure than the one this prevents — the same reasoning as depedSchoolId.
+  /// A school with no code falls back to the legacy flat login domains; see
+  /// accountEmails.js. scripts/backfill-school-slugs.js fills them in.
+  ///
+  /// Frozen once written. Never recompute it from `name`: a school that renames
+  /// would otherwise have every staff login and every future student ID change
+  /// under it, with no way back to the addresses people actually know.
+  slug             String?          @unique
   /// Optional school branding, set at registration. Null falls back to an
   /// initials placeholder and the default TulongGuro palette.
   logoUrl          String?

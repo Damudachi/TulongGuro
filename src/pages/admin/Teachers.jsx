@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import { Users, Plus, Loader2, Trash2, KeyRound, X, Copy, Check, GraduationCap, BookOpen, Layers, ChevronRight, Search } from 'lucide-react';
 import { API_URL, apiFetch } from '../../config';
-import { TEACHER_EMAIL_DOMAIN, buildAccountEmail } from '../../constants/accountEmails';
+import { accountDomain, buildAccountEmail } from '../../constants/accountEmails';
 import DomainEmailField from '../../components/DomainEmailField';
 import TeacherHandover from '../../components/TeacherHandover';
 
@@ -59,7 +59,7 @@ export default function AdminTeachers() {
     setError('');
     // form.email holds only the part before the @; the domain is fixed by the
     // role and added here, which is also what gets handed over as the login.
-    const teacherEmail = buildAccountEmail(form.email, 'TEACHER');
+    const teacherEmail = buildAccountEmail(form.email, 'TEACHER', data?.school?.slug);
     try {
       const res = await apiFetch(`${API_URL}/api/admin/${admin.id}/teachers`, {
         method: 'POST',
@@ -335,9 +335,10 @@ export default function AdminTeachers() {
               <DomainEmailField
                 id="new-teacher-email"
                 role="TEACHER"
+                schoolSlug={data?.school?.slug}
                 value={form.email}
                 onChange={email => setForm({ ...form, email })}
-                hint={`Teacher accounts always sign in on @${TEACHER_EMAIL_DOMAIN} — you only choose the name.`}
+                hint={`Teacher accounts at this school sign in on @${accountDomain('TEACHER', data?.school?.slug)} — you only choose the name.`}
               />
               <div>
                 <label className="block text-sm font-medium text-slate-700 mb-1">Temporary password *</label>
