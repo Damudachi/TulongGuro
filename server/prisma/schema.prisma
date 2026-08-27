@@ -191,7 +191,15 @@ model User {
   name              String
   email             String?          @unique
   password          String
-  /// ADMIN | TEACHER | STUDENT
+  /// ADMIN | TEACHER | STUDENT | PLATFORM
+  ///
+  /// PLATFORM is a TulongGuro operator — us, not a school. Those rows carry no
+  /// schoolId and belong to no tenant; they exist so the platform console has
+  /// named accounts with real sessions instead of one shared key, which could
+  /// not say who acted, be revoked for one person, or expire. Every school area
+  /// refuses them, because authorizePath keys on role and PLATFORM is none of
+  /// the three above. Created by scripts/create-platform-operator.js, then by
+  /// each other.
   ///
   /// Deliberately a plain String, not a Prisma enum. An enum was tried and
   /// reverted: this is a plain-JavaScript codebase with no TypeScript, so the

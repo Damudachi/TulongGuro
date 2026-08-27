@@ -34,7 +34,7 @@ const {
 } = require('./auth');
 const { classSchoolId, staffMayAccess, staffMayReadStudent, REAL_WORK } = require('./access');
 const {
-  TEACHER_EMAIL_DOMAIN, ADMIN_EMAIL_DOMAIN, accountDomain,
+  TEACHER_EMAIL_DOMAIN, ADMIN_EMAIL_DOMAIN, accountDomain, normalizeEmail,
   validateAccountEmail, validateContactEmail,
 } = require('./accountEmails');
 const {
@@ -2900,24 +2900,69 @@ app.get('/api/auth/school-lookup', schoolLookupRateLimit, async (req, res) => {
 // PLATFORM OPERATOR — school approval
 // ─────────────────────────────────────────
 /**
- * These routes are for whoever runs TulongGuro, not for any school. They are
- * guarded by a single shared secret in PLATFORM_ADMIN_KEY rather than by a user
- * account, because there is no platform-level user model and inventing one to
- * hold a single operator would be more surface area, not less.
+ * These routes are for whoever runs TulongGuro, not for any school.
  *
- * Consequences worth being honest about: the key is bearer authority, so anyone
- * holding it can approve any school, and it can only be rotated by redeploying.
- * That is an acceptable trade for an operator-only surface with three routes.
- * If school approval ever becomes a team activity with an audit trail, this
- * should become a real account.
+ * ── They used to be guarded by a shared key ──
+ * PLATFORM_ADMIN_KEY, typed into the console and sent as a header. The comment
+ * that used to sit here defended it, and ended: "if school approval ever
+ * becomes a team activity with an audit trail, this should become a real
+ * account." Both halves of that happened. Four people hold the key, and the
+ * console now sets any admin's password at any school — which is impersonation,
+ * not approval.
+ *
+ * Three things a shared secret cannot do, all of which this surface now needs:
+ * say *which* operator acted, be revoked for one person without re-keying
+ * everybody, and expire.
+ *
+ * ── So operators are accounts ──
+ * A User row with role PLATFORM and no schoolId. That reuses everything the
+ * school-facing side already has and trusts — bcrypt hashing, signToken,
+ * authenticate, sessionsValidFrom revocation, the rate limiters, and
+ * AdminAuditLog.actorId, which was nullable only because there was no operator
+ * row to point at. Sessions are four hours rather than a week; see
+ * PLATFORM_TOKEN_TTL_SECONDS.
+ *
+ * ── What the key is still for ──
+ * Two things, neither of them this console.
+ *
+ * Creating the first operator, from the command line, via
+ * scripts/create-platform-operator.js — the bootstrap, since there is nobody to
+ * sign in as yet. And the four data-retention endpoints under /api/admin/
+ * (retention-report, backfill-retention, archive-grades, purge-grades), which
+ * are invoked by scripts rather than by people; a shared secret is the right
+ * credential for a machine, and demanding an interactive login would break a
+ * scheduled job.
+ *
+ * It is not accepted by any route reachable from the console. Keeping it as a
+ * fallback there would have reintroduced every weakness above and would still
+ * be valid in two years.
+ *
+ * Authorisation is by role, checked in authorizePath (the `platform` branch)
+ * and again by requireOperator below. An operator is refused every school area
+ * for the same reason a school admin is refused this one: the branches key on
+ * role, and PLATFORM is not ADMIN, TEACHER or STUDENT.
+ */
+function requireOperator(req) {
+  if (req.auth?.role !== 'PLATFORM') {
+    const err = new Error('Not authorised.');
+    err.status = 401;
+    throw err;
+  }
+  return req.auth.sub;
+}
+
+/**
+ * The shared-key check, kept for the machine-invoked routes only — the
+ * retention endpoints under /api/admin/ and nothing else. See the note above on
+ * why those keep a secret while the console moved to accounts.
  *
  * With no key configured every request is refused. Failing closed matters here:
- * a missing env var must not silently turn approval into a public endpoint.
+ * a missing env var must not silently turn a purge endpoint into a public one.
  */
 function requirePlatformKey(req) {
   const configured = process.env.PLATFORM_ADMIN_KEY;
   if (!configured) {
-    const err = new Error('School approval is not configured on this server.');
+    const err = new Error('This endpoint is not configured on this server.');
     err.status = 503;
     throw err;
   }
@@ -2932,10 +2977,212 @@ function requirePlatformKey(req) {
   }
 }
 
+/** The operator's own row, for the audit trail. Loaded rather than taken from
+ *  the token: a name is display data and belongs to the database, not to a
+ *  credential the holder could otherwise choose the contents of. */
+async function operatorRow(req) {
+  const id = requireOperator(req);
+  const operator = await prisma.user.findUnique({
+    where: { id },
+    select: { id: true, name: true, email: true, role: true },
+  });
+  if (!operator || operator.role !== 'PLATFORM') {
+    const err = new Error('Not authorised.');
+    err.status = 401;
+    throw err;
+  }
+  return operator;
+}
+
+/**
+ * Operator sign-in.
+ *
+ * Deliberately its own route rather than a fourth role on /api/auth/login.
+ * That form is the most-attacked surface in the app and is read by every
+ * teacher and pupil; adding an operator option there would advertise that
+ * platform accounts exist and invite credential-stuffing against the one
+ * account type that can reach every school.
+ *
+ * Behind loginRateLimit, the same limiter the school login uses. The generic
+ * failure message is deliberate: "no such operator" and "wrong password" must
+ * not be distinguishable, or this becomes a way to enumerate the team.
+ */
+app.post('/api/platform/login', loginRateLimit, async (req, res) => {
+  try {
+    const { email, password } = req.body || {};
+    const normalized = normalizeEmail(email);
+    const operator = normalized
+      ? await prisma.user.findFirst({ where: { username: normalized, role: 'PLATFORM' } })
+      : null;
+
+    // The bcrypt compare runs even when there is no such operator, against a
+    // hash that cannot match, so a missing account and a wrong password take
+    // the same time. Without it the response time answers "is this address one
+    // of yours" to anyone who asks.
+    const hash = operator?.password || '$2a$10$invalidinvalidinvalidinvalidinvalidinvalidinvalidinvalidi';
+    const ok = await bcrypt.compare(String(password || ''), hash);
+    if (!operator || !ok) {
+      return res.status(401).json({ success: false, error: 'Invalid credentials' });
+    }
+
+    console.log(`🛡  Platform operator signed in: ${operator.email}`);
+    res.json({
+      success: true,
+      token: signToken(operator),
+      operator: { id: operator.id, name: operator.name, email: operator.email },
+    });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+/** Who the current session belongs to. The console calls it on load, so a
+ *  token that has expired or been revoked returns the operator to the sign-in
+ *  form rather than to a screen whose every request will fail. */
+app.get('/api/platform/me', platformRateLimit, async (req, res) => {
+  try {
+    const operator = await operatorRow(req);
+    res.json({ success: true, operator });
+  } catch (e) {
+    res.status(e.status || 500).json({ success: false, error: e.message });
+  }
+});
+
+/**
+ * The operators themselves.
+ *
+ * Peers, like a school's admins: any operator may add, reset or remove any
+ * other. There is no tier above this one — that is what "platform operator"
+ * means — so the guards are the same two that protect a school from itself:
+ * nobody may act on their own account here, and the last operator cannot be
+ * removed.
+ */
+app.get('/api/platform/operators', platformRateLimit, async (req, res) => {
+  try {
+    const me = await operatorRow(req);
+    const operators = await prisma.user.findMany({
+      where: { role: 'PLATFORM' },
+      select: { id: true, name: true, email: true, createdAt: true },
+      orderBy: { createdAt: 'asc' },
+    });
+    res.json({ success: true, operators: operators.map(o => ({ ...o, isMe: o.id === me.id })) });
+  } catch (e) {
+    res.status(e.status || 500).json({ success: false, error: e.message });
+  }
+});
+
+app.post('/api/platform/operators', platformRateLimit, async (req, res) => {
+  try {
+    await operatorRow(req);
+    const { name, email, password } = req.body || {};
+    if (!name?.trim() || !email?.trim() || !password) {
+      return res.status(400).json({ success: false, error: 'Name, email and a password are required.' });
+    }
+    if (String(password).length < 8) {
+      // Longer than the six a school account needs. This one reaches every
+      // school on the platform, so it is not the place to match that floor.
+      return res.status(400).json({ success: false, error: 'An operator password must be at least 8 characters.' });
+    }
+    // A real, deliverable address — not one of the synthetic login domains. An
+    // operator is a person we can reach, and this is also the only identifier
+    // they sign in with.
+    const check = validateContactEmail(email);
+    if (!check.ok) return res.status(400).json({ success: false, error: check.error });
+
+    const clash = await prisma.user.findFirst({
+      where: { OR: [{ email: check.email }, { username: check.email }] },
+      select: { id: true },
+    });
+    if (clash) return res.status(400).json({ success: false, error: 'An account with this email already exists.' });
+
+    const created = await prisma.user.create({
+      data: {
+        name: name.trim(),
+        email: check.email,
+        username: check.email,
+        password: await bcrypt.hash(password, BCRYPT_SALT_ROUNDS),
+        role: 'PLATFORM',
+        // No school. An operator belongs to the platform, and a schoolId here
+        // would put them inside a tenant they must never be a member of.
+        schoolId: null,
+        schoolName: null,
+      },
+    });
+    console.log(`🛡  Platform operator created: ${created.email}`);
+    res.json({ success: true, operator: { id: created.id, name: created.name, email: created.email } });
+  } catch (e) {
+    res.status(e.status || 500).json({ success: false, error: e.message });
+  }
+});
+
+app.put('/api/platform/operators/:userId/password', platformRateLimit, async (req, res) => {
+  try {
+    const me = await operatorRow(req);
+    const { password } = req.body || {};
+    if (!password || String(password).length < 8) {
+      return res.status(400).json({ success: false, error: 'An operator password must be at least 8 characters.' });
+    }
+    // Your own password is changed from the account menu, which asks for the
+    // current one first. This route is for helping a colleague who is locked
+    // out, and allowing it on yourself would be a way to skip that check.
+    if (req.params.userId === me.id) {
+      return res.status(400).json({ success: false, error: 'Change your own password from your account, not here.' });
+    }
+    const target = await prisma.user.findUnique({ where: { id: req.params.userId } });
+    if (!target || target.role !== 'PLATFORM') {
+      return res.status(404).json({ success: false, error: 'Operator not found.' });
+    }
+
+    const revokedAt = new Date();
+    await prisma.user.update({
+      where: { id: target.id },
+      data: { password: await bcrypt.hash(password, BCRYPT_SALT_ROUNDS), sessionsValidFrom: revokedAt },
+    });
+    markRevoked(target.id, revokedAt);
+    console.log(`🛡  ${me.email} reset the password of operator ${target.email}`);
+    res.json({ success: true });
+  } catch (e) {
+    res.status(e.status || 500).json({ success: false, error: e.message });
+  }
+});
+
+app.delete('/api/platform/operators/:userId', platformRateLimit, async (req, res) => {
+  try {
+    const me = await operatorRow(req);
+    if (req.params.userId === me.id) {
+      return res.status(400).json({ success: false, error: 'You cannot remove your own operator account.' });
+    }
+    const target = await prisma.user.findUnique({ where: { id: req.params.userId } });
+    if (!target || target.role !== 'PLATFORM') {
+      return res.status(404).json({ success: false, error: 'Operator not found.' });
+    }
+    const count = await prisma.user.count({ where: { role: 'PLATFORM' } });
+    if (count <= 1) {
+      // Unreachable while the self-check above stands — removing the last one
+      // means removing yourself — but stated so the guarantee does not depend
+      // on that check continuing to exist.
+      return res.status(400).json({ success: false, error: 'The last operator account cannot be removed.' });
+    }
+
+    // Deleted outright, unlike a school admin. An operator row owns no classes,
+    // sections, rubrics or submissions — nothing hangs off it that deleting
+    // would destroy — so there is no reason to leave a dormant account with
+    // platform authority sitting in the table.
+    const revokedAt = new Date();
+    await prisma.user.update({ where: { id: target.id }, data: { sessionsValidFrom: revokedAt } });
+    markRevoked(target.id, revokedAt);
+    await prisma.user.delete({ where: { id: target.id } });
+    console.log(`🛡  ${me.email} removed operator ${target.email}`);
+    res.json({ success: true });
+  } catch (e) {
+    res.status(e.status || 500).json({ success: false, error: e.message });
+  }
+});
+
 /** Schools awaiting review, newest first. `?status=` filters; default PENDING. */
 app.get('/api/platform/schools', platformRateLimit, async (req, res) => {
   try {
-    requirePlatformKey(req);
+    requireOperator(req);
     const status = String(req.query.status || 'PENDING').toUpperCase();
     const schools = await prisma.school.findMany({
       where: status === 'ALL' ? {} : { status },
@@ -3019,7 +3266,7 @@ app.get('/api/platform/schools', platformRateLimit, async (req, res) => {
  */
 app.post('/api/platform/schools/delete', platformRateLimit, async (req, res) => {
   try {
-    requirePlatformKey(req);
+    requireOperator(req);
     const ids = Array.isArray(req.body?.ids) ? req.body.ids.filter(v => typeof v === 'string') : [];
     if (!ids.length) {
       return res.status(400).json({ success: false, error: 'No schools were selected.' });
@@ -3093,7 +3340,7 @@ app.post('/api/platform/schools/delete', platformRateLimit, async (req, res) => 
  */
 app.get('/api/platform/schools/:schoolId/registrant-id', platformRateLimit, async (req, res) => {
   try {
-    requirePlatformKey(req);
+    requireOperator(req);
     const school = await prisma.school.findUnique({
       where: { id: req.params.schoolId },
       select: { registrantIdPath: true },
@@ -3140,7 +3387,7 @@ app.get('/api/platform/private-file', platformRateLimit, (req, res) => {
 
 app.post('/api/platform/schools/:schoolId/approve', platformRateLimit, async (req, res) => {
   try {
-    requirePlatformKey(req);
+    requireOperator(req);
     const school = await prisma.school.findUnique({ where: { id: req.params.schoolId } });
     if (!school) return res.status(404).json({ success: false, error: 'School not found.' });
 
@@ -3168,7 +3415,7 @@ app.post('/api/platform/schools/:schoolId/approve', platformRateLimit, async (re
 
 app.post('/api/platform/schools/:schoolId/reject', platformRateLimit, async (req, res) => {
   try {
-    requirePlatformKey(req);
+    requireOperator(req);
     const { reason } = req.body || {};
     if (!reason?.trim()) {
       return res.status(400).json({ success: false, error: 'A reason is required — it is shown to the school at login.' });
@@ -3272,7 +3519,7 @@ async function platformAdminInSchool(schoolId, userId) {
  */
 app.get('/api/platform/schools/:schoolId/admins', platformRateLimit, async (req, res) => {
   try {
-    requirePlatformKey(req);
+    requireOperator(req);
     const school = await prisma.school.findUnique({
       where: { id: req.params.schoolId },
       select: { id: true, name: true, slug: true, status: true, ownerId: true },
@@ -3313,7 +3560,7 @@ app.get('/api/platform/schools/:schoolId/admins', platformRateLimit, async (req,
  */
 app.put('/api/platform/schools/:schoolId/admins/:userId/password', platformRateLimit, async (req, res) => {
   try {
-    requirePlatformKey(req);
+    const operator = await operatorRow(req);
     const { school, target } = await platformAdminInSchool(req.params.schoolId, req.params.userId);
     const { password } = req.body || {};
     if (!password) return res.status(400).json({ success: false, error: 'A new password is required.' });
@@ -3338,8 +3585,8 @@ app.put('/api/platform/schools/:schoolId/admins/:userId/password', platformRateL
       data: {
         schoolId: school.id,
         event: 'ADMIN_PASSWORD_RESET',
-        actorId: null,
-        actorName: 'TulongGuro platform operator',
+        actorId: operator.id,
+        actorName: operator.name,
         targetId: target.id,
         targetName: target.name,
         targetEmail: target.email,
@@ -3371,7 +3618,7 @@ app.put('/api/platform/schools/:schoolId/admins/:userId/password', platformRateL
  */
 app.put('/api/platform/schools/:schoolId/admins/:userId/demote', platformRateLimit, async (req, res) => {
   try {
-    requirePlatformKey(req);
+    const operator = await operatorRow(req);
     const { school, target } = await platformAdminInSchool(req.params.schoolId, req.params.userId);
 
     const adminCount = await prisma.user.count({ where: { schoolId: school.id, role: 'ADMIN' } });
@@ -3396,8 +3643,8 @@ app.put('/api/platform/schools/:schoolId/admins/:userId/demote', platformRateLim
       data: {
         schoolId: school.id,
         event: 'ADMIN_DEMOTED',
-        actorId: null,
-        actorName: 'TulongGuro platform operator',
+        actorId: operator.id,
+        actorName: operator.name,
         targetId: target.id,
         targetName: target.name,
         targetEmail: target.email,
@@ -3519,6 +3766,17 @@ function relaxedStudentId(raw) {
 app.post('/api/auth/login', loginRateLimit, async (req, res) => {
   try {
     const { username, password, role } = req.body;
+
+    // Platform operators do not sign in here, whatever the body asks for.
+    //
+    // Without this the role is taken straight from the request, so posting
+    // `role: 'PLATFORM'` to the school login form would find an operator by
+    // username, check their password, and hand back a working platform token —
+    // bypassing /api/platform/login and the deliberate decision to keep
+    // operator sign-in off the surface every teacher and pupil can see.
+    if (role === 'PLATFORM') {
+      return res.status(401).json({ success: false, error: 'Invalid credentials' });
+    }
     // Include related section data so clients receive up-to-date section info on login
     let user = await prisma.user.findFirst({
       where: { username: typeof username === 'string' ? username.trim() : username, role },

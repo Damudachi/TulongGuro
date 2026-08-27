@@ -2,23 +2,35 @@
 import { ShieldCheck, Loader2, Check, X, Building2, Mail, RefreshCw, AlertTriangle,
   BadgeCheck, HelpCircle, FileText, Copy, Globe, Trash2, CheckSquare, Square,
   ChevronDown, KeyRound, UserMinus, Users, Search, ClipboardCheck } from 'lucide-react';
-import { API_URL, apiFetch } from '../config';
+import { API_URL } from '../config';
 
 import { showAlert, showConfirm } from '../utils/dialog';
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
 
 /**
- * Platform-operator screen for approving new school registrations.
+ * The TulongGuro platform console.
  *
- * Not part of the school-facing app: it has no layout, no nav and no user
- * account behind it. The only credential is the PLATFORM_ADMIN_KEY set on the
- * server, typed in here and held in sessionStorage so it dies with the tab
- * rather than sitting in localStorage on a shared machine.
+ * Not part of the school-facing app: no layout, no nav, and nothing links to
+ * it. Three views — approving school registrations, managing admin accounts at
+ * any school, and managing the operators themselves.
  *
- * The key is bearer authority â€” anyone holding it can approve any school â€” so
- * treat it like a password, not like a URL.
+ * ── It used to be one shared key ──
+ * PLATFORM_ADMIN_KEY, typed into this page and sent as a header. That was
+ * defensible while the console only approved and rejected registrations. It
+ * stopped being defensible when it gained the power to set any school admin's
+ * password — which is impersonation, at every school on the platform. A secret
+ * four people share cannot say which of them acted, cannot be revoked for one
+ * of them, and never expires.
+ *
+ * So an operator signs in as themselves now. The session is a normal signed
+ * token, held in sessionStorage so it dies with the tab, and short-lived: four
+ * hours rather than the week a teacher gets. The key survives only to create
+ * the first operator from the command line.
+ *
+ * Every call here goes through opFetch, never the app's apiFetch — see the note
+ * on it for why mixing the two credentials is the bug to avoid.
  */
-const KEY_STORAGE = 'tg_platform_key';
+const TOKEN_STORAGE = 'tg_platform_token';
 
 /**
  * The two things an operator does here, as top-level views.
@@ -33,6 +45,7 @@ const KEY_STORAGE = 'tg_platform_key';
 const VIEWS = [
   { key: 'approvals', label: 'Approvals', Icon: ClipboardCheck },
   { key: 'admins', label: 'Admin accounts', Icon: Users },
+  { key: 'operators', label: 'Operators', Icon: ShieldCheck },
 ];
 
 /**
@@ -71,8 +84,13 @@ const VERIFICATION_STYLES = {
 };
 
 export default function PlatformApprovals() {
-  const [key, setKey] = useState(() => sessionStorage.getItem(KEY_STORAGE) || '');
-  const [keyInput, setKeyInput] = useState('');
+  // The operator's session token, held in sessionStorage so it dies with the
+  // tab. `key` rather than `token` only because every call site below was
+  // written against the old shared key; what it holds now is a signed session.
+  const [key, setKey] = useState(() => sessionStorage.getItem(TOKEN_STORAGE) || '');
+  const [operator, setOperator] = useState(null);
+  const [loginForm, setLoginForm] = useState({ email: '', password: '' });
+  const [loggingIn, setLoggingIn] = useState(false);
   const [schools, setSchools] = useState([]);
   const [masterlistLoaded, setMasterlistLoaded] = useState(true);
   const [status, setStatus] = useState('PENDING');
@@ -113,13 +131,101 @@ export default function PlatformApprovals() {
   const [pwDone, setPwDone] = useState(null);        // { admin, password }
   const [pwCopied, setPwCopied] = useState(false);
 
+  // ── Operators view ──
+  const [operators, setOperators] = useState([]);
+  const [operatorsLoading, setOperatorsLoading] = useState(false);
+  const [showAddOperator, setShowAddOperator] = useState(false);
+  const [newOperator, setNewOperator] = useState({ name: '', email: '', password: '' });
+  const [opSaving, setOpSaving] = useState(false);
+  const [opBusyId, setOpBusyId] = useState(null);
+  // A credential handed over once — a new operator's password, or a reset one.
+  const [opDone, setOpDone] = useState(null);        // { name, email, password }
+  const [opCopied, setOpCopied] = useState(false);
+
+  /**
+   * fetch with the operator's session attached.
+   *
+   * Deliberately not the app's shared apiFetch. That one sets the Authorization
+   * header from the *school* session store, overwriting anything the caller
+   * passed — so an operator who is also signed in as a school admin in the same
+   * browser would send the school's token to the platform routes and be
+   * refused, with nothing on screen explaining why. The two credentials live in
+   * different places and must not be mixed.
+   */
+  const opFetch = useCallback((url, init = {}) => {
+    const headers = new Headers(init.headers || {});
+    if (key) headers.set('Authorization', `Bearer ${key}`);
+    // eslint-disable-next-line no-restricted-globals -- deliberate: the rule points at apiFetch, which attaches the *school* session token and would overwrite the operator credential this console signs with
+    return fetch(url, { ...init, headers });
+  }, [key]);
+
+  const signOut = useCallback(() => {
+    sessionStorage.removeItem(TOKEN_STORAGE);
+    setKey('');
+    setOperator(null);
+    setLoginForm({ email: '', password: '' });
+  }, []);
+
+  /**
+   * Confirm the stored token still belongs to a live operator.
+   *
+   * A session that expired while the tab sat open, or was revoked because
+   * another operator reset this account's password, otherwise shows a full
+   * console whose every request fails. Asking once on load turns that into the
+   * sign-in form.
+   */
+  useEffect(() => {
+    if (!key) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        // eslint-disable-next-line no-restricted-globals -- deliberate: the rule points at apiFetch, which attaches the *school* session token and would overwrite the operator credential this console signs with
+        const res = await fetch(`${API_URL}/api/platform/me`, {
+          headers: { Authorization: `Bearer ${key}` },
+        });
+        const data = await res.json().catch(() => null);
+        if (cancelled) return;
+        if (data?.success) setOperator(data.operator);
+        else signOut();
+      } catch { /* offline: leave the console up rather than signing them out */ }
+    })();
+    return () => { cancelled = true; };
+  }, [key, signOut]);
+
+  const handleLogin = async (e) => {
+    e.preventDefault();
+    if (loggingIn) return;
+    setLoggingIn(true);
+    setError('');
+    try {
+      // eslint-disable-next-line no-restricted-globals -- deliberate: the rule points at apiFetch, which attaches the *school* session token and would overwrite the operator credential this console signs with
+      const res = await fetch(`${API_URL}/api/platform/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(loginForm),
+      });
+      const data = await res.json().catch(() => null);
+      if (!data?.success) {
+        return setError(data?.error || 'Invalid credentials');
+      }
+      sessionStorage.setItem(TOKEN_STORAGE, data.token);
+      setKey(data.token);
+      setOperator(data.operator);
+      setLoginForm({ email: '', password: '' });
+    } catch {
+      setError('Network error. Is the API reachable?');
+    } finally {
+      setLoggingIn(false);
+    }
+  };
+
   const load = useCallback(async () => {
     if (!key) return;
     setIsLoading(true);
     setError('');
     try {
-      const res = await apiFetch(`${API_URL}/api/platform/schools?status=${status}`, {
-        headers: { 'x-platform-key': key },
+      const res = await opFetch(`${API_URL}/api/platform/schools?status=${status}`, {
+        
       });
       const data = await res.json();
       if (data.success) {
@@ -130,7 +236,7 @@ export default function PlatformApprovals() {
         // A bad key is worth forgetting immediately, so the form comes back
         // instead of leaving a dead screen that fails on every refresh.
         if (res.status === 401) {
-          sessionStorage.removeItem(KEY_STORAGE);
+          sessionStorage.removeItem(TOKEN_STORAGE);
           setKey('');
         }
       }
@@ -139,7 +245,7 @@ export default function PlatformApprovals() {
     } finally {
       setIsLoading(false);
     }
-  }, [key, status]);
+  }, [key, status, opFetch]);
 
   // eslint-disable-next-line react-hooks/set-state-in-effect -- flipping the loading flag ahead of an async read; the rule's alternative is a data-fetching library this app doesn't use
   useEffect(() => { load(); }, [load]);
@@ -206,9 +312,9 @@ export default function PlatformApprovals() {
 
     setIsDeleting(true);
     try {
-      const res = await apiFetch(`${API_URL}/api/platform/schools/delete`, {
+      const res = await opFetch(`${API_URL}/api/platform/schools/delete`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-platform-key': key },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ids }),
       });
       const data = await res.json();
@@ -242,8 +348,8 @@ export default function PlatformApprovals() {
   const viewRegistrantId = async (school) => {
     setBusyId(school.id);
     try {
-      const res = await apiFetch(`${API_URL}/api/platform/schools/${school.id}/registrant-id`, {
-        headers: { 'x-platform-key': key },
+      const res = await opFetch(`${API_URL}/api/platform/schools/${school.id}/registrant-id`, {
+        
       });
       const data = await res.json();
       if (!data.success) return showAlert(data.error || 'Could not open the ID.');
@@ -259,9 +365,9 @@ export default function PlatformApprovals() {
   const act = async (school, action, body) => {
     setBusyId(school.id);
     try {
-      const res = await apiFetch(`${API_URL}/api/platform/schools/${school.id}/${action}`, {
+      const res = await opFetch(`${API_URL}/api/platform/schools/${school.id}/${action}`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-platform-key': key },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body || {}),
       });
       const data = await res.json();
@@ -297,13 +403,13 @@ export default function PlatformApprovals() {
     setAdminsLoading(true);
     setError('');
     try {
-      const res = await apiFetch(`${API_URL}/api/platform/schools?status=ALL`, {
-        headers: { 'x-platform-key': key },
+      const res = await opFetch(`${API_URL}/api/platform/schools?status=ALL`, {
+        
       });
       const data = await res.json();
       if (!data.success) {
         setError(data.error || 'Could not load schools.');
-        if (res.status === 401) { sessionStorage.removeItem(KEY_STORAGE); setKey(''); }
+        if (res.status === 401) { sessionStorage.removeItem(TOKEN_STORAGE); setKey(''); }
         return;
       }
       const list = data.schools || [];
@@ -316,7 +422,7 @@ export default function PlatformApprovals() {
     } finally {
       setAdminsLoading(false);
     }
-  }, [key]);
+  }, [key, opFetch]);
 
   // eslint-disable-next-line react-hooks/set-state-in-effect -- same shape as the approvals load above: a loading flag ahead of an async read
   useEffect(() => { if (view === 'admins') loadAdminSchools(); }, [view, loadAdminSchools]);
@@ -325,8 +431,8 @@ export default function PlatformApprovals() {
    *  server now holds rather than what the client assumed it would. */
   const refreshAdmins = async (schoolId) => {
     try {
-      const res = await apiFetch(`${API_URL}/api/platform/schools/${schoolId}/admins`, {
-        headers: { 'x-platform-key': key },
+      const res = await opFetch(`${API_URL}/api/platform/schools/${schoolId}/admins`, {
+        
       });
       const data = await res.json();
       if (data.success) setAdminsBySchool(prev => ({ ...prev, [schoolId]: data.admins || [] }));
@@ -355,11 +461,11 @@ export default function PlatformApprovals() {
     setPwSaving(true);
     try {
       const { school, admin } = pwFor;
-      const res = await apiFetch(
+      const res = await opFetch(
         `${API_URL}/api/platform/schools/${school.id}/admins/${admin.id}/password`,
         {
           method: 'PUT',
-          headers: { 'Content-Type': 'application/json', 'x-platform-key': key },
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ password: pwValue }),
         },
       );
@@ -391,9 +497,9 @@ export default function PlatformApprovals() {
     if (!ok) return;
     setAdminBusyId(admin.id);
     try {
-      const res = await apiFetch(
+      const res = await opFetch(
         `${API_URL}/api/platform/schools/${school.id}/admins/${admin.id}/demote`,
-        { method: 'PUT', headers: { 'x-platform-key': key } },
+        { method: 'PUT' },
       );
       const data = await res.json().catch(() => null);
       if (!data?.success) return showAlert(data?.error || 'That did not work.');
@@ -402,6 +508,103 @@ export default function PlatformApprovals() {
       showAlert('Network error. Is the API reachable?');
     } finally {
       setAdminBusyId(null);
+    }
+  };
+
+  /**
+   * ── Operators ──
+   *
+   * Peers, exactly like a school's admins: any operator may add, reset or
+   * remove any other. There is no tier above this one — that is what being the
+   * platform operator means — so the only guards are the two that stop the
+   * platform locking itself out: nobody acts on their own account here, and the
+   * last operator cannot be removed.
+   */
+  const loadOperators = useCallback(async () => {
+    if (!key) return;
+    setOperatorsLoading(true);
+    try {
+      const res = await opFetch(`${API_URL}/api/platform/operators`);
+      const data = await res.json().catch(() => null);
+      if (data?.success) setOperators(data.operators || []);
+      else setError(data?.error || 'Could not load operators.');
+    } catch {
+      setError('Network error. Is the API reachable?');
+    } finally {
+      setOperatorsLoading(false);
+    }
+  }, [key, opFetch]);
+
+  // eslint-disable-next-line react-hooks/set-state-in-effect -- same shape as the two loads above
+  useEffect(() => { if (view === 'operators') loadOperators(); }, [view, loadOperators]);
+
+  const addOperator = async (e) => {
+    e.preventDefault();
+    if (opSaving) return;
+    setOpSaving(true);
+    setError('');
+    try {
+      const res = await opFetch(`${API_URL}/api/platform/operators`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(newOperator),
+      });
+      const data = await res.json().catch(() => null);
+      if (!data?.success) return showAlert(data?.error || 'The operator was not created.');
+      // Shown once, like every other password on this screen: nothing stores
+      // the plaintext and no mail is sent.
+      setOpDone({ name: newOperator.name, email: newOperator.email, password: newOperator.password });
+      setShowAddOperator(false);
+      setNewOperator({ name: '', email: '', password: '' });
+      await loadOperators();
+    } catch {
+      showAlert('Network error. Is the API reachable?');
+    } finally {
+      setOpSaving(false);
+    }
+  };
+
+  const resetOperatorPassword = async (target) => {
+    const password = generatePassword();
+    const ok = await showConfirm(
+      `${target.name} will need this new password to sign in, and any session they have open ends now.`,
+      { title: `Reset ${target.name}'s password?`, confirmLabel: 'Reset password' },
+    );
+    if (!ok) return;
+    setOpBusyId(target.id);
+    try {
+      const res = await opFetch(`${API_URL}/api/platform/operators/${target.id}/password`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password }),
+      });
+      const data = await res.json().catch(() => null);
+      if (!data?.success) return showAlert(data?.error || 'The password was not changed.');
+      setOpDone({ name: target.name, email: target.email, password });
+    } catch {
+      showAlert('Network error. Is the API reachable?');
+    } finally {
+      setOpBusyId(null);
+    }
+  };
+
+  const removeOperator = async (target) => {
+    const ok = await showConfirm(
+      `${target.name} loses access to the platform console immediately. Their account is deleted — `
+      + 'operator accounts own no school data, so nothing else goes with it.',
+      { title: `Remove operator ${target.name}?`, confirmLabel: 'Remove operator', danger: true },
+    );
+    if (!ok) return;
+    setOpBusyId(target.id);
+    try {
+      const res = await opFetch(`${API_URL}/api/platform/operators/${target.id}`, { method: 'DELETE' });
+      const data = await res.json().catch(() => null);
+      if (!data?.success) return showAlert(data?.error || 'That did not work.');
+      await loadOperators();
+    } catch {
+      showAlert('Network error. Is the API reachable?');
+    } finally {
+      setOpBusyId(null);
     }
   };
 
@@ -416,36 +619,55 @@ export default function PlatformApprovals() {
   if (!key) {
     return (
       <div className="min-h-screen bg-slate-100 flex items-center justify-center p-4">
-        <form
-          onSubmit={e => {
-            e.preventDefault();
-            const trimmed = keyInput.trim();
-            if (!trimmed) return;
-            sessionStorage.setItem(KEY_STORAGE, trimmed);
-            setKey(trimmed);
-          }}
-          className="w-full max-w-sm bg-white rounded-2xl border border-slate-200 shadow-sm p-6"
-        >
+        {/* An account, not a shared key. The old form asked for
+            PLATFORM_ADMIN_KEY — one secret the whole team typed, which could
+            not say who was using it, be revoked for one person, or expire. */}
+        <form onSubmit={handleLogin}
+          className="w-full max-w-sm bg-white rounded-2xl border border-slate-200 shadow-sm p-6">
           <div className="w-11 h-11 rounded-xl bg-ink-900 text-white grid place-items-center mb-4">
             <ShieldCheck className="w-5 h-5" />
           </div>
-          <h1 className="text-lg font-bold text-slate-900 mb-1">School approvals</h1>
+          <h1 className="text-lg font-bold text-slate-900 mb-1">Platform console</h1>
           <p className="text-sm text-slate-500 mb-5">
-            TulongGuro operators only. Enter the platform key from the server environment.
+            TulongGuro operators only. Sign in with your operator account.
           </p>
+
+          <label className="block text-xs font-bold text-slate-500 mb-1.5" htmlFor="op-email">Email</label>
           <input
-            type="password"
+            id="op-email"
+            type="email"
             autoFocus
-            value={keyInput}
-            onChange={e => setKeyInput(e.target.value)}
-            placeholder="PLATFORM_ADMIN_KEY"
+            autoComplete="username"
+            value={loginForm.email}
+            onChange={e => setLoginForm({ ...loginForm, email: e.target.value })}
             className="w-full px-4 py-2.5 border border-slate-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-slate-900 mb-3"
           />
+
+          <label className="block text-xs font-bold text-slate-500 mb-1.5" htmlFor="op-password">Password</label>
+          <input
+            id="op-password"
+            type="password"
+            autoComplete="current-password"
+            value={loginForm.password}
+            onChange={e => setLoginForm({ ...loginForm, password: e.target.value })}
+            className="w-full px-4 py-2.5 border border-slate-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-slate-900 mb-3"
+          />
+
           {error && <p className="text-xs text-red-600 mb-3">{error}</p>}
-          <button type="submit" disabled={!keyInput.trim()}
+          <button type="submit" disabled={!loginForm.email.trim() || !loginForm.password || loggingIn}
             className="w-full py-2.5 rounded-lg bg-ink-900 text-white font-bold text-sm hover:bg-ink-800 disabled:opacity-40">
-            Unlock
+            {loggingIn ? 'Signing in…' : 'Sign in'}
           </button>
+
+          {/* The bootstrap, named on the screen where it is needed. Without it
+              the first person to open this page has no way to find out how an
+              operator account comes to exist. */}
+          <p className="text-[11px] text-slate-400 mt-4 leading-relaxed">
+            No operator account yet? Create the first one from the server:
+            <code className="block mt-1 font-mono text-slate-500 break-all">
+              node scripts/create-platform-operator.js &quot;Your Name&quot; you@example.com
+            </code>
+          </p>
         </form>
       </div>
     );
@@ -468,11 +690,18 @@ export default function PlatformApprovals() {
               TulongGuro operators. Approve schools, and manage admin accounts across every school.
             </p>
           </div>
-          <button
-            onClick={() => { sessionStorage.removeItem(KEY_STORAGE); setKey(''); setKeyInput(''); }}
-            className="shrink-0 mt-1 px-3 py-1.5 rounded-lg text-xs font-bold text-slate-600 bg-white border border-slate-200 hover:bg-slate-50">
-            Lock
-          </button>
+          {/* Who is signed in, said plainly. Every action on this screen is now
+              recorded under this name, and an operator should be able to see
+              which account they are acting as before they act. */}
+          <div className="shrink-0 mt-1 text-right">
+            {operator && (
+              <p className="text-xs font-bold text-slate-700 truncate max-w-[12rem]">{operator.name}</p>
+            )}
+            <button onClick={signOut}
+              className="mt-1 px-3 py-1.5 rounded-lg text-xs font-bold text-slate-600 bg-white border border-slate-200 hover:bg-slate-50">
+              Sign out
+            </button>
+          </div>
         </div>
 
         {/* Segmented switch rather than links: there is no router behind this
@@ -1013,6 +1242,155 @@ export default function PlatformApprovals() {
                   </button>
                 </div>
                 <button onClick={() => setPwDone(null)}
+                  className="w-full py-2.5 rounded-lg bg-ink-900 text-white font-bold text-sm hover:bg-ink-800">
+                  Done
+                </button>
+              </div>
+            </div>
+          )}
+        </>)}
+
+        {view === 'operators' && (<>
+          <div className="flex items-center gap-2 mb-5">
+            <button
+              onClick={() => { setNewOperator({ name: '', email: '', password: generatePassword() }); setShowAddOperator(true); }}
+              className="px-3.5 py-2 rounded-lg bg-ink-900 text-white text-xs font-bold hover:bg-ink-800">
+              Add operator
+            </button>
+            <button onClick={loadOperators} title="Refresh"
+              className="ml-auto p-2 rounded-lg bg-white border border-slate-200 text-slate-500 hover:bg-slate-50">
+              <RefreshCw className={cn('w-4 h-4', operatorsLoading && 'animate-spin')} />
+            </button>
+          </div>
+
+          <div className="mb-5 flex items-start gap-2 bg-slate-900 text-slate-100 rounded-xl p-3.5 text-sm">
+            <ShieldCheck className="w-4 h-4 shrink-0 mt-0.5 text-slate-300" />
+            <div>
+              <p className="font-bold">Everyone here is a peer.</p>
+              <p className="text-xs text-slate-300 mt-0.5 leading-relaxed">
+                There is no rank above an operator. Each of you can approve schools, reset any
+                school admin&apos;s password, and add or remove each other — so every action is
+                recorded under the name of whoever did it. Add only people who should have that
+                reach over every school on the platform.
+              </p>
+            </div>
+          </div>
+
+          {operatorsLoading && operators.length === 0 ? (
+            <div className="bg-white border border-slate-200 rounded-xl p-10 text-center text-slate-400">
+              <Loader2 className="w-5 h-5 animate-spin mx-auto" />
+            </div>
+          ) : (
+            <div className="bg-white border border-slate-200 rounded-xl divide-y divide-slate-100">
+              {operators.map(o => (
+                <div key={o.id} className="flex items-center gap-3 p-4">
+                  <div className="w-9 h-9 rounded-full bg-slate-900 text-white font-bold flex items-center justify-center shrink-0">
+                    {(o.name || 'O').charAt(0).toUpperCase()}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="font-semibold text-slate-900 truncate flex items-center gap-2">
+                      <span className="truncate">{o.name}</span>
+                      {o.isMe && (
+                        <span className="shrink-0 text-[10px] font-bold uppercase tracking-wide text-slate-600 bg-slate-100 border border-slate-200 px-2 py-0.5 rounded-full">
+                          You
+                        </span>
+                      )}
+                    </p>
+                    <p className="text-xs text-slate-500 truncate font-mono">{o.email}</p>
+                  </div>
+                  {/* Both controls are hidden on your own row rather than
+                      disabled: your own password is changed from your account
+                      with the current one, and removing yourself is the one way
+                      to leave the platform with no operator. */}
+                  {!o.isMe && (
+                    <div className="flex gap-1 shrink-0">
+                      <button onClick={() => resetOperatorPassword(o)} disabled={opBusyId === o.id}
+                        title="Reset password"
+                        className="p-2 rounded-lg bg-slate-100 text-slate-600 hover:bg-slate-200 disabled:opacity-30">
+                        <KeyRound className="w-4 h-4" />
+                      </button>
+                      <button onClick={() => removeOperator(o)} disabled={opBusyId === o.id || operators.length <= 1}
+                        title={operators.length <= 1 ? 'The last operator cannot be removed' : 'Remove operator'}
+                        className="p-2 rounded-lg bg-slate-100 text-slate-600 hover:bg-red-100 hover:text-red-600 disabled:opacity-30">
+                        {opBusyId === o.id ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
+                      </button>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+
+          {showAddOperator && (
+            <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4">
+              <form onSubmit={addOperator} className="w-full max-w-sm bg-white rounded-2xl border border-slate-200 shadow-lg p-6">
+                <h2 className="text-base font-bold text-slate-900 mb-1">Add an operator</h2>
+                <p className="text-xs text-slate-500 mb-4 leading-relaxed">
+                  They will be able to approve schools and reset any school admin&apos;s password.
+                </p>
+
+                <label className="block text-xs font-bold text-slate-500 mb-1.5" htmlFor="new-op-name">Full name</label>
+                <input id="new-op-name" required value={newOperator.name}
+                  onChange={e => setNewOperator({ ...newOperator, name: e.target.value })}
+                  className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-slate-900 mb-3" />
+
+                <label className="block text-xs font-bold text-slate-500 mb-1.5" htmlFor="new-op-email">Email</label>
+                <input id="new-op-email" type="email" required autoComplete="off" value={newOperator.email}
+                  onChange={e => setNewOperator({ ...newOperator, email: e.target.value })}
+                  placeholder="name@tulongguro.com"
+                  className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-slate-900 mb-3" />
+
+                <label className="block text-xs font-bold text-slate-500 mb-1.5" htmlFor="new-op-pw">Password</label>
+                <div className="flex gap-2 mb-4">
+                  <input id="new-op-pw" required value={newOperator.password} autoComplete="off"
+                    onChange={e => setNewOperator({ ...newOperator, password: e.target.value })}
+                    className="flex-1 min-w-0 px-3 py-2 border border-slate-200 rounded-lg text-sm font-mono outline-none focus:ring-2 focus:ring-slate-900" />
+                  <button type="button" onClick={() => setNewOperator({ ...newOperator, password: generatePassword() })}
+                    title="Generate another"
+                    className="shrink-0 px-3 rounded-lg bg-slate-100 text-slate-600 hover:bg-slate-200">
+                    <RefreshCw className="w-4 h-4" />
+                  </button>
+                </div>
+
+                <div className="flex gap-2">
+                  <button type="button" onClick={() => setShowAddOperator(false)}
+                    className="flex-1 py-2.5 rounded-lg border border-slate-200 text-slate-600 font-bold text-sm hover:bg-slate-50">
+                    Cancel
+                  </button>
+                  <button type="submit" disabled={opSaving || newOperator.password.trim().length < 8}
+                    className="flex-1 py-2.5 rounded-lg bg-ink-900 text-white font-bold text-sm hover:bg-ink-800 disabled:opacity-40">
+                    {opSaving ? 'Adding…' : 'Add operator'}
+                  </button>
+                </div>
+              </form>
+            </div>
+          )}
+
+          {opDone && (
+            <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4">
+              <div className="w-full max-w-sm bg-white rounded-2xl border border-slate-200 shadow-lg p-6">
+                <div className="w-10 h-10 rounded-xl bg-emerald-100 text-emerald-700 grid place-items-center mb-3">
+                  <Check className="w-5 h-5" />
+                </div>
+                <h2 className="text-base font-bold text-slate-900 mb-1">Password for {opDone.name}</h2>
+                <p className="text-xs text-slate-500 mb-4 leading-relaxed">
+                  Give this to them now — it is not shown again, and nothing emails it.
+                  They sign in at this page with <span className="font-mono">{opDone.email}</span>.
+                </p>
+                <div className="flex items-center gap-2 p-3 rounded-lg bg-slate-100 mb-4">
+                  <code className="flex-1 min-w-0 text-sm font-mono font-bold text-slate-800 break-all">{opDone.password}</code>
+                  <button
+                    onClick={() => {
+                      navigator.clipboard?.writeText(opDone.password);
+                      setOpCopied(true);
+                      setTimeout(() => setOpCopied(false), 1500);
+                    }}
+                    title="Copy"
+                    className="shrink-0 p-2 rounded-lg bg-white border border-slate-200 text-slate-500 hover:bg-slate-50">
+                    {opCopied ? <Check className="w-4 h-4 text-emerald-600" /> : <Copy className="w-4 h-4" />}
+                  </button>
+                </div>
+                <button onClick={() => setOpDone(null)}
                   className="w-full py-2.5 rounded-lg bg-ink-900 text-white font-bold text-sm hover:bg-ink-800">
                   Done
                 </button>

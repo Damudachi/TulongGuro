@@ -36,6 +36,23 @@ const crypto = require('crypto');
  */
 const TOKEN_TTL_SECONDS = 7 * 24 * 60 * 60;
 
+/**
+ * How long a *platform operator's* session lasts. Four hours, not a week.
+ *
+ * The school-facing figure above is tuned for a teacher who opens the app most
+ * days and should not be asked to sign in again each morning. An operator is
+ * the opposite shape of user: they open the console when something needs
+ * approving or a school is locked out, do it, and close the tab. Long sessions
+ * buy them nothing and cost a great deal — this is the one credential on the
+ * platform that can set any admin's password at any school, which means signing
+ * in as them.
+ */
+const PLATFORM_TOKEN_TTL_SECONDS = 4 * 60 * 60;
+
+/** Whether a role gets the short session. Kept as a function rather than a
+ *  comparison at each call site so "which roles are operators" has one answer. */
+const isOperatorRole = (role) => role === 'PLATFORM';
+
 /** Past this fraction of its life, a token is reissued on the next request. */
 const RENEW_AFTER = 0.5;
 
@@ -75,14 +92,18 @@ const sign = (data) => b64url(crypto.createHmac('sha256', authSecret()).update(d
 /** A session token for a freshly authenticated user. */
 function signToken(user) {
   const now = Math.floor(Date.now() / 1000);
+  const ttl = isOperatorRole(user.role) ? PLATFORM_TOKEN_TTL_SECONDS : TOKEN_TTL_SECONDS;
   const payload = b64url(JSON.stringify({
     sub: user.id,
     role: user.role,
+    // Null for an operator, who belongs to no school. Nothing downstream may
+    // read a missing schoolId as "every school" — the platform routes check the
+    // role explicitly and never infer authority from this being absent.
     schoolId: user.schoolId || null,
     // When this session began. Compared against the user's sessionsValidFrom so
     // a session can be ended before its expiry — see isRevoked.
     iat: now,
-    exp: now + TOKEN_TTL_SECONDS,
+    exp: now + ttl,
   }));
   return `${payload}.${sign(payload)}`;
 }
@@ -149,7 +170,23 @@ const PUBLIC_PATHS = [
   /^\/api\/health(\/|$)/,
   /^\/api\/topics$/,                       // static DepEd reference data
   /^\/api\/rubric-templates\/builtin$/,    // static sample rubrics
-  /^\/api\/platform\//,                    // guarded by PLATFORM_ADMIN_KEY instead
+  // Only the operator sign-in itself is public. Every other /api/platform route
+  // now requires a PLATFORM session — see the branch in authorizePath.
+  //
+  // This used to be `/^\/api\/platform\//`, the whole tree, because the routes
+  // were guarded by a shared PLATFORM_ADMIN_KEY instead of by a session. That
+  // was tolerable while the console could only approve and reject
+  // *registrations* — schools nobody had signed into yet. It stopped being
+  // tolerable when it gained the power to set any admin's password at any
+  // school, which is impersonation: a shared secret cannot say which operator
+  // used it, cannot be revoked for one person, and never expires.
+  /^\/api\/platform\/login$/,
+  // Carries its own authentication in the URL: an HMAC over the key and an
+  // expiry, minted only by a route an operator has already been authorised on.
+  // It has to stay public because it is opened with window.open — a new tab
+  // navigation cannot carry an Authorization header, so requiring a session
+  // here would mean no operator could ever view a registrant's ID photo.
+  /^\/api\/platform\/private-file$/,
   /^\/api\/dev\//,                         // guarded by DEV_ACCESS_KEY instead
   /^\/api\/admin\/(retention-report|backfill-retention|archive-grades|purge-grades)$/,
   /^\/uploads\//,                          // static files served by express
@@ -395,6 +432,22 @@ function authorizePath(req, res, next) {
   const area = seg[1];
   const own = (id) => id === sub;
 
+  // ── Platform operators ──
+  //
+  // Checked here as well as in each handler. The handlers are the ones that
+  // matter, but this is the allowlist the rest of the file is built on, and a
+  // platform route added later should be refused to school accounts by default
+  // rather than by whoever remembers to add the check.
+  //
+  // The reverse direction is covered by the branches below: an operator has no
+  // schoolId and is not ADMIN, TEACHER or STUDENT, so every school area already
+  // denies them. An operator can approve a school; they cannot open its
+  // gradebook.
+  if (area === 'platform') {
+    if (role !== 'PLATFORM') return deny(res, 'This area is for TulongGuro platform operators.');
+    return next();
+  }
+
   if (area === 'admin') {
     if (role !== 'ADMIN') return deny(res, 'This area is for school admins.');
     if (seg[2] && !own(seg[2])) return deny(res, 'You can only manage your own school.');
@@ -443,6 +496,8 @@ function authorizePath(req, res, next) {
 
 module.exports = {
   TOKEN_TTL_SECONDS,
+  PLATFORM_TOKEN_TTL_SECONDS,
+  isOperatorRole,
   RENEWED_TOKEN_HEADER,
   dueForRenewal,
   signToken,
