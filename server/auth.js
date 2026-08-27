@@ -140,6 +140,12 @@ const PUBLIC_PATHS = [
   /^\/api\/auth\/login$/,
   /^\/api\/auth\/register$/,
   /^\/api\/auth\/school-lookup$/,           // reads DepEd's own published list
+  // Suggests and checks a school code while the registration form is open.
+  // Necessarily public: nobody registering a school has a session yet. Left off
+  // this list it answered 401, and apiFetch reads a 401 as "your session
+  // ended" — so filling in a DepEd School ID bounced the registrant to the
+  // login screen with an expiry notice, mid-registration.
+  /^\/api\/auth\/school-code$/,
   /^\/api\/health(\/|$)/,
   /^\/api\/topics$/,                       // static DepEd reference data
   /^\/api\/rubric-templates\/builtin$/,    // static sample rubrics
