@@ -2786,15 +2786,11 @@ app.get('/api/auth/school-code', schoolLookupRateLimit, async (req, res) => {
       success: true,
       code: check.slug,
       available: !taken,
-      // The preview the form puts under the field. Built here rather than in
-      // the client so the two cannot disagree about what the finished addresses
-      // look like — the client's copy of the rule is a courtesy, this is the
-      // one that will judge the address on submit.
-      preview: {
-        admin: `principal@${accountDomain('ADMIN', check.slug)}`,
-        teacher: `juan.delacruz@${accountDomain('TEACHER', check.slug)}`,
-        student: `${studentPrefixFor(check.slug)}-${String(new Date().getFullYear()).slice(-2)}-0001`,
-      },
+      // No login preview is returned. The form builds its own from the code —
+      // the addresses are a pure function of it, so making the preview wait on
+      // this route meant it vanished whenever the route could not answer, at
+      // exactly the moment the registrant most needed to see what the code was
+      // for. src/constants/schoolCode.js is the client's copy of the rule.
       error: taken ? `"${check.slug}" is already used by another school.` : null,
       suggestions: taken && schoolName ? await suggestAlternatives(schoolName, schoolSlugTaken) : [],
     });

@@ -4,6 +4,9 @@ import { BookOpen, Eye, EyeOff, UploadCloud, X, Image as ImageIcon, ArrowLeft, C
   CheckCircle2, AlertTriangle, Loader2, FileText, ShieldCheck } from 'lucide-react';
 import { API_URL, apiFetch } from '../config';
 import { accountDomain, localPartOf, buildAccountEmail } from '../constants/accountEmails';
+import {
+  suggestSchoolCode, schoolCodeProblem, studentPrefixFor, MAX_SCHOOL_CODE_LENGTH,
+} from '../constants/schoolCode';
 
 /**
  * Suggested school colours — the admin can still pick any hex via the picker
@@ -137,17 +140,33 @@ export default function Register() {
   // choose a different one, with alternatives offered, instead of finding out
   // from a teacher-creation form that will not accept the address they expect.
   //
-  //   value       what will be sent, '' until the first check answers
-  //   state       'idle' | 'checking' | 'available' | 'taken' | 'invalid'
-  //   edited      whether the registrant has typed over the suggestion; once
-  //               true the school name no longer re-suggests, or their choice
-  //               would be overwritten by a lookup filling the name field in
-  //   preview     the three example logins, built by the server so the client
-  //               cannot disagree with what will actually be created
+  // The code itself is *derived*, not stored: suggestSchoolCode() is a pure
+  // function of the school name, so the field can fill itself in the moment the
+  // name is typed instead of waiting on a debounce and a round-trip. Only the
+  // registrant's own override is state, and only the availability answer comes
+  // from the server — the one question the browser genuinely cannot settle.
+  //
+  //   typed        null = follow the suggestion; a string = their own choice.
+  //                Once set, the school name no longer suggests over the top of
+  //                it, or the DepEd lookup filling in the name would silently
+  //                undo a code somebody had deliberately chosen.
+  //   state        'idle' | 'checking' | 'available' | 'taken' | 'invalid'
+  //   suggestions  free alternatives, offered when the code is taken
   const [schoolCode, setSchoolCode] = useState({
-    value: '', state: 'idle', error: null, suggestions: [], preview: null, edited: false,
+    typed: null, state: 'idle', error: null, suggestions: [],
   });
-  const adminEmail = buildAccountEmail(formData.email, 'ADMIN', schoolCode.value);
+  const suggestedCode = suggestSchoolCode(formData.schoolName);
+  const schoolCodeValue = schoolCode.typed ?? suggestedCode;
+  const adminEmail = buildAccountEmail(formData.email, 'ADMIN', schoolCodeValue);
+  // Built here rather than fetched. The three example logins are what actually
+  // teaches the registrant what the code is for, so they must appear as soon as
+  // there is a code — not only once a check has come back, and not never when
+  // one cannot.
+  const schoolCodePreview = schoolCodeValue ? {
+    admin: `principal@${accountDomain('ADMIN', schoolCodeValue)}`,
+    teacher: `juan.delacruz@${accountDomain('TEACHER', schoolCodeValue)}`,
+    student: `${studentPrefixFor(schoolCodeValue)}-${String(new Date().getFullYear()).slice(-2)}-0001`,
+  } : null;
 
   // ── Does this school exist? ──
   // The DepEd School ID is checked against the published Masterlist of Schools
@@ -238,63 +257,64 @@ export default function Register() {
    * deliberately chosen would undo their choice without telling them.
    */
   useEffect(() => {
-    const name = formData.schoolName.trim();
-    const typed = schoolCode.edited ? schoolCode.value : '';
+    const code = schoolCodeValue;
     let cancelled = false;
     const timer = setTimeout(async () => {
       if (cancelled) return;
-      // Emptying both fields clears the verdict, for the same reason clearing
-      // the School ID clears its own: a stale "✓ available" sitting under an
-      // empty box is worse than no answer. Done inside the debounce rather than
-      // in the effect body — a synchronous setState there cascades renders, and
-      // the delay is invisible against a field the registrant just emptied.
-      if (!name && !typed) {
-        setSchoolCode(prev => ({ ...prev, state: 'idle', error: null, suggestions: [], preview: null }));
+      // No code yet — no verdict to show. A stale "✓ available" sitting under an
+      // empty box is worse than no answer. All of these run inside the debounce
+      // rather than in the effect body: a synchronous setState there cascades
+      // renders, which the lint rule rightly refuses.
+      if (!code) {
+        setSchoolCode(prev => ({ ...prev, state: 'idle', error: null, suggestions: [] }));
+        return;
+      }
+      // Shape is checked here, not over the network. It is the same rule the
+      // server applies and needs nothing the browser lacks, so a malformed code
+      // is answered instantly instead of after a round-trip.
+      const problem = schoolCodeProblem(code);
+      if (problem) {
+        setSchoolCode(prev => ({ ...prev, state: 'invalid', error: problem, suggestions: [] }));
         return;
       }
       setSchoolCode(prev => ({ ...prev, state: 'checking' }));
       try {
-        const query = new URLSearchParams({ schoolName: name, code: typed });
+        const query = new URLSearchParams({ schoolName: formData.schoolName.trim(), code });
         const res = await apiFetch(`${API_URL}/api/auth/school-code?${query}`);
         const data = await res.json();
         // A superseded request returns silently — a newer one is already in
         // flight and owns the state. A *failed* one must not: these two shared
-        // a `return` at first, which left the spinner turning forever every
-        // time the check could not run. Nothing on the form said why, and the
-        // field looked broken rather than unanswered.
+        // a `return` at first, which left the spinner turning forever whenever
+        // the check could not run.
         if (cancelled) return;
         if (!data.success) {
-          setSchoolCode(prev => ({ ...prev, state: 'idle', error: null, suggestions: [], preview: null }));
+          setSchoolCode(prev => ({ ...prev, state: 'idle', error: null, suggestions: [] }));
           return;
         }
         setSchoolCode(prev => ({
           ...prev,
-          // The suggestion is adopted only while the registrant has not typed
-          // their own — otherwise the box would rewrite itself under them.
-          value: prev.edited ? prev.value : (data.code || ''),
-          state: data.available === false ? (data.error ? 'taken' : 'invalid') : 'available',
+          state: data.available === false ? 'taken' : 'available',
           error: data.error || null,
           suggestions: data.suggestions || [],
-          preview: data.preview || null,
         }));
       } catch {
-        // A check that could not run must not read as "this code is taken".
-        // Registration still completes: sending no code makes the server derive
-        // one, so a registrant whose check never answered is not stuck — see
-        // the schoolSlug handling in /api/auth/register.
+        // A check that could not run must not read as "this code is taken", and
+        // must not block the form: the code is still shown, still previewed and
+        // still submitted, and the server settles it again on submit.
         if (!cancelled) {
-          setSchoolCode(prev => ({ ...prev, state: 'idle', error: null, suggestions: [], preview: null }));
+          setSchoolCode(prev => ({ ...prev, state: 'idle', error: null, suggestions: [] }));
         }
       }
     }, 400);
     return () => { cancelled = true; clearTimeout(timer); };
-  }, [formData.schoolName, schoolCode.value, schoolCode.edited]);
+  }, [schoolCodeValue, formData.schoolName]);
 
-  /** The registrant typing their own code. Marks it edited, which stops the
-   *  school name from suggesting over the top of it from here on. */
+  /** The registrant typing their own code. Setting `typed` stops the school
+   *  name from suggesting over the top of it from here on; emptying the box
+   *  hands it back to the suggestion rather than leaving them with nothing. */
   const handleSchoolCodeChange = (value) => {
-    const cleaned = String(value).toLowerCase().replace(/[^a-z0-9-]/g, '').slice(0, 24);
-    setSchoolCode(prev => ({ ...prev, value: cleaned, edited: true, state: 'checking' }));
+    const cleaned = String(value).toLowerCase().replace(/[^a-z0-9-]/g, '').slice(0, MAX_SCHOOL_CODE_LENGTH);
+    setSchoolCode(prev => ({ ...prev, typed: cleaned || null, state: 'checking' }));
   };
 
   // Clearing the field has to clear its verdict too, or a stale "✓ matched"
@@ -403,7 +423,7 @@ export default function Register() {
       // the server to derive. They have been shown the logins it produces and
       // have typed an admin address to match, so the server honours this or
       // refuses it — it never quietly substitutes a different one.
-      if (schoolCode.value) body.append('schoolSlug', schoolCode.value);
+      if (schoolCodeValue) body.append('schoolSlug', schoolCodeValue);
       if (brandColor) body.append('brandColor', brandColor);
       if (logo) body.append('logo', logo);
       if (proof) body.append('proof', proof);
@@ -605,11 +625,15 @@ export default function Register() {
                     id="school-code"
                     type="text"
                     className="flex-1 min-w-0 px-4 py-3 outline-none text-navy-700 font-semibold font-mono lowercase"
-                    placeholder="mes-maba"
+                    // Prefixed "e.g." because this box fills itself the moment a
+                    // school name is typed, so a bare `mes-maba` sitting in it
+                    // read as a real suggestion for somebody else's school
+                    // rather than as an example of the shape.
+                    placeholder="e.g. mes-maba"
                     autoComplete="off"
                     spellCheck="false"
                     aria-describedby="school-code-hint"
-                    value={schoolCode.value}
+                    value={schoolCodeValue}
                     onChange={(e) => handleSchoolCodeChange(e.target.value)}
                   />
                   <span className="shrink-0 px-3 grid place-items-center bg-cream-100 border-l-2 border-navy-700/10">
@@ -647,15 +671,15 @@ export default function Register() {
                   </div>
                 )}
 
-                {schoolCode.state === 'available' && schoolCode.preview && (
+                {schoolCodePreview && (
                   <div className="mt-2.5 rounded-xl bg-cream-100 border border-navy-700/10 p-3">
                     <p className="text-xs font-extrabold text-navy-500 mb-1.5">
                       Your school's sign-ins will look like this:
                     </p>
                     <ul className="space-y-1 text-xs font-mono text-navy-600 break-all">
-                      <li><span className="font-sans font-bold text-navy-400 mr-1.5">Admin</span>{schoolCode.preview.admin}</li>
-                      <li><span className="font-sans font-bold text-navy-400 mr-1.5">Teacher</span>{schoolCode.preview.teacher}</li>
-                      <li><span className="font-sans font-bold text-navy-400 mr-1.5">Student</span>{schoolCode.preview.student}</li>
+                      <li><span className="font-sans font-bold text-navy-400 mr-1.5">Admin</span>{schoolCodePreview.admin}</li>
+                      <li><span className="font-sans font-bold text-navy-400 mr-1.5">Teacher</span>{schoolCodePreview.teacher}</li>
+                      <li><span className="font-sans font-bold text-navy-400 mr-1.5">Student</span>{schoolCodePreview.student}</li>
                     </ul>
                   </div>
                 )}
@@ -687,15 +711,15 @@ export default function Register() {
                     onChange={(e) => setFormData({ ...formData, email: localPartOf(e.target.value) })}
                   />
                   <span
-                    title={`@${accountDomain('ADMIN', schoolCode.value)}`}
+                    title={`@${accountDomain('ADMIN', schoolCodeValue)}`}
                     className="shrink min-w-0 truncate px-3 grid place-items-center bg-cream-100 border-l-2 border-navy-700/10 text-sm font-extrabold text-navy-500 select-none"
                   >
-                    @{accountDomain('ADMIN', schoolCode.value)}
+                    @{accountDomain('ADMIN', schoolCodeValue)}
                   </span>
                 </div>
                 <p id="admin-email-hint" className="text-xs text-navy-400 mt-1.5 font-semibold break-words">
-                  Your account will sign in as {adminEmail || `principal@${accountDomain('ADMIN', schoolCode.value)}`}.
-                  Teachers you create later get @{accountDomain('TEACHER', schoolCode.value)} addresses.
+                  Your account will sign in as {adminEmail || `principal@${accountDomain('ADMIN', schoolCodeValue)}`}.
+                  Teachers you create later get @{accountDomain('TEACHER', schoolCodeValue)} addresses.
                 </p>
               </div>
 
@@ -903,7 +927,7 @@ export default function Register() {
                 />
                 <p id="contact-email-hint" className="text-xs text-navy-400 mt-1.5 font-semibold">
                   A real inbox we can reach you on while we review your school — not the
-                  @{accountDomain('ADMIN', schoolCode.value)} sign-in above, which is a username rather than a mailbox.
+                  @{accountDomain('ADMIN', schoolCodeValue)} sign-in above, which is a username rather than a mailbox.
                 </p>
               </div>
 
