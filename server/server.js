@@ -2731,6 +2731,32 @@ app.post('/api/auth/register', registerRateLimit, registerDailyRateLimit, (req, 
     });
   } catch (e) {
     await deletePrivate(storedRegistrantIdPath);
+
+    // ── Two schools claiming one code in the same instant ──
+    //
+    // The check above asks whether the code is free, and the answer is true
+    // right up until somebody else's INSERT lands. Two schools whose names
+    // reduce to the same code — San Joaquin and San Jose both give `sjes-san` —
+    // submitting seconds apart is exactly the case that outruns it, and the
+    // unique constraint on School.slug is what actually settles it.
+    //
+    // The loser must not be shown a raw P2002. It reads as a server fault,
+    // which it is not: their registration is fine and one field needs changing.
+    // So it is reported the same way a code taken *before* they started is,
+    // with the same alternatives — a registrant should not have to know whether
+    // they lost a race or arrived late.
+    if (e?.code === 'P2002' && [].concat(e.meta?.target ?? []).includes('slug')) {
+      return refuse(400, {
+        code: 'SCHOOL_CODE_TAKEN',
+        error: 'Another school claimed that school code while you were registering. '
+          + 'Please choose another — everything else you entered is still here.',
+        // From req.body, not the destructured `schoolName` — that binding is
+        // scoped to the try block above and is not visible here.
+        suggestions: await suggestAlternatives(String(req.body.schoolName ?? '').trim(), schoolSlugTaken)
+          .catch(() => []),
+      });
+    }
+
     return refuse(400, { error: e.message });
   }
 });
