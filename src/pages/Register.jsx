@@ -257,7 +257,16 @@ export default function Register() {
         const query = new URLSearchParams({ schoolName: name, code: typed });
         const res = await apiFetch(`${API_URL}/api/auth/school-code?${query}`);
         const data = await res.json();
-        if (cancelled || !data.success) return;
+        // A superseded request returns silently — a newer one is already in
+        // flight and owns the state. A *failed* one must not: these two shared
+        // a `return` at first, which left the spinner turning forever every
+        // time the check could not run. Nothing on the form said why, and the
+        // field looked broken rather than unanswered.
+        if (cancelled) return;
+        if (!data.success) {
+          setSchoolCode(prev => ({ ...prev, state: 'idle', error: null, suggestions: [], preview: null }));
+          return;
+        }
         setSchoolCode(prev => ({
           ...prev,
           // The suggestion is adopted only while the registrant has not typed
@@ -270,8 +279,12 @@ export default function Register() {
         }));
       } catch {
         // A check that could not run must not read as "this code is taken".
-        // The server checks again on submit, so silence is the safe answer.
-        if (!cancelled) setSchoolCode(prev => ({ ...prev, state: 'idle' }));
+        // Registration still completes: sending no code makes the server derive
+        // one, so a registrant whose check never answered is not stuck — see
+        // the schoolSlug handling in /api/auth/register.
+        if (!cancelled) {
+          setSchoolCode(prev => ({ ...prev, state: 'idle', error: null, suggestions: [], preview: null }));
+        }
       }
     }, 400);
     return () => { cancelled = true; clearTimeout(timer); };
