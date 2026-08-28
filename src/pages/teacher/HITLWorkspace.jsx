@@ -324,6 +324,15 @@ export default function HITLWorkspace() {
   //   { srcs: string[], pages: File[], index: number, done: Blob[] }
   const [redactQueue, setRedactQueue] = useState(null);
   const [redactBusy, setRedactBusy] = useState(false);
+  // Separate from redactBusy on purpose. redactBusy is the moment before the
+  // tool opens, and belongs on the Redact button. This one covers the upload
+  // after the last page is confirmed — which is a multi-megabyte POST, a
+  // server-side stitch and a re-encode, and used to leave the redactor sitting
+  // on screen looking frozen with the teacher's work apparently lost.
+  const [redactSaving, setRedactSaving] = useState(false);
+  // Holds the finished pages when an upload fails, so a retry resends what the
+  // teacher already drew instead of making them do the whole paper again.
+  const [redactError, setRedactError] = useState(null);
 
   /**
    * Open the redactor over this submission, one page at a time.
@@ -398,7 +407,8 @@ export default function HITLWorkspace() {
    */
   const saveRedaction = async (pageBlobs) => {
     if (!submission?.id || !pageBlobs?.length) return;
-    setRedactBusy(true);
+    setRedactSaving(true);
+    setRedactError(null);
     try {
       const form = new FormData();
       pageBlobs.forEach((b, i) => form.append('images', b, `page-${i + 1}.jpg`));
@@ -407,16 +417,19 @@ export default function HITLWorkspace() {
         body: form,
       });
       const data = await res.json();
-      if (!data.success) { showAlert(data.error || 'Could not save that redaction.'); return; }
+      if (!data.success) { setRedactError({ message: data.error || 'Could not save that redaction.', pages: pageBlobs }); return; }
       // A new filename every time, so storing it repaints the pane — there is
       // no cache to bust and nothing to refetch. pageBreaks comes back with it
       // because re-stitching can change where the boundaries fall.
       setSubmission(prev => ({ ...(prev || {}), imageUrl: data.imageUrl, pageBreaks: data.pageBreaks ?? prev?.pageBreaks }));
       closeRedactor();
     } catch {
-      showAlert('Network error while saving the redaction. Please try again.');
+      // Kept, not discarded: this is several minutes of a teacher's careful
+      // work, and losing it to one dropped request would mean redrawing every
+      // box on every page.
+      setRedactError({ message: 'Network error while saving the redaction.', pages: pageBlobs });
     } finally {
-      setRedactBusy(false);
+      setRedactSaving(false);
     }
   };
   const [isLoading, setIsLoading] = useState(true);
@@ -2533,7 +2546,49 @@ export default function HITLWorkspace() {
 
       {/* The same tool the upload paths use, so a page redacted while grading
           looks and behaves exactly like one redacted on the way in. */}
-      {redactQueue && (
+      {/* The redactor comes down the instant the last page is confirmed and this
+          takes its place. Leaving it up with a spinner on top would have been
+          less code, but it keeps a Cancel button on screen during an upload
+          that cannot be cancelled, and invites a second click on Confirm. */}
+      {(redactSaving || redactError) && (
+        <div className="fixed inset-0 z-[130] bg-ink-900/85 flex items-center justify-center p-6">
+          <div className="bg-white rounded-2xl px-6 py-5 max-w-sm w-full text-center">
+            {redactSaving ? (
+              <>
+                <Loader2 className="w-7 h-7 animate-spin text-brand-green mx-auto" />
+                <p className="font-bold text-slate-800 mt-3">Saving the redaction…</p>
+                <p className="text-xs text-slate-500 mt-1">
+                  {redactQueue?.pages.length > 1
+                    ? `Uploading ${redactQueue.pages.length} pages and putting them back together.`
+                    : 'Uploading the redacted page.'}
+                  {' '}This can take a moment on a slow connection — please don't close this tab.
+                </p>
+              </>
+            ) : (
+              <>
+                <AlertTriangle className="w-7 h-7 text-red-500 mx-auto" />
+                <p className="font-bold text-slate-800 mt-3">{redactError.message}</p>
+                <p className="text-xs text-slate-500 mt-1">
+                  Your boxes are still here — nothing has been lost. Try sending them again.
+                </p>
+                <div className="flex gap-2 mt-4">
+                  <button type="button"
+                    onClick={() => { setRedactError(null); closeRedactor(); }}
+                    className="flex-1 py-2.5 rounded-lg border border-slate-200 text-slate-600 font-bold text-sm hover:bg-slate-50">
+                    Discard
+                  </button>
+                  <button type="button" onClick={() => saveRedaction(redactError.pages)}
+                    className="flex-1 py-2.5 rounded-lg bg-brand-green text-white font-bold text-sm hover:bg-emerald-600">
+                    Try again
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
+      {redactQueue && !redactSaving && !redactError && (
         <>
           <ImageRedactor
             // Keyed on the page, so moving to page 2 remounts the tool with a
