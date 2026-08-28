@@ -7,7 +7,7 @@ import SubmissionImage from '../../components/SubmissionImage';
 import { ONBOARDING, hasSeenOnboarding, markOnboardingSeen } from '../../utils/onboarding';
 
 import { showAlert, showConfirm } from '../../utils/dialog';
-import RedactTool from '../../components/RedactTool';
+import ImageRedactor from '../../components/ImageRedactor';
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
 
 /**
@@ -317,7 +317,69 @@ export default function HITLWorkspace() {
   const [isReopening, setIsReopening] = useState(false);
 
   const [submission, setSubmission] = useState(null);
-  const [redacting, setRedacting] = useState(false);
+  // The already-uploaded page, pulled back down as an object URL so
+  // ImageRedactor can draw it into a canvas. See openRedactor.
+  const [redactSrc, setRedactSrc] = useState(null);
+  const [redactBusy, setRedactBusy] = useState(false);
+
+  /**
+   * Open the redactor over the page currently on screen.
+   *
+   * The photo is fetched into a Blob first rather than handed over as its
+   * Supabase URL. ImageRedactor draws the image into a canvas and exports the
+   * result, and a canvas that has been given a cross-origin image is tainted —
+   * the export throws, after the teacher has already marked the page up. An
+   * object URL made from a Blob we fetched ourselves is same-origin, so the
+   * export works. The bucket sends `Access-Control-Allow-Origin: *`, which is
+   * what makes the fetch itself allowed.
+   */
+  const openRedactor = async () => {
+    if (!submission?.imageUrl || redactBusy) return;
+    setRedactBusy(true);
+    try {
+      // eslint-disable-next-line no-restricted-globals -- deliberate: this is the storage bucket, not our API. apiFetch would attach the teacher's session token to a third-party request, which is a credential leak, and the bucket needs no auth to read a public object.
+      const res = await fetch(submission.imageUrl);
+      if (!res.ok) throw new Error('fetch failed');
+      setRedactSrc(URL.createObjectURL(await res.blob()));
+    } catch {
+      showAlert('Could not open that photo for redacting. Check your connection and try again.');
+    } finally {
+      setRedactBusy(false);
+    }
+  };
+
+  // Object URLs are held by the document until revoked, and this one points at
+  // a full-resolution scan.
+  const closeRedactor = () => {
+    setRedactSrc(prev => { if (prev) URL.revokeObjectURL(prev); return null; });
+  };
+
+  /**
+   * Store what the redactor produced.
+   *
+   * Sent as a file, not as coordinates: ImageRedactor has already composited at
+   * full resolution, and asking it for rectangles instead would mean a second
+   * redaction path that could disagree with the one every upload already uses.
+   */
+  const saveRedaction = async (blob) => {
+    if (!blob || !submission?.id) return;
+    try {
+      const form = new FormData();
+      form.append('image', blob, `redacted-${submission.id}.jpg`);
+      const res = await apiFetch(`${API_URL}/api/teacher/submissions/${submission.id}/redact`, {
+        method: 'POST',
+        body: form,
+      });
+      const data = await res.json();
+      if (!data.success) { showAlert(data.error || 'Could not save that redaction.'); return; }
+      // A new filename every time, so storing it repaints the pane — there is
+      // no cache to bust and nothing to refetch.
+      setSubmission(prev => ({ ...(prev || {}), imageUrl: data.imageUrl }));
+      closeRedactor();
+    } catch {
+      showAlert('Network error while saving the redaction. Please try again.');
+    }
+  };
   const [isLoading, setIsLoading] = useState(true);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
 
@@ -1463,9 +1525,11 @@ export default function HITLWorkspace() {
               page three is exactly the thing being looked for. */}
           {submission?.imageUrl && (
             <div className="sticky top-0 left-0 right-0 z-10 flex justify-end p-2 pointer-events-none">
-              <button type="button" onClick={() => setRedacting(true)}
-                className="pointer-events-auto inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-ink-900/85 text-white text-xs font-bold backdrop-blur-sm hover:bg-ink-900">
-                <Eraser className="w-3.5 h-3.5" /> Redact
+              <button type="button" onClick={openRedactor} disabled={redactBusy}
+                className="pointer-events-auto inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-ink-900/85 text-white text-xs font-bold backdrop-blur-sm hover:bg-ink-900 disabled:opacity-50">
+                {redactBusy
+                  ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Opening…</>
+                  : <><Eraser className="w-3.5 h-3.5" /> Redact</>}
               </button>
             </div>
           )}
@@ -2428,14 +2492,13 @@ export default function HITLWorkspace() {
         .animate-bounce-in { animation: bounceIn 0.6s ease-out; }
       `}</style>
 
-      {/* The new URL is a new filename, so simply storing it repaints the pane
-          — there is no cache to bust and nothing to refetch. */}
-      {redacting && submission?.imageUrl && (
-        <RedactTool
-          submissionId={submission.id}
-          imageUrl={submission.imageUrl}
-          onClose={() => setRedacting(false)}
-          onRedacted={(imageUrl) => setSubmission(prev => ({ ...(prev || {}), imageUrl }))}
+      {/* The same tool the upload paths use, so a page redacted while grading
+          looks and behaves exactly like one redacted on the way in. */}
+      {redactSrc && (
+        <ImageRedactor
+          imageSrc={redactSrc}
+          onConfirm={saveRedaction}
+          onCancel={closeRedactor}
         />
       )}
     </div>

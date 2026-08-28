@@ -11733,46 +11733,35 @@ app.get('/api/submissions/:id', async (req, res) => {
 
 // Trigger AI grading on an existing PENDING submission
 /**
- * Black out part of a submitted photo, permanently.
+ * Replace a submitted photo with a redacted copy of itself.
  *
- * Students photograph their work with their name written at the top, because
- * that is what they have been taught to do on paper. That name then sits in a
- * public storage URL and is handed to the AI with the rest of the page. This is
- * the teacher's way to take it back out.
+ * Students photograph their work with their name written across the top,
+ * because that is what paper has always asked of them. ImageRedactor is how
+ * that name gets covered at upload time, on both the student and the batch
+ * paths. This is the same tool reached from the grading screen, for the papers
+ * where nobody covered it — the teacher opens the page they are already
+ * reading, draws over the name, and this stores what comes back.
  *
- * ── Burnt in, not drawn on top ──
- * The rectangles are composited into the pixels and the result replaces what
- * imageUrl points at. An overlay drawn in the browser would have looked
- * identical on this screen and redacted nothing: the original bytes would still
- * be one URL away, and still be what got sent to Gemini.
+ * The browser sends the finished image rather than coordinates, because
+ * ImageRedactor already composites at full resolution and hands back a Blob;
+ * asking it for rectangles instead would mean a second, differently-shaped
+ * redaction path that could disagree with the one every upload uses.
  *
  * ── The original is kept, privately ──
  * A teacher who drags the box over the wrong part of the page would otherwise
  * have destroyed a student's graded work with no way back. So the untouched
- * original is archived to the private bucket first, under a key derived from
- * the submission id, before anything overwrites it. That bucket is the one
- * registrant IDs live in — never public, only ever handed out as a short-lived
- * signed link to a platform operator. The redaction is real for everyone who
- * can reach the submission; it is recoverable by the one role that can already
+ * original is archived to the private bucket first — the one registrant IDs
+ * live in, never served publicly, only ever handed out as a short-lived signed
+ * link to a platform operator. The redaction is real for everyone who can
+ * reach the submission; it stays recoverable by the one role that can already
  * see everything.
  *
  * `upsert: false` on that archive is doing the work: the FIRST redaction stores
  * the pristine page, and a second one cannot overwrite the archive with an
  * already-redacted copy. Without it, redacting twice would quietly destroy the
  * original the first redaction was careful to keep.
- *
- * ── Why the coordinates come from the browser but the drawing happens here ──
- * The obvious build is a canvas in the browser: draw, export, upload. It does
- * not work. The image is served from Supabase on another origin, so drawing it
- * into a canvas taints it and toBlob() throws SecurityError — after the teacher
- * has already done the work. Sending normalised rectangles instead means the
- * only thing the browser has to get right is where the boxes are, and sharp
- * does the compositing against the real pixels at full resolution.
- *
- * Normalised 0-1 rather than pixels, because the teacher drew them against
- * whatever size the image happened to be rendered at on their screen.
  */
-app.post('/api/teacher/submissions/:id/redact', async (req, res) => {
+app.post('/api/teacher/submissions/:id/redact', upload.single('image'), async (req, res) => {
   try {
     const sub = await prisma.submission.findUnique({
       where: { id: req.params.id },
@@ -11782,74 +11771,34 @@ app.post('/api/teacher/submissions/:id/redact', async (req, res) => {
     if (sub.activity?.class?.teacherId !== req.auth.sub) {
       return res.status(403).json({ success: false, error: 'You can only redact papers for your own classes.' });
     }
-    if (!sub.imageUrl) {
-      return res.status(400).json({ success: false, error: 'This submission has no photo to redact.' });
+    if (!req.file) return res.status(400).json({ success: false, error: 'No redacted image was sent.' });
+    if (!isImageMime(req.file.mimetype)) {
+      return res.status(400).json({ success: false, error: 'A redacted page has to be an image.' });
     }
 
-    // A rectangle off the edge of the page, or one with no area, is a drag that
-    // slipped rather than an instruction — clamped and dropped respectively,
-    // because refusing the whole request over one stray box would lose the
-    // other four the teacher meant.
-    const rects = (Array.isArray(req.body?.rects) ? req.body.rects : [])
-      .map((r) => ({
-        x: Math.min(Math.max(Number(r?.x) || 0, 0), 1),
-        y: Math.min(Math.max(Number(r?.y) || 0, 0), 1),
-        w: Math.min(Math.max(Number(r?.w) || 0, 0), 1),
-        h: Math.min(Math.max(Number(r?.h) || 0, 0), 1),
-      }))
-      .filter((r) => r.w > 0.001 && r.h > 0.001);
-    if (!rects.length) {
-      return res.status(400).json({ success: false, error: 'Draw at least one box over what should be hidden.' });
+    // Archived before anything is overwritten, and only if there is still an
+    // original to archive — a submission with no photo has nothing to keep.
+    if (sub.imageUrl) {
+      const original = await readImageBytes(sub.imageUrl);
+      if (original) await archiveOriginalOnce(sub.id, original);
     }
 
-    const original = await readImageBytes(sub.imageUrl);
-    if (!original) {
-      return res.status(400).json({ success: false, error: 'Could not read the submitted photo to redact it.' });
-    }
-
-    await archiveOriginalOnce(sub.id, original);
-
-    const meta = await sharp(original).metadata();
-    const width = meta.width || 0;
-    const height = meta.height || 0;
-    if (!width || !height) {
-      return res.status(400).json({ success: false, error: 'That photo could not be read as an image.' });
-    }
-
-    // One SVG overlay rather than one composite per rectangle: sharp reads it
-    // once, and the rounding happens against the real pixel dimensions instead
-    // of accumulating across several passes.
-    const boxes = rects.map((r) => {
-      const x = Math.round(r.x * width);
-      const y = Math.round(r.y * height);
-      const w = Math.min(Math.round(r.w * width), width - x);
-      const h = Math.min(Math.round(r.h * height), height - y);
-      return `<rect x="${x}" y="${y}" width="${w}" height="${h}" fill="#000" />`;
-    }).join('');
-    const overlay = Buffer.from(
-      `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}">${boxes}</svg>`
-    );
-    const redacted = await sharp(original)
-      .composite([{ input: overlay, top: 0, left: 0 }])
-      .jpeg({ quality: 90 })
-      .toBuffer();
-
-    // A NEW filename, not the old one overwritten. Same-path upsert leaves every
-    // browser, and Supabase's CDN, holding the un-redacted image for as long as
-    // it feels like caching it — which on a redaction is the one failure that
-    // matters.
+    // A NEW filename, not the old one overwritten. Same-path upsert leaves
+    // every browser, and Supabase's CDN, holding the un-redacted image for as
+    // long as it feels like caching it — which on a redaction is the one
+    // failure that matters.
     const filename = `redacted-${sub.id}-${Date.now()}.jpg`;
-    const localPath = path.join(uploadsDir, filename);
-    fs.mkdirSync(uploadsDir, { recursive: true });
-    fs.writeFileSync(localPath, redacted);
-    const imageUrl = await uploadToCloud(localPath, filename, { folder: 'submissions', contentType: 'image/jpeg' });
-    try { fs.unlinkSync(localPath); } catch {}
+    const imageUrl = await uploadToCloud(req.file.path, filename, {
+      folder: 'submissions',
+      contentType: req.file.mimetype || 'image/jpeg',
+    });
+    try { fs.unlinkSync(req.file.path); } catch {}
 
     await prisma.submission.update({ where: { id: sub.id }, data: { imageUrl } });
-    res.json({ success: true, imageUrl, boxes: rects.length });
+    res.json({ success: true, imageUrl });
   } catch (e) {
     console.error('Redaction failed:', e.message);
-    res.status(500).json({ success: false, error: 'Could not redact that photo. Please try again.' });
+    res.status(500).json({ success: false, error: 'Could not save that redaction. Please try again.' });
   }
 });
 
