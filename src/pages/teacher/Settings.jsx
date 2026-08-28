@@ -36,6 +36,10 @@ export default function Settings() {
   const [user] = useState(() => JSON.parse(localStorage.getItem('user') || '{}'));
   const [passwords, setPasswords] = useState({ current: '', newPass: '', confirm: '' });
   const [showPassword, setShowPassword] = useState(false);
+  // One toggle for both new-password fields rather than one each: the reason to
+  // reveal them is almost always to see why they are not matching, and a reveal
+  // that shows only one of the two does not answer that.
+  const [showNew, setShowNew] = useState(false);
   const [saveMsg, setSaveMsg] = useState('');
   const [pwError, setPwError] = useState('');
   const [pwBusy, setPwBusy] = useState(false);
@@ -160,16 +164,30 @@ export default function Settings() {
                   </div>
                   <div>
                     <label className="tg-label">New Password</label>
-                    <input type="password" required value={passwords.newPass}
-                      onChange={(e) => setPasswords(p => ({ ...p, newPass: e.target.value }))}
-                      className="tg-input" placeholder="At least 8 characters" />
+                    <div className="relative">
+                      <input type={showNew ? 'text' : 'password'} required value={passwords.newPass}
+                        onChange={(e) => setPasswords(p => ({ ...p, newPass: e.target.value }))}
+                        className="tg-input pr-12" placeholder="At least 8 characters" />
+                      <button type="button" onClick={() => setShowNew(!showNew)}
+                        aria-label={showNew ? 'Hide new password' : 'Show new password'}
+                        className="absolute right-4 top-1/2 -translate-y-1/2 text-navy-300 hover:text-navy-600">
+                        {showNew ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                      </button>
+                    </div>
                     <PasswordStrength value={passwords.newPass} />
                   </div>
                   <div>
                     <label className="tg-label">Confirm New Password</label>
-                    <input type="password" required value={passwords.confirm}
-                      onChange={(e) => setPasswords(p => ({ ...p, confirm: e.target.value }))}
-                      className="tg-input" />
+                    <div className="relative">
+                      <input type={showNew ? 'text' : 'password'} required value={passwords.confirm}
+                        onChange={(e) => setPasswords(p => ({ ...p, confirm: e.target.value }))}
+                        className="tg-input pr-12" />
+                      <button type="button" onClick={() => setShowNew(!showNew)}
+                        aria-label={showNew ? 'Hide new password' : 'Show new password'}
+                        className="absolute right-4 top-1/2 -translate-y-1/2 text-navy-300 hover:text-navy-600">
+                        {showNew ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                      </button>
+                    </div>
                   </div>
                   {pwError && (
                     <p role="alert" className="text-sm font-bold text-red-700 bg-red-50 border-2 border-red-200 rounded-2xl px-4 py-3">

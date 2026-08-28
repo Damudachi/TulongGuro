@@ -48,6 +48,9 @@ export default function AdminSettings() {
   const [nameBusy, setNameBusy] = useState(false);
   const [passwords, setPasswords] = useState({ current: '', newPass: '', confirm: '' });
   const [showCurrent, setShowCurrent] = useState(false);
+  // One toggle for both new-password fields: the reason to reveal them is
+  // almost always to see why they are not matching.
+  const [showNew, setShowNew] = useState(false);
   const [pwError, setPwError] = useState('');
   const [saveMsg, setSaveMsg] = useState('');
   const [busy, setBusy] = useState(false);
@@ -209,19 +212,33 @@ export default function AdminSettings() {
           </div>
           <div>
             <label htmlFor="admin-new-pw" className="block text-sm font-medium text-slate-700 mb-1">New password</label>
-            <input id="admin-new-pw" type="password" required autoComplete="new-password"
-              value={passwords.newPass}
-              onChange={e => setPasswords(p => ({ ...p, newPass: e.target.value }))}
-              placeholder="At least 8 characters"
-              className="w-full border border-slate-200 px-4 py-2.5 rounded-lg text-sm outline-none focus:ring-2 focus:ring-brand-navy" />
+            <div className="relative">
+              <input id="admin-new-pw" type={showNew ? 'text' : 'password'} required autoComplete="new-password"
+                value={passwords.newPass}
+                onChange={e => setPasswords(p => ({ ...p, newPass: e.target.value }))}
+                placeholder="At least 8 characters"
+                className="w-full border border-slate-200 px-4 py-2.5 rounded-lg text-sm outline-none focus:ring-2 focus:ring-brand-navy pr-12" />
+              <button type="button" onClick={() => setShowNew(v => !v)}
+                aria-label={showNew ? 'Hide new password' : 'Show new password'}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-brand-navy">
+                {showNew ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+              </button>
+            </div>
             <PasswordStrength value={passwords.newPass} />
           </div>
           <div>
             <label htmlFor="admin-confirm-pw" className="block text-sm font-medium text-slate-700 mb-1">Confirm new password</label>
-            <input id="admin-confirm-pw" type="password" required autoComplete="new-password"
-              value={passwords.confirm}
-              onChange={e => setPasswords(p => ({ ...p, confirm: e.target.value }))}
-              className="w-full border border-slate-200 px-4 py-2.5 rounded-lg text-sm outline-none focus:ring-2 focus:ring-brand-navy" />
+            <div className="relative">
+              <input id="admin-confirm-pw" type={showNew ? 'text' : 'password'} required autoComplete="new-password"
+                value={passwords.confirm}
+                onChange={e => setPasswords(p => ({ ...p, confirm: e.target.value }))}
+                className="w-full border border-slate-200 px-4 py-2.5 rounded-lg text-sm outline-none focus:ring-2 focus:ring-brand-navy pr-12" />
+              <button type="button" onClick={() => setShowNew(v => !v)}
+                aria-label={showNew ? 'Hide new password' : 'Show new password'}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-brand-navy">
+                {showNew ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+              </button>
+            </div>
           </div>
           {pwError && (
             <p role="alert" className="text-sm font-bold text-red-700 bg-red-50 border border-red-200 rounded-xl px-4 py-3">

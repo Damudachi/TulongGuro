@@ -5690,39 +5690,47 @@ async function logAdminEvent(event, actor, target) {
 }
 
 /**
- * Loads another admin of the same school.
+ * Refuses every attempt by one admin to act on another admin's account.
  *
- * Refuses the caller's own id on purpose. Every route that uses this either
- * demotes or resets the password of its target, and both are things an admin
- * must not do to themselves: an admin changing their own password has
- * /api/auth/change-password, which asks for the current one first, and
- * self-demotion is a way to lock a school out that the count-based guard below
- * cannot see coming.
+ * The two routes that call this — demote and reset-password — are the two ways
+ * an admin could reach inside a colleague's account, and neither is theirs to
+ * do any more. Resetting a password is impersonation: it lets the caller sign
+ * in as that person and act as them, at a school where "that person" may be the
+ * head teacher. Demotion is the same power pointed the other way. Both now
+ * belong to a platform operator, who is identifiable, revocable and outside the
+ * school's own politics — see the /api/platform/schools/:schoolId/admins routes.
+ *
+ * ── What this replaced ──
+ * Admins were peers: any one of them could demote or reset the password of any
+ * other, including the person who registered the school. That was a deliberate
+ * choice, made when an in-school super-admin tier was removed, and its argument
+ * was that a school whose registrant had left should be able to take their
+ * access back without a support ticket. The argument that beat it is that the
+ * same power lets a co-admin added for one term remove the head teacher who
+ * added them, or quietly take over their account — and a school cannot undo
+ * that from inside either.
+ *
+ * ── What it costs, honestly ──
+ * A school is capped at five admins and can no longer free a seat held by
+ * someone who has left. That is now a platform-operator job, and the admins
+ * screen says so. Removing an admin got rarer and slower on purpose; taking
+ * over a colleague's account became impossible.
+ *
+ * Kept as a throwing guard rather than deleting the routes: a route that
+ * vanishes 404s, which reads as the app being broken. This answers 403 with a
+ * sentence saying who *can* do it.
  */
 async function coAdminInSchool(admin, userId) {
-  if (userId === admin.id) {
-    const err = new Error('You cannot do this to your own account. Ask another admin.');
-    err.status = 400;
-    throw err;
-  }
-  const target = await prisma.user.findUnique({ where: { id: userId } });
-  if (!target || target.schoolId !== admin.schoolId || target.role !== 'ADMIN') {
-    const err = new Error('Admin not found in your school.');
-    err.status = 404;
-    throw err;
-  }
-  // Removed: the rule that protected the account which registered the school.
-  //
-  // It read "this is the super admin who registered the school, their access
-  // cannot be changed here", and it made the registrant permanently
-  // un-removable by their own colleagues. With the super-admin tier gone that
-  // is no longer a distinction the school recognises — the registrant is an
-  // admin like any other, and a school whose registrant has left needs to be
-  // able to take their access away without a support ticket.
-  //
-  // What still cannot happen is a school locking itself out: the self-check
-  // above and the last-admin count on the demote route cover that between them.
-  return target;
+  const err = new Error(
+    userId === admin.id
+      // Reachable only by calling the API directly — the screen has never
+      // offered this — but it has its own right answer, and it is not the
+      // "ask an operator" one.
+      ? 'Change your own password from Settings, which asks for your current one first.'
+      : "Only a TulongGuro platform operator can reset another admin's password or remove their admin access. Contact support and they will do it from outside the school."
+  );
+  err.status = 403;
+  throw err;
 }
 
 /**
@@ -5971,61 +5979,23 @@ app.post('/api/admin/:adminId/admins/promote', async (req, res) => {
  */
 app.put('/api/admin/:adminId/admins/:userId/demote', async (req, res) => {
   try {
+    // Always refuses now — coAdminInSchool explains why, and the platform
+    // console's demote route is where this action lives. The route is kept so
+    // an older client gets that sentence instead of a bare 404.
     const admin = await requireAdminSchool(req.params.adminId);
-    const target = await coAdminInSchool(admin, req.params.userId);
-
-    // The guard that matters most on this route. A school with no admin cannot
-    // add teachers, publish anything school-wide, or recover itself — it becomes
-    // a support ticket only a developer with production database access can
-    // close, which is the situation this whole feature exists to avoid.
-    const adminCount = await prisma.user.count({ where: { schoolId: admin.schoolId, role: 'ADMIN' } });
-    if (adminCount <= 1) {
-      return res.status(400).json({
-        success: false,
-        error: 'A school must keep at least one admin. Add another before removing this one.'
-      });
-    }
-
-    const revokedAt = new Date();
-    await prisma.user.update({
-      where: { id: target.id },
-      data: {
-        role: 'TEACHER',
-        // Without this their existing token still says ADMIN for up to another
-        // twelve hours, and the token is what authorizes every request — so the
-        // demotion would not actually take effect until it expired.
-        sessionsValidFrom: revokedAt
-      }
-    });
-    markRevoked(target.id, revokedAt);
-    await logAdminEvent('ADMIN_DEMOTED', admin, target);
-    res.json({ success: true });
+    await coAdminInSchool(admin, req.params.userId);
   } catch (e) { sendAdminError(res, e); }
 });
 
-/** Reset a fellow admin's password to a new temporary one. */
+/**
+ * Refused. Setting another admin's password is impersonation, and it is a
+ * platform operator's to do — see coAdminInSchool and the equivalent route
+ * under /api/platform/schools/:schoolId/admins/:userId/password.
+ */
 app.put('/api/admin/:adminId/admins/:userId/password', async (req, res) => {
   try {
     const admin = await requireAdminSchool(req.params.adminId);
-    const target = await coAdminInSchool(admin, req.params.userId);
-    const { password } = req.body || {};
-    if (!password) return res.status(400).json({ success: false, error: 'A new password is required.' });
-    const pwProblem = passwordProblem(password);
-    if (pwProblem) return res.status(400).json({ success: false, error: pwProblem });
-
-    const revokedAt = new Date();
-    await prisma.user.update({
-      where: { id: target.id },
-      data: {
-        password: await bcrypt.hash(password, BCRYPT_SALT_ROUNDS),
-        // Resetting the password of an account that may have been misused and
-        // leaving its session open would defeat the point of the reset.
-        sessionsValidFrom: revokedAt
-      }
-    });
-    markRevoked(target.id, revokedAt);
-    await logAdminEvent('ADMIN_PASSWORD_RESET', admin, target);
-    res.json({ success: true });
+    await coAdminInSchool(admin, req.params.userId);
   } catch (e) { sendAdminError(res, e); }
 });
 
@@ -14565,8 +14535,15 @@ app.get('/api/student/:studentId/dashboard', async (req, res) => {
       ...pendingSubmissions.map(s => s.activityId)
     ];
 
-    const upcomingDeadlines = upcomingActivities.filter(a => {
-      if (submittedActivityIds.includes(a.id)) return false;
+    // ── Overdue work is listed too, not quietly dropped ──
+    // This used to keep only activities whose deadline had not passed, so the
+    // moment a student missed something it vanished and the dashboard said
+    // "You're all caught up! 🎉" — congratulating them for the work they had
+    // just failed to hand in. Missed work is now carried with a day count, and
+    // whether it can still be handed in at all.
+    const now = new Date();
+    const upcomingDeadlines = upcomingActivities.reduce((out, a) => {
+      if (submittedActivityIds.includes(a.id)) return out;
       // Same rule the submit endpoint enforces. This used to test
       // `new Date(a.deadline) >= now`, which reads a bare "YYYY-MM-DD" as
       // midnight UTC — 08:00 in Manila. So a task due today dropped off the
@@ -14574,18 +14551,48 @@ app.get('/api/student/:studentId/dashboard', async (req, res) => {
       // before it actually closed and while /api/student/submit would still
       // happily accept it. Losing sight of work that is still open is the
       // worst direction for this particular bug to fail in.
-      return !isPastDeadline(a.deadline);
-    }).map(a => ({
-      id: a.id,
-      title: a.title,
-      deadline: a.deadline,
-      points: a.points || 100,
-      type: a.type || 'Essay',
-      className: a.class?.name || '',
-      classId: a.class?.id || '',
-      submissionMode: a.submissionMode || 'TEACHER_UPLOAD',
-      maxAttempts: a.maxAttempts ?? 1
-    })).sort((a, b) => new Date(a.deadline) - new Date(b.deadline));
+      const past = isPastDeadline(a.deadline);
+
+      // Nobody can be late to work the teacher uploads themselves: those papers
+      // were handed in on paper and are scanned whenever the teacher reaches
+      // the stack, often days later. Telling a child they are "5 days late" for
+      // their teacher's scanning schedule would be a lie about them, so an
+      // overdue teacher-upload activity is left off entirely — as it was
+      // before. See the same rule in submissionWindow().
+      const studentSubmits = (a.submissionMode || 'TEACHER_UPLOAD') === 'STUDENT_SUBMIT';
+      if (past && !studentSubmits) return out;
+
+      const due = deadlineInstant(a.deadline);
+      const { isClosed } = submissionWindow(a);
+      out.push({
+        id: a.id,
+        title: a.title,
+        deadline: a.deadline,
+        points: a.points || 100,
+        type: a.type || 'Essay',
+        className: a.class?.name || '',
+        classId: a.class?.id || '',
+        submissionMode: a.submissionMode || 'TEACHER_UPLOAD',
+        maxAttempts: a.maxAttempts ?? 1,
+        isMissed: past,
+        // Counted in whole days from the instant the deadline ran out, and
+        // never 0: something that went overdue an hour ago is "1 day late",
+        // not "0 days late", which reads as not late at all.
+        daysLate: past && due ? Math.max(1, Math.ceil((now - due) / 86400000)) : 0,
+        // The difference between "hand it in now, it still counts" and "this
+        // one is gone" — the only thing that changes what the student should
+        // do about it.
+        stillAccepted: past ? !isClosed : true,
+      });
+      return out;
+    }, []).sort((a, b) => {
+      // Overdue first: it is the only thing on this list that needs acting on
+      // today. Within it, most recently missed first — those are the ones most
+      // likely to still be inside a late window.
+      if (a.isMissed !== b.isMissed) return a.isMissed ? -1 : 1;
+      const order = new Date(a.deadline) - new Date(b.deadline);
+      return a.isMissed ? -order : order;
+    });
 
     res.json({
       success: true, student, submissions, pendingSubmissions, avgGrade,
@@ -15568,8 +15575,16 @@ app.get('/api/student/:studentId/activities/:activityId', async (req, res) => {
  * PH has no daylight saving, so the fixed offset is exact.
  */
 const PH_UTC_OFFSET_HOURS = 8;
-function isPastDeadline(deadline) {
-  if (!deadline) return false;
+/**
+ * The exact instant a deadline runs out, or null if it cannot be read.
+ *
+ * Split out of isPastDeadline because "how late is this" needs the same instant
+ * "is this late" is decided from. Computing it a second way would let the
+ * dashboard tell a student they are one day late for work the submit route
+ * still considers on time. Mirrors deadlineInstant() in src/utils/deadlines.js.
+ */
+function deadlineInstant(deadline) {
+  if (!deadline) return null;
   const dateOnly = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(deadline).trim());
   const due = dateOnly
     ? new Date(Date.UTC(
@@ -15577,8 +15592,12 @@ function isPastDeadline(deadline) {
         23 - PH_UTC_OFFSET_HOURS, 59, 59, 999
       ))
     : new Date(deadline);
-  if (Number.isNaN(due.getTime())) return false;   // unparseable: don't lock anyone out
-  return due < new Date();
+  return Number.isNaN(due.getTime()) ? null : due;
+}
+
+function isPastDeadline(deadline) {
+  const due = deadlineInstant(deadline);   // unparseable: don't lock anyone out
+  return due ? due < new Date() : false;
 }
 
 /**

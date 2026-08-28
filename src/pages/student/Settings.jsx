@@ -36,6 +36,9 @@ export default function Settings() {
 
   const [passwords, setPasswords] = useState({ current: '', newPass: '', confirm: '' });
   const [showPassword, setShowPassword] = useState(false);
+  // One toggle for both new-password fields: the reason to reveal them is
+  // almost always to see why they are not matching.
+  const [showNew, setShowNew] = useState(false);
   const [pwError, setPwError] = useState('');
   const [pwBusy, setPwBusy] = useState(false);
 
@@ -207,18 +210,32 @@ export default function Settings() {
                   </div>
                   <div>
                     <label className="tg-label" htmlFor="new-password">New password</label>
-                    <input id="new-password" type="password" required minLength={8} autoComplete="new-password"
-                      value={passwords.newPass}
-                      onChange={(e) => setPasswords(p => ({ ...p, newPass: e.target.value }))}
-                      className="tg-input" />
+                    <div className="relative">
+                      <input id="new-password" type={showNew ? 'text' : 'password'} required minLength={8} autoComplete="new-password"
+                        value={passwords.newPass}
+                        onChange={(e) => setPasswords(p => ({ ...p, newPass: e.target.value }))}
+                        className="tg-input pr-11" />
+                      <button type="button" onClick={() => setShowNew(v => !v)}
+                        aria-label={showNew ? 'Hide new password' : 'Show new password'}
+                        className="absolute right-3 top-1/2 -translate-y-1/2 text-navy-400 hover:text-navy-600">
+                        {showNew ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                      </button>
+                    </div>
                     <PasswordStrength value={passwords.newPass} />
                   </div>
                   <div>
                     <label className="tg-label" htmlFor="confirm-password">Confirm new password</label>
-                    <input id="confirm-password" type="password" required autoComplete="new-password"
-                      value={passwords.confirm}
-                      onChange={(e) => setPasswords(p => ({ ...p, confirm: e.target.value }))}
-                      className="tg-input" />
+                    <div className="relative">
+                      <input id="confirm-password" type={showNew ? 'text' : 'password'} required autoComplete="new-password"
+                        value={passwords.confirm}
+                        onChange={(e) => setPasswords(p => ({ ...p, confirm: e.target.value }))}
+                        className="tg-input pr-11" />
+                      <button type="button" onClick={() => setShowNew(v => !v)}
+                        aria-label={showNew ? 'Hide new password' : 'Show new password'}
+                        className="absolute right-3 top-1/2 -translate-y-1/2 text-navy-400 hover:text-navy-600">
+                        {showNew ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                      </button>
+                    </div>
                   </div>
                   {pwError && (
                     <p role="alert" className="text-sm font-bold text-red-700 bg-red-50 border-2 border-red-200 rounded-2xl px-4 py-3">

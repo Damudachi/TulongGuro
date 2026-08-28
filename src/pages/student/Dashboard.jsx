@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
-import { Award, CheckCircle2, Star, Loader2, Lightbulb, ChevronRight, Clock, BookOpen, Send } from 'lucide-react';
+import { Award, CheckCircle2, Star, Loader2, Lightbulb, ChevronRight, Clock, BookOpen, Send, AlertTriangle } from 'lucide-react';
 import { API_URL, apiFetch } from '../../config';
 import { gradeChip } from '../../utils/grading';
 import { usePassingGrade } from '../../utils/useSchool';
@@ -11,7 +11,7 @@ import { StatTile } from '../../components/PageHeader';
 import { firstNameFromRoster } from '../../utils/roster';
 import { getStoredUser } from '../../utils/session';
 import { mergeActivitySnapshot, readActivitySnapshot } from '../../utils/offlineSnapshot';
-import { isPastDeadline } from '../../utils/deadlines';
+import { isPastDeadline, deadlineInstant } from '../../utils/deadlines';
 import BadgeCelebration from '../../components/BadgeCelebration';
 
 /**
@@ -96,9 +96,28 @@ export default function StudentDashboard() {
         // the same not-yet-past rule the server applies.
         const snapshot = readActivitySnapshot(user.id);
         if (!snapshot) return;
+        // Overdue work is kept here too, for the same reason it is kept
+        // online: dropping it turns a missed deadline into "all caught up".
+        // The snapshot holds no lateUntil, so stillAccepted cannot be known
+        // offline — it is left undefined rather than guessed, and the card
+        // simply does not claim either way.
+        const now = new Date();
         setSavedUpcoming(snapshot.activities
-          .filter(a => a.deadline && !isPastDeadline(a.deadline))
-          .sort((a, b) => new Date(a.deadline) - new Date(b.deadline)));
+          .filter(a => a.deadline)
+          .map(a => {
+            const due = deadlineInstant(a.deadline);
+            const past = isPastDeadline(a.deadline);
+            return {
+              ...a,
+              isMissed: past,
+              daysLate: past && due ? Math.max(1, Math.ceil((now - due) / 86400000)) : 0,
+            };
+          })
+          .sort((a, b) => {
+            if (a.isMissed !== b.isMissed) return a.isMissed ? -1 : 1;
+            const order = new Date(a.deadline) - new Date(b.deadline);
+            return a.isMissed ? -order : order;
+          }));
         setSavedAt(snapshot.savedAt);
       })
       .finally(() => setIsLoading(false));
@@ -234,29 +253,48 @@ export default function StudentDashboard() {
             {upcomingDeadlines.map(item => {
               const dueDate = new Date(item.deadline);
               const daysLeft = Math.ceil((dueDate - new Date()) / (1000 * 60 * 60 * 24));
-              const urgent = daysLeft <= 1;
-              const soon = daysLeft <= 3;
-              const shell = urgent ? 'bg-red-50 border-red-200' : soon ? 'bg-sun-100 border-sun-200' : 'bg-white border-slate-200';
-              const urgencyText = urgent ? 'text-red-600' : soon ? 'text-sun-800' : 'text-navy-500';
+              // Overdue work carries its own scale. It is not "very urgent
+              // upcoming" — the thing the student needs to know first is that
+              // it is already late, and only then whether it can still be
+              // handed in, so it gets the strongest shell on the list.
+              const missed = !!item.isMissed;
+              const urgent = !missed && daysLeft <= 1;
+              const soon = !missed && daysLeft <= 3;
+              const shell = missed ? 'bg-red-100 border-red-300'
+                : urgent ? 'bg-red-50 border-red-200'
+                : soon ? 'bg-sun-100 border-sun-200'
+                : 'bg-white border-slate-200';
+              const urgencyText = missed ? 'text-red-700' : urgent ? 'text-red-600' : soon ? 'text-sun-800' : 'text-navy-500';
 
               return (
                 <Link key={item.id} to={activityLink(item.id, item.submissionMode)}
                   className={`flex items-center justify-between gap-3 p-4 rounded-3xl border-2 ${shell}
                               hover:-translate-y-0.5 hover:shadow-card transition-all group`}>
                   <div className="flex items-start gap-3 min-w-0">
-                    <div className="bg-royal-100 p-2.5 rounded-2xl text-royal-600 shrink-0">
-                      <BookOpen className="w-4 h-4" />
+                    <div className={`p-2.5 rounded-2xl shrink-0 ${missed ? 'bg-red-200 text-red-700' : 'bg-royal-100 text-royal-600'}`}>
+                      {missed ? <AlertTriangle className="w-4 h-4" /> : <BookOpen className="w-4 h-4" />}
                     </div>
                     <div className="min-w-0">
                       <p className="font-bold text-navy-700 text-sm truncate">{item.title}</p>
                       <p className="text-xs text-navy-500 truncate">
                         {item.className} • {item.type} • <span className="font-extrabold text-royal-600">{item.points} pts</span>
                       </p>
+                      {/* Said in words on the card itself, not only as a colour:
+                          whether it can still be handed in is the one thing
+                          that changes what the student does next. Left unsaid
+                          offline, where lateUntil is not in the snapshot. */}
+                      {missed && item.stillAccepted !== undefined && (
+                        <p className={`text-[11px] font-extrabold mt-0.5 ${item.stillAccepted ? 'text-sun-800' : 'text-red-700'}`}>
+                          {item.stillAccepted ? 'Still accepted — hand it in now' : 'Closed — talk to your teacher'}
+                        </p>
+                      )}
                     </div>
                   </div>
                   <div className="text-right shrink-0">
                     <p className={`text-xs font-extrabold ${urgencyText}`}>
-                      {daysLeft <= 0 ? 'Due today!' : daysLeft === 1 ? 'Due tomorrow' : `${daysLeft} days left`}
+                      {missed
+                        ? `${item.daysLate} ${item.daysLate === 1 ? 'day' : 'days'} late`
+                        : daysLeft <= 0 ? 'Due today!' : daysLeft === 1 ? 'Due tomorrow' : `${daysLeft} days left`}
                     </p>
                     <p className="text-[10px] font-semibold text-navy-400">
                       {dueDate.toLocaleDateString('en-PH', { month: 'short', day: 'numeric' })}

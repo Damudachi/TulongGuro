@@ -198,52 +198,82 @@ describe('a new admin lands in the creating admin\'s school', () => {
   });
 
   it('refuses to touch an admin belonging to another school', async () => {
+    // 403, not 404: an admin may no longer act on ANY other admin, so the
+    // refusal lands before the school is even looked at. That is also the
+    // better answer — a 404 here told the caller whether the id they guessed
+    // was a real admin somewhere else.
     const res = await call('PUT', `/api/admin/${ADMIN}/admins/${FOREIGN_ADMIN}/demote`);
-    expect(res.status).toBe(404);
+    expect(res.status).toBe(403);
     expect(prismaFake.user.update).not.toHaveBeenCalled();
   });
 });
 
 // ───────────────────────────────────────────────────────────────────────────
-// 2. A school can never reach zero admins
+// 2. One admin may not reach inside another admin's account
 // ───────────────────────────────────────────────────────────────────────────
-describe('the last admin', () => {
-  it('cannot be demoted', async () => {
-    prismaFake.user.count.mockResolvedValue(1);
-    // A sole admin has nobody else to demote, so this is the shape that would
-    // strand a school: two admins, one already gone, the other demoting the
-    // remaining one on a stale list.
+/**
+ * Admins used to be peers here: any one could demote or reset the password of
+ * any other, including the person who registered the school. Both powers moved
+ * to platform operators, because either one lets the caller take over a
+ * colleague's account — setting a password is how you sign in as someone else —
+ * and a school cannot undo that from inside.
+ *
+ * The routes are kept rather than deleted so an older client is told who *can*
+ * do it instead of getting a bare 404. Nothing about the school's state changes
+ * the answer, which is what these cases pin down: not the last admin, not a
+ * co-admin, not yourself, not a stranger.
+ */
+describe('an admin cannot demote or reset another admin', () => {
+  it('refuses to demote a co-admin', async () => {
     const res = await call('PUT', `/api/admin/${ADMIN}/admins/${CO_ADMIN}/demote`);
-    expect(res.status).toBe(400);
-    expect((await res.json()).error).toMatch(/at least one admin/i);
+    expect(res.status).toBe(403);
+    expect((await res.json()).error).toMatch(/platform operator/i);
     expect(prismaFake.user.update).not.toHaveBeenCalled();
   });
 
-  it('is counted at the moment of the demotion, not assumed', async () => {
-    prismaFake.user.count.mockResolvedValue(2);
+  it("refuses to reset a co-admin's password", async () => {
+    const res = await call('PUT', `/api/admin/${ADMIN}/admins/${CO_ADMIN}/password`, { password: 'New-pass-1' });
+    expect(res.status).toBe(403);
+    expect((await res.json()).error).toMatch(/platform operator/i);
+    expect(prismaFake.user.update).not.toHaveBeenCalled();
+  });
+
+  it('refuses even when the school has admins to spare', async () => {
+    // The old rule turned on the admin count — a school with two admins could
+    // demote one. The count is no longer part of the answer.
+    prismaFake.user.count.mockResolvedValue(5);
     const res = await call('PUT', `/api/admin/${ADMIN}/admins/${CO_ADMIN}/demote`);
-    expect(res.status).toBe(200);
-    expect(prismaFake.user.count).toHaveBeenCalledWith({
-      where: { schoolId: SCHOOL, role: 'ADMIN' },
-    });
+    expect(res.status).toBe(403);
+    expect(prismaFake.user.update).not.toHaveBeenCalled();
+  });
+
+  it('never writes, whatever the target', async () => {
+    for (const target of [ADMIN, CO_ADMIN, FOREIGN_ADMIN]) {
+      prismaFake.user.update.mockClear();
+      const res = await call('PUT', `/api/admin/${ADMIN}/admins/${target}/demote`);
+      expect([target, res.status]).toEqual([target, 403]);
+      expect(prismaFake.user.update).not.toHaveBeenCalled();
+    }
   });
 });
 
 // ───────────────────────────────────────────────────────────────────────────
-// 3. Nobody may act on their own account here
+// 3. Your own account is a different question, with a different answer
 // ───────────────────────────────────────────────────────────────────────────
-describe('self-service is refused', () => {
-  it('an admin cannot demote themselves', async () => {
-    const res = await call('PUT', `/api/admin/${ADMIN}/admins/${ADMIN}/demote`);
-    expect(res.status).toBe(400);
-    expect(prismaFake.user.update).not.toHaveBeenCalled();
-  });
-
-  it('an admin cannot reset their own password from here', async () => {
-    // /api/auth/change-password is the route for that, and it asks for the
-    // current password first.
+describe('acting on your own account here', () => {
+  it('points at Settings rather than at support', async () => {
+    // Reachable only by calling the API directly — the screen has never
+    // offered it — but "ask an operator" would be the wrong sentence: changing
+    // your own password is something you can do, just not from this route.
     const res = await call('PUT', `/api/admin/${ADMIN}/admins/${ADMIN}/password`, { password: 'New-pass-1' });
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(403);
+    expect((await res.json()).error).toMatch(/settings/i);
+    expect(prismaFake.user.update).not.toHaveBeenCalled();
+  });
+
+  it('refuses self-demotion too', async () => {
+    const res = await call('PUT', `/api/admin/${ADMIN}/admins/${ADMIN}/demote`);
+    expect(res.status).toBe(403);
     expect(prismaFake.user.update).not.toHaveBeenCalled();
   });
 });
@@ -252,17 +282,6 @@ describe('self-service is refused', () => {
 // 4. A role change has to end the target's session
 // ───────────────────────────────────────────────────────────────────────────
 describe('role changes take effect immediately', () => {
-  it('demotion sets TEACHER and revokes existing sessions', async () => {
-    const res = await call('PUT', `/api/admin/${ADMIN}/admins/${CO_ADMIN}/demote`);
-    expect(res.status).toBe(200);
-    const args = prismaFake.user.update.mock.calls[0][0];
-    expect(args.where.id).toBe(CO_ADMIN);
-    expect(args.data.role).toBe('TEACHER');
-    // Without this the demoted admin keeps the admin console until their token
-    // expires — the token, not the row, is what authorizes each request.
-    expect(args.data.sessionsValidFrom).toBeInstanceOf(Date);
-  });
-
   it('promotion sets ADMIN and revokes existing sessions', async () => {
     const res = await call('POST', `/api/admin/${ADMIN}/admins/promote`, {
       teacherId: FREE_TEACHER, adminEmail: 'ana.reyes@admin.tes-test.edu.ph',
@@ -276,14 +295,6 @@ describe('role changes take effect immediately', () => {
     // which is the second reason the session has to end here, beyond the role.
     expect(args.data.email).toBe('ana.reyes@admin.tes-test.edu.ph');
     expect(args.data.username).toBe('ana.reyes@admin.tes-test.edu.ph');
-  });
-
-  it('a password reset revokes existing sessions too', async () => {
-    const res = await call('PUT', `/api/admin/${ADMIN}/admins/${CO_ADMIN}/password`, { password: 'New-pass-1' });
-    expect(res.status).toBe(200);
-    const args = prismaFake.user.update.mock.calls[0][0];
-    expect(args.data.sessionsValidFrom).toBeInstanceOf(Date);
-    expect(args.data.password).not.toBe('New-pass-1');   // hashed, not stored raw
   });
 });
 
@@ -350,11 +361,11 @@ describe('access changes are recorded', () => {
     });
   });
 
-  it('records a demotion', async () => {
+  it('writes nothing for a refused demotion', async () => {
+    // Demotion is a platform operator's now, so there is no in-school event to
+    // record — and a refusal must not leave an audit row saying one happened.
     await call('PUT', `/api/admin/${ADMIN}/admins/${CO_ADMIN}/demote`);
-    const row = prismaFake.adminAuditLog.create.mock.calls[0][0].data;
-    expect(row.event).toBe('ADMIN_DEMOTED');
-    expect(row.targetId).toBe(CO_ADMIN);
+    expect(prismaFake.adminAuditLog.create).not.toHaveBeenCalled();
   });
 
   it('does not fail the action when the audit write throws', async () => {
@@ -479,25 +490,28 @@ describe('PUT /api/users/:userId/name', () => {
 });
 
 // ───────────────────────────────────────────────────────────────────────────
-// 11. Only the super admin may change who can reach the school
+// 11. Nobody inside the school may take another admin's access away
 // ───────────────────────────────────────────────────────────────────────────
 //
-// The asymmetry these routes used to have is the whole reason for this block:
-// with "any admin may add and remove any admin", a co-admin added for one term
-// could remove the head teacher who added them, and the school had no way back
-// — the remaining admin is a perfectly legitimate admin, so nothing looks wrong
-// from outside.
-describe('every admin of a school is a peer', () => {
+// This block has now held three answers to one question, and the sequence is
+// the point. First: only the registrant could change who reaches the school —
+// which left a school whose registrant had left unable to fix itself. Then:
+// every admin is a peer, any of them may remove any other — which let a
+// co-admin added for one term remove the head teacher who added them, and
+// nothing about the resulting school looks wrong from outside.
+//
+// Now: neither. Removing an admin, and setting an admin's password, are a
+// platform operator's — identifiable, revocable, and outside the school's own
+// politics. The cost is that freeing an admin seat is slower and needs support;
+// the thing bought is that no one inside a school can quietly take over a
+// colleague's account.
+describe("an admin cannot take another admin's access", () => {
   /**
    * A co-admin — an ordinary admin of the same school who did not register it.
    *
-   * These four routes used to be the registrant's alone, behind a super-admin
-   * gate. That tier is gone: a school's admins are peers, and the authority
-   * that used to sit with whoever filled in the registration form now sits with
-   * the platform operator, outside the school entirely.
-   *
-   * What is pinned here is that removing the tier did not also remove the two
-   * guards that stop a school locking itself out.
+   * Signed in as a second admin rather than the usual one, because the rule
+   * being pinned is that WHO is asking never changes the answer: registrant or
+   * not, the routes refuse.
    */
   const coAdminToken = () => signToken({ id: CO_ADMIN, role: 'ADMIN', schoolId: SCHOOL });
 
@@ -511,39 +525,23 @@ describe('every admin of a school is a peer', () => {
       ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
     });
 
-  it('lets a co-admin demote the admin who registered the school', async () => {
-    // The case the old tier existed to forbid, now allowed on purpose: a school
-    // whose registrant has left must be able to take their access away without
-    // a support ticket.
+  it('refuses a co-admin demoting the admin who registered the school', async () => {
+    // The case that decided this. It was allowed on purpose for a while — a
+    // school whose registrant had left could take their access back without a
+    // support ticket. The same door let a co-admin added for one term remove
+    // the head teacher who added them, and nothing about the resulting school
+    // looks wrong from outside, so it is shut from both sides now.
     prismaFake.user.findUnique
       .mockResolvedValueOnce({ id: CO_ADMIN, role: 'ADMIN', schoolId: SCHOOL, school: { id: SCHOOL } })
       .mockResolvedValueOnce({ id: ADMIN, role: 'ADMIN', schoolId: SCHOOL });
     prismaFake.user.count.mockResolvedValue(2);
 
     const res = await asCoAdmin('PUT', `/api/admin/${CO_ADMIN}/admins/${ADMIN}/demote`);
-    expect(res.status).toBe(200);
-    expect(prismaFake.user.update).toHaveBeenCalledWith(expect.objectContaining({
-      where: { id: ADMIN },
-      data: expect.objectContaining({ role: 'TEACHER' }),
-    }));
-  });
-
-  it('still refuses to leave a school with no admin', async () => {
-    // The guard that replaced the tier as the thing standing between a school
-    // and being locked out of itself.
-    prismaFake.user.findUnique
-      .mockResolvedValueOnce({ id: CO_ADMIN, role: 'ADMIN', schoolId: SCHOOL, school: { id: SCHOOL } })
-      .mockResolvedValueOnce({ id: ADMIN, role: 'ADMIN', schoolId: SCHOOL });
-    prismaFake.user.count.mockResolvedValue(1);
-
-    const res = await asCoAdmin('PUT', `/api/admin/${CO_ADMIN}/admins/${ADMIN}/demote`);
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(403);
     expect(prismaFake.user.update).not.toHaveBeenCalled();
   });
 
-  it('still refuses an admin acting on their own account', async () => {
-    // The other half of that guarantee. Without it, peer admins would be able
-    // to demote themselves one after another until nobody was left.
+  it('refuses a co-admin acting on their own account too', async () => {
     prismaFake.user.findUnique
       .mockResolvedValue({ id: CO_ADMIN, role: 'ADMIN', schoolId: SCHOOL, school: { id: SCHOOL } });
 
@@ -552,7 +550,7 @@ describe('every admin of a school is a peer', () => {
       ['PUT', `/api/admin/${CO_ADMIN}/admins/${CO_ADMIN}/password`, { password: 'New-pass-1' }],
     ]) {
       const res = await asCoAdmin(method, path, body);
-      expect(res.status, `${method} ${path}`).toBe(400);
+      expect(res.status, `${method} ${path}`).toBe(403);
     }
     expect(prismaFake.user.update).not.toHaveBeenCalled();
   });

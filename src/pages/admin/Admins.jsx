@@ -1,14 +1,14 @@
 import { useState, useEffect, useCallback } from 'react';
 import {
-  Plus, Loader2, KeyRound, X, Copy, Check, ArrowUpCircle,
-  UserMinus, History, Info, Pencil
+  Plus, Loader2, X, Copy, Check, ArrowUpCircle,
+  History, Info, Pencil
 } from 'lucide-react';
 import { API_URL, apiFetch } from '../../config';
 import { getStoredUser, updateStoredUser } from '../../utils/session';
 import { accountDomain, buildAccountEmail, validateAccountEmail } from '../../constants/accountEmails';
 import DomainEmailField from '../../components/DomainEmailField';
 
-import { showAlert, showConfirm } from '../../utils/dialog';
+import { showConfirm } from '../../utils/dialog';
 import { generatePassword } from '../../constants/password';
 import PasswordStrength from '../../components/PasswordStrength';
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
@@ -215,47 +215,6 @@ export default function AdminAdmins() {
     }
   };
 
-  const handleDemote = async (admin) => {
-    const goAhead = await showConfirm(
-      'Their account becomes a teacher account — nothing is deleted — and they '
-      + 'are signed out immediately.',
-      { title: `Remove admin access from ${admin.name}?`, confirmLabel: 'Remove admin access', danger: true }
-    );
-    if (!goAhead) return;
-    setBusyId(admin.id);
-    try {
-      const res = await apiFetch(`${API_URL}/api/admin/${me.id}/admins/${admin.id}/demote`, { method: 'PUT' });
-      const d = await res.json().catch(() => null);
-      if (res.ok && d?.success) load();
-      else showAlert(failureMessage(res, d, 'Nothing has been changed.'));
-    } catch {
-      showAlert('Could not reach the server. Nothing has been changed.');
-    } finally {
-      setBusyId(null);
-    }
-  };
-
-  const handleResetPassword = async (admin) => {
-    const password = generatePassword();
-    if (!(await showConfirm(`Reset ${admin.name}'s password? Their current one stops working immediately.`,
-      { confirmLabel: 'Reset password', danger: true }))) return;
-    setBusyId(admin.id);
-    try {
-      const res = await apiFetch(`${API_URL}/api/admin/${me.id}/admins/${admin.id}/password`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ password }),
-      });
-      const d = await res.json().catch(() => null);
-      if (res.ok && d?.success) setCredentials({ email: admin.email, password });
-      else showAlert(failureMessage(res, d, 'Their existing password still works.'));
-    } catch {
-      showAlert('Could not reach the server. Their password has not been changed.');
-    } finally {
-      setBusyId(null);
-    }
-  };
-
   const handleRename = async (e) => {
     e.preventDefault();
     if (isRenaming) return;
@@ -356,19 +315,21 @@ export default function AdminAdmins() {
       <div className="bg-blue-50 border border-blue-200 rounded-2xl p-4 mb-6 flex gap-3">
         <Info className="w-5 h-5 text-brand-navy shrink-0 mt-0.5" />
         <div className="text-sm text-blue-900">
-          <p className="font-bold mb-1">Everyone on this list can also change this list.</p>
+          <p className="font-bold mb-1">Everyone on this list can add to this list.</p>
           <p className="text-blue-800 text-xs leading-relaxed">
             An admin adds and removes teachers, changes the grading policy, and reads every
             learner's grades. Give it only to people who run the school — colleagues who teach
-            need a teacher account instead. Every admin here is a peer: each one can add or
-            remove any of the others, including you, so add people you would trust with the
-            whole school. A school can have up to {maxAdmins} admins and must always keep at
+            need a teacher account instead. Any admin can add another, so add people you would
+            trust with the whole school. Nobody here can change a colleague's password or take
+            their admin access away — that is a TulongGuro operator's to do. A school can have
+            up to {maxAdmins} admins and must always keep at
             least one. Admin accounts sign in on @{accountDomain('ADMIN', school?.slug)}.
           </p>
-          {/* Named because peer admins can lock each other out, and a school
-              that does not know there is a way back will treat it as final. */}
+          {/* The only way an admin leaves this list, now that admins cannot
+              remove each other. Said here because a school that does not know
+              there is a way back will treat a departure as permanent. */}
           <p className="text-blue-800 text-xs leading-relaxed mt-2">
-            Locked out, or need an admin restored? Contact TulongGuro support — a platform
+            Someone left, locked out, or need an admin restored? Contact TulongGuro support — a platform
             operator can reset any admin's password or remove admin access from outside the school.
           </p>
         </div>
@@ -426,9 +387,6 @@ export default function AdminAdmins() {
       <div className="space-y-3 mb-10">
         {admins.map(a => {
           const isMe = a.id === me.id;
-          // The last admin cannot be demoted; saying so on the button is
-          // friendlier than letting the server refuse after a confirm dialog.
-          const isLast = admins.length <= 1;
           return (
             <div key={a.id}
               className="bg-white border border-slate-200 rounded-xl p-4 flex items-center gap-4">
@@ -473,22 +431,13 @@ export default function AdminAdmins() {
                 {isMe && nameError && <p className="text-xs text-red-600 mt-1">{nameError}</p>}
                 <p className="text-xs text-slate-500 truncate">{a.email}</p>
               </div>
-              {canManage && (
-                <div className="flex gap-1 shrink-0">
-                  <button onClick={() => handleResetPassword(a)}
-                    disabled={isMe || busyId === a.id}
-                    title={isMe ? 'Change your own password from Settings' : 'Reset password'}
-                    className="p-2 rounded-lg bg-slate-100 text-slate-600 hover:bg-slate-200 disabled:opacity-30">
-                    <KeyRound className="w-4 h-4" />
-                  </button>
-                  <button onClick={() => handleDemote(a)}
-                    disabled={isMe || isLast || busyId === a.id}
-                    title={isMe ? 'You cannot remove your own admin access — ask another admin' : isLast ? 'A school must keep at least one admin' : 'Remove admin access'}
-                    className="p-2 rounded-lg bg-slate-100 text-slate-600 hover:bg-red-100 hover:text-red-600 disabled:opacity-30">
-                    {busyId === a.id ? <Loader2 className="w-4 h-4 animate-spin" /> : <UserMinus className="w-4 h-4" />}
-                  </button>
-                </div>
-              )}
+              {/* Removed: the reset-password and remove-admin buttons.
+                  Both are now a platform operator's, because either one lets
+                  the person clicking it reach inside a colleague's account —
+                  setting a password is how you sign in as someone else. The
+                  server refuses both regardless of what is on screen; see
+                  coAdminInSchool in server.js. The banner above says who to
+                  ask instead, so nothing here is a dead end. */}
             </div>
           );
         })}
