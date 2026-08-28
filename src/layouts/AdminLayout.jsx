@@ -122,9 +122,9 @@ export default function AdminLayout() {
               <p className="text-[11px] font-semibold text-white/50 truncate">{user.email || 'Administrator'}</p>
             </div>
           </div>
-          {/* A shortcut, not the only copy: the same control is on
-              /admin/settings, which is where a phone reaches it — this sidebar
-              is desktop-only. */}
+          {/* The console's only theme control — Settings deliberately does not
+              carry a second copy of it. This sidebar is desktop-only, so a
+              phone has no way to switch; the dock would need its own cell. */}
           <div className="px-1 pb-2">
             <ThemeToggle compact />
           </div>

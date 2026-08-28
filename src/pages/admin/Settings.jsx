@@ -1,9 +1,7 @@
 import { useState } from 'react';
-import { Link } from 'react-router-dom';
 import { Loader2, Lock, Eye, EyeOff, KeyRound, CheckCircle2, ShieldCheck } from 'lucide-react';
 import { API_URL, apiFetch, setSession } from '../../config';
-import { getStoredUser } from '../../utils/session';
-import ThemeToggle from '../../components/ThemeToggle';
+import { getStoredUser, updateStoredUser } from '../../utils/session';
 
 /**
  * The admin's own account page.
@@ -37,14 +35,64 @@ function LockedField({ label, value }) {
 }
 
 export default function AdminSettings() {
-  // Read once at first render: the stored user does not change while this page
-  // is open, so an effect-then-setState pass only bought an extra render.
-  const [user] = useState(getStoredUser);
+  // Read once at first render: the stored user does not change under this page
+  // except when this page changes it, and that path updates both stores itself.
+  const [user, setUser] = useState(getStoredUser);
+  // The name field is a draft rather than bound straight to `user`, so an
+  // abandoned edit does not leave the sidebar showing a name that was never
+  // saved.
+  const [nameDraft, setNameDraft] = useState(() => getStoredUser().name || '');
+  const [nameError, setNameError] = useState('');
+  const [nameBusy, setNameBusy] = useState(false);
   const [passwords, setPasswords] = useState({ current: '', newPass: '', confirm: '' });
   const [showCurrent, setShowCurrent] = useState(false);
   const [pwError, setPwError] = useState('');
   const [saveMsg, setSaveMsg] = useState('');
   const [busy, setBusy] = useState(false);
+
+  /**
+   * Change your own name.
+   *
+   * PUT /api/users/:userId/name keys the write to the session rather than to
+   * the id in the path, so this can only ever move the caller's own row — the
+   * same route the Admins page uses for the pencil on your row.
+   */
+  const handleRename = async (e) => {
+    e.preventDefault();
+    if (nameBusy) return;
+    const name = nameDraft.trim();
+    setNameError('');
+    setSaveMsg('');
+    if (!name) return setNameError('Name cannot be empty.');
+    if (name === (user.name || '')) return;
+
+    setNameBusy(true);
+    try {
+      const res = await apiFetch(`${API_URL}/api/users/${user.id}/name`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name }),
+      });
+      const d = await res.json().catch(() => null);
+      if (!res.ok || !d?.success) {
+        setNameError(d?.error || 'Could not save. Your name has not been changed.');
+        return;
+      }
+      // The sidebar, the account block and every other screen read the stored
+      // blob, so the new name has to land there too or it reverts on the next
+      // navigation. updateStoredUser fires USER_UPDATED_EVENT, which is what
+      // the layout listens on.
+      updateStoredUser({ name: d.name });
+      setUser(u => ({ ...u, name: d.name }));
+      setNameDraft(d.name);
+      setSaveMsg('Your name has been updated.');
+      setTimeout(() => setSaveMsg(''), 6000);
+    } catch {
+      setNameError('Could not reach the server. Your name has not been changed.');
+    } finally {
+      setNameBusy(false);
+    }
+  };
 
   const handleChangePassword = async (e) => {
     e.preventDefault();
@@ -87,7 +135,7 @@ export default function AdminSettings() {
     <div className="p-4 md:p-8 max-w-3xl mx-auto pb-24">
       <div className="mb-6">
         <h1 className="text-2xl font-bold text-brand-slate">Your account</h1>
-        <p className="text-slate-500 text-sm">Your sign-in details and how this console looks</p>
+        <p className="text-slate-500 text-sm">Your name and the password you sign in with</p>
       </div>
 
       {saveMsg && (
@@ -102,16 +150,30 @@ export default function AdminSettings() {
           <ShieldCheck className="w-4 h-4 text-brand-navy" /> Account details
         </h2>
         <div className="space-y-4">
+          <form onSubmit={handleRename}>
+            <label htmlFor="admin-name" className="block text-[10px] font-extrabold text-slate-400 mb-1.5 uppercase tracking-wider">
+              Full Name
+            </label>
+            <div className="flex items-center gap-2">
+              <input id="admin-name" type="text" value={nameDraft} maxLength={80} required
+                autoComplete="name"
+                onChange={e => setNameDraft(e.target.value)}
+                className="flex-1 min-w-0 border border-slate-200 px-4 py-2.5 rounded-xl text-sm font-semibold outline-none focus:ring-2 focus:ring-brand-navy" />
+              {/* Disabled until the draft actually differs, so the button is a
+                  statement about whether there is anything to save rather than
+                  a way to re-send the name that is already stored. */}
+              <button type="submit" disabled={nameBusy || !nameDraft.trim() || nameDraft.trim() === (user.name || '')}
+                className="bg-brand-navy text-white px-4 py-2.5 rounded-lg text-sm font-bold hover:bg-blue-900 shadow-md disabled:opacity-40 shrink-0 flex items-center gap-2">
+                {nameBusy ? <Loader2 className="w-4 h-4 animate-spin" /> : null} Save
+              </button>
+            </div>
+            {nameError && <p role="alert" className="text-xs font-bold text-red-700 mt-2">{nameError}</p>}
+          </form>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <LockedField label="Full Name" value={user?.name || 'N/A'} />
             <LockedField label="Email Address" value={user?.email || user?.username || 'N/A'} />
+            <LockedField label="School" value={user?.school?.name || user?.schoolName || 'Not set'} />
           </div>
-          <LockedField label="School" value={user?.school?.name || user?.schoolName || 'Not set'} />
-          {/* Renaming is self-only and already lives on the Admins page, so it
-              is pointed at rather than duplicated here — two forms writing the
-              same field is how they drift apart. */}
           <p className="text-xs text-slate-500 font-medium">
-            Your name is changed on the <Link to="/admin/admins" className="font-bold text-brand-navy hover:underline">School admins</Link> page.
             Your email and school cannot be changed from the console — contact TulongGuro support.
           </p>
         </div>
@@ -168,14 +230,6 @@ export default function AdminSettings() {
             Changing this signs you out on every other device you are still logged in on. This one stays signed in.
           </p>
         </form>
-      </div>
-
-      {/* ── Appearance ──
-          The sidebar carries a compact copy of this control, but the sidebar is
-          desktop-only: on a phone this page is the only place the console's
-          theme can be changed. */}
-      <div className="bg-white border border-slate-200 rounded-xl p-5 md:p-6">
-        <ThemeToggle />
       </div>
     </div>
   );
