@@ -8,6 +8,7 @@ import { ONBOARDING, hasSeenOnboarding, markOnboardingSeen } from '../../utils/o
 
 import { showAlert, showConfirm } from '../../utils/dialog';
 import ImageRedactor from '../../components/ImageRedactor';
+import { splitSubmissionIntoPages, isFileSubmission } from '../../utils/submissionPages';
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
 
 /**
@@ -317,55 +318,90 @@ export default function HITLWorkspace() {
   const [isReopening, setIsReopening] = useState(false);
 
   const [submission, setSubmission] = useState(null);
-  // The already-uploaded page, pulled back down as an object URL so
-  // ImageRedactor can draw it into a canvas. See openRedactor.
-  const [redactSrc, setRedactSrc] = useState(null);
+  // Multi-page work is stored stitched into one tall image, so redacting it
+  // whole would put a four-page scan in a window sized for one page. It is cut
+  // back into pages and walked one at a time, exactly as the upload paths do.
+  //   { srcs: string[], pages: File[], index: number, done: Blob[] }
+  const [redactQueue, setRedactQueue] = useState(null);
   const [redactBusy, setRedactBusy] = useState(false);
 
   /**
-   * Open the redactor over the page currently on screen.
+   * Open the redactor over this submission, one page at a time.
    *
-   * The photo is fetched into a Blob first rather than handed over as its
-   * Supabase URL. ImageRedactor draws the image into a canvas and exports the
-   * result, and a canvas that has been given a cross-origin image is tainted —
-   * the export throws, after the teacher has already marked the page up. An
-   * object URL made from a Blob we fetched ourselves is same-origin, so the
-   * export works. The bucket sends `Access-Control-Allow-Origin: *`, which is
-   * what makes the fetch itself allowed.
+   * splitSubmissionIntoPages does the fetching and the cutting: it reads the
+   * stored composite, cuts it at the recorded page boundaries and hands back
+   * one File per page. Reusing it rather than fetching here matters for more
+   * than tidiness — it already handles the cross-origin read correctly (a
+   * canvas given a cross-origin image is tainted and its export throws, which
+   * would surface only after a teacher had marked the page up).
+   *
+   * Work handed in as a PDF or Word file has no page images to cut and nothing
+   * here can redact it, so it is refused up front rather than opening an empty
+   * window.
    */
   const openRedactor = async () => {
     if (!submission?.imageUrl || redactBusy) return;
+    if (isFileSubmission(submission.imageUrl)) {
+      showAlert('This work was handed in as a document, so there is no photo to redact.');
+      return;
+    }
     setRedactBusy(true);
     try {
-      // eslint-disable-next-line no-restricted-globals -- deliberate: this is the storage bucket, not our API. apiFetch would attach the teacher's session token to a third-party request, which is a credential leak, and the bucket needs no auth to read a public object.
-      const res = await fetch(submission.imageUrl);
-      if (!res.ok) throw new Error('fetch failed');
-      setRedactSrc(URL.createObjectURL(await res.blob()));
-    } catch {
-      showAlert('Could not open that photo for redacting. Check your connection and try again.');
+      const pages = await splitSubmissionIntoPages(submission);
+      setRedactQueue({
+        pages,
+        srcs: pages.map(f => URL.createObjectURL(f)),
+        index: 0,
+        done: [],
+      });
+    } catch (err) {
+      showAlert(err?.message || 'Could not open that photo for redacting. Please try again.');
     } finally {
       setRedactBusy(false);
     }
   };
 
-  // Object URLs are held by the document until revoked, and this one points at
-  // a full-resolution scan.
+  // Object URLs are held by the document until revoked, and these point at
+  // full-resolution scans — one per page.
   const closeRedactor = () => {
-    setRedactSrc(prev => { if (prev) URL.revokeObjectURL(prev); return null; });
+    setRedactQueue(prev => {
+      prev?.srcs.forEach(url => URL.revokeObjectURL(url));
+      return null;
+    });
   };
 
   /**
-   * Store what the redactor produced.
+   * One page confirmed — take the next, or save once the last one is done.
    *
-   * Sent as a file, not as coordinates: ImageRedactor has already composited at
-   * full resolution, and asking it for rectangles instead would mean a second
-   * redaction path that could disagree with the one every upload already uses.
+   * "Skip (No Name Found)" is the same button as "Confirm Redaction" inside
+   * ImageRedactor, so this receives a blob either way: an untouched page on a
+   * skip, a redacted one otherwise. That is what makes the queue simple — every
+   * page comes back, so the set that gets re-stitched is always complete.
    */
-  const saveRedaction = async (blob) => {
-    if (!blob || !submission?.id) return;
+  const handlePageRedacted = async (blob) => {
+    if (!redactQueue) return;
+    const done = [...redactQueue.done];
+    done[redactQueue.index] = blob || redactQueue.pages[redactQueue.index];
+    if (redactQueue.index + 1 < redactQueue.pages.length) {
+      setRedactQueue({ ...redactQueue, index: redactQueue.index + 1, done });
+      return;
+    }
+    await saveRedaction(done);
+  };
+
+  /**
+   * Send the finished pages back as a replacement set.
+   *
+   * Every page is sent, not only the ones that were drawn on: the server
+   * re-stitches what it is given into the composite, so a partial set would
+   * silently delete the pages left out of it.
+   */
+  const saveRedaction = async (pageBlobs) => {
+    if (!submission?.id || !pageBlobs?.length) return;
+    setRedactBusy(true);
     try {
       const form = new FormData();
-      form.append('image', blob, `redacted-${submission.id}.jpg`);
+      pageBlobs.forEach((b, i) => form.append('images', b, `page-${i + 1}.jpg`));
       const res = await apiFetch(`${API_URL}/api/teacher/submissions/${submission.id}/redact`, {
         method: 'POST',
         body: form,
@@ -373,11 +409,14 @@ export default function HITLWorkspace() {
       const data = await res.json();
       if (!data.success) { showAlert(data.error || 'Could not save that redaction.'); return; }
       // A new filename every time, so storing it repaints the pane — there is
-      // no cache to bust and nothing to refetch.
-      setSubmission(prev => ({ ...(prev || {}), imageUrl: data.imageUrl }));
+      // no cache to bust and nothing to refetch. pageBreaks comes back with it
+      // because re-stitching can change where the boundaries fall.
+      setSubmission(prev => ({ ...(prev || {}), imageUrl: data.imageUrl, pageBreaks: data.pageBreaks ?? prev?.pageBreaks }));
       closeRedactor();
     } catch {
       showAlert('Network error while saving the redaction. Please try again.');
+    } finally {
+      setRedactBusy(false);
     }
   };
   const [isLoading, setIsLoading] = useState(true);
@@ -2494,12 +2533,22 @@ export default function HITLWorkspace() {
 
       {/* The same tool the upload paths use, so a page redacted while grading
           looks and behaves exactly like one redacted on the way in. */}
-      {redactSrc && (
-        <ImageRedactor
-          imageSrc={redactSrc}
-          onConfirm={saveRedaction}
-          onCancel={closeRedactor}
-        />
+      {redactQueue && (
+        <>
+          <ImageRedactor
+            // Keyed on the page, so moving to page 2 remounts the tool with a
+            // clean slate instead of carrying page 1's boxes and zoom over.
+            key={redactQueue.index}
+            imageSrc={redactQueue.srcs[redactQueue.index]}
+            onConfirm={handlePageRedacted}
+            onCancel={closeRedactor}
+          />
+          {redactQueue.pages.length > 1 && (
+            <div className="fixed top-14 left-1/2 -translate-x-1/2 z-[120] bg-ink-900/85 text-white text-xs font-bold px-4 py-2 rounded-full">
+              Photo {redactQueue.index + 1} of {redactQueue.pages.length}
+            </div>
+          )}
+        </>
       )}
     </div>
   );

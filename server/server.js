@@ -11761,7 +11761,7 @@ app.get('/api/submissions/:id', async (req, res) => {
  * already-redacted copy. Without it, redacting twice would quietly destroy the
  * original the first redaction was careful to keep.
  */
-app.post('/api/teacher/submissions/:id/redact', upload.single('image'), async (req, res) => {
+app.post('/api/teacher/submissions/:id/redact', submissionUpload.array('images', MAX_SUBMISSION_PAGES), async (req, res) => {
   try {
     const sub = await prisma.submission.findUnique({
       where: { id: req.params.id },
@@ -11771,10 +11771,8 @@ app.post('/api/teacher/submissions/:id/redact', upload.single('image'), async (r
     if (sub.activity?.class?.teacherId !== req.auth.sub) {
       return res.status(403).json({ success: false, error: 'You can only redact papers for your own classes.' });
     }
-    if (!req.file) return res.status(400).json({ success: false, error: 'No redacted image was sent.' });
-    if (!isImageMime(req.file.mimetype)) {
-      return res.status(400).json({ success: false, error: 'A redacted page has to be an image.' });
-    }
+    const pages = req.files || [];
+    if (!pages.length) return res.status(400).json({ success: false, error: 'No redacted pages were sent.' });
 
     // Archived before anything is overwritten, and only if there is still an
     // original to archive — a submission with no photo has nothing to keep.
@@ -11783,19 +11781,30 @@ app.post('/api/teacher/submissions/:id/redact', upload.single('image'), async (r
       if (original) await archiveOriginalOnce(sub.id, original);
     }
 
+    // The same pipeline a fresh upload goes through: the pages are re-stitched
+    // into one composite and re-optimised, and it hands back new boundaries.
+    // Re-deriving them rather than keeping the old ones is what makes this
+    // safe — a redaction is JPEG-re-encoded page by page, so the composite it
+    // rebuilds is not guaranteed to be the same height as the one it replaces,
+    // and stale pageBreaks would cut the next split in the wrong places.
+    const prepared = await prepareSubmissionUpload(pages);
     // A NEW filename, not the old one overwritten. Same-path upsert leaves
     // every browser, and Supabase's CDN, holding the un-redacted image for as
     // long as it feels like caching it — which on a redaction is the one
     // failure that matters.
-    const filename = `redacted-${sub.id}-${Date.now()}.jpg`;
-    const imageUrl = await uploadToCloud(req.file.path, filename, {
+    const filename = `redacted-${sub.id}-${Date.now()}-${prepared.filename}`;
+    const imageUrl = await uploadToCloud(prepared.path, filename, {
       folder: 'submissions',
-      contentType: req.file.mimetype || 'image/jpeg',
+      contentType: prepared.contentType,
     });
-    try { fs.unlinkSync(req.file.path); } catch {}
+    prepared.extraToDelete.forEach(f => { try { fs.unlinkSync(f); } catch {} });
+    try { fs.unlinkSync(prepared.path); } catch {}
 
-    await prisma.submission.update({ where: { id: sub.id }, data: { imageUrl } });
-    res.json({ success: true, imageUrl });
+    await prisma.submission.update({
+      where: { id: sub.id },
+      data: { imageUrl, pageBreaks: serializePageBreaks(prepared.pageBreaks) },
+    });
+    res.json({ success: true, imageUrl, pages: pages.length });
   } catch (e) {
     console.error('Redaction failed:', e.message);
     res.status(500).json({ success: false, error: 'Could not save that redaction. Please try again.' });
