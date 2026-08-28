@@ -6,7 +6,8 @@ import { BookOpen, Eye, EyeOff, UploadCloud, X, Image as ImageIcon, ArrowLeft, C
 import { API_URL, apiFetch } from '../config';
 import { accountDomain, localPartOf, buildAccountEmail } from '../constants/accountEmails';
 import {
-  suggestSchoolCode, schoolCodeProblem, studentPrefixFor, MAX_SCHOOL_CODE_LENGTH,
+  suggestSchoolCode, schoolCodeProblem, schoolCodeMatchProblem, studentPrefixFor,
+  MAX_SCHOOL_CODE_LENGTH,
 } from '../constants/schoolCode';
 
 /**
@@ -321,6 +322,17 @@ export default function Register() {
         setSchoolCode(prev => ({ ...prev, state: 'invalid', error: problem, suggestions: [] }));
         return;
       }
+      // Whether the code belongs to *this* school is settled here too. The
+      // server refuses it either way, but its answer arrives as available:false
+      // — which the state below reads as 'taken', and "that code is taken" is
+      // the wrong sentence for a code that was never this school's to ask for.
+      // Deriving the verdict in the browser also means it lands with the same
+      // keystroke as the shape check rather than a round-trip later.
+      const mismatch = schoolCodeMatchProblem(formData.schoolName, code);
+      if (mismatch) {
+        setSchoolCode(prev => ({ ...prev, state: 'invalid', error: mismatch, suggestions: [] }));
+        return;
+      }
       setSchoolCode(prev => ({ ...prev, state: 'checking' }));
       try {
         const query = new URLSearchParams({ schoolName: formData.schoolName.trim(), code });
@@ -439,6 +451,11 @@ export default function Register() {
       if (!formData.schoolName.trim()) return 'Please enter your school name.';
       const codeProblem = schoolCodeProblem(schoolCodeValue);
       if (codeProblem) return codeProblem;
+      // Blocks the step rather than only colouring the field: the code is
+      // frozen once the school exists and is printed on every student ID it
+      // issues, so this is the last moment it can be corrected cheaply.
+      const codeMismatch = schoolCodeMatchProblem(formData.schoolName, schoolCodeValue);
+      if (codeMismatch) return codeMismatch;
       if (schoolCode.state === 'taken') return 'That school code is taken. Please choose another.';
       return null;
     }

@@ -39,6 +39,7 @@ const {
 } = require('./accountEmails');
 const {
   suggestSlug, validateSlug, suggestAlternatives, resolveSlug, studentPrefixFor,
+  codeMatchesName,
 } = require('./schoolSlug');
 const {
   NOT_FOUND: SCHOOL_NOT_FOUND, NO_MASTERLIST,
@@ -2593,6 +2594,22 @@ app.post('/api/auth/register', registerRateLimit, registerDailyRateLimit, (req, 
     if (String(requestedSlug ?? '').trim()) {
       const slugCheck = validateSlug(requestedSlug);
       if (!slugCheck.ok) return refuse(400, { code: 'SCHOOL_CODE_INVALID', error: slugCheck.error });
+      // Does the code belong to the school claiming it? Asked before whether
+      // anyone else holds it, so a code that was never this school's to ask for
+      // cannot be used to probe which codes are taken.
+      //
+      // This is the enforcement point, not the form. /api/auth/school-code is
+      // unauthenticated by necessity and this route accepts `schoolSlug`
+      // directly, so the live check on the field is advice; only a refusal here
+      // keeps a school out of another school's identity. See codeMatchesName.
+      const nameMatch = codeMatchesName(trimmedSchool, slugCheck.slug);
+      if (!nameMatch.ok) {
+        return refuse(400, {
+          code: 'SCHOOL_CODE_MISMATCH',
+          error: nameMatch.error,
+          suggestions: await suggestAlternatives(trimmedSchool, schoolSlugTaken),
+        });
+      }
       if (await schoolSlugTaken(slugCheck.slug)) {
         return refuse(400, {
           code: 'SCHOOL_CODE_TAKEN',
@@ -2917,6 +2934,23 @@ app.get('/api/auth/school-code', schoolLookupRateLimit, async (req, res) => {
         error: check.error,
         suggestions: schoolName ? await suggestAlternatives(schoolName, schoolSlugTaken) : [],
       });
+    }
+
+    // Only a code the registrant actually typed is checked against the name —
+    // the derived suggestion matches by construction, and running it through
+    // the same test would turn a school whose own name yields an awkward code
+    // into one that cannot register at all.
+    if (requested && schoolName) {
+      const nameMatch = codeMatchesName(schoolName, check.slug);
+      if (!nameMatch.ok) {
+        return res.json({
+          success: true,
+          code: check.slug,
+          available: false,
+          error: nameMatch.error,
+          suggestions: await suggestAlternatives(schoolName, schoolSlugTaken),
+        });
+      }
     }
 
     const taken = await schoolSlugTaken(check.slug);

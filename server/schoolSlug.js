@@ -80,6 +80,39 @@ const RESERVED_SLUGS = new Set([
  */
 const FILLER_WORDS = new Set(['of', 'the', 'and', 'de', 'del', 'da', 'las', 'los', 'sa', 'ng', 'para']);
 
+/**
+ * School-type abbreviations, whose letters are themselves initials.
+ *
+ * "Magalang CS" is Magalang Central School. Taking one letter per word reads
+ * `CS` as a single initial and throws the School away, giving a two-character
+ * code — `mc` — for a school whose name plainly offers three. 15,594 of the
+ * 83,094 masterlist schools came out with a head of two characters or fewer
+ * for exactly this reason: nearly one school in five.
+ *
+ * Every entry here was taken from the masterlist's own token counts (each
+ * appears as a standalone capitalised word at least 15 times), not guessed —
+ * ES 16,750, NHS 2,168, PS 1,730, IS 573, CS 454, CES 439, HS 398, BLC 303,
+ * MES 171, MS 127, SHS 68, MNHS 68, MHS 31, NCHS 17.
+ *
+ * Matched case-insensitively on purpose. 3,473 names are stored in full upper
+ * case, and keying this on capitalisation would hand those rows a different
+ * code from the identical school stored in mixed case.
+ */
+const TYPE_ABBREVIATIONS = new Set([
+  'es', 'ces', 'mes', 'hs', 'nhs', 'shs', 'mhs', 'nchs', 'mnhs',
+  'is', 'ps', 'ms', 'cs', 'blc',
+]);
+
+/**
+ * Capitalised words that are not acronyms and must not be expanded.
+ *
+ * Roman numerals are the ones that matter: 902 names carry one, and "San
+ * Nicolas II ES" would otherwise spend two of its four initials on i, i and
+ * push the ES out entirely. `Inc` is a corporate suffix, not part of a school's
+ * identity.
+ */
+const NOT_ACRONYMS = new Set(['i', 'ii', 'iii', 'iv', 'v', 'vi', 'vii', 'viii', 'ix', 'x', 'inc']);
+
 /** How many characters of the name are taken for the second half of the code.
  *  Four separates Mabalacat from Mabiga while keeping `MES-MABA-26-0001` short
  *  enough for a Grade 1 learner to copy off the board. */
@@ -109,6 +142,12 @@ function foldAccents(value) {
  *  of punctuation. Order is preserved — the first one becomes the place part. */
 function significantWords(schoolName) {
   return foldAccents(schoolName)
+    // The possessive is removed before punctuation becomes a separator. Without
+    // this, "Mary's Ville Academy" splits into Mary | s | Ville | Academy: the
+    // orphaned s becomes an initial in its own right, giving `msva` instead of
+    // `mva` and offering `msva-s` as an alternative code. 1,103 masterlist
+    // names carry a possessive and 5,547 hold a one-letter word.
+    .replace(/['’]s\b/gi, '')
     .replace(/[^A-Za-z0-9]+/g, ' ')
     .trim()
     .split(' ')
@@ -126,7 +165,238 @@ function initialsOf(schoolName) {
   const words = significantWords(schoolName);
   if (words.length === 0) return 'tg';
   if (words.length === 1) return words[0].toLowerCase().slice(0, 4);
-  return words.map((word) => word[0]).join('').toLowerCase().slice(0, 4);
+  return initialLetters(schoolName).slice(0, 4);
+}
+
+/**
+ * Every initial the name offers, in order, before any four-character cap.
+ *
+ *   "Mabalacat Elementary School"  ->  "mes"
+ *   "Magalang CS"                  ->  "mcs"   (CS gives c AND s)
+ *   "Ambitacay ES"                 ->  "aes"
+ *
+ * This is the pool a typed code is checked against, which is why it is not
+ * truncated: a registrant may legitimately reach past the first four. For "Dr.
+ * Clemente N. Dayrit Sr. Memorial High School" the pool is `dcndsmhs`, so
+ * `dcnd` (the suggestion), `cndm` (honorific dropped) and `dmhs` (how the
+ * school is known locally) are all readable off the name, while `mes` is not.
+ *
+ * Two ways a word contributes all of its letters rather than just its first: it
+ * is a known school type, or it is written in capitals inside a name that is
+ * not otherwise shouting — which is how STI, UCCP and AMA are caught without
+ * having to be listed. A name in full upper case gives no such signal, since
+ * every word in it looks like an acronym, so those fall back to the known set.
+ * That is a real limit: "STI COLLEGE - DAGUPAN" yields `scd` where the
+ * mixed-case spelling yields `stic`. It costs a handful of private schools
+ * written wholly in capitals; the alternative — trusting capitalisation on rows
+ * that are entirely capitalised — corrupts every ordinary school stored that
+ * way, which is 3,473 of them.
+ */
+function initialLetters(schoolName) {
+  const name = String(schoolName ?? '');
+  const shouty = name === name.toUpperCase();
+  return significantWords(name).map((word) => {
+    const lower = word.toLowerCase();
+    if (NOT_ACRONYMS.has(lower)) return lower[0];
+    if (TYPE_ABBREVIATIONS.has(lower)) return lower;
+    const looksLikeAcronym = !shouty
+      && word.length >= 2 && word.length <= 5
+      && /^[A-Za-z]+$/.test(word) && word === word.toUpperCase();
+    return looksLikeAcronym ? lower : lower[0];
+  }).join('');
+}
+
+/** The words of a name as they were read before the possessive was stripped,
+ *  so "Kid's Avenue" still yields the word `Kids`. See legacyInitialLetters. */
+function legacyWords(schoolName) {
+  return foldAccents(schoolName)
+    .replace(/[^A-Za-z0-9]+/g, ' ')
+    .trim()
+    .split(' ')
+    .filter((word) => word && !FILLER_WORDS.has(word.toLowerCase()));
+}
+
+/**
+ * The same letters, read the way the code did before the possessive was
+ * stripped: "Mary's Ville Academy" gave M, s, V, A.
+ *
+ * Accepted as well as the current reading, for two reasons. A registrant may
+ * genuinely count the s — it is a capital letter in the name they are looking
+ * at. And on the day this ships, a browser still holding the previous script
+ * derives `msva-mary`, posts it, and would otherwise be refused by a server
+ * that had changed its mind about the school's initials while the form was
+ * open: 1,031 masterlist names carry a possessive, and a registration dying at
+ * submit is the exact failure this module exists to prevent.
+ */
+function legacyInitialLetters(schoolName) {
+  const name = String(schoolName ?? '');
+  const shouty = name === name.toUpperCase();
+  return legacyWords(name).map((word) => {
+    const lower = word.toLowerCase();
+    if (NOT_ACRONYMS.has(lower)) return lower[0];
+    if (TYPE_ABBREVIATIONS.has(lower)) return lower;
+    const looksLikeAcronym = !shouty
+      && word.length >= 2 && word.length <= 5
+      && /^[A-Za-z]+$/.test(word) && word === word.toUpperCase();
+    return looksLikeAcronym ? lower : lower[0];
+  }).join('');
+}
+
+/**
+ * Whether the first half of a code can be read off the school's initials.
+ *
+ * In order, but not necessarily contiguously — that is what lets a registrant
+ * drop an honorific or reach a suffix, both of which they may reasonably want
+ * and neither of which one four-character suggestion can offer at once.
+ *
+ * Two characters is the floor, not three: "Magalang CS" offers only `mcs`, so
+ * `mc` — what the old derivation produced, and what such a school may already
+ * have on its letterhead — has to stay legal. 817 masterlist schools still
+ * yield a head that short even after abbreviations are expanded.
+ *
+ * There is deliberately no ceiling. Four is what the *suggestion* is truncated
+ * to, for the sake of the printed student ID, but it is not a limit on what a
+ * name legitimately offers: "Angeles City NHS" reads `acnhs`, and refusing that
+ * would reject the most natural code the school has. The pool of letters is its
+ * own bound, and MAX_SLUG_LENGTH bounds the code as a whole.
+ */
+function headMatches(schoolName, head) {
+  // A trailing number is stripped here as well as in tailMatches, because a
+  // one-word school has no tail to carry it: "Shalom" suggests `shal`, and the
+  // numbered fallback for a collision is `shal2`, which is the app's own answer
+  // and must not be refused by the app's own check.
+  const raw = String(head ?? '').trim().toLowerCase();
+  // Same shape as the tail: the trailing number is a collision suffix unless
+  // removing it leaves nothing to check, which is the case for a name whose own
+  // word is a digit. "Purok 3" reads `p3` and suggests `p3-puro`, and stripping
+  // the 3 would leave `p` — the module refusing a code it had just offered.
+  const stripped = raw.replace(/\d+$/, '');
+  const want = stripped.length >= 2 ? stripped : raw;
+  if (want.length < 2) return false;
+  const words = significantWords(schoolName);
+  if (words.length === 0) return false;
+  // A one-word name has no initials to read, so its code takes letters from the
+  // word itself. Mirrors the same fallback in initialsOf().
+  if (words.length === 1) return words[0].toLowerCase().startsWith(want);
+
+  // Both readings of the name are accepted — see legacyInitialLetters.
+  return [initialLetters(schoolName), legacyInitialLetters(schoolName)]
+    .some((letters) => {
+      let i = 0;
+      for (const letter of letters) {
+        if (letter === want[i]) i += 1;
+        if (i === want.length) return true;
+      }
+      return false;
+    });
+}
+
+/**
+ * Whether the second half of a code is built out of the school's own name.
+ *
+ * The tail must read as prefixes of consecutive significant words, starting at
+ * any one of them. Both halves of that rule were found by running the codes
+ * suggestAlternatives() itself produces back through it:
+ *
+ *   "magacs"  = maga|cs — prefixes of two consecutive words. Testing only for a
+ *               prefix of the whole name run together refuses this, and it is
+ *               one of the three alternatives Magalang CS is offered. That rule
+ *               rejected 25.6% of the app's own suggestions; this one rejects
+ *               0.7%, and those are single-letter tails that should never have
+ *               been generated in the first place.
+ *   "isidro"  = the second word alone, which is what separates San Isidro from
+ *               San Jose — so the walk may begin at any word.
+ *   "drcl"    = dr|cl, crossing a word boundary, and the suggested code for the
+ *               Dayrit school.
+ *   "maba"    cannot be read off "Magalang CS" at all, and is refused.
+ *
+ * A trailing number is allowed, because that is how a collision is settled.
+ *
+ * Deliberately NOT loosened to any in-order subsequence, which would admit
+ * vowel-dropped forms like `mblct` for Mabalacat. Measured over 35,748 pairs of
+ * same-head schools, that loosening raises the share able to claim another
+ * school's code from 1.49% to 21.24%: "San Simon Integrated School" could then
+ * take `ssis-sant`, which belongs to "Santiago Sur Integrated School". That is
+ * the confusion this module exists to prevent.
+ */
+function tailMatches(schoolName, tail) {
+  const whole = String(tail ?? '').trim().toLowerCase();
+  // Stripping the collision number would leave nothing at all for a name whose
+  // own word is a number — "K of C Council 7377 Pre-School" offers `7377` as a
+  // tail — so in that case the digits are the tail rather than a suffix on it.
+  const stripped = whole.replace(/\d+$/, '');
+  const stem = stripped.length >= 2 ? stripped : whole;
+  if (stem.length < 2) return false;
+
+  // Both readings of the name are accepted. placeOf() takes its four letters
+  // from the same words, so "Kid's Avenue Learning Center" used to offer `kids`
+  // and now offers `kida`: without the older reading, a form opened before this
+  // shipped would post a tail the new server no longer recognised. See
+  // legacyInitialLetters for the same argument about the head.
+  const readings = [significantWords(schoolName), legacyWords(schoolName)]
+    .map((list) => list.map((word) => word.toLowerCase()));
+
+  const readable = (words) => {
+    const walk = (pos, index) => {
+      if (pos === stem.length) return true;
+      if (index >= words.length) return false;
+      const word = words[index];
+      // A one-letter word may be stepped over without consuming anything.
+      // Middle initials ("Emigdio A. Bondoc High School") sit between the two
+      // words a code is most naturally built from, and suggestAlternatives
+      // skips them too — without this, the tail it offers would fail the check
+      // it has to pass.
+      if (word.length === 1 && walk(pos, index + 1)) return true;
+      for (let take = Math.min(word.length, stem.length - pos); take >= 1; take -= 1) {
+        if (stem.substr(pos, take) === word.slice(0, take) && walk(pos + take, index + 1)) return true;
+      }
+      return false;
+    };
+    return words.some((_, index) => walk(0, index));
+  };
+  return readings.some(readable);
+}
+
+/**
+ * Whether a code belongs to the school claiming it.
+ *
+ * This is the check the platform was missing. validateSlug() only ever asked
+ * whether a code was well-shaped, and the availability check only whether
+ * someone else already held it — so "Magalang CS" could register `mes-maba`,
+ * which is Mabalacat Elementary School's identity, and be shown a green tick
+ * while doing it. The code is frozen for the life of the school and printed on
+ * every student ID it ever issues, so first claim is the only moment to catch
+ * this: by approval the addresses exist, and after a rename the stored code is
+ * deliberately no longer derivable from the name at all.
+ *
+ * An absent name or code is not an error here. The registration form checks on
+ * every keystroke, and a half-filled form must not go red before the registrant
+ * has had a chance to fill it in; shape and presence are validateSlug's job.
+ *
+ * Returns the sentence to show rather than a boolean, matching validateSlug().
+ */
+function codeMatchesName(schoolName, code) {
+  const name = String(schoolName ?? '').trim();
+  const slug = String(code ?? '').trim().toLowerCase();
+  if (!name || !slug) return { ok: true, error: null };
+
+  const cut = slug.indexOf('-');
+  const head = cut < 0 ? slug : slug.slice(0, cut);
+  const tail = cut < 0 ? '' : slug.slice(cut + 1);
+
+  if (!headMatches(name, head)) {
+    return {
+      ok: false,
+      error: `"${head}" is not made from the initials of ${name}. Try ${suggestSlug(name)}.`,
+    };
+  }
+  if (tail && !tailMatches(name, tail)) {
+    return {
+      ok: false,
+      error: `"${tail}" does not come from the name ${name}. Try ${suggestSlug(name)}.`,
+    };
+  }
+  return { ok: true, error: null };
 }
 
 /**
@@ -214,7 +484,14 @@ function validateSlug(raw) {
  */
 async function suggestAlternatives(schoolName, isTaken, { limit = 3 } = {}) {
   const initials = initialsOf(schoolName);
-  const words = significantWords(schoolName).map((word) => word.toLowerCase());
+  // One-letter words are skipped when choosing which word a candidate is built
+  // from. "Mary's Ville Academy" and "Emigdio A. Bondoc High School" otherwise
+  // offer `msva-s` and `eabh-a`: a tail of a single letter, which identifies
+  // nothing and which tailMatches() rightly refuses. 6.7% of masterlist names
+  // hold a word this short.
+  const words = significantWords(schoolName)
+    .map((word) => word.toLowerCase())
+    .filter((word) => word.length >= 2);
   const candidates = [];
 
   // The first word in full — "sjes-sanjose" rather than "sjes-san".
@@ -318,9 +595,14 @@ module.exports = {
   RESERVED_SLUGS,
   MIN_SLUG_LENGTH,
   MAX_SLUG_LENGTH,
+  TYPE_ABBREVIATIONS,
   foldAccents,
   significantWords,
   initialsOf,
+  initialLetters,
+  headMatches,
+  tailMatches,
+  codeMatchesName,
   placeOf,
   suggestSlug,
   validateSlug,
