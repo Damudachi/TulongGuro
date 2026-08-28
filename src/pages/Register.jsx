@@ -368,9 +368,15 @@ export default function Register() {
     setSchoolId(digits);
     if (digits.length < 5) setLookup(null);
     setProofRequired(false);
-    // The name stays — deleting what someone can see would be startling — but
-    // it is no longer attributable to DepEd until a new lookup says so, and a
-    // note claiming otherwise over a stale name is the wrong kind of wrong.
+    // A name DepEd gave us for the previous ID goes with that ID. It used to
+    // stay put on the grounds that deleting what someone can see is startling,
+    // which held while the box was one they could retype — now that it is
+    // locked and fills itself, leaving it would strand the last school's name
+    // in a field the registrant cannot correct. A name they typed themselves is
+    // theirs and is left alone.
+    if (nameFromLookup && !editingSchoolName) {
+      setFormData(prev => ({ ...prev, schoolName: '' }));
+    }
     setNameFromLookup(false);
   };
 
@@ -386,6 +392,29 @@ export default function Register() {
   // The document is asked for only when the ID is not on the list, which is the
   // one case a human has to judge by hand.
   const showProofField = lookup?.state === 'missing' || proofRequired;
+
+  /**
+   * Whether the School Name box accepts typing.
+   *
+   * Closed on arrival, which is the change: the name used to be an open text
+   * box sitting above the School ID that fills it, so the ordinary way to use
+   * this form was to type a school name by hand and never enter an ID at all.
+   * That name is what an operator checks against DepEd's records, and what the
+   * school code — and therefore every login the school will ever have — is
+   * derived from, so a hand-typed spelling costs a review round trip at best.
+   *
+   * Opened only where DepEd cannot answer for the school:
+   *
+   *   showProofField     the ID is not on our copy of the masterlist, so there
+   *                      is no record to copy a name from and the registrant is
+   *                      already being asked for a document instead.
+   *   unchecked          the masterlist itself is unavailable — nothing can be
+   *                      looked up, and locking the field would leave the form
+   *                      with no way forward at all.
+   *   editingSchoolName  they pressed one of the two buttons under the field
+   *                      and said so deliberately.
+   */
+  const mayTypeSchoolName = editingSchoolName || showProofField || lookup?.state === 'unchecked';
 
   /**
    * What is still missing on one step, or null if it is complete.
@@ -823,27 +852,29 @@ export default function Register() {
                   Each field now depends only on the ones above it. */}
               <div>
                 <label className="tg-label">School Name</label>
-                {/* ── Read-only once DepEd has answered ──
+                {/* ── DepEd's to fill, not the registrant's ──
                     The name an operator checks against DepEd's records should
-                    be DepEd's own spelling, so once the lookup fills it in the
-                    box stops accepting typing. Locking it is not only tidiness:
-                    the school code is derived from this name, so a stray
-                    keystroke here silently changes every login the school will
-                    ever have.
+                    be DepEd's own spelling, so this box does not accept typing
+                    — not once the lookup has answered, and not before it
+                    either. That is not only tidiness: the school code is
+                    derived from this name, so a keystroke here silently changes
+                    every login the school will ever have.
 
-                    Not locked *shut*, though. A school that has been renamed
-                    since our copy of the masterlist was taken has to be able to
-                    say so, and that case is exactly the one an operator most
-                    needs to see. The button below reopens it, which makes
-                    correcting the name a deliberate act rather than an
-                    accident. */}
+                    Not locked *shut*, though, and it must not be: a school
+                    renamed since our copy of the masterlist was taken, or one
+                    that is not on the list at all, has to be able to say so.
+                    Both cases open it — see mayTypeSchoolName — through a
+                    button that makes typing the name a deliberate act rather
+                    than the default way to fill this form in. */}
                 <div className="relative">
                   <input
                     type="text"
                     required
-                    readOnly={nameFromLookup && !editingSchoolName}
-                    className={cn('tg-input', nameFromLookup && !editingSchoolName && 'pr-11 bg-cream-100 text-navy-500 cursor-not-allowed')}
-                    placeholder="Manila Science High School"
+                    readOnly={!mayTypeSchoolName}
+                    className={cn('tg-input', !mayTypeSchoolName && 'pr-11 bg-cream-100 text-navy-500 cursor-not-allowed')}
+                    placeholder={mayTypeSchoolName
+                      ? "Your school's full name, as its records write it"
+                      : 'Filled in from your DepEd School ID above'}
                     value={formData.schoolName}
                     aria-describedby="school-name-hint"
                     onChange={(e) => {
@@ -851,7 +882,7 @@ export default function Register() {
                       setNameFromLookup(false);
                     }}
                   />
-                  {nameFromLookup && !editingSchoolName && (
+                  {!mayTypeSchoolName && (
                     <Lock className="w-4 h-4 text-navy-300 absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none" />
                   )}
                 </div>
@@ -873,11 +904,25 @@ export default function Register() {
                       </button>
                     </span>
                   </p>
-                ) : (
+                ) : mayTypeSchoolName ? (
                   <p id="school-name-hint" className="text-xs text-navy-400 mt-1.5 font-semibold">
-                    {nameFromLookup || editingSchoolName
-                      ? 'Editing the name here — a reviewer will see it next to what DepEd has on record.'
-                      : 'Enter your DepEd School ID above and we will fill this in for you.'}
+                    Typing the name yourself — a reviewer will see it next to what DepEd has on record.
+                  </p>
+                ) : (
+                  /* The locked-and-empty state, which is where every
+                     registration now starts. It has to carry its own way out:
+                     a school missing from our copy of the masterlist, or a
+                     lookup that could not run at all, would otherwise reach a
+                     box it cannot fill and a Continue it cannot pass. */
+                  <p id="school-name-hint" className="text-xs text-navy-400 mt-1.5 font-semibold">
+                    Enter your DepEd School ID above and we will fill this in for you.{' '}
+                    <button
+                      type="button"
+                      onClick={() => setEditingSchoolName(true)}
+                      className="font-extrabold text-royal-500 hover:text-royal-600 underline decoration-dotted underline-offset-2"
+                    >
+                      My school is not coming up
+                    </button>
                   </p>
                 )}
               </div>

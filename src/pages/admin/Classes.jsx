@@ -481,15 +481,25 @@ export default function AdminClasses() {
                             once work arrives: a control that disappears looks
                             like a page that lost it, where one that is there
                             and says why it is closed answers the question the
-                            admin actually has. */}
+                            admin actually has.
+
+                            Faded when it is closed, which is the part that has
+                            to read at a glance. Amber alone was the wrong
+                            signal — it made the bin on the shell that cannot be
+                            deleted the brightest thing in the row, so the card
+                            with 65 submissions in it looked like the one most
+                            asking to be deleted. It lifts back to full on hover
+                            because it still does something: press it and it
+                            says what is in the way. */}
                         <button type="button" onClick={() => deleteShell(c)} disabled={isSaving}
+                          aria-disabled={c.submissionCount > 0 || undefined}
                           title={c.submissionCount > 0
                             ? `Has ${c.submissionCount} student submission${c.submissionCount === 1 ? '' : 's'} — cannot be deleted`
                             : 'Delete this course shell'}
                           aria-label={`Delete ${c.name}`}
-                          className={cn('p-2 rounded-lg transition-colors shrink-0 disabled:opacity-40',
+                          className={cn('p-2 rounded-lg transition-all shrink-0 disabled:opacity-40',
                             c.submissionCount > 0
-                              ? 'bg-amber-50 text-amber-600 hover:bg-amber-100'
+                              ? 'bg-slate-100 text-slate-400 opacity-40 hover:opacity-100 hover:bg-amber-50 hover:text-amber-600'
                               : 'bg-slate-100 text-slate-500 hover:bg-red-100 hover:text-red-600')}>
                           <Trash2 className="w-4 h-4" />
                         </button>
