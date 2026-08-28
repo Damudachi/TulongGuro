@@ -105,6 +105,9 @@ export default function AdminClasses() {
    */
   const deleteShell = async (c) => {
     if (isSaving) return;
+    // A backstop, not the usual path: the button itself is disabled once there
+    // is work in the shell. Kept because "refuses silently" is the one way this
+    // could fail that nobody would be able to report.
     if (c.submissionCount > 0) {
       return showAlert(
         `"${c.name}" has ${c.submissionCount} student submission${c.submissionCount === 1 ? '' : 's'} in it, `
@@ -483,24 +486,20 @@ export default function AdminClasses() {
                             and says why it is closed answers the question the
                             admin actually has.
 
-                            Faded when it is closed, which is the part that has
-                            to read at a glance. Amber alone was the wrong
-                            signal — it made the bin on the shell that cannot be
-                            deleted the brightest thing in the row, so the card
-                            with 65 submissions in it looked like the one most
-                            asking to be deleted. It lifts back to full on hover
-                            because it still does something: press it and it
-                            says what is in the way. */}
-                        <button type="button" onClick={() => deleteShell(c)} disabled={isSaving}
-                          aria-disabled={c.submissionCount > 0 || undefined}
+                            Faded and inert once there is work in it, exactly
+                            as the same bin behaves on the teacher page — same
+                            classes, so the two cannot drift. It does not light
+                            up under the cursor: a control that answers a hover
+                            is offering to do something, and this one is not
+                            going to. The title says why, and the confirm path
+                            below stays as the backstop. */}
+                        <button type="button" onClick={() => deleteShell(c)}
+                          disabled={isSaving || c.submissionCount > 0}
                           title={c.submissionCount > 0
                             ? `Has ${c.submissionCount} student submission${c.submissionCount === 1 ? '' : 's'} — cannot be deleted`
                             : 'Delete this course shell'}
                           aria-label={`Delete ${c.name}`}
-                          className={cn('p-2 rounded-lg transition-all shrink-0 disabled:opacity-40',
-                            c.submissionCount > 0
-                              ? 'bg-slate-100 text-slate-400 opacity-40 hover:opacity-100 hover:bg-amber-50 hover:text-amber-600'
-                              : 'bg-slate-100 text-slate-500 hover:bg-red-100 hover:text-red-600')}>
+                          className="p-2 rounded-lg shrink-0 bg-slate-100 text-slate-500 hover:bg-red-100 hover:text-red-600 disabled:opacity-30 disabled:hover:bg-slate-100 disabled:hover:text-slate-500">
                           <Trash2 className="w-4 h-4" />
                         </button>
                         <Link to={`/admin/teachers/${c.teacher?.id}`}
