@@ -5660,7 +5660,10 @@ app.get('/api/admin/:adminId/teachers/:teacherId', async (req, res) => {
         include: {
           section: { select: { id: true, name: true, gradeLevel: true, _count: { select: { students: true } } } },
           _count: { select: { activities: true, lessons: true } },
-          activities: { select: { id: true, _count: { select: { submissions: true } } } }
+          // REAL_WORK, for the same reason as the whole-school list above: this
+          // number is what closes the bin on the card, and the DELETE route
+          // decides on the filtered count.
+          activities: { select: { id: true, _count: { select: { submissions: { where: REAL_WORK } } } } }
         },
         orderBy: { createdAt: 'desc' }
       }),
@@ -5795,7 +5798,13 @@ app.get('/api/admin/:adminId/classes', async (req, res) => {
           // Counted through the activities rather than with a nested filter so
           // the "can this be deleted?" number here means the same thing as the
           // one the teacher-detail route reports.
-          activities: { select: { id: true, _count: { select: { submissions: true } } } },
+          //
+          // REAL_WORK, matching the DELETE route's own gate exactly. A bare
+          // count includes the PENDING placeholder rows enrolment back-fills —
+          // one per learner per activity — so a shell nobody had submitted to
+          // reported "65 submissions", and the bin beside it sat closed against
+          // work that does not exist.
+          activities: { select: { id: true, _count: { select: { submissions: { where: REAL_WORK } } } } },
         },
         orderBy: { createdAt: 'desc' },
       }),

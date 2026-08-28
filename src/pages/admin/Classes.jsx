@@ -2,9 +2,10 @@ import { useState, useEffect, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import {
   BookOpen, Plus, Loader2, X, Search, Filter, Sparkles, AlertTriangle, ChevronRight,
-  Pencil, Check,
+  Pencil, Check, Trash2,
 } from 'lucide-react';
 import { API_URL, apiFetch } from '../../config';
+import { showAlert, showConfirm } from '../../utils/dialog';
 import { GRADE_LEVELS, SUBJECTS, SCHOOL_YEARS, DEFAULT_SCHOOL_YEAR, courseShellName } from '../../constants/school';
 import { foldForSearch } from '../../utils/roster';
 
@@ -88,6 +89,59 @@ export default function AdminClasses() {
     });
     setError('');
     setShowForm(true);
+  };
+
+  /**
+   * Delete a course shell from the list it is listed in.
+   *
+   * Only ever offered on a shell nobody has submitted to. Once there is student
+   * work in it the shell is the only thing holding that work together, and the
+   * server refuses the delete outright — so the control says so on itself
+   * rather than letting an admin press a bin and read a refusal.
+   *
+   * The activities and copied lessons go with it, which is worth saying before
+   * the fact: a shell with forty curriculum lessons in it does not look empty
+   * to the person about to remove it, even when no learner has touched it.
+   */
+  const deleteShell = async (c) => {
+    if (isSaving) return;
+    if (c.submissionCount > 0) {
+      return showAlert(
+        `"${c.name}" has ${c.submissionCount} student submission${c.submissionCount === 1 ? '' : 's'} in it, `
+        + 'so it cannot be deleted — the submissions, their scores and their released feedback all hang off it.\n\n'
+        + 'To take it off this teacher, open their page and move it to another teacher instead. '
+        + 'Nothing has been changed.'
+      );
+    }
+    const carries = [
+      c.activityCount > 0 && `${c.activityCount} activit${c.activityCount === 1 ? 'y' : 'ies'}`,
+      c.lessonCount > 0 && `${c.lessonCount} lesson${c.lessonCount === 1 ? '' : 's'}`,
+    ].filter(Boolean);
+    if (!(await showConfirm(
+      `Delete the course shell "${c.name}"?`
+      + (carries.length ? ` Its ${carries.join(' and ')} go with it.` : '')
+      + ' No learner has submitted to it. This cannot be undone.',
+      { confirmLabel: 'Delete course shell', danger: true }
+    ))) return;
+    setIsSaving(true);
+    try {
+      const res = await apiFetch(`${API_URL}/api/admin/${admin.id}/classes/${c.id}`, { method: 'DELETE' });
+      const d = await res.json().catch(() => null);
+      if (!d?.success) {
+        // Banner rather than a dialog: the shell is still on screen, and the
+        // usual refusal is work that arrived between the page loading and the
+        // bin being pressed — which the reload below then shows.
+        setError(d?.error || 'That course shell could not be deleted.');
+        load();
+        return;
+      }
+      setNotice(`Course shell "${c.name}" was deleted.`);
+      load();
+    } catch {
+      setError('Network error. Nothing was deleted.');
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   const openEdit = (c) => {
@@ -415,15 +469,29 @@ export default function AdminClasses() {
                       <div className="relative shrink-0 flex items-center gap-1.5 max-w-[55%]">
                         {/* Renaming and reassigning used to be reachable only
                             from the teacher page, which meant leaving the list
-                            of shells to correct one of them. Deleting still
-                            lives there: it needs the "what else would this
-                            person be left with" context this page does not
-                            have. */}
+                            of shells to correct one of them. */}
                         <button type="button" onClick={() => openEdit(c)}
                           title="Rename this course shell or hand it to another teacher"
                           aria-label={`Edit ${c.name}`}
                           className="p-2 rounded-lg bg-slate-100 text-slate-600 hover:bg-brand-navy hover:text-white transition-colors shrink-0">
                           <Pencil className="w-4 h-4" />
+                        </button>
+                        {/* Enabled only while the shell is still empty of
+                            student work. Shown either way rather than hidden
+                            once work arrives: a control that disappears looks
+                            like a page that lost it, where one that is there
+                            and says why it is closed answers the question the
+                            admin actually has. */}
+                        <button type="button" onClick={() => deleteShell(c)} disabled={isSaving}
+                          title={c.submissionCount > 0
+                            ? `Has ${c.submissionCount} student submission${c.submissionCount === 1 ? '' : 's'} — cannot be deleted`
+                            : 'Delete this course shell'}
+                          aria-label={`Delete ${c.name}`}
+                          className={cn('p-2 rounded-lg transition-colors shrink-0 disabled:opacity-40',
+                            c.submissionCount > 0
+                              ? 'bg-amber-50 text-amber-600 hover:bg-amber-100'
+                              : 'bg-slate-100 text-slate-500 hover:bg-red-100 hover:text-red-600')}>
+                          <Trash2 className="w-4 h-4" />
                         </button>
                         <Link to={`/admin/teachers/${c.teacher?.id}`}
                           className="min-w-0 text-xs font-semibold text-brand-navy bg-blue-50 border border-blue-100 px-2.5 py-1.5 rounded-lg hover:bg-blue-100 flex items-center gap-1">

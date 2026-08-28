@@ -387,20 +387,20 @@ describe('POST /api/admin/:adminId/classes assigns the shell to a named teacher'
     expect(prismaFake.class.create).toHaveBeenCalled();
   });
 
-  // Subject and SECTION, not subject and grade level. The grade level is stored
-  // on the shell in its own column and shown on its own badge, and naming from
-  // it gave two shells the same name the moment one teacher taught one subject
-  // into two blocks of one grade — the exact pair an admin needs to tell apart.
-  it('names the class from subject and section when none is given', async () => {
+  // Subject, grade level, then SECTION: "Filipino Grade 6 - Sampaguita". The
+  // section is in it because naming from the grade alone gave two shells the
+  // same name the moment one teacher taught one subject into two blocks of one
+  // grade — the exact pair an admin needs to tell apart.
+  it('names the class from subject, grade level and section when none is given', async () => {
     inSchoolSection();
     prismaFake.class.create.mockResolvedValue({ id: 'class-3' });
 
     await postClass(adminToken(), shell({ name: '   ' }));
 
     // SECTION_NAME is 'Grade 6 - Sampaguita' — the house-style grade prefix
-    // comes back off, or the grade level would walk into the name it was
-    // deliberately taken out of.
-    expect(prismaFake.class.create.mock.calls[0][0].data.name).toBe('Filipino — Sampaguita');
+    // comes back off before the grade level is put in front, or it would be
+    // said twice: "Filipino Grade 6 - Grade 6 - Sampaguita".
+    expect(prismaFake.class.create.mock.calls[0][0].data.name).toBe('Filipino Grade 6 - Sampaguita');
   });
 
   it('refuses a second identical shell for the same teacher', async () => {
@@ -472,6 +472,19 @@ describe('GET /api/admin/:adminId/classes lists the whole school', () => {
     // Summed across the activities rather than counted separately, so this
     // number means the same thing as the teacher-detail route's.
     expect(body.classes[0].submissionCount).toBe(41);
+    // And counted on the same filter the DELETE route gates on. Unfiltered it
+    // picks up the PENDING placeholders enrolment back-fills, and the bin on
+    // the card closes against submissions nobody made.
+    const { include } = prismaFake.class.findMany.mock.calls.at(-1)[0];
+    expect(include.activities.select._count.select.submissions).toEqual({
+      where: {
+        OR: [
+          { imageUrl: { not: null } },
+          { hitlScore: { not: null } },
+          { aiScore: { not: null } },
+        ],
+      },
+    });
     expect(body.classes[0].activityCount).toBe(2);
     expect(body.classes[0].lessonCount).toBe(8);
   });

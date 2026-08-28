@@ -147,6 +147,11 @@ export default function Register() {
     name: '',
     email: '',
     password: '',
+    // Typed again, never sent. A registration password is set once, by someone
+    // who will not see this form again and cannot reset it themselves until the
+    // school is approved — a typo in it locks the admin out of the school they
+    // just registered, and the only way to catch one is to ask twice.
+    confirmPassword: '',
     schoolName: '',
     // A mailbox that actually receives mail, unlike the login above it — that
     // one sits on a synthetic domain with nothing behind it. This is the only
@@ -182,6 +187,11 @@ export default function Register() {
   const [schoolCode, setSchoolCode] = useState({
     typed: null, state: 'idle', error: null, suggestions: [],
   });
+  // Only once there is something in the second box to disagree with the
+  // first. Compared exactly — trimming or case-folding here would pass a pair
+  // the login screen will later treat as two different passwords.
+  const passwordMismatch = !!formData.confirmPassword && formData.password !== formData.confirmPassword;
+
   const suggestedCode = suggestSchoolCode(formData.schoolName);
   const schoolCodeValue = schoolCode.typed ?? suggestedCode;
   const adminEmail = buildAccountEmail(formData.email, 'ADMIN', schoolCodeValue);
@@ -411,6 +421,8 @@ export default function Register() {
       if (!registrantId) return 'Please attach a photo of your school or employee ID.';
       if (!formData.contactEmail.trim()) return 'Please give a school contact email we can reach you on.';
       if (!formData.password) return 'Please set a password.';
+      if (!formData.confirmPassword) return 'Please type your password a second time to confirm it.';
+      if (formData.password !== formData.confirmPassword) return 'The two passwords do not match.';
       return null;
     }
     if (!logoConsent) return 'Please tick the box allowing us to display your school logo, then upload it.';
@@ -512,7 +524,13 @@ export default function Register() {
     try {
       const body = new FormData();
       // The full address, not the local part the field holds.
-      Object.entries({ ...formData, email: adminEmail }).forEach(([k, v]) => body.append(k, v));
+      const account = { ...formData, email: adminEmail };
+      // The confirmation copy stays on the form. It exists to catch a typo
+      // before the request is made; sending it would only put the password in
+      // the body twice, and anything holding a copy of this request would hold
+      // it twice too.
+      delete account.confirmPassword;
+      Object.entries(account).forEach(([k, v]) => body.append(k, v));
       body.append('depedSchoolId', schoolId);
       // The code the registrant settled on, sent explicitly rather than left to
       // the server to derive. They have been shown the logins it produces and
@@ -1117,15 +1135,26 @@ export default function Register() {
               </div>
 
               <div>
-                <label className="tg-label">Password</label>
+                <label className="tg-label" htmlFor="register-password">Password</label>
                 <div className="relative">
                   <input
+                    id="register-password"
                     type={showPassword ? "text" : "password"}
                     required
                     className="tg-input pr-12"
                     placeholder="••••••••"
+                    autoComplete="new-password"
+                    // Controlled, which it was not before: without `value` the
+                    // box kept its own copy of the password, so a Back to step 1
+                    // and forward again emptied formData while the field still
+                    // looked filled in.
+                    value={formData.password}
                     onChange={(e) => setFormData({...formData, password: e.target.value})}
                   />
+                  {/* One eye for both boxes. Confirming a password you cannot
+                      read is the point of the second box; confirming one you
+                      can read is just typing it twice, so the toggle reveals
+                      the pair together or neither. */}
                   <button
                     type="button"
                     onClick={() => setShowPassword(!showPassword)}
@@ -1135,6 +1164,38 @@ export default function Register() {
                     {showPassword ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
                   </button>
                 </div>
+              </div>
+
+              <div>
+                <label className="tg-label" htmlFor="register-password-confirm">Re-enter Password</label>
+                <input
+                  id="register-password-confirm"
+                  type={showPassword ? "text" : "password"}
+                  required
+                  className={cn('tg-input', passwordMismatch && 'border-red-400 focus:border-red-400')}
+                  placeholder="••••••••"
+                  autoComplete="new-password"
+                  aria-describedby="password-confirm-hint"
+                  aria-invalid={passwordMismatch || undefined}
+                  value={formData.confirmPassword}
+                  onChange={(e) => setFormData({ ...formData, confirmPassword: e.target.value })}
+                />
+                {/* Said while it is still wrong, not on Continue. The mismatch
+                    is visible from the two boxes themselves, and a banner at the
+                    bottom of a scrolled step is a worse place to learn about a
+                    field that is right here. Silent until the second box has
+                    something in it — "does not match" against an empty box is
+                    nagging somebody who is still typing. */}
+                {passwordMismatch ? (
+                  <p className="flex items-start gap-1.5 text-xs font-semibold text-red-600 mt-1.5">
+                    <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                    The two passwords do not match.
+                  </p>
+                ) : (
+                  <p id="password-confirm-hint" className="text-xs text-navy-400 mt-1.5 font-semibold">
+                    Type it once more. You will sign in with this the moment your school is approved.
+                  </p>
+                )}
               </div>
               </>)}
 
