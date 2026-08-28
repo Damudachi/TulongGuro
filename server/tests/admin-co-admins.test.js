@@ -168,7 +168,7 @@ const call = (method, path, body) =>
 describe('a new admin lands in the creating admin\'s school', () => {
   it('ignores a schoolId supplied in the request body', async () => {
     const res = await call('POST', `/api/admin/${ADMIN}/admins`, {
-      name: 'Principal', email: 'Principal@Admin.TES-TEST.EDU.PH', password: 'temp-pass-1',
+      name: 'Principal', email: 'Principal@Admin.TES-TEST.EDU.PH', password: 'Temp-pass-1',
       schoolId: OTHER_SCHOOL,          // the attack: pick somebody else's school
       role: 'ADMIN',
     });
@@ -180,7 +180,7 @@ describe('a new admin lands in the creating admin\'s school', () => {
 
   it('normalizes the email and uses it as the username, as the teacher route does', async () => {
     await call('POST', `/api/admin/${ADMIN}/admins`, {
-      name: '  Principal  ', email: '  Principal@Admin.TES-TEST.EDU.PH  ', password: 'temp-pass-1',
+      name: '  Principal  ', email: '  Principal@Admin.TES-TEST.EDU.PH  ', password: 'Temp-pass-1',
     });
     const written = prismaFake.user.create.mock.calls[0][0].data;
     expect(written.email).toBe('principal@admin.tes-test.edu.ph');
@@ -190,7 +190,7 @@ describe('a new admin lands in the creating admin\'s school', () => {
 
   it('never returns the password hash', async () => {
     const res = await call('POST', `/api/admin/${ADMIN}/admins`, {
-      name: 'Principal', email: 'principal@admin.tes-test.edu.ph', password: 'temp-pass-1',
+      name: 'Principal', email: 'principal@admin.tes-test.edu.ph', password: 'Temp-pass-1',
     });
     const body = await res.json();
     expect(body.success).toBe(true);
@@ -242,7 +242,7 @@ describe('self-service is refused', () => {
   it('an admin cannot reset their own password from here', async () => {
     // /api/auth/change-password is the route for that, and it asks for the
     // current password first.
-    const res = await call('PUT', `/api/admin/${ADMIN}/admins/${ADMIN}/password`, { password: 'new-pass-1' });
+    const res = await call('PUT', `/api/admin/${ADMIN}/admins/${ADMIN}/password`, { password: 'New-pass-1' });
     expect(res.status).toBe(400);
     expect(prismaFake.user.update).not.toHaveBeenCalled();
   });
@@ -279,11 +279,11 @@ describe('role changes take effect immediately', () => {
   });
 
   it('a password reset revokes existing sessions too', async () => {
-    const res = await call('PUT', `/api/admin/${ADMIN}/admins/${CO_ADMIN}/password`, { password: 'new-pass-1' });
+    const res = await call('PUT', `/api/admin/${ADMIN}/admins/${CO_ADMIN}/password`, { password: 'New-pass-1' });
     expect(res.status).toBe(200);
     const args = prismaFake.user.update.mock.calls[0][0];
     expect(args.data.sessionsValidFrom).toBeInstanceOf(Date);
-    expect(args.data.password).not.toBe('new-pass-1');   // hashed, not stored raw
+    expect(args.data.password).not.toBe('New-pass-1');   // hashed, not stored raw
   });
 });
 
@@ -316,7 +316,7 @@ describe('the per-school admin cap', () => {
   it('blocks creating past it', async () => {
     prismaFake.user.count.mockResolvedValue(5);
     const res = await call('POST', `/api/admin/${ADMIN}/admins`, {
-      name: 'Sixth', email: 'sixth@admin.tes-test.edu.ph', password: 'temp-pass-1',
+      name: 'Sixth', email: 'sixth@admin.tes-test.edu.ph', password: 'Temp-pass-1',
     });
     expect(res.status).toBe(400);
     expect(prismaFake.user.create).not.toHaveBeenCalled();
@@ -338,7 +338,7 @@ describe('the per-school admin cap', () => {
 describe('access changes are recorded', () => {
   it('writes an audit row naming both parties', async () => {
     await call('POST', `/api/admin/${ADMIN}/admins`, {
-      name: 'Principal', email: 'principal@admin.tes-test.edu.ph', password: 'temp-pass-1',
+      name: 'Principal', email: 'principal@admin.tes-test.edu.ph', password: 'Temp-pass-1',
     });
     const row = prismaFake.adminAuditLog.create.mock.calls[0][0].data;
     expect(row).toMatchObject({
@@ -362,7 +362,7 @@ describe('access changes are recorded', () => {
     // could not be written is worse.
     prismaFake.adminAuditLog.create.mockRejectedValue(new Error('table missing'));
     const res = await call('POST', `/api/admin/${ADMIN}/admins`, {
-      name: 'Principal', email: 'principal@admin.tes-test.edu.ph', password: 'temp-pass-1',
+      name: 'Principal', email: 'principal@admin.tes-test.edu.ph', password: 'Temp-pass-1',
     });
     expect(res.status).toBe(200);
   });
@@ -549,7 +549,7 @@ describe('every admin of a school is a peer', () => {
 
     for (const [method, path, body] of [
       ['PUT', `/api/admin/${CO_ADMIN}/admins/${CO_ADMIN}/demote`, undefined],
-      ['PUT', `/api/admin/${CO_ADMIN}/admins/${CO_ADMIN}/password`, { password: 'new-pass-1' }],
+      ['PUT', `/api/admin/${CO_ADMIN}/admins/${CO_ADMIN}/password`, { password: 'New-pass-1' }],
     ]) {
       const res = await asCoAdmin(method, path, body);
       expect(res.status, `${method} ${path}`).toBe(400);
@@ -607,7 +607,7 @@ describe('a school with no code gets one before staff addresses are built', () =
   it('assigns the code and puts a new admin on it, not on the shared @admin.com', async () => {
     slugless();
     const res = await call('POST', `/api/admin/${ADMIN}/admins`, {
-      name: 'Principal', email: 'principal@admin.tes-test.edu.ph', password: 'temp-pass-1',
+      name: 'Principal', email: 'principal@admin.tes-test.edu.ph', password: 'Temp-pass-1',
     });
     expect(res.status).toBe(200);
     expect(prismaFake.school.update).toHaveBeenCalledWith(
@@ -620,7 +620,7 @@ describe('a school with no code gets one before staff addresses are built', () =
   it('assigns the code on the teacher route too', async () => {
     slugless();
     const res = await call('POST', `/api/admin/${ADMIN}/teachers`, {
-      name: 'Ana Reyes', email: 'ana.reyes@teacher.tes-test.edu.ph', password: 'temp-pass-1',
+      name: 'Ana Reyes', email: 'ana.reyes@teacher.tes-test.edu.ph', password: 'Temp-pass-1',
     });
     expect(res.status).toBe(200);
     expect(prismaFake.school.update).toHaveBeenCalledWith(
@@ -633,7 +633,7 @@ describe('a school with no code gets one before staff addresses are built', () =
   // had merely been renamed — see the "frozen" rule in schoolSlug.js.
   it('never re-codes a school that already has one', async () => {
     const res = await call('POST', `/api/admin/${ADMIN}/admins`, {
-      name: 'Principal', email: 'principal@admin.tes-test.edu.ph', password: 'temp-pass-1',
+      name: 'Principal', email: 'principal@admin.tes-test.edu.ph', password: 'Temp-pass-1',
     });
     expect(res.status).toBe(200);
     expect(prismaFake.school.update).not.toHaveBeenCalled();
@@ -644,7 +644,7 @@ describe('staff email domains', () => {
   it('refuses an admin account that is not on @admin.tes-test.edu.ph', async () => {
     for (const email of ['principal@teacher.tes-test.edu.ph', 'principal@deped.gov.ph', 'principal@gmail.com']) {
       const res = await call('POST', `/api/admin/${ADMIN}/admins`, {
-        name: 'Principal', email, password: 'temp-pass-1',
+        name: 'Principal', email, password: 'Temp-pass-1',
       });
       expect(res.status, email).toBe(400);
       expect((await res.json()).error).toMatch(/@admin\.tes-test\.edu\.ph/);
@@ -655,7 +655,7 @@ describe('staff email domains', () => {
   it('refuses a teacher account that is not on @teacher.tes-test.edu.ph', async () => {
     for (const email of ['ana@admin.tes-test.edu.ph', 'ana@deped.gov.ph', 'ana@gmail.com']) {
       const res = await call('POST', `/api/admin/${ADMIN}/teachers`, {
-        name: 'Ana Reyes', email, password: 'temp-pass-1',
+        name: 'Ana Reyes', email, password: 'Temp-pass-1',
       });
       expect(res.status, email).toBe(400);
       expect((await res.json()).error).toMatch(/@teacher\.tes-test\.edu\.ph/);
@@ -666,7 +666,7 @@ describe('staff email domains', () => {
   it('refuses an address that is not an address at all', async () => {
     for (const email of ['principal', 'principal@', '@admin.tes-test.edu.ph', 'a@b@admin.tes-test.edu.ph']) {
       const res = await call('POST', `/api/admin/${ADMIN}/admins`, {
-        name: 'Principal', email, password: 'temp-pass-1',
+        name: 'Principal', email, password: 'Temp-pass-1',
       });
       expect(res.status, email).toBe(400);
     }
@@ -675,7 +675,7 @@ describe('staff email domains', () => {
 
   it('creates a teacher on the teacher domain', async () => {
     const res = await call('POST', `/api/admin/${ADMIN}/teachers`, {
-      name: 'Ana Reyes', email: '  Ana.Reyes@Teacher.TES-TEST.EDU.PH ', password: 'temp-pass-1',
+      name: 'Ana Reyes', email: '  Ana.Reyes@Teacher.TES-TEST.EDU.PH ', password: 'Temp-pass-1',
     });
     expect(res.status).toBe(200);
     const written = prismaFake.user.create.mock.calls[0][0].data;

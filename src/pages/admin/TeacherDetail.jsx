@@ -17,12 +17,8 @@ import {
 } from '../../utils/roster';
 
 import { showAlert, showConfirm } from '../../utils/dialog';
+import { generatePassword } from '../../constants/password';
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
-
-function generatePassword() {
-  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789';
-  return Array.from({ length: 10 }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
-}
 
 /**
  * Hand a course shell to a colleague.

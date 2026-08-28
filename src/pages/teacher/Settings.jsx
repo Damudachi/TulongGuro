@@ -3,6 +3,8 @@ import { User, Shield, Lock, Eye, EyeOff, Loader2, Palette, CheckCircle2 } from 
 import PageHeader from '../../components/PageHeader';
 import { API_URL, apiFetch, setSession } from '../../config';
 import ThemeToggle from '../../components/ThemeToggle';
+import { passwordProblem } from '../../constants/password';
+import PasswordStrength from '../../components/PasswordStrength';
 
 /**
  * The Bio field and the Notifications tab used to live here. Both wrote to
@@ -50,7 +52,10 @@ export default function Settings() {
     e.preventDefault();
     setPwError('');
     if (passwords.newPass !== passwords.confirm) return setPwError('The two new passwords do not match.');
-    if (passwords.newPass.length < 6) return setPwError('Your new password must be at least 6 characters.');
+    // The server re-runs this; here it saves a round-trip and lands the message
+    // next to the field. See constants/password.js.
+    const weak = passwordProblem(passwords.newPass);
+    if (weak) return setPwError(weak);
 
     setPwBusy(true);
     try {
@@ -157,7 +162,8 @@ export default function Settings() {
                     <label className="tg-label">New Password</label>
                     <input type="password" required value={passwords.newPass}
                       onChange={(e) => setPasswords(p => ({ ...p, newPass: e.target.value }))}
-                      className="tg-input" placeholder="At least 6 characters" />
+                      className="tg-input" placeholder="At least 8 characters" />
+                    <PasswordStrength value={passwords.newPass} />
                   </div>
                   <div>
                     <label className="tg-label">Confirm New Password</label>

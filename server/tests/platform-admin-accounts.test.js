@@ -141,7 +141,7 @@ const asOperator = (method, path, body) =>
 
 const EVERY_ROUTE = [
   ['GET', `/api/platform/schools/${SCHOOL}/admins`, undefined],
-  ['PUT', `/api/platform/schools/${SCHOOL}/admins/${ADMIN}/password`, { password: 'new-pass-1' }],
+  ['PUT', `/api/platform/schools/${SCHOOL}/admins/${ADMIN}/password`, { password: 'New-pass-1' }],
   ['PUT', `/api/platform/schools/${SCHOOL}/admins/${ADMIN}/demote`, undefined],
 ];
 
@@ -233,14 +233,14 @@ describe('setting an admin password', () => {
     prismaFake.school.findUnique.mockResolvedValue(approvedSchool);
 
     const res = await asOperator(
-      'PUT', `/api/platform/schools/${SCHOOL}/admins/${ADMIN}/password`, { password: 'brand-new-pass' },
+      'PUT', `/api/platform/schools/${SCHOOL}/admins/${ADMIN}/password`, { password: 'Brand-new-pass1' },
     );
     expect(res.status).toBe(200);
 
     const [call] = prismaFake.user.update.mock.calls;
     expect(call[0].where).toEqual({ id: ADMIN });
     // Never stored as typed.
-    expect(call[0].data.password).not.toBe('brand-new-pass');
+    expect(call[0].data.password).not.toBe('Brand-new-pass1');
     expect(call[0].data.password).toMatch(/^\$2[aby]\$/);
     // The whole point of a reset is that the old credential stops working, and
     // a stateless token outlives the password unless this is set.
@@ -254,7 +254,7 @@ describe('setting an admin password', () => {
     prismaFake.school.findUnique.mockResolvedValue(approvedSchool);
 
     await asOperator(
-      'PUT', `/api/platform/schools/${SCHOOL}/admins/${ADMIN}/password`, { password: 'brand-new-pass' },
+      'PUT', `/api/platform/schools/${SCHOOL}/admins/${ADMIN}/password`, { password: 'Brand-new-pass1' },
     );
     expect(prismaFake.adminAuditLog.create).toHaveBeenCalledWith(expect.objectContaining({
       data: expect.objectContaining({
@@ -265,7 +265,7 @@ describe('setting an admin password', () => {
     }));
   });
 
-  it('refuses a password shorter than six characters', async () => {
+  it('refuses a password that does not meet the rule', async () => {
     stubUsers({ [ADMIN]: { id: ADMIN, role: 'ADMIN', schoolId: SCHOOL } });
     prismaFake.school.findUnique.mockResolvedValue(approvedSchool);
 
@@ -281,7 +281,7 @@ describe('setting an admin password', () => {
     prismaFake.school.findUnique.mockResolvedValue(approvedSchool);
 
     const res = await asOperator(
-      'PUT', `/api/platform/schools/${SCHOOL}/admins/${TEACHER}/password`, { password: 'brand-new-pass' },
+      'PUT', `/api/platform/schools/${SCHOOL}/admins/${TEACHER}/password`, { password: 'Brand-new-pass1' },
     );
     expect(res.status).toBe(404);
     expect(prismaFake.user.update).not.toHaveBeenCalled();
@@ -294,7 +294,7 @@ describe('setting an admin password', () => {
     prismaFake.school.findUnique.mockResolvedValue(approvedSchool);
 
     const res = await asOperator(
-      'PUT', `/api/platform/schools/${SCHOOL}/admins/${ADMIN}/password`, { password: 'brand-new-pass' },
+      'PUT', `/api/platform/schools/${SCHOOL}/admins/${ADMIN}/password`, { password: 'Brand-new-pass1' },
     );
     expect(res.status).toBe(404);
     expect(prismaFake.user.update).not.toHaveBeenCalled();

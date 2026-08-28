@@ -5,6 +5,9 @@ import { ShieldCheck, Loader2, Check, X, Building2, Mail, RefreshCw, AlertTriang
 import { API_URL } from '../config';
 
 import { showAlert, showConfirm } from '../utils/dialog';
+import { generatePassword } from '../constants/password';
+import { passwordProblem } from '../constants/password';
+import PasswordStrength from '../components/PasswordStrength';
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
 
 /**
@@ -47,18 +50,6 @@ const VIEWS = [
   { key: 'admins', label: 'Admin accounts', Icon: Users },
   { key: 'operators', label: 'Operators', Icon: ShieldCheck },
 ];
-
-/**
- * A temporary password, in the same alphabet the school-facing screens use.
- *
- * No look-alike characters (0/O, 1/l/I): this is read off one screen and typed
- * into another, often over a phone call, and a password that cannot be
- * dictated is a support ticket of its own.
- */
-function generatePassword() {
-  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789';
-  return Array.from({ length: 12 }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
-}
 
 const STATUS_STYLES = {
   PENDING: 'bg-amber-100 text-amber-800',
@@ -463,7 +454,7 @@ export default function PlatformApprovals() {
 
   const openSetPassword = (school, admin) => {
     setPwFor({ school, admin });
-    setPwValue(generatePassword());
+    setPwValue(generatePassword(12));
     setPwDone(null);
     setPwCopied(false);
   };
@@ -587,7 +578,7 @@ export default function PlatformApprovals() {
   };
 
   const resetOperatorPassword = async (target) => {
-    const password = generatePassword();
+    const password = generatePassword(12);
     const ok = await showConfirm(
       `${target.name} will need this new password to sign in, and any session they have open ends now.`,
       { title: `Reset ${target.name}'s password?`, confirmLabel: 'Reset password' },
@@ -1260,17 +1251,18 @@ export default function PlatformApprovals() {
                     autoComplete="off"
                     className="flex-1 min-w-0 px-3 py-2 border border-slate-200 rounded-lg text-sm font-mono outline-none focus:ring-2 focus:ring-slate-900"
                   />
-                  <button type="button" onClick={() => setPwValue(generatePassword())} title="Generate another"
+                  <button type="button" onClick={() => setPwValue(generatePassword(12))} title="Generate another"
                     className="shrink-0 px-3 rounded-lg bg-slate-100 text-slate-600 hover:bg-slate-200">
                     <RefreshCw className="w-4 h-4" />
                   </button>
                 </div>
+                <PasswordStrength value={pwValue} />
                 <div className="flex gap-2">
                   <button type="button" onClick={() => setPwFor(null)}
                     className="flex-1 py-2.5 rounded-lg border border-slate-200 text-slate-600 font-bold text-sm hover:bg-slate-50">
                     Cancel
                   </button>
-                  <button type="submit" disabled={pwValue.trim().length < 6 || pwSaving}
+                  <button type="submit" disabled={!!passwordProblem(pwValue.trim()) || pwSaving}
                     className="flex-1 py-2.5 rounded-lg bg-ink-900 text-white font-bold text-sm hover:bg-ink-800 disabled:opacity-40">
                     {pwSaving ? 'Setting…' : 'Set password'}
                   </button>
@@ -1319,7 +1311,7 @@ export default function PlatformApprovals() {
         {view === 'operators' && (<>
           <div className="flex items-center gap-2 mb-5">
             <button
-              onClick={() => { setNewOperator({ name: '', email: '', password: generatePassword() }); setShowAddOperator(true); }}
+              onClick={() => { setNewOperator({ name: '', email: '', password: generatePassword(12) }); setShowAddOperator(true); }}
               className="px-3.5 py-2 rounded-lg bg-ink-900 text-white text-xs font-bold hover:bg-ink-800">
               Add operator
             </button>
@@ -1417,6 +1409,8 @@ export default function PlatformApprovals() {
                   onChange={e => setMyPassword({ ...myPassword, newPassword: e.target.value })}
                   className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-slate-900 mb-3" />
 
+                <PasswordStrength value={myPassword.newPassword} className="mb-3" />
+
                 {myPwError && <p className="text-xs text-red-600 mb-3">{myPwError}</p>}
 
                 <div className="flex gap-2">
@@ -1424,7 +1418,7 @@ export default function PlatformApprovals() {
                     className="flex-1 py-2.5 rounded-lg border border-slate-200 text-slate-600 font-bold text-sm hover:bg-slate-50">
                     Cancel
                   </button>
-                  <button type="submit" disabled={myPwSaving || myPassword.newPassword.length < 8}
+                  <button type="submit" disabled={myPwSaving || !!passwordProblem(myPassword.newPassword)}
                     className="flex-1 py-2.5 rounded-lg bg-ink-900 text-white font-bold text-sm hover:bg-ink-800 disabled:opacity-40">
                     {myPwSaving ? 'Changing…' : 'Change password'}
                   </button>
@@ -1457,19 +1451,20 @@ export default function PlatformApprovals() {
                   <input id="new-op-pw" required value={newOperator.password} autoComplete="off"
                     onChange={e => setNewOperator({ ...newOperator, password: e.target.value })}
                     className="flex-1 min-w-0 px-3 py-2 border border-slate-200 rounded-lg text-sm font-mono outline-none focus:ring-2 focus:ring-slate-900" />
-                  <button type="button" onClick={() => setNewOperator({ ...newOperator, password: generatePassword() })}
+                  <button type="button" onClick={() => setNewOperator({ ...newOperator, password: generatePassword(12) })}
                     title="Generate another"
                     className="shrink-0 px-3 rounded-lg bg-slate-100 text-slate-600 hover:bg-slate-200">
                     <RefreshCw className="w-4 h-4" />
                   </button>
                 </div>
+                <PasswordStrength value={newOperator.password} />
 
                 <div className="flex gap-2">
                   <button type="button" onClick={() => setShowAddOperator(false)}
                     className="flex-1 py-2.5 rounded-lg border border-slate-200 text-slate-600 font-bold text-sm hover:bg-slate-50">
                     Cancel
                   </button>
-                  <button type="submit" disabled={opSaving || newOperator.password.trim().length < 8}
+                  <button type="submit" disabled={opSaving || !!passwordProblem(newOperator.password.trim())}
                     className="flex-1 py-2.5 rounded-lg bg-ink-900 text-white font-bold text-sm hover:bg-ink-800 disabled:opacity-40">
                     {opSaving ? 'Adding…' : 'Add operator'}
                   </button>

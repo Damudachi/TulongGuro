@@ -3,6 +3,8 @@ import { Shield, Download, Loader2, EyeOff, Eye, Palette, CheckCircle2 } from 'l
 import PageHeader from '../../components/PageHeader';
 import { API_URL, apiFetch, setSession } from '../../config';
 import ThemeToggle from '../../components/ThemeToggle';
+import { passwordProblem } from '../../constants/password';
+import PasswordStrength from '../../components/PasswordStrength';
 
 /**
  * What a learner can actually change about their account.
@@ -50,7 +52,10 @@ export default function Settings() {
     e.preventDefault();
     setPwError('');
     if (passwords.newPass !== passwords.confirm) return setPwError('The two new passwords do not match.');
-    if (passwords.newPass.length < 6) return setPwError('Your new password must be at least 6 characters.');
+    // The server re-runs this; here it saves a round-trip and lands the message
+    // next to the field. See constants/password.js.
+    const weak = passwordProblem(passwords.newPass);
+    if (weak) return setPwError(weak);
 
     setPwBusy(true);
     try {
@@ -202,11 +207,11 @@ export default function Settings() {
                   </div>
                   <div>
                     <label className="tg-label" htmlFor="new-password">New password</label>
-                    <input id="new-password" type="password" required minLength={6} autoComplete="new-password"
+                    <input id="new-password" type="password" required minLength={8} autoComplete="new-password"
                       value={passwords.newPass}
                       onChange={(e) => setPasswords(p => ({ ...p, newPass: e.target.value }))}
                       className="tg-input" />
-                    <p className="text-xs text-navy-400 mt-1">At least 6 characters.</p>
+                    <PasswordStrength value={passwords.newPass} />
                   </div>
                   <div>
                     <label className="tg-label" htmlFor="confirm-password">Confirm new password</label>

@@ -9,13 +9,9 @@ import { accountDomain, buildAccountEmail, validateAccountEmail } from '../../co
 import DomainEmailField from '../../components/DomainEmailField';
 
 import { showAlert, showConfirm } from '../../utils/dialog';
+import { generatePassword } from '../../constants/password';
+import PasswordStrength from '../../components/PasswordStrength';
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
-
-/** Temporary password handed over once, exactly as the teacher screen does it. */
-function generatePassword() {
-  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789';
-  return Array.from({ length: 10 }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
-}
 
 /**
  * How far back the access feed reaches.
@@ -606,6 +602,7 @@ export default function AdminAdmins() {
                     New
                   </button>
                 </div>
+                <PasswordStrength value={form.password} />
               </div>
               {error && <p className="text-xs text-red-600 bg-red-50 border border-red-200 rounded-lg p-2.5">{error}</p>}
               <div className="flex gap-2 pt-1">

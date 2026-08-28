@@ -2,6 +2,8 @@ import { useState } from 'react';
 import { Loader2, Lock, Eye, EyeOff, KeyRound, CheckCircle2, ShieldCheck } from 'lucide-react';
 import { API_URL, apiFetch, setSession } from '../../config';
 import { getStoredUser, updateStoredUser } from '../../utils/session';
+import { passwordProblem } from '../../constants/password';
+import PasswordStrength from '../../components/PasswordStrength';
 
 /**
  * The admin's own account page.
@@ -101,7 +103,10 @@ export default function AdminSettings() {
     // Checked here as well as on the server so the common mistakes are named
     // without a round trip. The server still decides.
     if (passwords.newPass !== passwords.confirm) return setPwError('The two new passwords do not match.');
-    if (passwords.newPass.length < 6) return setPwError('Your new password must be at least 6 characters.');
+    // The server re-runs this; here it saves a round-trip and lands the message
+    // next to the field. See constants/password.js.
+    const weak = passwordProblem(passwords.newPass);
+    if (weak) return setPwError(weak);
     if (passwords.newPass === passwords.current) return setPwError('Your new password must be different from the current one.');
 
     setBusy(true);
@@ -207,8 +212,9 @@ export default function AdminSettings() {
             <input id="admin-new-pw" type="password" required autoComplete="new-password"
               value={passwords.newPass}
               onChange={e => setPasswords(p => ({ ...p, newPass: e.target.value }))}
-              placeholder="At least 6 characters"
+              placeholder="At least 8 characters"
               className="w-full border border-slate-200 px-4 py-2.5 rounded-lg text-sm outline-none focus:ring-2 focus:ring-brand-navy" />
+            <PasswordStrength value={passwords.newPass} />
           </div>
           <div>
             <label htmlFor="admin-confirm-pw" className="block text-sm font-medium text-slate-700 mb-1">Confirm new password</label>

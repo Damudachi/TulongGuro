@@ -33,6 +33,7 @@ const {
   RENEWED_TOKEN_HEADER,
 } = require('./auth');
 const { classSchoolId, staffMayAccess, staffMayReadStudent, REAL_WORK } = require('./access');
+const { passwordProblem } = require('./passwordRule');
 const {
   TEACHER_EMAIL_DOMAIN, ADMIN_EMAIL_DOMAIN, accountDomain, normalizeEmail,
   validateAccountEmail, validateContactEmail,
@@ -2760,6 +2761,11 @@ app.post('/api/auth/register', registerRateLimit, registerDailyRateLimit, (req, 
     if (!name || !email || !password || !schoolName) {
       return refuse(400, { error: 'Name, email, password and school name are all required.' });
     }
+    // This creates the school's first admin — the account that can then create
+    // every other account at that school — so it is the last place to let a
+    // weak password through. See passwordRule.js.
+    const pwProblem = passwordProblem(password);
+    if (pwProblem) return refuse(400, { error: pwProblem });
     const nameCheck = validateFullName(name);
     if (!nameCheck.ok) {
       return refuse(400, { code: 'NAME_FORMAT', error: nameCheck.error });
@@ -3415,11 +3421,10 @@ app.post('/api/platform/operators', platformRateLimit, async (req, res) => {
     if (!name?.trim() || !email?.trim() || !password) {
       return res.status(400).json({ success: false, error: 'Name, email and a password are required.' });
     }
-    if (String(password).length < 8) {
-      // Longer than the six a school account needs. This one reaches every
-      // school on the platform, so it is not the place to match that floor.
-      return res.status(400).json({ success: false, error: 'An operator password must be at least 8 characters.' });
-    }
+    // Every account on the platform now meets this; an operator reaches every
+    // school, so it is emphatically not the place to fall below it.
+    const pwProblem = passwordProblem(password);
+    if (pwProblem) return res.status(400).json({ success: false, error: pwProblem });
     // A real, deliverable address — not one of the synthetic login domains. An
     // operator is a person we can reach, and this is also the only identifier
     // they sign in with.
@@ -3456,9 +3461,8 @@ app.put('/api/platform/operators/:userId/password', platformRateLimit, async (re
   try {
     const me = await operatorRow(req);
     const { password } = req.body || {};
-    if (!password || String(password).length < 8) {
-      return res.status(400).json({ success: false, error: 'An operator password must be at least 8 characters.' });
-    }
+    const pwProblem = passwordProblem(password);
+    if (pwProblem) return res.status(400).json({ success: false, error: pwProblem });
     // Your own password is changed from the account menu, which asks for the
     // current one first. This route is for helping a colleague who is locked
     // out, and allowing it on yourself would be a way to skip that check.
@@ -3997,9 +4001,8 @@ app.put('/api/platform/schools/:schoolId/admins/:userId/password', platformRateL
     const { school, target } = await platformAdminInSchool(req.params.schoolId, req.params.userId);
     const { password } = req.body || {};
     if (!password) return res.status(400).json({ success: false, error: 'A new password is required.' });
-    if (String(password).length < 6) {
-      return res.status(400).json({ success: false, error: 'The password must be at least 6 characters.' });
-    }
+    const pwProblem = passwordProblem(password);
+    if (pwProblem) return res.status(400).json({ success: false, error: pwProblem });
 
     const revokedAt = new Date();
     await prisma.user.update({
@@ -4139,9 +4142,12 @@ app.post('/api/auth/change-password', changePasswordRateLimit, async (req, res) 
     if (!currentPassword || !newPassword) {
       return res.status(400).json({ success: false, error: 'Enter your current password and a new one.' });
     }
-    if (String(newPassword).length < 6) {
-      return res.status(400).json({ success: false, error: 'Your new password must be at least 6 characters.' });
-    }
+    // Every role goes through here, students included. Their ISSUED default is
+    // still a birthday and is exempt — it is generated, never posted to this
+    // route — but what they choose to replace it with meets the same rule
+    // everyone else does. See passwordRule.js for why that asymmetry is meant.
+    const pwProblem = passwordProblem(newPassword);
+    if (pwProblem) return res.status(400).json({ success: false, error: pwProblem });
     if (currentPassword === newPassword) {
       return res.status(400).json({ success: false, error: 'Your new password must be different from the current one.' });
     }
@@ -5266,6 +5272,10 @@ app.post('/api/admin/:adminId/teachers', async (req, res) => {
     if (!name?.trim() || !email?.trim() || !password) {
       return res.status(400).json({ success: false, error: 'Name, email and a temporary password are required.' });
     }
+    // A temporary password is still a live credential until the teacher
+    // replaces it, and plenty never do. It meets the same rule.
+    const pwProblem = passwordProblem(password);
+    if (pwProblem) return res.status(400).json({ success: false, error: pwProblem });
     // A teacher account has to sit on this school's teacher domain — see
     // accountEmails.js for why the domain carries both the role and the school.
     // Passing the school's code is what stops two schools colliding on the same
@@ -5307,6 +5317,8 @@ app.put('/api/admin/:adminId/teachers/:teacherId/password', async (req, res) => 
     const admin = await requireAdminSchool(req.params.adminId);
     const { password } = req.body;
     if (!password) return res.status(400).json({ success: false, error: 'A new password is required.' });
+    const pwProblem = passwordProblem(password);
+    if (pwProblem) return res.status(400).json({ success: false, error: pwProblem });
     const teacher = await prisma.user.findUnique({ where: { id: req.params.teacherId } });
     if (!teacher || teacher.schoolId !== admin.schoolId) {
       return res.status(404).json({ success: false, error: 'Teacher not found in your school.' });
@@ -5713,9 +5725,8 @@ app.post('/api/admin/:adminId/admins', async (req, res) => {
     if (!name?.trim() || !email?.trim() || !password) {
       return res.status(400).json({ success: false, error: 'Name, email and a temporary password are required.' });
     }
-    if (String(password).length < 6) {
-      return res.status(400).json({ success: false, error: 'The temporary password must be at least 6 characters.' });
-    }
+    const pwProblem = passwordProblem(password);
+    if (pwProblem) return res.status(400).json({ success: false, error: pwProblem });
     // As on the teacher route: a school with no code yet gets one now, so the
     // new admin lands on @admin.<code>.edu.ph rather than the shared @admin.com
     // that made every school's "principal" the same account.
@@ -5938,9 +5949,8 @@ app.put('/api/admin/:adminId/admins/:userId/password', async (req, res) => {
     const target = await coAdminInSchool(admin, req.params.userId);
     const { password } = req.body || {};
     if (!password) return res.status(400).json({ success: false, error: 'A new password is required.' });
-    if (String(password).length < 6) {
-      return res.status(400).json({ success: false, error: 'The temporary password must be at least 6 characters.' });
-    }
+    const pwProblem = passwordProblem(password);
+    if (pwProblem) return res.status(400).json({ success: false, error: pwProblem });
 
     const revokedAt = new Date();
     await prisma.user.update({
