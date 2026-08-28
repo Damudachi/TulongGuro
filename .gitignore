@@ -99,3 +99,5 @@ server/data/ebeis-raw/
 # reach an older one from.
 server/data/*-backup.json
 /new issues
+check.py
+check2.py
