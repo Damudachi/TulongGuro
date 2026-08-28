@@ -1205,7 +1205,6 @@ const ASSIST_MAX_TRIES = Number(process.env.GEMINI_ASSIST_MAX_TRIES || 4);
 const AI_DAILY_BUDGET_PER_MODEL = Number(process.env.AI_DAILY_BUDGET_PER_MODEL || 20);
 
 const genAIByKey = aiApiKeys.map(k => ({ ...k, client: new GoogleGenerativeAI(k.value) }));
-const genAI = genAIByKey[0]?.client || null;
 
 /**
  * The grading pool: one entry per (credential × model) pair, because that pair
@@ -1304,18 +1303,19 @@ function rollPoolDayIfNeeded() {
   gradingPool.forEach(e => { e.used = 0; e.failed = 0; e.unavailableUntil = 0; e.restReason = null; });
 }
 
-// Single handles kept for the callers that are not grading (rubric extraction,
-// curriculum parsing, roster extraction) and want one model rather than the
-// rotation. These used to simply alias the ends of the gradingPool — harmless
-// while every pool entry was a bare model handle, but the pool's entries now
-// carry GRADING_SYSTEM_INSTRUCTION and a grading-sized maxOutputTokens (see
+// One handle on the first credential, kept as the "is the AI configured at all"
+// sentinel the document callers check before they start reading a file off
+// disk. The calls themselves go through documentRotation, which builds its own
+// handles per credential — the `modelLite` twin that used to live beside this
+// one was the whole of the old fallback and is gone with it.
+//
+// Deliberately NOT an alias of a gradingPool entry: the pool's entries carry
+// GRADING_SYSTEM_INSTRUCTION and a grading-sized maxOutputTokens (see
 // GRADING_MAX_OUTPUT_TOKENS), neither of which belongs on "parse this
 // curriculum PDF" or "extract this rubric image" — a curriculum document can
 // legitimately need a larger output than one paper's grading JSON, and it
-// should not be grading a paper's tone rules while it does it. Same
-// credentials as the ends of the pool, plain model config otherwise.
+// should not be grading a paper's tone rules while it does it.
 const model = genAIByKey[0]?.client.getGenerativeModel({ model: GRADING_MODEL_IDS[0], generationConfig: { responseMimeType: 'application/json' } }, { timeout: GEMINI_DOCUMENT_TIMEOUT_MS }) || null;
-const modelLite = genAIByKey[genAIByKey.length - 1]?.client.getGenerativeModel({ model: GRADING_MODEL_IDS[GRADING_MODEL_IDS.length - 1], generationConfig: { responseMimeType: 'application/json' } }, { timeout: GEMINI_DOCUMENT_TIMEOUT_MS }) || null;
 /**
  * One entry per (assist model × credential), same shape as gradingPool and for
  * the same reason: the pair, not the model alone, is what Google meters.
@@ -2184,26 +2184,109 @@ async function generateGradingContent(parts, opts = {}) {
   throw new AiUnavailableError('OUTAGE', 'The AI service did not respond. Please try again shortly.');
 }
 
-// Same as generateContentWithRetry, but if the primary model still fails after
-// exhausting its retries (e.g. a sustained outage, not just a momentary blip),
-// falls back once to modelLite before giving up. Used by the non-grading callers
-// — grading itself goes through generateGradingContent's full rotation.
-async function generateContentWithFallback(primaryModel, parts, opts = {}) {
-  try {
-    return await generateContentWithRetry(primaryModel, parts, opts);
-  } catch (err) {
-    const cls = classifyAiError(err);
-    if ((cls.quota || cls.transient) && modelLite && primaryModel !== modelLite) {
-      console.log(`⚠ Primary model still failing after retries, falling back to modelLite: ${cls.message.slice(0, 120)}`);
-      return await generateContentWithRetry(modelLite, parts, {
-        purpose: opts.purpose || 'OTHER',
-        modelLabel: LITE_MODEL_ID,
-        retries: 1,
-        baseDelayMs: opts.baseDelayMs || 800,
-      });
-    }
-    throw err;
+/**
+ * The buckets one DOCUMENT call may try, in order.
+ *
+ * "Document" is the non-grading work that hands the model a whole FILE rather
+ * than one pupil's paper: a rubric image or PDF, a curriculum guide, a photo of
+ * a class list. It used to run as "the primary model, retried twice on the same
+ * credential, then one drop to the lite model", and this deployment's own
+ * request log shows what that produced when Google's 3.6 capacity dipped:
+ *
+ *     EXTRACT gemini-3.6-flash        29.2s  TRANSIENT
+ *     EXTRACT gemini-3.6-flash retry 1 28.3s  TRANSIENT
+ *     EXTRACT gemini-3.6-flash retry 2 35.9s  TRANSIENT
+ *     EXTRACT gemini-3.5-flash-lite     3.3s  OK
+ *
+ * Ninety seconds spent re-dialling the one model that had just said it was out
+ * of capacity, and then the school's rubric was transcribed by the cheaper
+ * reader — silently, on the one call whose output every later grade is measured
+ * against. A 503 is Google-side capacity for a model on a PROJECT; the lever
+ * that moves it is a different credential, not a fourth attempt on the same one.
+ *
+ * So the rotation walks CREDENTIALS on the preferred model first, one attempt
+ * each, and only reaches a different model when every one of those is spent.
+ * Same reasoning as generateAssistContent and gradingRotation, applied to the
+ * one path that had never had it — with the axes the other way round from the
+ * assistant's, because a document is read once at set-up and its accuracy is
+ * permanent, so quality is worth more here than the two seconds a lighter model
+ * would save.
+ *
+ * Fallback models get ONE try each, on the far credential, and only after the
+ * preferred model has run out. Set GEMINI_DOCUMENT_MODELS to a single id to
+ * drop them entirely and let a document call fail rather than be read by a
+ * weaker model.
+ */
+const DOCUMENT_MODEL_IDS = [...new Set(
+  (process.env.GEMINI_DOCUMENT_MODELS || `${PRIMARY_MODEL_ID},${LITE_MODEL_ID}`)
+    .split(',').map(s => s.trim()).filter(Boolean)
+)];
+
+/** How many CREDENTIALS the preferred document model may be tried on before the
+ *  rotation moves to the next model. A document call can legitimately take a
+ *  minute (GEMINI_DOCUMENT_TIMEOUT_MS), and there is an admin watching a
+ *  spinner, so this is bounded well below the number of keys a deployment may
+ *  hold. Three is enough to prove a 503 is Google-wide rather than one
+ *  project's, and to cross into a second project's daily budget. */
+const DOCUMENT_MAX_TRIES = Number(process.env.GEMINI_DOCUMENT_MAX_TRIES || 3);
+
+function documentRotation(modelId, systemInstruction) {
+  if (!genAIByKey.length) return [];
+  const handle = (client, id) => client.getGenerativeModel({
+    model: id,
+    ...(systemInstruction ? { systemInstruction } : {}),
+    generationConfig: { responseMimeType: 'application/json' },
+  }, { timeout: GEMINI_DOCUMENT_TIMEOUT_MS });
+
+  const preferred = modelId || DOCUMENT_MODEL_IDS[0];
+  const others = DOCUMENT_MODEL_IDS.filter(id => id !== preferred);
+  const last = genAIByKey[genAIByKey.length - 1];
+
+  return [
+    ...genAIByKey.slice(0, Math.max(DOCUMENT_MAX_TRIES, 1)).map(k => ({
+      label: `${preferred}@${k.name}`,
+      model: handle(k.client, preferred),
+    })),
+    ...others.map(id => ({ label: `${id}@${last.name}`, model: handle(last.client, id) })),
+  ];
+}
+
+/**
+ * Run one document call against that rotation. Replaces the old
+ * generateContentWithFallback — same callers, same purpose labels, a rotation
+ * behind it instead of one model and one drop.
+ *
+ * `systemInstruction` is passed per call rather than baked into a shared handle
+ * because the rubric reader has one and the curriculum and roster readers do
+ * not, and a fallback that quietly dropped it would answer the same prompt
+ * under a different role.
+ */
+async function generateDocumentContent(parts, opts = {}) {
+  const { purpose = 'OTHER', modelId = null, systemInstruction = null } = opts;
+  const rotation = documentRotation(modelId, systemInstruction);
+  if (!rotation.length) {
+    throw new AiUnavailableError('NOT_CONFIGURED', 'Gemini AI is not configured on this server.');
   }
+  // Nothing to move on TO with a single credential, so that deployment keeps a
+  // retry inside the bucket; a pool of keys spends the same budget across them.
+  const retries = genAIByKey.length > 1 ? 0 : 1;
+
+  let lastErr = null;
+  for (const bucket of rotation) {
+    try {
+      return await generateContentWithRetry(bucket.model, parts, { purpose, retries, modelLabel: bucket.label });
+    } catch (err) {
+      lastErr = err;
+      const cls = classifyAiError(err);
+      console.log(`⚠ document call ${bucket.label} failed: ${cls.message.slice(0, 120)}`);
+      // A file this model could not decode will not decode on the next one, and
+      // a malformed request is malformed everywhere. Only capacity and quota
+      // — the things a different bucket actually changes — are worth moving for.
+      if (!cls.quota && !cls.transient && !cls.credential) break;
+      if (cls.badImage) break;
+    }
+  }
+  throw lastErr;
 }
 
 /**
@@ -5784,9 +5867,20 @@ app.post('/api/admin/:adminId/classes', async (req, res) => {
     const section = await sectionInSchool(admin, sectionId);
 
     const trimmedName = typeof name === 'string' ? name.trim() : '';
-    const resolvedName = trimmedName || [subject, gradeLevel].filter(Boolean).join(' — ');
+    // Blank name → "Subject — Section", not "Subject — Grade Level". The grade
+    // level is stored on the shell in its own column and shown on its own
+    // badge, so putting it in the name repeated it; and it made the name
+    // non-unique the moment one teacher took the same subject into two blocks
+    // of the same grade — two shells both called "English — Grade 6", which is
+    // exactly the pair an admin most needs to tell apart. The section's own
+    // grade prefix comes off first (sections are stored house-style as
+    // "Grade 6 - Newton", see formatSectionName) or the grade level would walk
+    // straight back into the name it was taken out of.
+    const bareSection = (section.name || '').trim().replace(/^(?:grade|gr|g)\s*\.?\s*\d{1,2}\s*[-–—:.]?\s*/i, '').trim()
+      || (section.name || '').trim();
+    const resolvedName = trimmedName || [subject, bareSection].filter(Boolean).join(' — ');
     if (!resolvedName) {
-      return res.status(400).json({ success: false, error: 'Give this class a name, or choose a subject and grade level to build one from.' });
+      return res.status(400).json({ success: false, error: 'Give this class a name, or choose a subject and a block section to build one from.' });
     }
     const targetYear = typeof schoolYear === 'string' && schoolYear.trim() ? schoolYear.trim() : currentSchoolYear();
 
@@ -7705,10 +7799,10 @@ async function extractRosterFromImage(localPath, mime) {
   }
 
   try {
-    const result = await generateContentWithFallback(model, [
+    const result = await generateDocumentContent([
       ROSTER_OCR_PROMPT,
       { inlineData: { data: fs.readFileSync(prepared).toString('base64'), mimeType: sentMime } }
-    ], { purpose: 'EXTRACT', modelLabel: PRIMARY_MODEL_ID });
+    ], { purpose: 'EXTRACT' });
     const text = (await result.response).text().replace(/```json\n?|\n?```/gi, '').trim();
 
     let parsed;
@@ -8812,7 +8906,7 @@ RULES:
       }
     }];
 
-    const result = await generateContentWithFallback(model, [parsePrompt, ...fileParts], { purpose: 'PARSE', modelLabel: PRIMARY_MODEL_ID });
+    const result = await generateDocumentContent([parsePrompt, ...fileParts], { purpose: 'PARSE' });
     const text = result.response.text();
     let cleaned = text
       .replace(/```json\s*/gi, '')
@@ -9948,10 +10042,13 @@ async function extractRubricFromUpload(file, { activityPoints = null } = {}) {
     const base64Data = fileBuffer.toString('base64');
     const mimeType = file.mimetype || 'image/jpeg';
 
-    const model = genAI.getGenerativeModel({
-      model: 'gemini-3.5-flash',
-      systemInstruction: 'You are an expert at reading and parsing grading rubrics from images and documents. You extract structured rubric criteria with exact point values and descriptions. Output strict JSON only.'
-    });
+    // The rubric reader's role. Passed to the rotation rather than bound to one
+    // handle here: this function used to build its OWN model on a hardcoded
+    // 'gemini-3.5-flash' while labelling every log row PRIMARY_MODEL_ID, so the
+    // request log claimed 3.6-flash for calls 3.5-flash had actually answered.
+    // The model id now comes from one place (DOCUMENT_MODEL_IDS) and the label
+    // is written by whichever bucket answered.
+    const RUBRIC_READER_ROLE = 'You are an expert at reading and parsing grading rubrics from images and documents. You extract structured rubric criteria with exact point values and descriptions. Output strict JSON only.';
 
     const prompt = `Analyze this grading rubric document/image and extract ALL criteria.
 
@@ -9983,10 +10080,10 @@ Rules:
 - Ensure points add up correctly
 - Return ONLY valid JSON, no markdown`;
 
-    const result = await generateContentWithFallback(model, [
+    const result = await generateDocumentContent([
       prompt,
       { inlineData: { data: base64Data, mimeType } }
-    ], { purpose: 'EXTRACT', modelLabel: PRIMARY_MODEL_ID });
+    ], { purpose: 'EXTRACT', systemInstruction: RUBRIC_READER_ROLE });
     const response = await result.response;
     let text = response.text();
     // Clean markdown code blocks if present

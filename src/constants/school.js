@@ -41,6 +41,41 @@ export function formatSectionName(name, gradeLevel) {
   return bare ? `${gradeLevel} - ${bare}` : gradeLevel;
 }
 
+/**
+ * The block's own name, with the house-style grade prefix taken back off —
+ * "Grade 6 - Newton" → "Newton".
+ *
+ * The inverse of what formatSectionName prepends, and the same pattern, so the
+ * two cannot drift apart. Used where the grade level is already on screen or
+ * already carried by the row, and repeating it just makes the label longer
+ * without making it more specific.
+ */
+export function sectionShortName(name) {
+  const typed = (name || '').replace(/\s+/g, ' ').trim();
+  if (!typed) return '';
+  const bare = typed.replace(/^(?:grade|gr|g)\s*\.?\s*\d{1,2}\s*[-–—:.]?\s*/i, '').trim();
+  // "Grade 6" and nothing else is its own name — there is no shorter form.
+  return bare || typed;
+}
+
+/**
+ * What a course shell is called when the admin leaves the name field blank.
+ *
+ * Subject and SECTION, not subject and grade level. The grade level is its own
+ * field on the create form and is already on the shell's badge, so
+ * "English — Grade 6" repeated a fact the row was showing anyway, and — worse —
+ * gave the same name to two shells whenever one teacher taught the same subject
+ * into two blocks of one grade. "English — Newton" is what a teacher calls it
+ * out loud, and it is the part that actually tells the two apart.
+ *
+ * The section's grade prefix is stripped rather than passed through, or the
+ * name would come back as "English — Grade 6 - Newton" and put the grade level
+ * right back where it was taken from.
+ */
+export function defaultClassName(subject, sectionName) {
+  return [subject, sectionShortName(sectionName)].filter(Boolean).join(' — ');
+}
+
 export const SCHOOL_YEARS = (() => {
   const now = new Date();
   const startYear = now.getMonth() >= 5 ? now.getFullYear() : now.getFullYear() - 1;

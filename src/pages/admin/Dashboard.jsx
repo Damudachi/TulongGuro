@@ -209,10 +209,19 @@ export default function AdminDashboard() {
 
   return (
     <div className="p-4 md:p-8 max-w-5xl mx-auto pb-24">
-      <div className="mb-8">
-        <h1 className="text-2xl font-bold text-brand-slate">{core?.school?.name || 'Your school'}</h1>
-        <p className="text-slate-500 text-sm">
-          {greeting()}, {firstName(admin.name)} — school year {DEFAULT_SCHOOL_YEAR}
+      {/* ── Welcome ──
+          Brand-coloured and full width, the way the student and teacher
+          dashboards open. The school's own name is the headline because this
+          is the one page an admin lands on every morning, and a 14px line of
+          slate on white read as a page title rather than as a welcome. The
+          greeting, the admin's name and the school year sit under it as one
+          supporting line — the same three facts as before, given room. */}
+      <div className="bg-royal-500 text-white px-5 py-6 md:px-8 md:py-8 rounded-3xl mb-8">
+        <h1 className="font-display text-3xl md:text-4xl font-extrabold leading-tight">
+          {core?.school?.name || 'Your school'}
+        </h1>
+        <p className="text-royal-100 text-sm md:text-base font-semibold mt-1.5">
+          {greeting()}, {firstName(admin.name)} 👋 · School year {DEFAULT_SCHOOL_YEAR}
         </p>
       </div>
 

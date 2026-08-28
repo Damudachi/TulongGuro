@@ -5,7 +5,7 @@ import {
   Pencil, Check,
 } from 'lucide-react';
 import { API_URL, apiFetch } from '../../config';
-import { GRADE_LEVELS, SUBJECTS, SCHOOL_YEARS, DEFAULT_SCHOOL_YEAR } from '../../constants/school';
+import { GRADE_LEVELS, SUBJECTS, SCHOOL_YEARS, DEFAULT_SCHOOL_YEAR, defaultClassName } from '../../constants/school';
 import { foldForSearch } from '../../utils/roster';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
@@ -198,6 +198,13 @@ export default function AdminClasses() {
   const teachers = data?.teachers || [];
   const sections = data?.sections || [];
   const matchedCurriculum = curriculumFor(data?.curriculums, form.subject, form.gradeLevel);
+  // What the shell will be called if the name field is left blank. The SECTION,
+  // not the grade level: the grade level is already its own field on this form
+  // and is carried on the shell's own badge, so "English — Grade 6" said the
+  // same thing twice and said nothing about which Grade 6 block it was. Two
+  // shells for two sections of the same subject and grade used to arrive with
+  // identical names. "English — Newton" is how a teacher names it out loud.
+  const defaultShellName = defaultClassName(form.subject, sections.find(s => s.id === form.sectionId)?.name);
 
   // Matches the shell's own name, its section and its teacher — the three ways
   // an admin refers to a class out loud. Folded the same way every other search
@@ -562,12 +569,14 @@ export default function AdminClasses() {
                   <label className="block text-sm font-medium text-slate-700 mb-1">Class name</label>
                   <input type="text" value={form.name} autoComplete="off"
                     onChange={e => setForm({ ...form, name: e.target.value })}
-                    placeholder={form.subject && form.gradeLevel ? `${form.subject} — ${form.gradeLevel}` : 'e.g. Filipino — Grade 6'}
+                    placeholder={defaultShellName || 'e.g. Filipino — Newton'}
                     className="w-full border border-slate-200 p-2.5 rounded-lg outline-none focus:ring-2 focus:ring-brand-navy text-sm" />
                 </div>
               </div>
               <p className="text-[11px] text-slate-400 -mt-2">
-                Leave the name blank to use &ldquo;Subject — Grade Level&rdquo;.
+                Leave the name blank to use &ldquo;Subject — Section&rdquo;
+                {defaultShellName && <> — this one saves as <span className="font-semibold text-brand-navy">{defaultShellName}</span></>}.
+                The grade level comes from the field above, so it is not repeated here.
               </p>
 
               {matchedCurriculum && (

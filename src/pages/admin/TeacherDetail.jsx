@@ -6,7 +6,7 @@ import {
   ChevronRight,
 } from 'lucide-react';
 import { API_URL, apiFetch } from '../../config';
-import { GRADE_LEVELS, SUBJECTS, SCHOOL_YEARS, DEFAULT_SCHOOL_YEAR, formatSectionName } from '../../constants/school';
+import { GRADE_LEVELS, SUBJECTS, SCHOOL_YEARS, DEFAULT_SCHOOL_YEAR, formatSectionName, defaultClassName } from '../../constants/school';
 import StudentCredentials from '../../components/StudentCredentials';
 import SectionMoveConfirm from '../../components/SectionMoveConfirm';
 import RosterSearch from '../../components/RosterSearch';
@@ -429,6 +429,12 @@ export default function AdminTeacherDetail() {
   // of a one-line description, but it is also forty rows the admin should know
   // they are creating.
   const matchedCurriculum = curriculumFor(curriculums, classForm.subject, classForm.gradeLevel);
+  // What the shell is called if the name field is left blank — subject and
+  // SECTION. See defaultClassName for why the grade level is not in it.
+  const defaultShellName = defaultClassName(
+    classForm.subject,
+    schoolSections.find(s => s.id === classForm.sectionId)?.name,
+  );
 
   /**
    * Each section's roster alphabetised and numbered once, then filtered.
@@ -644,9 +650,12 @@ export default function AdminTeacherDetail() {
                 <label className="block text-xs font-medium text-slate-600 mb-1">Class name</label>
                 <input type="text" value={classForm.name} autoComplete="off"
                   onChange={e => setClassForm({ ...classForm, name: e.target.value })}
-                  placeholder={classForm.subject && classForm.gradeLevel ? `${classForm.subject} — ${classForm.gradeLevel}` : 'e.g. Filipino — Grade 6'}
+                  placeholder={defaultShellName || 'e.g. Filipino — Newton'}
                   className="w-full border border-slate-200 p-2 rounded-lg text-sm outline-none focus:ring-2 focus:ring-brand-navy" />
-                <p className="text-[11px] text-slate-400 mt-1">Leave blank to use "Subject — Grade Level".</p>
+                <p className="text-[11px] text-slate-400 mt-1">
+                  Leave blank to use &ldquo;Subject — Section&rdquo;
+                  {defaultShellName && <> — this one saves as <span className="font-semibold text-brand-navy">{defaultShellName}</span></>}.
+                </p>
               </div>
             </div>
 

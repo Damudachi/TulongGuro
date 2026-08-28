@@ -387,13 +387,20 @@ describe('POST /api/admin/:adminId/classes assigns the shell to a named teacher'
     expect(prismaFake.class.create).toHaveBeenCalled();
   });
 
-  it('names the class from subject and grade level when none is given', async () => {
+  // Subject and SECTION, not subject and grade level. The grade level is stored
+  // on the shell in its own column and shown on its own badge, and naming from
+  // it gave two shells the same name the moment one teacher taught one subject
+  // into two blocks of one grade — the exact pair an admin needs to tell apart.
+  it('names the class from subject and section when none is given', async () => {
     inSchoolSection();
     prismaFake.class.create.mockResolvedValue({ id: 'class-3' });
 
     await postClass(adminToken(), shell({ name: '   ' }));
 
-    expect(prismaFake.class.create.mock.calls[0][0].data.name).toBe('Filipino — Grade 6');
+    // SECTION_NAME is 'Grade 6 - Sampaguita' — the house-style grade prefix
+    // comes back off, or the grade level would walk into the name it was
+    // deliberately taken out of.
+    expect(prismaFake.class.create.mock.calls[0][0].data.name).toBe('Filipino — Sampaguita');
   });
 
   it('refuses a second identical shell for the same teacher', async () => {
