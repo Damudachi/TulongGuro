@@ -97,7 +97,7 @@ export function schoolCodeProblem(value) {
     return `A school code can be at most ${MAX_SCHOOL_CODE_LENGTH} characters.`;
   }
   if (!/^[a-z0-9]+(-[a-z0-9]+)*$/.test(code)) {
-    return 'A school code can use small letters, numbers and single hyphens — like mes-maba.';
+    return 'A school code can use small letters, numbers and single hyphens — like ses-samp.';
   }
   return null;
 }

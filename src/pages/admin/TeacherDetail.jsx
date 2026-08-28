@@ -6,7 +6,7 @@ import {
   ChevronRight,
 } from 'lucide-react';
 import { API_URL, apiFetch } from '../../config';
-import { GRADE_LEVELS, SUBJECTS, SCHOOL_YEARS, DEFAULT_SCHOOL_YEAR, formatSectionName, defaultClassName } from '../../constants/school';
+import { GRADE_LEVELS, SUBJECTS, SCHOOL_YEARS, DEFAULT_SCHOOL_YEAR, formatSectionName, courseShellName } from '../../constants/school';
 import StudentCredentials from '../../components/StudentCredentials';
 import SectionMoveConfirm from '../../components/SectionMoveConfirm';
 import RosterSearch from '../../components/RosterSearch';
@@ -35,9 +35,13 @@ function generatePassword() {
  */
 function HandoverIcon() {
   return (
-    <span className="relative inline-grid place-items-center w-4 h-4" aria-hidden="true">
-      <Users className="w-4 h-4" />
-      <ArrowRightLeft className="absolute -bottom-1.5 -right-1.5 w-2.5 h-2.5" strokeWidth={3.5} />
+    // Every part of the glyph stays inside the same 16px box the Pencil and
+    // Trash2 beside it occupy. The badge used to hang outside the span on both
+    // axes, which made this one button visibly larger than its neighbours and
+    // than the identical row of controls under Sections & Students.
+    <span className="relative block w-4 h-4" aria-hidden="true">
+      <Users className="absolute top-0 left-0 w-3 h-3" />
+      <ArrowRightLeft className="absolute bottom-0 right-0 w-2.5 h-2.5" strokeWidth={3.5} />
     </span>
   );
 }
@@ -210,12 +214,21 @@ export default function AdminTeacherDetail() {
     setClassFormError('');
     setBusy(true);
     const curriculum = curriculumFor(data?.curriculums, classForm.subject, classForm.gradeLevel);
+    // Rebuilt here rather than read off the render: the box holds the block's
+    // name ("Tesla"), and what the shell is saved as is that with the subject
+    // and grade level in front of it.
+    const resolvedName = courseShellName(
+      classForm.subject,
+      classForm.gradeLevel,
+      classForm.name,
+      schoolSections.find(s => s.id === classForm.sectionId)?.name,
+    );
     try {
       const res = await apiFetch(`${API_URL}/api/admin/${admin.id}/classes`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          name: classForm.name,
+          name: resolvedName,
           subject: classForm.subject,
           gradeLevel: classForm.gradeLevel,
           schoolYear: classForm.schoolYear,
@@ -429,10 +442,13 @@ export default function AdminTeacherDetail() {
   // of a one-line description, but it is also forty rows the admin should know
   // they are creating.
   const matchedCurriculum = curriculumFor(curriculums, classForm.subject, classForm.gradeLevel);
-  // What the shell is called if the name field is left blank — subject and
-  // SECTION. See defaultClassName for why the grade level is not in it.
-  const defaultShellName = defaultClassName(
+  // What the shell will be called, from whatever the form holds right now:
+  // "English Grade 6 - Tesla". The admin types only the block; the subject and
+  // grade level chosen above are added by courseShellName.
+  const defaultShellName = courseShellName(
     classForm.subject,
+    classForm.gradeLevel,
+    classForm.name,
     schoolSections.find(s => s.id === classForm.sectionId)?.name,
   );
 
@@ -647,14 +663,18 @@ export default function AdminTeacherDetail() {
                 </select>
               </div>
               <div>
-                <label className="block text-xs font-medium text-slate-600 mb-1">Class name</label>
+                {/* The block's own name and nothing else. The subject and the
+                    grade level are chosen two fields up and are put in front of
+                    it automatically, so typing "Grade 6" here only ever got it
+                    said twice. */}
+                <label className="block text-xs font-medium text-slate-600 mb-1">Section name</label>
                 <input type="text" value={classForm.name} autoComplete="off"
                   onChange={e => setClassForm({ ...classForm, name: e.target.value })}
-                  placeholder={defaultShellName || 'e.g. Filipino — Newton'}
+                  placeholder="e.g. Newton"
                   className="w-full border border-slate-200 p-2 rounded-lg text-sm outline-none focus:ring-2 focus:ring-brand-navy" />
                 <p className="text-[11px] text-slate-400 mt-1">
-                  Leave blank to use &ldquo;Subject — Section&rdquo;
-                  {defaultShellName && <> — this one saves as <span className="font-semibold text-brand-navy">{defaultShellName}</span></>}.
+                  Just the block &mdash; Newton, Ruby, Tesla. Leave it blank to use the section chosen above
+                  {defaultShellName && <> &mdash; this one saves as <span className="font-semibold text-brand-navy">{defaultShellName}</span></>}.
                 </p>
               </div>
             </div>

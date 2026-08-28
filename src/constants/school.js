@@ -59,21 +59,44 @@ export function sectionShortName(name) {
 }
 
 /**
- * What a course shell is called when the admin leaves the name field blank.
+ * What a course shell is called: "English Grade 6 - Newton".
  *
- * Subject and SECTION, not subject and grade level. The grade level is its own
- * field on the create form and is already on the shell's badge, so
- * "English — Grade 6" repeated a fact the row was showing anyway, and — worse —
- * gave the same name to two shells whenever one teacher taught the same subject
- * into two blocks of one grade. "English — Newton" is what a teacher calls it
- * out loud, and it is the part that actually tells the two apart.
+ * Subject, then grade level, then the block — in that order, assembled here
+ * rather than typed. The admin supplies only the block's own name ("Newton",
+ * "Ruby", "Tesla"); the subject and the grade level are already their own
+ * fields on the same form, and asking anyone to repeat them in a name produced
+ * exactly the drift you would expect — "English — Newton" beside
+ * "Eng G6 Ruby" beside "English Grade 6 - Tesla", three shapes for one thing.
  *
- * The section's grade prefix is stripped rather than passed through, or the
- * name would come back as "English — Grade 6 - Newton" and put the grade level
- * right back where it was taken from.
+ * The block's grade prefix comes off first (sections are stored house-style as
+ * "Grade 6 - Newton", see formatSectionName) or the grade level would land in
+ * the name twice: "English Grade 6 - Grade 6 - Newton".
+ *
+ * Whichever halves exist are used — no block gives "English Grade 6", and no
+ * subject or grade gives the block on its own.
  */
-export function defaultClassName(subject, sectionName) {
-  return [subject, sectionShortName(sectionName)].filter(Boolean).join(' — ');
+export function defaultClassName(subject, sectionName, gradeLevel) {
+  const head = [subject, gradeLevel].filter(Boolean).join(' ').trim();
+  const block = sectionShortName(sectionName);
+  if (!head) return block;
+  if (!block) return head;
+  return `${head} - ${block}`;
+}
+
+/**
+ * The name a course shell is saved under, from the create form's four fields.
+ *
+ * A function rather than a value computed in a component body, because two
+ * places need the same answer and must not be able to disagree: the hint under
+ * the field that promises what the shell will be called, and the submit that
+ * actually sends it.
+ *
+ * The typed section name wins over the chosen block's own — an admin who types
+ * "Tesla" is naming the shell, not re-picking the section — and a blank field
+ * falls back to the block that was chosen above it.
+ */
+export function courseShellName(subject, gradeLevel, typedSectionName, blockSectionName) {
+  return defaultClassName(subject, (typedSectionName || '').trim() || blockSectionName, gradeLevel);
 }
 
 export const SCHOOL_YEARS = (() => {

@@ -5,7 +5,7 @@ import {
   Pencil, Check,
 } from 'lucide-react';
 import { API_URL, apiFetch } from '../../config';
-import { GRADE_LEVELS, SUBJECTS, SCHOOL_YEARS, DEFAULT_SCHOOL_YEAR, defaultClassName } from '../../constants/school';
+import { GRADE_LEVELS, SUBJECTS, SCHOOL_YEARS, DEFAULT_SCHOOL_YEAR, courseShellName } from '../../constants/school';
 import { foldForSearch } from '../../utils/roster';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
@@ -152,12 +152,17 @@ export default function AdminClasses() {
     setError('');
     setIsSaving(true);
     const curriculum = curriculumFor(data?.curriculums, form.subject, form.gradeLevel);
+    // Rebuilt from the fields rather than read off the render, so the name that
+    // is sent is the one the hint under the box promised.
+    const resolvedName = courseShellName(
+      form.subject, form.gradeLevel, form.name, sections.find(s => s.id === form.sectionId)?.name,
+    );
     try {
       const res = await apiFetch(`${API_URL}/api/admin/${admin.id}/classes`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          name: form.name,
+          name: resolvedName,
           subject: form.subject,
           gradeLevel: form.gradeLevel,
           schoolYear: form.schoolYear,
@@ -198,13 +203,12 @@ export default function AdminClasses() {
   const teachers = data?.teachers || [];
   const sections = data?.sections || [];
   const matchedCurriculum = curriculumFor(data?.curriculums, form.subject, form.gradeLevel);
-  // What the shell will be called if the name field is left blank. The SECTION,
-  // not the grade level: the grade level is already its own field on this form
-  // and is carried on the shell's own badge, so "English — Grade 6" said the
-  // same thing twice and said nothing about which Grade 6 block it was. Two
-  // shells for two sections of the same subject and grade used to arrive with
-  // identical names. "English — Newton" is how a teacher names it out loud.
-  const defaultShellName = defaultClassName(form.subject, sections.find(s => s.id === form.sectionId)?.name);
+  // What the shell will be called: "English Grade 6 - Tesla". The name field
+  // below holds the block and only the block; the subject and grade level are
+  // their own fields on this form and courseShellName puts them in front.
+  const defaultShellName = courseShellName(
+    form.subject, form.gradeLevel, form.name, sections.find(s => s.id === form.sectionId)?.name,
+  );
 
   // Matches the shell's own name, its section and its teacher — the three ways
   // an admin refers to a class out loud. Folded the same way every other search
@@ -566,17 +570,18 @@ export default function AdminClasses() {
                   </select>
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-1">Class name</label>
+                  {/* The block's own name only: "Newton", "Ruby", "Tesla". */}
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Section name</label>
                   <input type="text" value={form.name} autoComplete="off"
                     onChange={e => setForm({ ...form, name: e.target.value })}
-                    placeholder={defaultShellName || 'e.g. Filipino — Newton'}
+                    placeholder="e.g. Newton"
                     className="w-full border border-slate-200 p-2.5 rounded-lg outline-none focus:ring-2 focus:ring-brand-navy text-sm" />
                 </div>
               </div>
               <p className="text-[11px] text-slate-400 -mt-2">
-                Leave the name blank to use &ldquo;Subject — Section&rdquo;
-                {defaultShellName && <> — this one saves as <span className="font-semibold text-brand-navy">{defaultShellName}</span></>}.
-                The grade level comes from the field above, so it is not repeated here.
+                Just the block &mdash; Newton, Ruby, Tesla. Leave it blank to use the section chosen above
+                {defaultShellName && <> &mdash; this one saves as <span className="font-semibold text-brand-navy">{defaultShellName}</span></>}.
+                The subject and grade level come from the fields above, so they are not typed here.
               </p>
 
               {matchedCurriculum && (

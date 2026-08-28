@@ -190,7 +190,7 @@ function validateSlug(raw) {
     return {
       ok: false,
       slug,
-      error: 'A school code can use small letters, numbers and single hyphens — like mes-maba.',
+      error: 'A school code can use small letters, numbers and single hyphens — like ses-samp.',
     };
   }
   if (RESERVED_SLUGS.has(slug)) {

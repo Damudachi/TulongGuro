@@ -867,9 +867,15 @@ export default function Register() {
               {/* ── School code ──
                   Suggested from the name, editable, checked live. The preview
                   below it is the part that actually teaches the rule: a
-                  registrant reading "principal@admin.mes-maba.edu.ph" grasps
+                  registrant reading "principal@admin.ses-samp.edu.ph" grasps
                   what the code is for instantly, where "initials plus the first
-                  four letters of the first word" has to be decoded first. */}
+                  four letters of the name" has to be decoded first.
+
+                  The box carries no placeholder example. It fills itself from
+                  the school name typed above, and any example parked in it was
+                  a real school's code sitting on an open form — the worked
+                  example lives in the hint underneath, on a school that does
+                  not exist. */}
               <div>
                 <label className="tg-label" htmlFor="school-code">School Code</label>
                 <div className="flex items-stretch rounded-2xl border-2 border-navy-700/10 bg-white overflow-hidden focus-within:border-royal-400 transition-colors">
@@ -877,11 +883,7 @@ export default function Register() {
                     id="school-code"
                     type="text"
                     className="flex-1 min-w-0 px-4 py-3 outline-none text-navy-700 font-semibold font-mono lowercase"
-                    // Prefixed "e.g." because this box fills itself the moment a
-                    // school name is typed, so a bare `mes-maba` sitting in it
-                    // read as a real suggestion for somebody else's school
-                    // rather than as an example of the shape.
-                    placeholder="e.g. mes-maba"
+                    placeholder=""
                     autoComplete="off"
                     spellCheck="false"
                     aria-describedby="school-code-hint"
@@ -939,10 +941,15 @@ export default function Register() {
                 <p id="school-code-hint" className="text-xs text-navy-400 mt-1.5 font-semibold leading-relaxed">
                   <strong className="text-navy-500">This code goes inside every account's email address at your school.</strong>{' '}
                   It is suggested from your school's name — the initials, then the first four letters
-                  of the name{suggestedCode && formData.schoolName.trim()
-                    ? <> (so <span className="font-mono font-bold text-navy-500">{formData.schoolName.trim()}</span> gives{' '}
-                        <span className="font-mono font-bold text-navy-500">{suggestedCode}</span>)</>
-                    : ''}.
+                  of the name.{' '}
+                  {suggestedCode && formData.schoolName.trim()
+                    ? <>So <span className="font-mono font-bold text-navy-500">{formData.schoolName.trim()}</span> gives{' '}
+                        <span className="font-mono font-bold text-navy-500">{suggestedCode}</span>.{' '}</>
+                    /* Only until the name is typed. The example school is made
+                       up on purpose — a real one shown here would name a school
+                       to everyone who opens this form. */
+                    : <>Sample Elementary School would give{' '}
+                        <span className="font-mono font-bold text-navy-500">ses-samp</span>.{' '}</>}
                   You can change it now; once your school is approved it is permanent.
                 </p>
               </div>

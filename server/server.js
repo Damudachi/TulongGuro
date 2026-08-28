@@ -5867,18 +5867,19 @@ app.post('/api/admin/:adminId/classes', async (req, res) => {
     const section = await sectionInSchool(admin, sectionId);
 
     const trimmedName = typeof name === 'string' ? name.trim() : '';
-    // Blank name → "Subject — Section", not "Subject — Grade Level". The grade
-    // level is stored on the shell in its own column and shown on its own
-    // badge, so putting it in the name repeated it; and it made the name
-    // non-unique the moment one teacher took the same subject into two blocks
-    // of the same grade — two shells both called "English — Grade 6", which is
-    // exactly the pair an admin most needs to tell apart. The section's own
-    // grade prefix comes off first (sections are stored house-style as
-    // "Grade 6 - Newton", see formatSectionName) or the grade level would walk
-    // straight back into the name it was taken out of.
+    // Blank name → "Subject Grade - Section": "English Grade 6 - Newton". The
+    // section is in it because without it two blocks of one grade taught the
+    // same subject by one teacher arrived with identical names — exactly the
+    // pair an admin most needs to tell apart. The grade level is in it because
+    // that is the house style the whole console reads in, and the create form
+    // now asks only for the block, assembling the rest. The section's own grade
+    // prefix comes off first (sections are stored house-style as
+    // "Grade 6 - Newton", see formatSectionName) or the grade level would
+    // appear twice: "English Grade 6 - Grade 6 - Newton".
     const bareSection = (section.name || '').trim().replace(/^(?:grade|gr|g)\s*\.?\s*\d{1,2}\s*[-–—:.]?\s*/i, '').trim()
       || (section.name || '').trim();
-    const resolvedName = trimmedName || [subject, bareSection].filter(Boolean).join(' — ');
+    const shellHead = [subject, gradeLevel].filter(Boolean).join(' ').trim();
+    const resolvedName = trimmedName || [shellHead, bareSection].filter(Boolean).join(' - ');
     if (!resolvedName) {
       return res.status(400).json({ success: false, error: 'Give this class a name, or choose a subject and a block section to build one from.' });
     }
