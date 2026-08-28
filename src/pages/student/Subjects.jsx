@@ -7,6 +7,7 @@ import { mergeActivitySnapshot } from '../../utils/offlineSnapshot';
 import { gradeTone, gradeChip, DEFAULT_PASSING_GRADE } from '../../utils/grading';
 import { submissionWindow, formatDeadline } from '../../utils/deadlines';
 import { indexForKey } from '../../constants/folderTints';
+import { activityLink } from '../../utils/activityLink';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
 
@@ -137,8 +138,12 @@ export default function Subjects() {
               const hasFeedback = !!activity.submission?.feedback;
               const subWindow = submissionWindow(activity);
 
+              // The whole card is the target, not just a button in the corner:
+              // on a phone this is a thumb-sized row of text, and an activity
+              // with nothing submitted yet had nothing clickable on it at all.
               return (
-                <div key={activity.id} className="tg-card p-5">
+                <Link key={activity.id} to={activityLink(activity)}
+                  className="tg-card p-5 block hover:border-brand-green transition-colors">
                   <div className="flex items-start justify-between gap-3">
                     <div className="flex items-start gap-3 flex-1 min-w-0">
                       <div className={cn(theme.soft, theme.ink, 'p-2.5 rounded-2xl shrink-0')}>
@@ -168,12 +173,14 @@ export default function Subjects() {
                       </div>
                     </div>
 
-                    {activity.submission?.id && (
-                      <Link to={`/student/output/${activity.submission.id}`}
-                        className={cn('shrink-0 inline-flex items-center gap-1 text-xs font-bold text-white px-4 py-2 rounded-full shadow-pop transition-all active:translate-y-0.5 active:shadow-none', theme.tile)}>
-                        View <ChevronRight className="w-3 h-3" />
-                      </Link>
-                    )}
+                    {/* Not a Link any more: the card itself is one now, and an
+                        anchor inside an anchor is invalid markup that browsers
+                        resolve however they like. It keeps its look because it
+                        is still the thing the eye goes to — it just no longer
+                        owns the navigation. */}
+                    <span className={cn('shrink-0 inline-flex items-center gap-1 text-xs font-bold text-white px-4 py-2 rounded-full shadow-pop', theme.tile)}>
+                      {activity.submission?.id ? 'View' : 'Open'} <ChevronRight className="w-3 h-3" />
+                    </span>
                   </div>
 
                   {hasFeedback && (
@@ -184,7 +191,7 @@ export default function Subjects() {
                       </p>
                     </div>
                   )}
-                </div>
+                </Link>
               );
             })}
           </div>

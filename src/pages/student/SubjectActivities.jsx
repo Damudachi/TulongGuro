@@ -4,6 +4,7 @@ import { CheckCircle2, Clock, AlertCircle, Loader2, FileText, ChevronRight, Book
 import { API_URL, apiFetch } from '../../config';
 import { getStoredUser } from '../../utils/session';
 import { submissionWindow, formatDeadline } from '../../utils/deadlines';
+import { activityLink } from '../../utils/activityLink';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
 
@@ -89,14 +90,12 @@ export default function SubjectActivities() {
                   const status = STATUS_STYLES[statusKey] || STATUS_STYLES.NONE;
                   const StatusIcon = status.icon;
                   const subWindow = submissionWindow(activity);
+                  // Still needed for the "Teacher submits" pill below.
                   const isTeacherUpload = activity.submissionMode !== 'STUDENT_SUBMIT';
-                  // Graded work opens the feedback page; otherwise go to the
-                  // right activity page for this submission mode.
-                  const to = activity.submission?.status === 'GRADED'
-                    ? `/student/output/${activity.submission.id}`
-                    : isTeacherUpload
-                      ? `/student/activity/${activity.id}`
-                      : `/student/submit?activityId=${activity.id}`;
+                  // Shared with the subject detail screen so a card cannot
+                  // lead somewhere different depending on which list it was
+                  // tapped from. See utils/activityLink.js.
+                  const to = activityLink(activity);
 
                   return (
                     <Link key={activity.id} to={to}

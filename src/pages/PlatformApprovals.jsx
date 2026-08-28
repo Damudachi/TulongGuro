@@ -402,11 +402,19 @@ export default function PlatformApprovals() {
   /**
    * Every school, for the admin-accounts view.
    *
-   * `status=ALL` on purpose. Admin trouble is not confined to approved schools
-   * - a pending one whose registrant typed their own password wrong is exactly
-   * the case an operator gets called about - and hiding those would leave the
-   * screen unable to answer the question it exists for. Each row carries its
-   * status so nothing reads as approved that is not.
+   * `status=ALL` on purpose, then REJECTED dropped. Admin trouble is not
+   * confined to approved schools - a pending one whose registrant typed their
+   * own password wrong is exactly the case an operator gets called about - and
+   * hiding those would leave the screen unable to answer the question it exists
+   * for. Each row carries its status so nothing reads as approved that is not.
+   *
+   * A REJECTED school is the one case that argument does not cover: nobody at
+   * it can sign in at all, so there is no admin trouble to fix and its rows
+   * were only ever noise in a list an operator scans under time pressure. They
+   * come back on their own if the rejection is reversed - the filter is on
+   * status, not a flag - which is why this drops them here rather than asking
+   * the server to forget they exist. The approvals view still lists them under
+   * its Rejected tab, which is where a refused registration belongs.
    *
    * The list endpoint already embeds each school's admins, so opening a row
    * costs nothing; the per-school route is only used to redraw after an action.
@@ -425,7 +433,8 @@ export default function PlatformApprovals() {
         if (res.status === 401) { sessionStorage.removeItem(TOKEN_STORAGE); setKey(''); }
         return;
       }
-      const list = data.schools || [];
+      // Rejected schools drop out here — see the note above this callback.
+      const list = (data.schools || []).filter(s => s.status !== 'REJECTED');
       setAdminSchools(list);
       // Seeded from what the list already returned, so a row opens filled in
       // rather than spinning on a request that would return the same thing.
@@ -940,6 +949,25 @@ export default function PlatformApprovals() {
                             The note is what the lookup found at the moment this
                             school registered, not a re-check now: the masterlist
                             file is replaced whenever DepEd publishes a new one. */}
+                        {/* The code this registration is CLAIMING, which is not
+                            the same as one it owns: several pending schools may
+                            ask for `sjes-sanj` at once and approving one settles
+                            it against the others. An operator deciding between
+                            two similar names needs to see that they collide
+                            before they approve one of them, not after. */}
+                        <div className="mt-2 text-xs">
+                          {s.slug ? (
+                            <p className="text-slate-600">
+                              School code <span className="font-mono font-bold text-slate-800">{s.slug}</span>
+                              {s.status === 'PENDING' && <span className="text-slate-400"> · claimed, not yet owned</span>}
+                            </p>
+                          ) : (
+                            /* Registered before codes existed. Not a fault, and
+                               not something to chase — it falls back to the
+                               legacy flat login domains. */
+                            <p className="text-slate-400 font-mono">no school code</p>
+                          )}
+                        </div>
                         {s.depedSchoolId && (
                           <div className="mt-2 text-xs text-slate-600 space-y-0.5">
                             <p className="font-mono font-bold text-slate-800">
@@ -959,6 +987,31 @@ export default function PlatformApprovals() {
                             <a href={s.proofUrl} target="_blank" rel="noreferrer"
                               className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-slate-100 text-xs font-bold text-slate-700 hover:bg-slate-200">
                               <FileText className="w-3.5 h-3.5" /> Proof document
+                            </a>
+                          )}
+
+                          {/* The logo the registrant uploaded, shown as itself
+                              rather than as a link that says "logo". It is the
+                              one piece of evidence here an operator can judge at
+                              a glance — a school seal against a stock photo —
+                              and a thumbnail answers that without a click. A
+                              plain <a>, unlike the registrant ID: the logo lives
+                              in the public bucket, so there is no signed link to
+                              mint and nothing here that expires. */}
+                          {s.logoUrl && (
+                            <a href={s.logoUrl} target="_blank" rel="noreferrer"
+                              className="inline-flex items-center gap-1.5 pl-1 pr-2.5 py-1 rounded-lg bg-slate-100 text-xs font-bold text-slate-700 hover:bg-slate-200">
+                              <img src={s.logoUrl} alt=""
+                                className="w-5 h-5 rounded object-cover bg-white shrink-0" />
+                              View logo
+                              {/* Consent is a separate question from having the
+                                  file. Operators review either way; the school
+                                  only agreed to have it DISPLAYED if this is
+                                  set, so the absence is worth saying out loud
+                                  rather than assuming. */}
+                              {!s.logoConsentAt && (
+                                <span className="font-normal text-amber-700">· no display consent</span>
+                              )}
                             </a>
                           )}
 
@@ -1014,7 +1067,14 @@ export default function PlatformApprovals() {
                         )}
 
                         <p className="text-xs text-slate-400 mt-1.5">
-                          Registered {new Date(s.createdAt).toLocaleDateString('en-PH', { day: 'numeric', month: 'short', year: 'numeric' })}
+                          {/* The clock time matters as much as the date here:
+                              twenty registrations inside one minute is the
+                              flood signature this row exists to surface, and a
+                              date alone flattens that into "20 today". */}
+                          Registered {new Date(s.createdAt).toLocaleString('en-PH', {
+                            day: 'numeric', month: 'short', year: 'numeric',
+                            hour: 'numeric', minute: '2-digit',
+                          })}
                           {' Â· '}{s._count?.users ?? 0} account(s)
                           {' Â· '}{s._count?.sections ?? 0} section(s)
                           {' Â· '}{s._count?.curriculums ?? 0} curriculum(s)

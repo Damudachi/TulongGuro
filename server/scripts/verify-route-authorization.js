@@ -78,6 +78,10 @@ const ROUTE_MANIFEST = {
   'DELETE /api/teacher/rubric-templates/:id': { needsCheck: true },
   'POST /api/teacher/rubric/extract': { needsCheck: false, note: 'stateless file->rubric extraction, no resource id' },
   'POST /api/teacher/submissions/:id/analyze': { needsCheck: true },
+  // Rewrites the stored photo of a specific submission. Same shape as analyze:
+  // the id is the only thing naming the resource, so the handler proves the
+  // caller teaches the class it belongs to.
+  'POST /api/teacher/submissions/:id/redact': { needsCheck: true },
   'GET /api/teacher/activities/:activityId/ai-check': { needsCheck: true },
   'POST /api/teacher/activities/:activityId/ai-check': { needsCheck: true },
   'GET /api/teacher/ai-jobs/:jobId': { needsCheck: true },

@@ -1062,6 +1062,67 @@ async function deletePrivate(key) {
 }
 
 /**
+ * The bytes behind a stored image URL, wherever it is actually kept.
+ *
+ * Two shapes exist because uploadToCloud returns two: a Supabase public URL in
+ * a configured deployment, and `/uploads/<name>` in local development. Reading
+ * the local one back over HTTP would mean the server making a request to
+ * itself, which needs to know its own address and fails behind a proxy — so it
+ * is read off disk instead.
+ */
+async function readImageBytes(storedUrl) {
+  try {
+    if (storedUrl.startsWith('/uploads/')) {
+      return fs.readFileSync(path.join(uploadsDir, path.basename(storedUrl)));
+    }
+    const res = await fetch(storedUrl);
+    if (!res.ok) return null;
+    return Buffer.from(await res.arrayBuffer());
+  } catch (err) {
+    console.error('⚠ Could not read image bytes:', err.message);
+    return null;
+  }
+}
+
+/**
+ * Keep the untouched original of a submission photo, once and only once.
+ *
+ * Called immediately before a redaction overwrites what imageUrl points at, so
+ * a box dragged over the wrong part of the page is recoverable rather than
+ * final. Lives in the private bucket — the same one registrant IDs use — so it
+ * is never served publicly and only a platform operator can be handed a link.
+ *
+ * The key is derived from the submission id rather than random, because the
+ * whole point is to be able to answer "is there already an original for this
+ * one" without a column to record a random key in.
+ *
+ * `upsert: false` is the load-bearing part, and the reason this is a named
+ * function rather than three lines inline: the archive must capture the FIRST
+ * state of the page. A second redaction that overwrote it would replace the
+ * pristine original with an already-redacted copy, quietly destroying the
+ * exact thing the first redaction preserved. A duplicate here is success, not
+ * an error.
+ */
+async function archiveOriginalOnce(submissionId, buffer) {
+  const key = `redaction-originals/${submissionId}.jpg`;
+  if (!useSupabase) {
+    const dest = path.join(privateUploadsDir, key);
+    fs.mkdirSync(path.dirname(dest), { recursive: true });
+    if (!fs.existsSync(dest)) fs.writeFileSync(dest, buffer);
+    return key;
+  }
+  const { error } = await supabase.storage
+    .from(PRIVATE_BUCKET)
+    .upload(key, buffer, { contentType: 'image/jpeg', upsert: false });
+  // Supabase reports an existing object as a 409 / "Duplicate". That is the
+  // already-archived case and is exactly what should happen on a re-redaction.
+  if (error && !/duplicate|already exists|resource already/i.test(error.message || '')) {
+    throw new Error(`Could not archive the original photo: ${error.message}`);
+  }
+  return key;
+}
+
+/**
  * Remove a file previously written by uploadToCloud, given the URL it returned.
  * Best-effort: used on the privacy-rejection path, where the scan has already
  * been persisted by the time the AI tells us it has a name on it. Leaving it in
@@ -11671,6 +11732,127 @@ app.get('/api/submissions/:id', async (req, res) => {
 
 
 // Trigger AI grading on an existing PENDING submission
+/**
+ * Black out part of a submitted photo, permanently.
+ *
+ * Students photograph their work with their name written at the top, because
+ * that is what they have been taught to do on paper. That name then sits in a
+ * public storage URL and is handed to the AI with the rest of the page. This is
+ * the teacher's way to take it back out.
+ *
+ * ── Burnt in, not drawn on top ──
+ * The rectangles are composited into the pixels and the result replaces what
+ * imageUrl points at. An overlay drawn in the browser would have looked
+ * identical on this screen and redacted nothing: the original bytes would still
+ * be one URL away, and still be what got sent to Gemini.
+ *
+ * ── The original is kept, privately ──
+ * A teacher who drags the box over the wrong part of the page would otherwise
+ * have destroyed a student's graded work with no way back. So the untouched
+ * original is archived to the private bucket first, under a key derived from
+ * the submission id, before anything overwrites it. That bucket is the one
+ * registrant IDs live in — never public, only ever handed out as a short-lived
+ * signed link to a platform operator. The redaction is real for everyone who
+ * can reach the submission; it is recoverable by the one role that can already
+ * see everything.
+ *
+ * `upsert: false` on that archive is doing the work: the FIRST redaction stores
+ * the pristine page, and a second one cannot overwrite the archive with an
+ * already-redacted copy. Without it, redacting twice would quietly destroy the
+ * original the first redaction was careful to keep.
+ *
+ * ── Why the coordinates come from the browser but the drawing happens here ──
+ * The obvious build is a canvas in the browser: draw, export, upload. It does
+ * not work. The image is served from Supabase on another origin, so drawing it
+ * into a canvas taints it and toBlob() throws SecurityError — after the teacher
+ * has already done the work. Sending normalised rectangles instead means the
+ * only thing the browser has to get right is where the boxes are, and sharp
+ * does the compositing against the real pixels at full resolution.
+ *
+ * Normalised 0-1 rather than pixels, because the teacher drew them against
+ * whatever size the image happened to be rendered at on their screen.
+ */
+app.post('/api/teacher/submissions/:id/redact', async (req, res) => {
+  try {
+    const sub = await prisma.submission.findUnique({
+      where: { id: req.params.id },
+      include: { activity: { include: { class: { select: { teacherId: true } } } } }
+    });
+    if (!sub) return res.status(404).json({ success: false, error: 'Submission not found' });
+    if (sub.activity?.class?.teacherId !== req.auth.sub) {
+      return res.status(403).json({ success: false, error: 'You can only redact papers for your own classes.' });
+    }
+    if (!sub.imageUrl) {
+      return res.status(400).json({ success: false, error: 'This submission has no photo to redact.' });
+    }
+
+    // A rectangle off the edge of the page, or one with no area, is a drag that
+    // slipped rather than an instruction — clamped and dropped respectively,
+    // because refusing the whole request over one stray box would lose the
+    // other four the teacher meant.
+    const rects = (Array.isArray(req.body?.rects) ? req.body.rects : [])
+      .map((r) => ({
+        x: Math.min(Math.max(Number(r?.x) || 0, 0), 1),
+        y: Math.min(Math.max(Number(r?.y) || 0, 0), 1),
+        w: Math.min(Math.max(Number(r?.w) || 0, 0), 1),
+        h: Math.min(Math.max(Number(r?.h) || 0, 0), 1),
+      }))
+      .filter((r) => r.w > 0.001 && r.h > 0.001);
+    if (!rects.length) {
+      return res.status(400).json({ success: false, error: 'Draw at least one box over what should be hidden.' });
+    }
+
+    const original = await readImageBytes(sub.imageUrl);
+    if (!original) {
+      return res.status(400).json({ success: false, error: 'Could not read the submitted photo to redact it.' });
+    }
+
+    await archiveOriginalOnce(sub.id, original);
+
+    const meta = await sharp(original).metadata();
+    const width = meta.width || 0;
+    const height = meta.height || 0;
+    if (!width || !height) {
+      return res.status(400).json({ success: false, error: 'That photo could not be read as an image.' });
+    }
+
+    // One SVG overlay rather than one composite per rectangle: sharp reads it
+    // once, and the rounding happens against the real pixel dimensions instead
+    // of accumulating across several passes.
+    const boxes = rects.map((r) => {
+      const x = Math.round(r.x * width);
+      const y = Math.round(r.y * height);
+      const w = Math.min(Math.round(r.w * width), width - x);
+      const h = Math.min(Math.round(r.h * height), height - y);
+      return `<rect x="${x}" y="${y}" width="${w}" height="${h}" fill="#000" />`;
+    }).join('');
+    const overlay = Buffer.from(
+      `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}">${boxes}</svg>`
+    );
+    const redacted = await sharp(original)
+      .composite([{ input: overlay, top: 0, left: 0 }])
+      .jpeg({ quality: 90 })
+      .toBuffer();
+
+    // A NEW filename, not the old one overwritten. Same-path upsert leaves every
+    // browser, and Supabase's CDN, holding the un-redacted image for as long as
+    // it feels like caching it — which on a redaction is the one failure that
+    // matters.
+    const filename = `redacted-${sub.id}-${Date.now()}.jpg`;
+    const localPath = path.join(uploadsDir, filename);
+    fs.mkdirSync(uploadsDir, { recursive: true });
+    fs.writeFileSync(localPath, redacted);
+    const imageUrl = await uploadToCloud(localPath, filename, { folder: 'submissions', contentType: 'image/jpeg' });
+    try { fs.unlinkSync(localPath); } catch {}
+
+    await prisma.submission.update({ where: { id: sub.id }, data: { imageUrl } });
+    res.json({ success: true, imageUrl, boxes: rects.length });
+  } catch (e) {
+    console.error('Redaction failed:', e.message);
+    res.status(500).json({ success: false, error: 'Could not redact that photo. Please try again.' });
+  }
+});
+
 app.post('/api/teacher/submissions/:id/analyze', async (req, res) => {
   try {
     const sub = await prisma.submission.findUnique({

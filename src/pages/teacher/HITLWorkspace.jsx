@@ -1,12 +1,13 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
-import { ArrowLeft, Check, Edit2, Info, Sparkles, X, Send, Bot, Loader2, CheckCircle2, ChevronDown, Plus, Trash2, AlertTriangle, SkipForward, Send as SendIcon, RefreshCw, RotateCcw } from 'lucide-react';
+import { ArrowLeft, Check, Edit2, Info, Sparkles, X, Send, Bot, Loader2, CheckCircle2, ChevronDown, Plus, Trash2, AlertTriangle, SkipForward, Send as SendIcon, RefreshCw, RotateCcw, Eraser } from 'lucide-react';
 import { API_URL, apiFetch } from '../../config';
 import { rubricPointScale, formatRubricPoints } from '../../utils/rubric';
 import SubmissionImage from '../../components/SubmissionImage';
 import { ONBOARDING, hasSeenOnboarding, markOnboardingSeen } from '../../utils/onboarding';
 
 import { showAlert, showConfirm } from '../../utils/dialog';
+import RedactTool from '../../components/RedactTool';
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
 
 /**
@@ -316,6 +317,7 @@ export default function HITLWorkspace() {
   const [isReopening, setIsReopening] = useState(false);
 
   const [submission, setSubmission] = useState(null);
+  const [redacting, setRedacting] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
 
@@ -1455,6 +1457,18 @@ export default function HITLWorkspace() {
             button stranded above a screen of empty white. The two sides scroll
             independently now. */}
         <div className="flex-1 bg-slate-200 rounded-xl border border-slate-300 overflow-auto relative min-h-[70vh] md:min-h-0">
+          {/* Sticky rather than absolute: this pane scrolls a stitched
+              multi-page scan, and an absolutely positioned control would be
+              left behind on page one — where a name written at the top of
+              page three is exactly the thing being looked for. */}
+          {submission?.imageUrl && (
+            <div className="sticky top-0 left-0 right-0 z-10 flex justify-end p-2 pointer-events-none">
+              <button type="button" onClick={() => setRedacting(true)}
+                className="pointer-events-auto inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-ink-900/85 text-white text-xs font-bold backdrop-blur-sm hover:bg-ink-900">
+                <Eraser className="w-3.5 h-3.5" /> Redact
+              </button>
+            </div>
+          )}
           {submission?.imageUrl ? (
             <SubmissionImage
               url={submission.imageUrl}
@@ -2413,6 +2427,17 @@ export default function HITLWorkspace() {
         }
         .animate-bounce-in { animation: bounceIn 0.6s ease-out; }
       `}</style>
+
+      {/* The new URL is a new filename, so simply storing it repaints the pane
+          — there is no cache to bust and nothing to refetch. */}
+      {redacting && submission?.imageUrl && (
+        <RedactTool
+          submissionId={submission.id}
+          imageUrl={submission.imageUrl}
+          onClose={() => setRedacting(false)}
+          onRedacted={(imageUrl) => setSubmission(prev => ({ ...(prev || {}), imageUrl }))}
+        />
+      )}
     </div>
   );
 }
