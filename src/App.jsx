@@ -23,6 +23,7 @@ import AdminRubrics from './pages/admin/Rubrics';
 import AdminGrading from './pages/admin/Grading';
 import AdminAnalytics from './pages/admin/Analytics';
 import AdminShellAnalytics from './pages/admin/ShellAnalytics';
+import AdminSettings from './pages/admin/Settings';
 
 // Teacher Pages
 import TeacherDashboard from './pages/teacher/Dashboard';
@@ -87,6 +88,9 @@ function App() {
               its weights are the smallest unit an average means anything in. */}
           <Route path="analytics/shell/:classId" element={<AdminShellAnalytics />} />
           <Route path="admins" element={<AdminAdmins />} />
+          {/* The admin's own account. /admin/admins manages the *other* admins;
+              this is the only place an admin can change their own password. */}
+          <Route path="settings" element={<AdminSettings />} />
         </Route>
 
         {/* Teacher Routes */}

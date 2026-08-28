@@ -481,7 +481,7 @@ export default function AdminAdmins() {
                 <div className="flex gap-1 shrink-0">
                   <button onClick={() => handleResetPassword(a)}
                     disabled={isMe || busyId === a.id}
-                    title={isMe ? 'Change your own password from the login screen' : 'Reset password'}
+                    title={isMe ? 'Change your own password from Settings' : 'Reset password'}
                     className="p-2 rounded-lg bg-slate-100 text-slate-600 hover:bg-slate-200 disabled:opacity-30">
                     <KeyRound className="w-4 h-4" />
                   </button>

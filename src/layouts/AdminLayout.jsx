@@ -1,5 +1,5 @@
 import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom';
-import { LayoutDashboard, Users, GraduationCap, Layers, BookOpen, ClipboardList, Scale, TrendingUp, ShieldCheck, LogOut } from 'lucide-react';
+import { LayoutDashboard, Users, GraduationCap, Layers, BookOpen, ClipboardList, Scale, TrendingUp, ShieldCheck, Settings, LogOut } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import SchoolBadge from '../components/SchoolBadge';
 import Logo from '../components/Logo';
@@ -31,6 +31,10 @@ const NAV = [
   { name: 'Grading', path: '/admin/grading', icon: Scale },
   { name: 'Analytics', path: '/admin/analytics', icon: TrendingUp },
   { name: 'Admins', path: '/admin/admins', icon: ShieldCheck },
+  // Last, and separate from Admins on purpose: that page is the school's other
+  // admins, this one is your own account — including the only place an admin
+  // can change their own password.
+  { name: 'Settings', path: '/admin/settings', icon: Settings },
 ];
 
 export default function AdminLayout() {
@@ -118,8 +122,9 @@ export default function AdminLayout() {
               <p className="text-[11px] font-semibold text-white/50 truncate">{user.email || 'Administrator'}</p>
             </div>
           </div>
-          {/* Admins have no Settings page of their own, so the theme control
-              lives here rather than being the one role that cannot switch it. */}
+          {/* A shortcut, not the only copy: the same control is on
+              /admin/settings, which is where a phone reaches it — this sidebar
+              is desktop-only. */}
           <div className="px-1 pb-2">
             <ThemeToggle compact />
           </div>
