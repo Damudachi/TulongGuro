@@ -400,21 +400,24 @@ export default function PlatformApprovals() {
 
   // â”€â”€ Key gate â”€â”€
   /**
-   * Every school, for the admin-accounts view.
+   * The approved schools, for the admin-accounts view.
    *
-   * `status=ALL` on purpose, then REJECTED dropped. Admin trouble is not
-   * confined to approved schools - a pending one whose registrant typed their
-   * own password wrong is exactly the case an operator gets called about - and
-   * hiding those would leave the screen unable to answer the question it exists
-   * for. Each row carries its status so nothing reads as approved that is not.
+   * `status=APPROVED`, and only those. This screen used to ask for every school
+   * and show them all with a status chip, on the argument that admin trouble is
+   * not confined to approved schools - a pending school's registrant who typed
+   * their own password wrong is a real support call. That argument lost to a
+   * simpler one: nobody at a PENDING or REJECTED school can sign in at all, so
+   * there is no live account to rescue, and both were only ever noise in a list
+   * an operator scans under time pressure looking for a school that is running.
    *
-   * A REJECTED school is the one case that argument does not cover: nobody at
-   * it can sign in at all, so there is no admin trouble to fix and its rows
-   * were only ever noise in a list an operator scans under time pressure. They
-   * come back on their own if the rejection is reversed - the filter is on
-   * status, not a flag - which is why this drops them here rather than asking
-   * the server to forget they exist. The approvals view still lists them under
-   * its Rejected tab, which is where a refused registration belongs.
+   * A registration that has not been approved is the approvals tab's subject,
+   * not this one's, and it is still there under Pending and Rejected. A school
+   * appears here the moment it is approved, and disappears again if that is
+   * reversed - the filter is on status, so nothing has to be cleaned up.
+   *
+   * Filtered by the server rather than here: the operator cannot act on rows
+   * this screen will not show, so sending them at all was only bandwidth and a
+   * longer list to search.
    *
    * The list endpoint already embeds each school's admins, so opening a row
    * costs nothing; the per-school route is only used to redraw after an action.
@@ -424,7 +427,7 @@ export default function PlatformApprovals() {
     setAdminsLoading(true);
     setError('');
     try {
-      const res = await opFetch(`${API_URL}/api/platform/schools?status=ALL`, {
+      const res = await opFetch(`${API_URL}/api/platform/schools?status=APPROVED`, {
         
       });
       const data = await res.json();
@@ -433,8 +436,7 @@ export default function PlatformApprovals() {
         if (res.status === 401) { sessionStorage.removeItem(TOKEN_STORAGE); setKey(''); }
         return;
       }
-      // Rejected schools drop out here — see the note above this callback.
-      const list = (data.schools || []).filter(s => s.status !== 'REJECTED');
+      const list = data.schools || [];
       setAdminSchools(list);
       // Seeded from what the list already returned, so a row opens filled in
       // rather than spinning on a request that would return the same thing.
