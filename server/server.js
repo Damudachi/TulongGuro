@@ -98,17 +98,208 @@ const BCRYPT_SALT_ROUNDS = 10;
  * calls, the claim the registration itself makes, and the backfill script's
  * dry run — cannot disagree about what "taken" means.
  *
- * Counts a school in any status, and that is deliberate. A PENDING registration
- * holds its code while an operator looks at it, or two schools would be shown
- * the same code as free for however long the queue is. A REJECTED one holds it
- * too — its admin row still carries an address built on the code, so handing
- * the code to someone else would strand that address. Codes come free only when
- * a school row is deleted outright. See schoolSlug.js.
+ * Counts an APPROVED school only, and that is the whole rule: a code is owned
+ * by approval, not by registration.
+ *
+ * This used to count a school in any status, so the INSERT at registration took
+ * the code. The reasoning was that two schools filling in the form the same
+ * afternoon should not both be told `sjes-sanj` was free. True, but it bought
+ * that at a price that was not worth it — registration is the one door in this
+ * system anybody can walk up to, so a PENDING row is an unverified claim and a
+ * REJECTED one is a claim that was refused, and both of them held a code
+ * against every real school for as long as the row existed. An invented "San
+ * Joaquin Elementary School" could take `sjes-sanj` from the real San Jose
+ * Elementary School permanently, because rejection did not release it either.
+ *
+ * So a code is free until a school is approved on it. Several registrations may
+ * claim one at once and are all allowed to; the approve route settles which
+ * school gets it and what happens to the others. The partial unique index in
+ * migrations/20260829000000_school_slug_owned_on_approval is what actually
+ * enforces the "at most one APPROVED" half — this function keeps the common
+ * path off it. See schoolSlug.js.
+ *
+ * findFirst, not findUnique: `slug` is no longer a unique column, so there is
+ * no longer such a thing as *the* school with a code.
  */
 async function schoolSlugTaken(slug) {
   if (!slug) return false;
-  const existing = await prisma.school.findUnique({ where: { slug }, select: { id: true } });
-  return Boolean(existing);
+  const owner = await prisma.school.findFirst({
+    where: { slug, status: 'APPROVED' },
+    select: { id: true },
+  });
+  return Boolean(owner);
+}
+
+/**
+ * Whether a Prisma error is the "two schools approved on one code" conflict.
+ *
+ * Worth a named predicate because the shape of `meta.target` moved with the
+ * constraint. When `slug` was a column-level unique, Prisma reported the
+ * *field* and the check was `target.includes('slug')`. The partial index is not
+ * a field Prisma knows about, so it reports the *index name* instead. Both are
+ * accepted: a database reshaped by an older `db push` may still be carrying the
+ * whole-column constraint, and this branch has to catch it there too.
+ */
+function isSlugConflict(e) {
+  if (e?.code !== 'P2002') return false;
+  const target = [].concat(e.meta?.target ?? []).join(' ');
+  return target.includes('slug') || target.includes('School_slug_approved_key');
+}
+
+/**
+ * The other registrations claiming a code, excluding one.
+ *
+ * Only PENDING rows are returned. A REJECTED one claiming the same code is not
+ * contesting anything — it has already been refused, and re-rejecting it would
+ * overwrite the reason an operator wrote with a boilerplate one.
+ */
+async function contestingRegistrations(slug, exceptSchoolId) {
+  if (!slug) return [];
+  return prisma.school.findMany({
+    where: { slug, status: 'PENDING', id: { not: exceptSchoolId } },
+    select: { id: true, name: true },
+  });
+}
+
+/**
+ * End every live session at a school.
+ *
+ * The login gate only stops *new* sign-ins, so without this anyone already
+ * holding a token keeps working until it expires. Extracted because approval
+ * now rejects schools too — the contesting registrations that lose the code —
+ * and a rejection that left those sessions running would be a rejection in name
+ * only at exactly the moment it matters most.
+ */
+async function endSessionsForSchool(schoolId) {
+  const revokedAt = new Date();
+  const members = await prisma.user.findMany({ where: { schoolId }, select: { id: true } });
+  await prisma.user.updateMany({ where: { schoolId }, data: { sessionsValidFrom: revokedAt } });
+  members.forEach((m) => markRevoked(m.id, revokedAt));
+}
+
+/**
+ * A domain that no school can ever be issued, per school.
+ *
+ * `.invalid` is reserved by RFC 2606 and can never resolve, and accountDomain()
+ * only ever builds `<role>.<code>.edu.ph`, so an address parked here cannot
+ * collide with any school's namespace now or later. The school id is in the
+ * label so two schools' parked accounts cannot collide with each other either.
+ */
+function parkedDomainFor(schoolId) {
+  return `released-${String(schoolId).replace(/[^a-z0-9]/gi, '').slice(0, 12).toLowerCase()}.invalid`;
+}
+
+/**
+ * Move a school's staff addresses out of a code's namespace.
+ *
+ * Called when a school loses a code it was claiming. The reason it has to exist
+ * at all is that User.email and User.username are unique platform-wide while
+ * the addresses built on them are per-school: a losing registration's admin
+ * holds `principal@admin.sjes-sanj.edu.ph`, and leaving it there would hand the
+ * winning school a code whose most obvious address is already occupied by
+ * somebody at a school that does not own the code. They would own `sjes-sanj`
+ * and not be able to create their own principal.
+ *
+ * The addresses are parked rather than deleted. The accounts are real people's
+ * accounts, the rejection they follow is often reversed, and a row with a NULL
+ * username could not be signed in as even after that reversal. Parking keeps
+ * the account intact and merely stops it standing in the winner's way; the
+ * approve route puts a school's addresses back on a real domain if that school
+ * is later approved on a code of its own.
+ *
+ * Only addresses actually inside the contested namespace are touched. A staff
+ * account on the legacy flat domain, or one somebody moved elsewhere, is not
+ * this function's business.
+ */
+async function releaseSchoolAddresses(schoolId, slug) {
+  if (!slug) return 0;
+  const domains = ['ADMIN', 'TEACHER']
+    .map((role) => accountDomain(role, slug))
+    .filter(Boolean);
+  if (!domains.length) return 0;
+
+  const members = await prisma.user.findMany({
+    where: { schoolId },
+    select: { id: true, email: true, username: true },
+  });
+  const parked = parkedDomainFor(schoolId);
+  const inNamespace = (value) => {
+    const at = String(value ?? '').lastIndexOf('@');
+    return at > 0 && domains.includes(String(value).slice(at + 1).toLowerCase());
+  };
+
+  let moved = 0;
+  for (const member of members) {
+    const data = {};
+    // Rewritten one field at a time. The two columns usually hold the same
+    // string but are not guaranteed to — a legacy account may have a username
+    // that was never an address — so each is judged on its own.
+    if (inNamespace(member.email)) data.email = `${member.email.slice(0, member.email.lastIndexOf('@'))}@${parked}`;
+    if (inNamespace(member.username)) data.username = `${member.username.slice(0, member.username.lastIndexOf('@'))}@${parked}`;
+    if (!Object.keys(data).length) continue;
+    try {
+      await prisma.user.update({ where: { id: member.id }, data });
+      moved += 1;
+    } catch (err) {
+      // One account that will not move must not stop the rest. The winner is
+      // blocked only on the addresses that are actually still in the way, and
+      // an operator can see this line.
+      console.error(`[release] could not park ${member.id} out of ${slug}:`, err.message);
+    }
+  }
+  if (moved) console.log(`🔓 Released ${moved} address(es) from ${slug} (school ${schoolId})`);
+  return moved;
+}
+
+/**
+ * Put parked addresses back on a real domain.
+ *
+ * The other half of releaseSchoolAddresses, and the reason parking is safe to
+ * do at all. A school that lost a code, was rejected for it, and is later
+ * approved on a code of its own would otherwise be approved with every staff
+ * login still sitting on `.invalid` — an approved school nobody can sign in to,
+ * which is a worse outcome than the collision this all started with.
+ *
+ * Keyed on the account's role, because the domain is: an admin goes back to
+ * `admin.<code>.edu.ph` and a teacher to `teacher.<code>.edu.ph`. A role with
+ * no domain rule — a student, who is enrolled from a roster and often has no
+ * address at all — is left alone.
+ */
+async function reissueParkedAddresses(schoolId, slug) {
+  if (!slug) return 0;
+  const parked = parkedDomainFor(schoolId);
+  const members = await prisma.user.findMany({
+    where: { schoolId },
+    select: { id: true, role: true, email: true, username: true },
+  });
+
+  let restored = 0;
+  for (const member of members) {
+    const domain = accountDomain(member.role, slug);
+    if (!domain) continue;
+    const rehome = (value) => {
+      const at = String(value ?? '').lastIndexOf('@');
+      if (at < 1 || String(value).slice(at + 1).toLowerCase() !== parked) return null;
+      return `${String(value).slice(0, at)}@${domain}`;
+    };
+    const data = {};
+    const email = rehome(member.email);
+    const username = rehome(member.username);
+    if (email) data.email = email;
+    if (username) data.username = username;
+    if (!Object.keys(data).length) continue;
+    try {
+      await prisma.user.update({ where: { id: member.id }, data });
+      restored += 1;
+    } catch (err) {
+      // The address it wants is occupied at the new code. Left parked rather
+      // than guessed at: an admin can rename the account deliberately, and a
+      // silently altered login is worse than one that is visibly still parked.
+      console.error(`[reissue] could not restore ${member.id} onto ${slug}:`, err.message);
+    }
+  }
+  if (restored) console.log(`🔑 Restored ${restored} address(es) onto ${slug} (school ${schoolId})`);
+  return restored;
 }
 
 /**
@@ -2790,12 +2981,11 @@ app.post('/api/auth/register', registerRateLimit, registerDailyRateLimit, (req, 
     const school = await prisma.school.create({
       data: {
         name: trimmedSchool, logoUrl, brandColor: brandColor || null, status: 'PENDING',
-        // Claimed here, at registration, rather than at approval. Two schools
-        // filling in the form the same afternoon would otherwise both be told
-        // the code was free and the second would break on approval, after a
-        // human had already reviewed it. The unique constraint on the column is
-        // what actually settles the race — the check above only keeps the
-        // common path off it.
+        // A claim on a code, not ownership of one. Another PENDING registration
+        // may be carrying the same code right now and that is allowed: nobody
+        // has checked either school yet, so neither has a better title to it
+        // than the other. Approval is what converts one of these claims into
+        // ownership and refuses the rest — see the approve route.
         slug: schoolSlug,
         depedSchoolId: schoolId,
         // The masterlist's own name and verdict, frozen as they were at
@@ -2861,23 +3051,24 @@ app.post('/api/auth/register', registerRateLimit, registerDailyRateLimit, (req, 
   } catch (e) {
     await deletePrivate(storedRegistrantIdPath);
 
-    // ── Two schools claiming one code in the same instant ──
+    // ── A code that was approved to somebody else mid-registration ──
     //
-    // The check above asks whether the code is free, and the answer is true
-    // right up until somebody else's INSERT lands. Two schools whose names
-    // reduce to the same code — San Joaquin and San Jose both give `sjes-san` —
-    // submitting seconds apart is exactly the case that outruns it, and the
-    // unique constraint on School.slug is what actually settles it.
+    // Two registrations claiming one code no longer collide here: several
+    // PENDING rows may carry the same code, so the ordinary race this branch
+    // was written for cannot happen at the INSERT any more. What is still
+    // possible is narrower — the check above found the code unowned, and an
+    // operator approved another school onto it in the seconds before this
+    // INSERT landed, so the partial unique index refuses the row.
     //
     // The loser must not be shown a raw P2002. It reads as a server fault,
     // which it is not: their registration is fine and one field needs changing.
-    // So it is reported the same way a code taken *before* they started is,
+    // So it is reported the same way a code owned *before* they started is,
     // with the same alternatives — a registrant should not have to know whether
     // they lost a race or arrived late.
-    if (e?.code === 'P2002' && [].concat(e.meta?.target ?? []).includes('slug')) {
+    if (isSlugConflict(e)) {
       return refuse(400, {
         code: 'SCHOOL_CODE_TAKEN',
-        error: 'Another school claimed that school code while you were registering. '
+        error: 'Another school was approved on that school code while you were registering. '
           + 'Please choose another — everything else you entered is still here.',
         // From req.body, not the destructured `schoolName` — that binding is
         // scoped to the try block above and is not visible here.
@@ -3531,6 +3722,30 @@ app.get('/api/platform/private-file', platformRateLimit, (req, res) => {
   return res.sendFile(resolved);
 });
 
+/**
+ * Approve a school — and, with it, hand over the school code.
+ *
+ * This is the moment a code stops being a claim and becomes property. Nothing
+ * before it confers ownership: several PENDING registrations may be sitting in
+ * the queue carrying `sjes-sanj`, because until a person has looked, none of
+ * them is known to be a school at all. See schoolSlugTaken.
+ *
+ * So approval has to do three things in order, and the order matters:
+ *
+ *   1. Refuse if a *different approved school* already owns the code. The
+ *      registrant chose it when it was genuinely free, so this is not their
+ *      mistake and the refusal is addressed to the operator, not to them.
+ *   2. Approve, letting the partial unique index settle a simultaneous
+ *      approval of a contesting registration.
+ *   3. Reject the other registrations claiming the same code, and vacate the
+ *      addresses they were holding inside it.
+ *
+ * Step 3 is the part that is easy to leave out and cannot be. A losing
+ * registration's admin account holds `principal@admin.sjes-sanj.edu.ph`, and
+ * User.email is unique platform-wide — so a rejection that left it there would
+ * hand the winner a code whose most obvious address they cannot create. The
+ * code would be theirs and its namespace would not be.
+ */
 app.post('/api/platform/schools/:schoolId/approve', platformRateLimit, async (req, res) => {
   try {
     requireOperator(req);
@@ -3548,13 +3763,96 @@ app.post('/api/platform/schools/:schoolId/approve', platformRateLimit, async (re
     // break rule 1: a code is assigned once and frozen.
     const slug = school.slug || await resolveSlug(school.name, null, schoolSlugTaken);
 
+    // Whoever else already owns it. Checked before the write so the ordinary
+    // case gets a sentence an operator can act on rather than a P2002; the
+    // index below is what covers the instant between this read and that write.
+    const owner = await prisma.school.findFirst({
+      where: { slug, status: 'APPROVED', id: { not: school.id } },
+      select: { id: true, name: true },
+    });
+    if (owner) {
+      return res.status(409).json({
+        success: false,
+        code: 'SCHOOL_CODE_OWNED',
+        // Names the owner, unlike the registration form's refusal. The audience
+        // here is a platform operator who is entitled to know which school it
+        // is — that is the whole of what they need to decide what to do next.
+        error: `"${slug}" is already owned by ${owner.name}. `
+          + `${school.name} needs a different school code before it can be approved — `
+          + `reject this registration and ask them to re-register with another code.`,
+      });
+    }
+
     const updated = await prisma.school.update({
       where: { id: school.id },
       data: { status: 'APPROVED', approvedAt: new Date(), rejectedReason: null, slug }
     });
     console.log(`✅ Approved school "${updated.name}" (code: ${updated.slug})`);
-    res.json({ success: true, school: updated });
+
+    // A school being approved after losing an earlier code has its staff
+    // addresses parked on `.invalid`. This is the moment to put them back — see
+    // reissueParkedAddresses. A no-op for every school that never lost one.
+    await reissueParkedAddresses(school.id, slug)
+      .catch((err) => console.error('[approve] could not restore parked addresses:', err.message));
+
+    // ── The registrations that lose the code ──
+    //
+    // Deliberately after the approval commits, not inside its transaction. The
+    // approval is the operator's decision and must stand on its own; the
+    // consequences for the losing registrations are bookkeeping, and a failure
+    // in that bookkeeping must not roll back a school that is now approved and
+    // may already have been told so. Anything that fails here is logged and can
+    // be reapplied by re-running the approval, which is idempotent.
+    const contested = await contestingRegistrations(slug, school.id);
+    for (const loser of contested) {
+      try {
+        await prisma.school.update({
+          where: { id: loser.id },
+          data: {
+            status: 'REJECTED',
+            approvedAt: null,
+            // Says what happened and what to do, because this is the sentence
+            // the registrant reads at login and it is the only explanation they
+            // will get. It does not name the winner — the login screen is not
+            // an operator console.
+            rejectedReason: `The school code "${slug}" was approved to another school before this `
+              + `registration was reviewed. Your documents were not the problem. Please register `
+              + `again and choose a different school code.`,
+            // The claim is dropped, not kept. Holding it would put this row back
+            // in the way of the next school whose name reduces to the same code
+            // — which is the exact fault this whole change removes — and the
+            // school no longer has any address sitting inside it, because
+            // releaseSchoolAddresses is about to move them all out.
+            slug: null,
+          },
+        });
+        await releaseSchoolAddresses(loser.id, slug);
+        await endSessionsForSchool(loser.id);
+        console.log(`↩️  Rejected "${loser.name}" — lost school code ${slug} to "${updated.name}"`);
+      } catch (err) {
+        console.error(`[approve] could not settle contesting registration ${loser.id}:`, err.message);
+      }
+    }
+
+    res.json({
+      success: true,
+      school: updated,
+      // Returned so the console can tell the operator what their approval did
+      // to the queue, instead of leaving rows to silently change status under
+      // the next refresh.
+      rejectedForCode: contested.map((s) => ({ id: s.id, name: s.name })),
+    });
   } catch (e) {
+    if (isSlugConflict(e)) {
+      // Two operators approving two contesting registrations at once. The index
+      // let exactly one through; this is the other.
+      return res.status(409).json({
+        success: false,
+        code: 'SCHOOL_CODE_OWNED',
+        error: 'Another school was approved on that school code a moment ago. '
+          + 'Reload the queue and review this registration again.',
+      });
+    }
     res.status(e.status || 500).json({ success: false, error: e.message });
   }
 });
@@ -3572,33 +3870,22 @@ app.post('/api/platform/schools/:schoolId/reject', platformRateLimit, async (req
       where: { id: school.id },
       // The rows are kept, not deleted: a refusal is often a "we couldn't verify
       // you yet" that gets reversed, and deleting takes the admin account with it.
-      // The school code is deliberately *not* released here, though a rejected
-      // registration has issued nothing under it and freeing it looks safe.
       //
-      // Two reasons. The registrant's own admin row survives this rejection —
-      // the comment above says why the rows are kept — and it holds an address
-      // built on the code, `principal@admin.sjes-jose.edu.ph`. Free the code,
-      // let a real San Jose take it, and their principal cannot be created:
-      // the address is occupied by an account at a school that no longer holds
-      // the code. And a refusal here is often "we couldn't verify you yet",
-      // which gets reversed; a school that came back would need a second code
-      // and a second login for the same person.
+      // The school code is kept too, and that is now a much smaller decision
+      // than it used to be. A REJECTED row no longer owns its code — ownership
+      // belongs to approval, so this school is not standing in anyone's way by
+      // holding one. What the row keeps is a *claim*, which is worth keeping for
+      // the case this route is most often used for: a refusal that gets
+      // reversed. A school that comes back is approved on the code it already
+      // told its staff about, rather than a second one.
       //
-      // Codes are freed by deleting the school outright, which the platform
-      // route already allows for a PENDING or REJECTED school with no data. The
-      // row and its admin account go together there, so nothing is orphaned and
-      // the unique constraint frees the code on its own.
+      // The addresses inside the code are kept for the same reason and are safe
+      // to keep for the same reason. If another school is later approved onto
+      // the code, that approval is what moves them out — see
+      // releaseSchoolAddresses, called from the approve route.
       data: { status: 'REJECTED', rejectedReason: reason.trim(), approvedAt: null }
     });
-    // The login gate only stops *new* sign-ins. Anyone already holding a token
-    // would keep working until it expired, so end those sessions now.
-    const revokedAt = new Date();
-    const members = await prisma.user.findMany({ where: { schoolId: school.id }, select: { id: true } });
-    await prisma.user.updateMany({
-      where: { schoolId: school.id },
-      data: { sessionsValidFrom: revokedAt }
-    });
-    members.forEach(m => markRevoked(m.id, revokedAt));
+    await endSessionsForSchool(school.id);
     console.log(`⛔ Rejected school "${updated.name}": ${reason.trim()}`);
     res.json({ success: true, school: updated });
   } catch (e) {

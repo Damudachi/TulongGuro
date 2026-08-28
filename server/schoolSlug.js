@@ -46,15 +46,19 @@
  * ── The three rules ──
  * 1. Frozen. Assigned once, never recomputed from School.name. A school that
  *    renames must not have every login and every student ID change under it.
- * 2. Never reused while the school row exists, whatever its status. Freeing a
- *    code would let a later registration inherit an identity — its accounts,
- *    its printed student IDs — and even a refused registration leaves an admin
- *    account holding an address built on the code. See the note further down on
- *    why there is no releaseSlug().
- * 3. Claimed at registration, not at approval. Two schools filling in the form
- *    the same afternoon must not both be told `sjes-san` is free. The unique
- *    constraint on School.slug is what actually enforces this; resolveSlug()
- *    keeps the common path off it rather than replacing it.
+ * 2. Never reused once a school has been APPROVED on it. Freeing an owned code
+ *    would let a later registration inherit an identity — its accounts, its
+ *    printed student IDs. A code merely *claimed* by a PENDING or REJECTED
+ *    registration is a different matter; see rule 3.
+ * 3. Claimed at registration, owned at approval. Several registrations may
+ *    carry `sjes-sanj` at once and all of them are allowed to: registration is
+ *    the one door anyone can walk up to, so an unreviewed row is a claim by
+ *    somebody who has not yet been shown to be a school, and letting it hold a
+ *    code lets an invented San Joaquin take one from the real San Jose. At most
+ *    one APPROVED school may hold a code, which is a partial unique index —
+ *    `... ON "School"("slug") WHERE "status" = 'APPROVED'` — and that index is
+ *    what actually enforces it. resolveSlug() and schoolSlugTaken() keep the
+ *    common path off it rather than replacing it.
  */
 
 /**
@@ -561,27 +565,28 @@ async function resolveSlug(schoolName, preferred, isTaken) {
 }
 
 /**
- * ── Why there is no releaseSlug() ──
+ * ── Why there is still no releaseSlug() ──
  *
- * Rejecting a school looks like the moment to free its code: nothing was issued
- * under it, no teachers, no student IDs. It isn't, for two reasons.
+ * There is nothing here to release. A code is not held by a row's existence any
+ * more, it is held by that row being APPROVED — so a rejected registration has
+ * already stopped standing in anyone's way the moment its status changed, and a
+ * function to "free" its code would have nothing left to do.
  *
- * The registrant's own admin row survives a rejection — the platform keeps
- * those rows, because a refusal is often "we couldn't verify you yet" and gets
- * reversed — and that row holds an address built on the code,
- * `principal@admin.sjes-jose.edu.ph`. Free the code, let a real San Jose take
- * it, and their principal cannot be created: the address is held by an account
- * at a school that no longer owns the code. The clash would surface as an
- * unexplainable "this email already exists" at a different school entirely,
- * which is the exact failure this whole module exists to remove.
+ * What does need doing at that moment is not about the code at all. The
+ * registrant's admin row survives a rejection — the platform keeps those rows,
+ * because a refusal is often "we couldn't verify you yet" and gets reversed —
+ * and it holds an address built on the code,
+ * `principal@admin.sjes-sanj.edu.ph`. User.email is unique platform-wide, so
+ * that address, not the code, is what would block a real San Jose from creating
+ * their own principal. It would surface as an unexplainable "this email already
+ * exists" at a different school entirely.
  *
- * And a school that comes back from a rejection would need a second code and a
- * second login for the same person, having already been told the first.
- *
- * Codes are freed by deleting the school outright, which the platform route
- * allows for a PENDING or REJECTED school with no data. The row and its admin
- * account go together there, so nothing is orphaned and the unique constraint
- * releases the code by itself.
+ * So the addresses are what move, and they move at the only moment they have
+ * to: when another school is actually approved onto the code. That is
+ * releaseSchoolAddresses() in server.js, with reissueParkedAddresses() to put
+ * them back if the rejected school is later approved on a code of its own.
+ * Doing it at rejection instead would rename the logins of every school that
+ * gets refused and then reinstated, for a conflict that mostly never comes.
  */
 
 /** The student-ID prefix a code produces: `mes-maba` -> `MES-MABA`. Uppercase

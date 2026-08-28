@@ -26,9 +26,30 @@ model School {
   /// the platform-wide unique columns on User. See schoolSlug.js for how one is
   /// derived, offered and chosen.
   ///
-  /// Unique, and that constraint is load-bearing rather than defensive: two
-  /// schools registering the same afternoon can both be *told* a code is free,
-  /// and this is the only thing that stops them both taking it.
+  /// ── Claimed at registration, owned at approval ──
+  /// Deliberately NOT unique on its own, and this is the one thing about the
+  /// column that is easy to get wrong twice. Several PENDING registrations may
+  /// carry the same code at the same time; at most one APPROVED school may.
+  ///
+  /// A whole-column unique constraint would say the opposite — that the code
+  /// belongs to whoever INSERTed first — and that gave a code to registrations
+  /// nobody had checked. Registration is the only door anyone can walk up to,
+  /// so a PENDING row is an unverified claim, and a REJECTED one is a claim
+  /// that was refused. Neither is a school, and neither should be able to hold
+  /// `sjes-sanj` against the real San Jose Elementary School.
+  ///
+  /// The constraint that enforces this is a partial unique index and therefore
+  /// cannot be written in this schema — Prisma has no syntax for a WHERE on an
+  /// index. It lives in migrations/20260829000000_school_slug_owned_on_approval:
+  ///
+  ///     CREATE UNIQUE INDEX "School_slug_approved_key"
+  ///       ON "School"("slug") WHERE "status" = 'APPROVED';
+  ///
+  /// It is still load-bearing rather than defensive — two operators approving
+  /// two contesting registrations in the same instant are stopped by this and
+  /// by nothing else. Because Prisma cannot see it, `prisma migrate dev` will
+  /// offer to drop it as drift; do not accept. Deploys run `migrate deploy`,
+  /// which applies the SQL above and never diffs.
   ///
   /// Nullable because every school registered before codes existed has none,
   /// and refusing to serve them until someone backfills would be a worse
@@ -39,7 +60,7 @@ model School {
   /// Frozen once written. Never recompute it from `name`: a school that renames
   /// would otherwise have every staff login and every future student ID change
   /// under it, with no way back to the addresses people actually know.
-  slug             String?          @unique
+  slug             String?
   /// Optional school branding, set at registration. Null falls back to an
   /// initials placeholder and the default TulongGuro palette.
   logoUrl          String?

@@ -55,15 +55,21 @@ const APPLY = process.argv.includes('--apply');
 const MIGRATE_EMAILS = process.argv.includes('--emails');
 
 /**
- * Codes claimed so far — the database plus everything this run has decided.
+ * Codes owned so far — the database plus everything this run has decided.
  *
  * The in-memory half matters because a dry run writes nothing: without it every
  * San Jose in the table would be reported as getting `sjes-san`, which is the
  * one thing the report exists to warn about.
+ *
+ * APPROVED only, matching schoolSlugTaken() in server.js. A code carried by a
+ * PENDING or REJECTED row is a claim, not a title, and treating it as taken
+ * here would do the thing that rule exists to prevent: push a real school off
+ * its own obvious code because an unreviewed — or refused — registration
+ * happens to be sitting on it.
  */
 async function makeTakenPredicate() {
   const rows = await prisma.school.findMany({
-    where: { slug: { not: null } },
+    where: { slug: { not: null }, status: 'APPROVED' },
     select: { slug: true },
   });
   const claimed = new Set(rows.map((row) => row.slug));
@@ -142,8 +148,12 @@ async function main() {
   // assigned, because a school may have been given its code on a previous run
   // and left with its staff still on the flat domain.
   console.log('\n── Staff addresses ──\n');
+  // APPROVED only, for the same reason the taken-set is. Moving a PENDING
+  // school's staff onto a code it does not own yet would put their addresses
+  // inside a namespace another school may be approved into, which is the
+  // collision releaseSchoolAddresses() then has to clean up.
   const coded = await prisma.school.findMany({
-    where: { slug: { not: null } },
+    where: { slug: { not: null }, status: 'APPROVED' },
     select: { id: true, name: true, slug: true },
   });
 

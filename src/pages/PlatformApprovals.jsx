@@ -383,6 +383,20 @@ export default function PlatformApprovals() {
         setRejectingId(null);
         setRejectReason('');
         load();
+        // Approving a school hands it the school code, which refuses every
+        // other registration still asking for the same one. Those rows change
+        // status as a result of this click, so the operator is told rather than
+        // left to notice a queue that shrank by more than the row they acted
+        // on. See the approve route for why losing registrations are settled.
+        const lost = data.rejectedForCode || [];
+        if (lost.length) {
+          showAlert(
+            `${school.name} now owns the school code ${data.school?.slug || ''}. `
+            + `${lost.length === 1 ? 'This registration was' : 'These registrations were'} `
+            + `asking for the same code and ${lost.length === 1 ? 'has' : 'have'} been refused: `
+            + `${lost.map((s) => s.name).join(', ')}.`
+          );
+        }
       } else {
         showAlert(data.error || 'That did not work.');
       }
