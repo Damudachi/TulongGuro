@@ -1126,7 +1126,7 @@ export default function PlatformApprovals() {
           {/* Said once, at the top, because it is the thing an operator most
               needs to have straight: these controls reach inside a live school.
               Everything below acts on real people's logins. */}
-          <div className="mb-5 flex items-start gap-2 bg-slate-900 text-slate-100 rounded-xl p-3.5 text-sm">
+          <div className="mb-5 flex items-start gap-2 bg-ink-900 text-slate-100 rounded-xl p-3.5 text-sm">
             <ShieldCheck className="w-4 h-4 shrink-0 mt-0.5 text-slate-300" />
             <div>
               <p className="font-bold">You are the super admin for every school here.</p>
@@ -1337,7 +1337,7 @@ export default function PlatformApprovals() {
             </button>
           </div>
 
-          <div className="mb-5 flex items-start gap-2 bg-slate-900 text-slate-100 rounded-xl p-3.5 text-sm">
+          <div className="mb-5 flex items-start gap-2 bg-ink-900 text-slate-100 rounded-xl p-3.5 text-sm">
             <ShieldCheck className="w-4 h-4 shrink-0 mt-0.5 text-slate-300" />
             <div>
               <p className="font-bold">Everyone here is a peer.</p>
@@ -1358,7 +1358,7 @@ export default function PlatformApprovals() {
             <div className="bg-white border border-slate-200 rounded-xl divide-y divide-slate-100">
               {operators.map(o => (
                 <div key={o.id} className="flex items-center gap-3 p-4">
-                  <div className="w-9 h-9 rounded-full bg-slate-900 text-white font-bold flex items-center justify-center shrink-0">
+                  <div className="w-9 h-9 rounded-full bg-ink-900 text-white font-bold flex items-center justify-center shrink-0">
                     {(o.name || 'O').charAt(0).toUpperCase()}
                   </div>
                   <div className="flex-1 min-w-0">
