@@ -1,13 +1,13 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import {
-  Users, GraduationCap, Layers, BookOpen, ClipboardList, TrendingUp,
+  Users, GraduationCap, Layers, BookOpen, ClipboardList,
   Loader2, AlertTriangle, ArrowRight, Check, Sparkles, UserCircle, ChevronRight,
 } from 'lucide-react';
 import { API_URL, apiFetch } from '../../config';
 import { getStoredUser } from '../../utils/session';
 import { DEFAULT_SCHOOL_YEAR } from '../../constants/school';
-import { bandsFor, gradeTone } from '../../utils/grading';
+import { gradeTone } from '../../utils/grading';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
 
@@ -201,17 +201,9 @@ export default function AdminDashboard() {
   // ── Performance, once analytics has landed ──
   const summary = perf?.summary || null;
   const passingGrade = perf?.passingGrade ?? 75;
-  const bandTotal = summary ? Object.values(summary.bands).reduce((a, b) => a + b, 0) || 1 : 1;
-  const BANDS = summary
-    ? [
-        ...bandsFor(passingGrade).map((b, i, all) => ({
-          key: b.key,
-          label: i === 0 ? `${b.min}+` : b.key === 'failing' ? `Below ${passingGrade}` : `${b.min}–${all[i - 1].min - 1}`,
-          cls: b.bar,
-        })),
-        { key: 'notGraded', label: 'Not graded', cls: 'bg-slate-200' },
-      ]
-    : [];
+  // The band ladder that used to draw the school-spread bar here is gone with
+  // it. `passingGrade` stays — the support list below still tones its averages
+  // against it.
   const atRisk = (perf?.atRisk || []).slice(0, 5);
   const weakSubjects = (perf?.bySubject || []).filter(s => s.average !== null).slice(0, 4);
 
@@ -267,74 +259,23 @@ export default function AdminDashboard() {
         </section>
       )}
 
-      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 mb-6">
+      {/* Rubrics deliberately absent. A count of published rubrics is not a
+          state of the school an admin acts on from here — the Rubrics tab is
+          in the sidebar — and it sat beside five tiles that are. */}
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3 mb-6">
         <Tile label="Teachers" value={teachers.length} icon={Users} to="/admin/teachers" />
         <Tile label="Sections" value={sections.length} icon={GraduationCap} to="/admin/sections" />
         <Tile label="Course Shells" value={shells.length} icon={Layers} to="/admin/classes" />
         <Tile label="Learners" value={learnerCount} icon={UserCircle} to="/admin/sections" />
         <Tile label="Curriculums" value={curriculums.length} icon={BookOpen} to="/admin/curriculum" />
-        <Tile label="Rubrics" value={core?.rubricCount || 0} icon={ClipboardList} to="/admin/rubrics" />
       </div>
 
-      {/* ── How the school is doing ── */}
-      <Card
-        title="How the school is doing"
-        icon={TrendingUp}
-        className="mb-6"
-        action={
-          <Link to="/admin/analytics" className="text-xs font-bold text-brand-navy hover:underline shrink-0 flex items-center gap-1">
-            Open analytics <ChevronRight className="w-3.5 h-3.5" />
-          </Link>
-        }
-      >
-        {perfState === 'loading' ? (
-          <p className="text-sm text-slate-400 flex items-center gap-2 py-3">
-            <Loader2 className="w-4 h-4 animate-spin" /> Working out the school average...
-          </p>
-        ) : perfState === 'error' || !summary ? (
-          <p className="text-sm text-slate-400 py-3">The performance summary could not be read just now.</p>
-        ) : summary.schoolAverage === null ? (
-          <p className="text-sm text-slate-500 py-3">
-            No graded work yet. Averages appear here as soon as teachers start releasing scores.
-          </p>
-        ) : (
-          <>
-            <div className="flex flex-wrap items-end gap-x-8 gap-y-3 mb-4">
-              <div>
-                <p className="text-[11px] font-bold uppercase tracking-wider text-slate-400">School average</p>
-                <p className={cn('text-4xl font-extrabold leading-none mt-1', gradeTone(summary.schoolAverage, passingGrade))}>
-                  {summary.schoolAverage}
-                </p>
-                <p className="text-xs text-slate-400 mt-1">Passing is {passingGrade}</p>
-              </div>
-              <div>
-                <p className="text-[11px] font-bold uppercase tracking-wider text-slate-400">Need support</p>
-                <p className={cn('text-4xl font-extrabold leading-none mt-1',
-                  summary.atRiskCount > 0 ? 'text-red-600' : 'text-brand-green')}>
-                  {summary.atRiskCount}
-                </p>
-                <p className="text-xs text-slate-400 mt-1">of {summary.studentCount} learners</p>
-              </div>
-            </div>
-
-            {/* Every learner once, under their own general average — the same
-                population the two numbers above describe. */}
-            <div className="flex h-2.5 rounded-full overflow-hidden mb-2.5">
-              {BANDS.map(b => summary.bands[b.key] > 0 && (
-                <div key={b.key} className={b.cls} style={{ width: `${(summary.bands[b.key] / bandTotal) * 100}%` }} />
-              ))}
-            </div>
-            <div className="flex flex-wrap gap-x-4 gap-y-1">
-              {BANDS.map(b => (
-                <span key={b.key} className="flex items-center gap-1.5 text-[11px] font-bold text-slate-500">
-                  <span className={cn('w-2 h-2 rounded-full', b.cls)} />
-                  {b.label} · {summary.bands[b.key]}
-                </span>
-              ))}
-            </div>
-          </>
-        )}
-      </Card>
+      {/* The school-average panel that used to sit here is gone. A single
+          number averaged over every subject in the school is not something a
+          coordinator can act on — it moves for reasons nobody can name — and it
+          invited the reading that the school itself has a grade. Analytics is
+          now entered per course shell, where an average has a teacher, a
+          section and a set of weights attached to it. */}
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6">
         {/* ── Who needs help ──

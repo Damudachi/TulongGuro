@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Scale, Loader2, Check, AlertTriangle, RotateCcw, Info } from 'lucide-react';
+import { Scale, Loader2, Check, AlertTriangle, RotateCcw } from 'lucide-react';
 import { API_URL, apiFetch } from '../../config';
 import { GRADE_LEVELS, SUBJECTS } from '../../constants/school';
 
@@ -284,13 +284,6 @@ export default function AdminGrading() {
           </button>
         </div>
       </section>
-
-      <p className="mt-6 text-xs text-navy-400 flex items-start gap-2 leading-relaxed">
-        <Info className="w-4 h-4 shrink-0 mt-px" />
-        Within a component, a student's score is total points earned over total points
-        possible — so a 50-point activity counts half as much as a 100-point one, rather
-        than equally. Teachers pick each activity's component when they create it.
-      </p>
     </div>
   );
 }

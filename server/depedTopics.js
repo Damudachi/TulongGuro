@@ -95,7 +95,7 @@ const DEPED_GRADE6_ENGLISH_TOPICS = [
     term: 1,
     description: 'Distinguishing statements of fact from opinion and fact-based opinion, and identifying propaganda techniques used to persuade: name-calling/labelling, glittering generalities, and transfer.',
     weekRef: 'Term 1, Week 7',
-    recommendedRubricId: 'rt-critical-propaganda',
+    recommendedRubricId: 'rt-informational-outline',
     aiGuidance: 'Evaluate for accurate classification of statements as fact, opinion, or fact-based opinion, and correct identification and explanation of name-calling/labelling, glittering generalities, or transfer when present in a given text.'
   },
   {
@@ -104,7 +104,7 @@ const DEPED_GRADE6_ENGLISH_TOPICS = [
     term: 1,
     description: 'Using words with literal (denotative) and implied (connotative) meanings, using punctuation as a context clue, and using the almanac as a general reference.',
     weekRef: 'Term 1, Week 8',
-    recommendedRubricId: 'rt-vocabulary-reference',
+    recommendedRubricId: 'rt-informational-outline',
     aiGuidance: 'Evaluate for correct distinction between literal and implied word meanings in context, appropriate use of punctuation as a clue to meaning, and correct/appropriate use of almanac-type reference information when the task calls for it.'
   },
   {
@@ -113,7 +113,7 @@ const DEPED_GRADE6_ENGLISH_TOPICS = [
     term: 1,
     description: 'Composing sentences using intransitive verbs, perfect tenses (present, past, future), adjectival phrases (prepositional phrases as adjectives), order of adverbs, complements (noun, pronoun, adjective), and compound-complex sentences.',
     weekRef: 'Term 1, Week 9',
-    recommendedRubricId: 'rt-grammar',
+    recommendedRubricId: 'rt-narrative-persuasive',
     aiGuidance: 'Evaluate for correct use of intransitive verbs, correct formation of present/past/future perfect tenses, prepositional phrases used correctly as adjectives, correct ordering of adverbs (manner, place, frequency, time, purpose), correct noun/pronoun/adjective complements, and at least one properly formed compound-complex sentence.'
   },
   {
@@ -131,7 +131,7 @@ const DEPED_GRADE6_ENGLISH_TOPICS = [
     term: 1,
     description: 'Creating simple print survey forms for personal data information, and using non-verbal cues (facial expressions, gestures, eye contact, haptics, posture, proxemics/blocking) appropriately for context and meaning.',
     weekRef: 'Term 1, Week 10',
-    recommendedRubricId: 'rt-survey-form',
+    recommendedRubricId: 'rt-informational-outline',
     aiGuidance: 'Evaluate for a well-structured personal data survey form with clear, relevant fields appropriate to its stated purpose. Where non-verbal cue use is part of the task, check for age-appropriate and context-appropriate descriptions or application of facial expressions, gestures, eye contact, haptics, posture, and proxemics.'
   },
   {
@@ -140,7 +140,7 @@ const DEPED_GRADE6_ENGLISH_TOPICS = [
     term: 1,
     description: 'Deriving meaning from visual elements and evaluating their cultural appropriateness; identifying multimedia elements (video, animation) and their purpose; determining ideas used to influence viewers, including author\'s stand and propaganda technique; and creating a visual or multimedia text.',
     weekRef: 'Term 1, Week 11',
-    recommendedRubricId: 'rt-visual-multimedia',
+    recommendedRubricId: 'rt-literary-analysis',
     aiGuidance: 'Evaluate for correct identification of the purpose of visual/multimedia elements, sound reasoning about how those elements contribute to meaning, a judgment on cultural appropriateness, correct identification of the author\'s point of view and any propaganda technique used, and a created visual/multimedia text that is purposeful and appropriate.'
   },
   {
@@ -178,7 +178,7 @@ const DEPED_GRADE6_ENGLISH_TOPICS = [
     term: 2,
     description: 'Distinguishing fact from opinion and fact-based opinion, and identifying propaganda techniques: testimonials, plain folks, and bandwagon.',
     weekRef: 'Term 2, Week 15',
-    recommendedRubricId: 'rt-critical-propaganda',
+    recommendedRubricId: 'rt-informational-outline',
     aiGuidance: 'Evaluate for accurate fact/opinion classification and correct identification of testimonials, plain folks, or bandwagon propaganda techniques, with explanation of how each is used to persuade the audience.'
   },
   {
@@ -187,7 +187,7 @@ const DEPED_GRADE6_ENGLISH_TOPICS = [
     term: 2,
     description: 'Using words with literal and implied meanings in sentences, and using directories (acronyms and abbreviations used by organizations) as a general reference.',
     weekRef: 'Term 2, Week 16',
-    recommendedRubricId: 'rt-vocabulary-reference',
+    recommendedRubricId: 'rt-informational-outline',
     aiGuidance: 'Evaluate for correct denotative/connotative word usage in sentences and correct, appropriate use of directory-type references such as organizational acronyms and abbreviations.'
   },
   {
@@ -196,7 +196,7 @@ const DEPED_GRADE6_ENGLISH_TOPICS = [
     term: 2,
     description: 'Composing sentences using intransitive verbs, present/past/future perfect tenses, prepositional phrases as adjectives, noun/pronoun/adjective complements, and compound-complex sentences.',
     weekRef: 'Term 2, Week 17',
-    recommendedRubricId: 'rt-grammar',
+    recommendedRubricId: 'rt-narrative-persuasive',
     aiGuidance: 'Evaluate for correct use of intransitive verbs, correctly formed perfect tenses, prepositional phrases functioning as adjectives, appropriate complements, and at least one correctly structured compound-complex sentence.'
   },
   {
@@ -205,7 +205,7 @@ const DEPED_GRADE6_ENGLISH_TOPICS = [
     term: 2,
     description: 'Creating open-ended and interview (oral) print survey forms based on purpose, and using non-verbal cues appropriately for clarity of context, purpose, and meaning.',
     weekRef: 'Term 2, Week 19',
-    recommendedRubricId: 'rt-survey-form',
+    recommendedRubricId: 'rt-informational-outline',
     aiGuidance: 'Evaluate for well-designed open-ended survey questions that genuinely elicit detailed responses relevant to the stated purpose, and appropriate use/description of non-verbal cues (facial expressions, gestures, eye contact, haptics, posture, proxemics) where applicable.'
   },
   {
@@ -214,7 +214,7 @@ const DEPED_GRADE6_ENGLISH_TOPICS = [
     term: 2,
     description: 'Deriving meaning from visual elements by identifying purpose and analyzing contribution to meaning, evaluating cultural appropriateness, and identifying multimedia elements such as video and animation.',
     weekRef: 'Term 2, Week 20',
-    recommendedRubricId: 'rt-visual-multimedia',
+    recommendedRubricId: 'rt-literary-analysis',
     aiGuidance: 'Evaluate for correct identification of the visual text\'s purpose, sound analysis of how visual elements contribute to meaning, and a reasoned judgment on cultural appropriateness.'
   },
   {
@@ -223,7 +223,7 @@ const DEPED_GRADE6_ENGLISH_TOPICS = [
     term: 2,
     description: 'Deriving meaning from multimedia elements by identifying the author\'s purpose, analyzing their contribution to meaning, and determining ideas explicitly used to influence viewers, including author\'s point of view/stand and propaganda technique.',
     weekRef: 'Term 2, Week 21',
-    recommendedRubricId: 'rt-visual-multimedia',
+    recommendedRubricId: 'rt-literary-analysis',
     aiGuidance: 'Evaluate for correct identification of the author\'s purpose and point of view/stand in the multimedia text, sound analysis of how multimedia elements shape meaning, and correct identification of any propaganda technique used to influence the viewer.'
   },
   {
@@ -241,7 +241,7 @@ const DEPED_GRADE6_ENGLISH_TOPICS = [
     term: 2,
     description: 'Comprehending persuasive informational texts through diamond outline, identifying the author\'s purpose, drawing conclusions, making generalizations, summarizing, distinguishing fact from opinion, and identifying the fear and half-truths/spin propaganda techniques.',
     weekRef: 'Term 2, Week 24',
-    recommendedRubricId: 'rt-critical-propaganda',
+    recommendedRubricId: 'rt-informational-outline',
     aiGuidance: 'Evaluate for correct diamond-outline comprehension of the persuasive text, accurate identification of author\'s purpose, sound conclusions/generalizations, correct fact/opinion classification, and correct identification of fear-based or half-truths/spin propaganda techniques.'
   },
   {
@@ -250,7 +250,7 @@ const DEPED_GRADE6_ENGLISH_TOPICS = [
     term: 2,
     description: 'Using words with literal and implied meanings in sentences, and using general print/online references such as handbooks and manuals to clarify text meaning and task requirements.',
     weekRef: 'Term 2, Week 25',
-    recommendedRubricId: 'rt-vocabulary-reference',
+    recommendedRubricId: 'rt-informational-outline',
     aiGuidance: 'Evaluate for correct denotative/connotative word usage and appropriate, accurate application of information drawn from handbook- or manual-type references to clarify meaning or complete a task.'
   },
   {
@@ -259,7 +259,7 @@ const DEPED_GRADE6_ENGLISH_TOPICS = [
     term: 2,
     description: 'Composing sentences using intransitive verbs, present/past/future perfect tenses, prepositional phrases as adverbs (adverbial phrases), complements, and compound-complex sentences.',
     weekRef: 'Term 2, Week 26',
-    recommendedRubricId: 'rt-grammar',
+    recommendedRubricId: 'rt-narrative-persuasive',
     aiGuidance: 'Evaluate for correct use of intransitive verbs, correctly formed perfect tenses, prepositional phrases functioning as adverbs, appropriate complements, and correctly structured compound-complex sentences.'
   },
 
@@ -279,7 +279,7 @@ const DEPED_GRADE6_ENGLISH_TOPICS = [
     term: 3,
     description: 'Creating interview (oral) survey forms based on purpose, and using non-verbal cues appropriately for clarity of context, purpose, and meaning.',
     weekRef: 'Term 3, Week 28',
-    recommendedRubricId: 'rt-survey-form',
+    recommendedRubricId: 'rt-informational-outline',
     aiGuidance: 'Evaluate for well-structured interview questions appropriate to the stated purpose and audience, and appropriate use/description of non-verbal cues in an oral interview context.'
   },
   {
@@ -288,7 +288,7 @@ const DEPED_GRADE6_ENGLISH_TOPICS = [
     term: 3,
     description: 'Deriving meaning from visual elements by identifying purpose and analyzing contribution to meaning, evaluating cultural appropriateness, and creating a visual text drawn from the visual elements learned.',
     weekRef: 'Term 3, Week 29',
-    recommendedRubricId: 'rt-visual-multimedia',
+    recommendedRubricId: 'rt-literary-analysis',
     aiGuidance: 'Evaluate for correct identification of the visual text\'s purpose, sound analysis of how visual elements contribute to meaning, a reasoned cultural-appropriateness judgment, and a created visual text that is purposeful and well-executed.'
   },
   {
@@ -297,7 +297,7 @@ const DEPED_GRADE6_ENGLISH_TOPICS = [
     term: 3,
     description: 'Identifying multimedia elements (video, animation), deriving meaning by identifying the author\'s purpose and analyzing contribution to meaning, determining ideas used to influence viewers (author\'s stand and propaganda technique), and creating a multimedia text.',
     weekRef: 'Term 3, Week 30',
-    recommendedRubricId: 'rt-visual-multimedia',
+    recommendedRubricId: 'rt-literary-analysis',
     aiGuidance: 'Evaluate for correct identification of multimedia elements and the author\'s purpose/stand, sound analysis of how those elements shape meaning, correct identification of any propaganda technique used, and a created multimedia text that is purposeful and appropriate.'
   },
   {
@@ -315,7 +315,7 @@ const DEPED_GRADE6_ENGLISH_TOPICS = [
     term: 3,
     description: 'Identifying propaganda techniques used to persuade an audience to further an idea or agenda: fear, half-truths/spin, bad logic/unwarranted extrapolation, and card stacking.',
     weekRef: 'Term 3, Week 33',
-    recommendedRubricId: 'rt-critical-propaganda',
+    recommendedRubricId: 'rt-informational-outline',
     aiGuidance: 'Evaluate for correct identification and explanation of fear, half-truths/spin, bad logic/unwarranted extrapolation, or card stacking propaganda techniques present in a given text, with reasoning about how each is used to persuade.'
   },
   {
@@ -324,7 +324,7 @@ const DEPED_GRADE6_ENGLISH_TOPICS = [
     term: 3,
     description: 'Composing sentences for clarity and coherence using intransitive verbs, present/past/future perfect tenses, adverbial phrases, complements, and compound-complex sentences in formal and digital contexts.',
     weekRef: 'Term 3, Week 34',
-    recommendedRubricId: 'rt-grammar',
+    recommendedRubricId: 'rt-narrative-persuasive',
     aiGuidance: 'Evaluate for grammatical correctness (intransitive verbs, perfect tenses, adverbial phrases, complements, compound-complex sentences) and for appropriate register/tone suited to formal or digital/online communication.'
   },
   {
@@ -342,7 +342,7 @@ const DEPED_GRADE6_ENGLISH_TOPICS = [
     term: 3,
     description: 'Creating simple digital/online survey forms based on purpose.',
     weekRef: 'Term 3, Week 36',
-    recommendedRubricId: 'rt-survey-form',
+    recommendedRubricId: 'rt-informational-outline',
     aiGuidance: 'Evaluate for a well-structured online survey form with question types and fields appropriate to its stated purpose and to digital delivery.'
   },
   {
@@ -351,7 +351,7 @@ const DEPED_GRADE6_ENGLISH_TOPICS = [
     term: 3,
     description: 'Deriving meaning from visual elements, evaluating their cultural appropriateness, and creating a visual text for advocacy or information drawn from the visual elements learned.',
     weekRef: 'Term 3, Week 37',
-    recommendedRubricId: 'rt-visual-multimedia',
+    recommendedRubricId: 'rt-literary-analysis',
     aiGuidance: 'Evaluate for a clear advocacy or informational purpose in the created visual text, effective and culturally appropriate use of visual elements, and alignment between the visual choices and the intended message.'
   },
   {
@@ -360,7 +360,7 @@ const DEPED_GRADE6_ENGLISH_TOPICS = [
     term: 3,
     description: 'Identifying multimedia elements (video, animation), deriving meaning, determining ideas explicitly used to influence viewers, and creating a multimedia text for a specific purpose.',
     weekRef: 'Term 3, Week 38',
-    recommendedRubricId: 'rt-visual-multimedia',
+    recommendedRubricId: 'rt-literary-analysis',
     aiGuidance: 'Evaluate for a clearly defined purpose in the created multimedia text, effective use of multimedia elements to support that purpose, and evidence that the ideas/messaging were deliberately shaped to influence the intended viewers.'
   }
 ];

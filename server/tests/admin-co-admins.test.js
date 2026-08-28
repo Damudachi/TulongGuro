@@ -109,29 +109,29 @@ beforeEach(() => {
   resetPrisma();
   usersById.clear();
   usersById.set(ADMIN, {
-    id: ADMIN, name: 'Head Admin', email: 'head@admin.com', role: 'ADMIN',
+    id: ADMIN, name: 'Head Admin', email: 'head@admin.te-test.edu.ph', role: 'ADMIN',
     schoolId: SCHOOL, schoolName: 'Test ES', sessionsValidFrom: null,
     // ownerId is what makes this admin the super admin. requireAdminSchool
     // includes the school on the caller's row, so this is the copy the gate
     // actually reads — without it every route below 403s.
-    school: { id: SCHOOL, name: 'Test ES', status: 'APPROVED', ownerId: ADMIN },
+    school: { id: SCHOOL, name: 'Test ES', slug: 'te-test', status: 'APPROVED', ownerId: ADMIN },
   });
   usersById.set(CO_ADMIN, {
-    id: CO_ADMIN, name: 'Registrar', email: 'registrar@admin.com', role: 'ADMIN',
+    id: CO_ADMIN, name: 'Registrar', email: 'registrar@admin.te-test.edu.ph', role: 'ADMIN',
     schoolId: SCHOOL, sessionsValidFrom: null,
-    school: { id: SCHOOL, name: 'Test ES', status: 'APPROVED', ownerId: ADMIN },
+    school: { id: SCHOOL, name: 'Test ES', slug: 'te-test', status: 'APPROVED', ownerId: ADMIN },
   });
   usersById.set(FOREIGN_ADMIN, {
-    id: FOREIGN_ADMIN, name: 'Other Admin', email: 'other@admin.com', role: 'ADMIN',
+    id: FOREIGN_ADMIN, name: 'Other Admin', email: 'other@admin.te-test.edu.ph', role: 'ADMIN',
     schoolId: OTHER_SCHOOL, sessionsValidFrom: null,
   });
   usersById.set(FREE_TEACHER, {
-    id: FREE_TEACHER, name: 'Ana Reyes', email: 'ana.reyes@teacher.edu.ph', role: 'TEACHER',
+    id: FREE_TEACHER, name: 'Ana Reyes', email: 'ana.reyes@teacher.te-test.edu.ph', role: 'TEACHER',
     schoolId: SCHOOL, sessionsValidFrom: null,
     _count: { taughtClasses: 0, ownedSections: 0 },
   });
   usersById.set(BUSY_TEACHER, {
-    id: BUSY_TEACHER, name: 'Ben Cruz', email: 'ben.cruz@teacher.edu.ph', role: 'TEACHER',
+    id: BUSY_TEACHER, name: 'Ben Cruz', email: 'ben.cruz@teacher.te-test.edu.ph', role: 'TEACHER',
     schoolId: SCHOOL, sessionsValidFrom: null,
     _count: { taughtClasses: 3, ownedSections: 1 },
   });
@@ -164,7 +164,7 @@ const call = (method, path, body) =>
 describe('a new admin lands in the creating admin\'s school', () => {
   it('ignores a schoolId supplied in the request body', async () => {
     const res = await call('POST', `/api/admin/${ADMIN}/admins`, {
-      name: 'Principal', email: 'Principal@Admin.COM', password: 'temp-pass-1',
+      name: 'Principal', email: 'Principal@Admin.TE-TEST.EDU.PH', password: 'temp-pass-1',
       schoolId: OTHER_SCHOOL,          // the attack: pick somebody else's school
       role: 'ADMIN',
     });
@@ -176,17 +176,17 @@ describe('a new admin lands in the creating admin\'s school', () => {
 
   it('normalizes the email and uses it as the username, as the teacher route does', async () => {
     await call('POST', `/api/admin/${ADMIN}/admins`, {
-      name: '  Principal  ', email: '  Principal@Admin.COM  ', password: 'temp-pass-1',
+      name: '  Principal  ', email: '  Principal@Admin.TE-TEST.EDU.PH  ', password: 'temp-pass-1',
     });
     const written = prismaFake.user.create.mock.calls[0][0].data;
-    expect(written.email).toBe('principal@admin.com');
-    expect(written.username).toBe('principal@admin.com');
+    expect(written.email).toBe('principal@admin.te-test.edu.ph');
+    expect(written.username).toBe('principal@admin.te-test.edu.ph');
     expect(written.name).toBe('Principal');
   });
 
   it('never returns the password hash', async () => {
     const res = await call('POST', `/api/admin/${ADMIN}/admins`, {
-      name: 'Principal', email: 'principal@admin.com', password: 'temp-pass-1',
+      name: 'Principal', email: 'principal@admin.te-test.edu.ph', password: 'temp-pass-1',
     });
     const body = await res.json();
     expect(body.success).toBe(true);
@@ -261,7 +261,7 @@ describe('role changes take effect immediately', () => {
 
   it('promotion sets ADMIN and revokes existing sessions', async () => {
     const res = await call('POST', `/api/admin/${ADMIN}/admins/promote`, {
-      teacherId: FREE_TEACHER, adminEmail: 'ana.reyes@admin.com',
+      teacherId: FREE_TEACHER, adminEmail: 'ana.reyes@admin.te-test.edu.ph',
     });
     expect(res.status).toBe(200);
     const args = prismaFake.user.update.mock.calls[0][0];
@@ -270,8 +270,8 @@ describe('role changes take effect immediately', () => {
     expect(args.data.sessionsValidFrom).toBeInstanceOf(Date);
     // The login moves with the role, so the old credential stops existing —
     // which is the second reason the session has to end here, beyond the role.
-    expect(args.data.email).toBe('ana.reyes@admin.com');
-    expect(args.data.username).toBe('ana.reyes@admin.com');
+    expect(args.data.email).toBe('ana.reyes@admin.te-test.edu.ph');
+    expect(args.data.username).toBe('ana.reyes@admin.te-test.edu.ph');
   });
 
   it('a password reset revokes existing sessions too', async () => {
@@ -312,7 +312,7 @@ describe('the per-school admin cap', () => {
   it('blocks creating past it', async () => {
     prismaFake.user.count.mockResolvedValue(5);
     const res = await call('POST', `/api/admin/${ADMIN}/admins`, {
-      name: 'Sixth', email: 'sixth@admin.com', password: 'temp-pass-1',
+      name: 'Sixth', email: 'sixth@admin.te-test.edu.ph', password: 'temp-pass-1',
     });
     expect(res.status).toBe(400);
     expect(prismaFake.user.create).not.toHaveBeenCalled();
@@ -321,7 +321,7 @@ describe('the per-school admin cap', () => {
   it('blocks promoting past it', async () => {
     prismaFake.user.count.mockResolvedValue(5);
     const res = await call('POST', `/api/admin/${ADMIN}/admins/promote`, {
-      teacherId: FREE_TEACHER, adminEmail: 'ana.reyes@admin.com',
+      teacherId: FREE_TEACHER, adminEmail: 'ana.reyes@admin.te-test.edu.ph',
     });
     expect(res.status).toBe(400);
     expect(prismaFake.user.update).not.toHaveBeenCalled();
@@ -334,7 +334,7 @@ describe('the per-school admin cap', () => {
 describe('access changes are recorded', () => {
   it('writes an audit row naming both parties', async () => {
     await call('POST', `/api/admin/${ADMIN}/admins`, {
-      name: 'Principal', email: 'principal@admin.com', password: 'temp-pass-1',
+      name: 'Principal', email: 'principal@admin.te-test.edu.ph', password: 'temp-pass-1',
     });
     const row = prismaFake.adminAuditLog.create.mock.calls[0][0].data;
     expect(row).toMatchObject({
@@ -342,7 +342,7 @@ describe('access changes are recorded', () => {
       event: 'ADMIN_CREATED',
       actorId: ADMIN,
       actorName: 'Head Admin',
-      targetEmail: 'principal@admin.com',
+      targetEmail: 'principal@admin.te-test.edu.ph',
     });
   });
 
@@ -358,7 +358,7 @@ describe('access changes are recorded', () => {
     // could not be written is worse.
     prismaFake.adminAuditLog.create.mockRejectedValue(new Error('table missing'));
     const res = await call('POST', `/api/admin/${ADMIN}/admins`, {
-      name: 'Principal', email: 'principal@admin.com', password: 'temp-pass-1',
+      name: 'Principal', email: 'principal@admin.te-test.edu.ph', password: 'temp-pass-1',
     });
     expect(res.status).toBe(200);
   });
@@ -370,7 +370,7 @@ describe('access changes are recorded', () => {
 describe('GET /admins', () => {
   it('lists only ADMIN rows of the caller\'s school, without password hashes', async () => {
     prismaFake.user.findMany.mockResolvedValue([
-      { id: ADMIN, name: 'Head Admin', email: 'head@admin.com', createdAt: new Date() },
+      { id: ADMIN, name: 'Head Admin', email: 'head@admin.te-test.edu.ph', createdAt: new Date() },
     ]);
     const res = await call('GET', `/api/admin/${ADMIN}/admins`);
     expect(res.status).toBe(200);
@@ -393,8 +393,8 @@ describe('when the access history cannot be read', () => {
     // looking at their own account.
     prismaFake.adminAuditLog.findMany.mockRejectedValue(new Error('relation "AdminAuditLog" does not exist'));
     prismaFake.user.findMany.mockResolvedValue([
-      { id: ADMIN, name: 'Head Admin', email: 'head@admin.com', createdAt: new Date() },
-      { id: CO_ADMIN, name: 'Registrar', email: 'registrar@admin.com', createdAt: new Date() },
+      { id: ADMIN, name: 'Head Admin', email: 'head@admin.te-test.edu.ph', createdAt: new Date() },
+      { id: CO_ADMIN, name: 'Registrar', email: 'registrar@admin.te-test.edu.ph', createdAt: new Date() },
     ]);
     const res = await call('GET', `/api/admin/${ADMIN}/admins`);
     expect(res.status).toBe(200);
@@ -558,7 +558,7 @@ describe('every admin of a school is a peer', () => {
       id: CO_ADMIN, role: 'ADMIN', schoolId: SCHOOL, school: { id: SCHOOL },
     });
     prismaFake.user.findMany.mockResolvedValue([
-      { id: ADMIN, name: 'Head Admin', email: 'head@admin.com', createdAt: new Date() },
+      { id: ADMIN, name: 'Head Admin', email: 'head@admin.te-test.edu.ph', createdAt: new Date() },
     ]);
     prismaFake.adminAuditLog.findMany.mockResolvedValue([]);
 
@@ -581,31 +581,86 @@ describe('every admin of a school is a peer', () => {
 // nothing checked it: a head teacher created as a TEACHER and a class adviser
 // created as an ADMIN both went through, and the mistake surfaced weeks later
 // as "why can't I see the admin console".
+// ───────────────────────────────────────────────────────────────────────────
+// 12a. A school with no code yet gets one before an address is built on it
+// ───────────────────────────────────────────────────────────────────────────
+//
+// School.slug arrived after these domains did, so schools approved before it
+// carry a null code and accountDomain() falls back to the flat legacy domains.
+// That fallback is right for reading an existing login and wrong for minting a
+// new one: on @admin.com the local part has to be unique across every school on
+// the platform, so the second school anywhere in the country to promote a
+// "dexter" was told the address already existed and given no way past it. These
+// pin that a slugless school is given a code at the moment it first needs one.
+describe('a school with no code gets one before staff addresses are built', () => {
+  const slugless = () => {
+    for (const id of [ADMIN, CO_ADMIN]) {
+      const u = usersById.get(id);
+      usersById.set(id, { ...u, school: { ...u.school, slug: null } });
+    }
+  };
+
+  it('assigns the code and puts a new admin on it, not on the shared @admin.com', async () => {
+    slugless();
+    const res = await call('POST', `/api/admin/${ADMIN}/admins`, {
+      name: 'Principal', email: 'principal@admin.te-test.edu.ph', password: 'temp-pass-1',
+    });
+    expect(res.status).toBe(200);
+    expect(prismaFake.school.update).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: SCHOOL }, data: { slug: 'te-test' } })
+    );
+    const written = prismaFake.user.create.mock.calls[0][0].data;
+    expect(written.email).toBe('principal@admin.te-test.edu.ph');
+  });
+
+  it('assigns the code on the teacher route too', async () => {
+    slugless();
+    const res = await call('POST', `/api/admin/${ADMIN}/teachers`, {
+      name: 'Ana Reyes', email: 'ana.reyes@teacher.te-test.edu.ph', password: 'temp-pass-1',
+    });
+    expect(res.status).toBe(200);
+    expect(prismaFake.school.update).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: SCHOOL }, data: { slug: 'te-test' } })
+    );
+  });
+
+  // A school that already has a code keeps it. Recomputing one from School.name
+  // would change every login and every printed student ID under a school that
+  // had merely been renamed — see the "frozen" rule in schoolSlug.js.
+  it('never re-codes a school that already has one', async () => {
+    const res = await call('POST', `/api/admin/${ADMIN}/admins`, {
+      name: 'Principal', email: 'principal@admin.te-test.edu.ph', password: 'temp-pass-1',
+    });
+    expect(res.status).toBe(200);
+    expect(prismaFake.school.update).not.toHaveBeenCalled();
+  });
+});
+
 describe('staff email domains', () => {
-  it('refuses an admin account that is not on @admin.com', async () => {
-    for (const email of ['principal@teacher.edu.ph', 'principal@deped.gov.ph', 'principal@gmail.com']) {
+  it('refuses an admin account that is not on @admin.te-test.edu.ph', async () => {
+    for (const email of ['principal@teacher.te-test.edu.ph', 'principal@deped.gov.ph', 'principal@gmail.com']) {
       const res = await call('POST', `/api/admin/${ADMIN}/admins`, {
         name: 'Principal', email, password: 'temp-pass-1',
       });
       expect(res.status, email).toBe(400);
-      expect((await res.json()).error).toMatch(/@admin\.com/);
+      expect((await res.json()).error).toMatch(/@admin\.te-test\.edu\.ph/);
     }
     expect(prismaFake.user.create).not.toHaveBeenCalled();
   });
 
-  it('refuses a teacher account that is not on @teacher.edu.ph', async () => {
-    for (const email of ['ana@admin.com', 'ana@deped.gov.ph', 'ana@gmail.com']) {
+  it('refuses a teacher account that is not on @teacher.te-test.edu.ph', async () => {
+    for (const email of ['ana@admin.te-test.edu.ph', 'ana@deped.gov.ph', 'ana@gmail.com']) {
       const res = await call('POST', `/api/admin/${ADMIN}/teachers`, {
         name: 'Ana Reyes', email, password: 'temp-pass-1',
       });
       expect(res.status, email).toBe(400);
-      expect((await res.json()).error).toMatch(/@teacher\.edu\.ph/);
+      expect((await res.json()).error).toMatch(/@teacher\.te-test\.edu\.ph/);
     }
     expect(prismaFake.user.create).not.toHaveBeenCalled();
   });
 
   it('refuses an address that is not an address at all', async () => {
-    for (const email of ['principal', 'principal@', '@admin.com', 'a@b@admin.com']) {
+    for (const email of ['principal', 'principal@', '@admin.te-test.edu.ph', 'a@b@admin.te-test.edu.ph']) {
       const res = await call('POST', `/api/admin/${ADMIN}/admins`, {
         name: 'Principal', email, password: 'temp-pass-1',
       });
@@ -616,20 +671,20 @@ describe('staff email domains', () => {
 
   it('creates a teacher on the teacher domain', async () => {
     const res = await call('POST', `/api/admin/${ADMIN}/teachers`, {
-      name: 'Ana Reyes', email: '  Ana.Reyes@Teacher.EDU.PH ', password: 'temp-pass-1',
+      name: 'Ana Reyes', email: '  Ana.Reyes@Teacher.TE-TEST.EDU.PH ', password: 'temp-pass-1',
     });
     expect(res.status).toBe(200);
     const written = prismaFake.user.create.mock.calls[0][0].data;
-    expect(written.email).toBe('ana.reyes@teacher.edu.ph');
-    expect(written.username).toBe('ana.reyes@teacher.edu.ph');
+    expect(written.email).toBe('ana.reyes@teacher.te-test.edu.ph');
+    expect(written.username).toBe('ana.reyes@teacher.te-test.edu.ph');
     expect(written.role).toBe('TEACHER');
   });
 
   it('will not promote a teacher without an admin address to move them to', async () => {
     // The one place the rule and an existing feature collide: a teacher is on
-    // @teacher.edu.ph and is about to become an ADMIN, who must be on
-    // @admin.com. Letting them keep the teacher address would make "an admin's
-    // address ends in @admin.com" quietly untrue.
+    // @teacher.te-test.edu.ph and is about to become an ADMIN, who must be on
+    // @admin.te-test.edu.ph. Letting them keep the teacher address would make "an admin's
+    // address ends in @admin.te-test.edu.ph" quietly untrue.
     const res = await call('POST', `/api/admin/${ADMIN}/admins/promote`, { teacherId: FREE_TEACHER });
     expect(res.status).toBe(400);
     const body = await res.json();
@@ -639,7 +694,7 @@ describe('staff email domains', () => {
 
   it('will not promote onto an address that is not on the admin domain', async () => {
     const res = await call('POST', `/api/admin/${ADMIN}/admins/promote`, {
-      teacherId: FREE_TEACHER, adminEmail: 'ana.reyes@teacher.edu.ph',
+      teacherId: FREE_TEACHER, adminEmail: 'ana.reyes@teacher.te-test.edu.ph',
     });
     expect(res.status).toBe(400);
     expect(prismaFake.user.update).not.toHaveBeenCalled();
@@ -647,10 +702,10 @@ describe('staff email domains', () => {
 
   it('will not promote onto an address somebody else already holds', async () => {
     prismaFake.user.findFirst.mockImplementation(async (args) => (
-      args?.orderBy ? null : { id: 'someone-else', email: 'taken@admin.com' }
+      args?.orderBy ? null : { id: 'someone-else', email: 'taken@admin.te-test.edu.ph' }
     ));
     const res = await call('POST', `/api/admin/${ADMIN}/admins/promote`, {
-      teacherId: FREE_TEACHER, adminEmail: 'taken@admin.com',
+      teacherId: FREE_TEACHER, adminEmail: 'taken@admin.te-test.edu.ph',
     });
     expect(res.status).toBe(400);
     expect(prismaFake.user.update).not.toHaveBeenCalled();
@@ -659,7 +714,7 @@ describe('staff email domains', () => {
   it('leaves the address alone when the account is already on the admin domain', async () => {
     // An account created before the rule, or one demoted and promoted again.
     usersById.set(FREE_TEACHER, {
-      ...usersById.get(FREE_TEACHER), email: 'ana.reyes@admin.com',
+      ...usersById.get(FREE_TEACHER), email: 'ana.reyes@admin.te-test.edu.ph',
     });
     const res = await call('POST', `/api/admin/${ADMIN}/admins/promote`, { teacherId: FREE_TEACHER });
     expect(res.status).toBe(200);

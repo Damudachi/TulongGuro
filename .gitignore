@@ -98,3 +98,4 @@ server/data/ebeis-raw/
 # real file, with none of its authority — git history is the right place to
 # reach an older one from.
 server/data/*-backup.json
+/new issues

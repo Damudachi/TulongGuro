@@ -22,6 +22,7 @@ import AdminCurriculum from './pages/admin/Curriculum';
 import AdminRubrics from './pages/admin/Rubrics';
 import AdminGrading from './pages/admin/Grading';
 import AdminAnalytics from './pages/admin/Analytics';
+import AdminShellAnalytics from './pages/admin/ShellAnalytics';
 
 // Teacher Pages
 import TeacherDashboard from './pages/teacher/Dashboard';
@@ -82,6 +83,9 @@ function App() {
           <Route path="rubrics" element={<AdminRubrics />} />
           <Route path="grading" element={<AdminGrading />} />
           <Route path="analytics" element={<AdminAnalytics />} />
+          {/* Analytics is entered per course shell — a class, its teacher and
+              its weights are the smallest unit an average means anything in. */}
+          <Route path="analytics/shell/:classId" element={<AdminShellAnalytics />} />
           <Route path="admins" element={<AdminAdmins />} />
         </Route>
 

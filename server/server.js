@@ -384,6 +384,35 @@ function workingAverage(subs, policy) {
 }
 
 /**
+ * A student's standing in each DepEd component, for the per-student drill-down
+ * in admin analytics.
+ *
+ * Points-weighted within the component, the same way computeGrade weights it —
+ * a 50-point quiz counts half as much as a 100-point one — so the three figures
+ * here are the numbers the weighted average is actually built from rather than
+ * a second, differently-computed opinion sitting beside it.
+ *
+ * A component the student has nothing in reports `percent: null` rather than 0.
+ * Zero is a real score somebody could have earned; "no quarterly assessment has
+ * been given yet" is not, and the two must not render alike on a screen a
+ * coordinator uses to decide who to chase.
+ */
+function componentBreakdown(subs) {
+  const acc = { WW: { earned: 0, possible: 0, count: 0 }, PT: { earned: 0, possible: 0, count: 0 }, QA: { earned: 0, possible: 0, count: 0 } };
+  for (const e of toGradeEntries(subs)) {
+    const bucket = acc[e.component] || acc.WW;
+    bucket.earned += (e.percent / 100) * e.points;
+    bucket.possible += e.points;
+    bucket.count += 1;
+  }
+  const out = {};
+  for (const [key, b] of Object.entries(acc)) {
+    out[key] = { percent: b.possible > 0 ? Math.round((b.earned / b.possible) * 100) : null, count: b.count };
+  }
+  return out;
+}
+
+/**
  * One average across work from several subjects.
  *
  * DepEd weights components differently per subject — Languages is 30/50/20,
@@ -4380,6 +4409,9 @@ app.get('/api/admin/:adminId/analytics', async (req, res) => {
           band,
           trend: trendOf(mine),
           needsSupport: avg !== null && avg < passingGrade && enoughToJudge,
+          // What the average is made of, so the drill-down can say *where* a
+          // learner is losing marks rather than only that they are.
+          components: componentBreakdown(mine),
         });
 
         if (avg !== null) {
@@ -4737,6 +4769,48 @@ async function requireAdminSchool(adminId) {
   return admin;
 }
 
+/**
+ * The school's code, assigned now if it never got one.
+ *
+ * Every staff address is built on this code, and `accountDomain()` falls back
+ * to the flat legacy domain when it is missing. That fallback is right for
+ * *reading* an existing account — those addresses are live credentials — but it
+ * is wrong for creating a new one, and it was silently doing both: a school
+ * approved before codes existed put every teacher it created onto the single
+ * platform-wide `@teacher.edu.ph` and every admin onto `@admin.com`. `User.email`
+ * is unique across the whole platform, so the second school to promote a Dexter
+ * was told "an account with this email already exists" and given no way past
+ * it — the exact bug school codes were introduced to close, still reachable
+ * through any school the backfill had not reached.
+ *
+ * Assigning here rather than waiting for the backfill script means the first
+ * account a school creates is enough to give it its namespace. Approval already
+ * does the same thing (see the approve route); this covers schools approved
+ * before that did.
+ *
+ * Returns the code. Existing accounts on the legacy domains are untouched and
+ * keep signing in — see accountEmails.js on why those are never retired here.
+ */
+async function ensureSchoolSlug(school) {
+  if (!school) return null;
+  if (school.slug) return school.slug;
+  const slug = await resolveSlug(school.name, null, schoolSlugTaken);
+  try {
+    await prisma.school.update({ where: { id: school.id }, data: { slug } });
+  } catch (e) {
+    // Two requests racing to name the same school both computed the same code;
+    // the unique constraint settles it and the loser re-reads the winner's
+    // answer. Anything else is a real failure and belongs to the caller.
+    if (e?.code !== 'P2002') throw e;
+    const fresh = await prisma.school.findUnique({ where: { id: school.id }, select: { slug: true } });
+    if (fresh?.slug) return (school.slug = fresh.slug);
+    throw e;
+  }
+  // Mutated so the caller's already-loaded `admin.school` agrees with the row.
+  school.slug = slug;
+  return slug;
+}
+
 function sendAdminError(res, e) {
   res.status(e.status || 500).json({ success: false, error: e.message });
 }
@@ -4793,6 +4867,10 @@ app.post('/api/admin/:adminId/teachers', async (req, res) => {
     // Passing the school's code is what stops two schools colliding on the same
     // name: without it every teacher.edu.ph address in the country shared one
     // namespace, and the second school to hire an Irma could not create her.
+    // Assigned rather than read, so a school approved before codes existed gets
+    // its own namespace on the first teacher it creates instead of putting them
+    // on the shared legacy domain. See ensureSchoolSlug.
+    await ensureSchoolSlug(admin.school);
     const emailCheck = validateAccountEmail(email, 'TEACHER', admin.school?.slug);
     if (!emailCheck.ok) return res.status(400).json({ success: false, error: emailCheck.error });
     const normalizedEmail = emailCheck.email;
@@ -5234,6 +5312,10 @@ app.post('/api/admin/:adminId/admins', async (req, res) => {
     if (String(password).length < 6) {
       return res.status(400).json({ success: false, error: 'The temporary password must be at least 6 characters.' });
     }
+    // As on the teacher route: a school with no code yet gets one now, so the
+    // new admin lands on @admin.<code>.edu.ph rather than the shared @admin.com
+    // that made every school's "principal" the same account.
+    await ensureSchoolSlug(admin.school);
     const emailCheck = validateAccountEmail(email, 'ADMIN', admin.school?.slug);
     if (!emailCheck.ok) return res.status(400).json({ success: false, error: emailCheck.error });
 
@@ -5347,6 +5429,12 @@ app.post('/api/admin/:adminId/admins/promote', async (req, res) => {
      * still be promoted without being asked to change address.
      */
     let emailMove = {};
+    // A school with no code yet gets one before an address is built on it.
+    // Without this the promotion targeted the shared @admin.com, where the
+    // local part has to be unique across every school on the platform — which
+    // is how promoting a second Dexter anywhere in the country came back as
+    // "an account with this email already exists".
+    await ensureSchoolSlug(admin.school);
     // The domain to move them onto is this school's, not a platform-wide one.
     // Both forms count as "already an admin address": the school's own coded
     // domain, and the flat legacy one an account created before school codes

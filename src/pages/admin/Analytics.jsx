@@ -1,5 +1,6 @@
-import { useState, useEffect, useMemo } from 'react';
-import { TrendingUp, TrendingDown, Loader2, AlertTriangle, Users, BookOpen } from 'lucide-react';
+import { useState, useEffect } from 'react';
+import { Link } from 'react-router-dom';
+import { TrendingUp, Loader2, Users, BookOpen, ChevronRight } from 'lucide-react';
 import { API_URL, apiFetch } from '../../config';
 import { bandsFor, gradeTone } from '../../utils/grading';
 
@@ -21,9 +22,17 @@ function Stat({ label, value, hint, tone = 'text-navy-700' }) {
 /**
  * School-wide analytics for the admin acting as subject coordinator.
  *
- * A summary by design: which subjects and sections are struggling, and who
- * needs support. Student work, AI feedback and rubric detail stay with the
- * teacher — a coordinator needs the pattern, not the papers.
+ * A summary by design: which subjects and course shells are struggling. Student
+ * work, AI feedback and rubric detail stay with the teacher — a coordinator
+ * needs the pattern, not the papers.
+ *
+ * This page used to end in a flat roster of every learner in the school, one
+ * row per class they take, narrowed with a search box and two filters. It read
+ * as a leaderboard and it was the wrong unit: a coordinator does not intervene
+ * on "the school", they intervene on a class, with the teacher who teaches it.
+ * The same child also appeared once per subject with only a grey subtitle to
+ * tell the rows apart. Learners now live one level down, inside the course
+ * shell whose weights produced the number — see ShellAnalytics.jsx.
  */
 export default function AdminAnalytics() {
   const admin = JSON.parse(localStorage.getItem('user') || '{}');
@@ -32,21 +41,6 @@ export default function AdminAnalytics() {
   // spinner that only the first commit would take away again (see load below).
   const [isLoading, setIsLoading] = useState(() => !!admin.id);
   const [error, setError] = useState('');
-  const [query, setQuery] = useState('');
-  const [classFilter, setClassFilter] = useState('');
-  const [onlyRisk, setOnlyRisk] = useState(false);
-
-  // Hooks must run on every render, so this sits above the loading/error
-  // returns and tolerates `data` still being null.
-  const visibleStudents = useMemo(() => {
-    const rows = data?.students || [];
-    const q = query.trim().toLowerCase();
-    return rows.filter(s =>
-      (!classFilter || s.classId === classFilter) &&
-      (!onlyRisk || s.needsSupport) &&
-      (!q || s.name?.toLowerCase().includes(q) || s.teacherName?.toLowerCase().includes(q))
-    );
-  }, [data, query, classFilter, onlyRisk]);
 
   useEffect(() => {
     if (!admin.id) return;
@@ -65,7 +59,7 @@ export default function AdminAnalytics() {
   if (error) return <div className="p-8 text-center text-red-600 font-bold">{error}</div>;
   if (!data) return null;
 
-  const { summary, bySubject, classes, students, passingGrade } = data;
+  const { summary, bySubject, classes, passingGrade } = data;
   const bandTotal = Object.values(summary.bands).reduce((a, b) => a + b, 0) || 1;
   // Built from the school's own passing grade rather than a fixed 90/80/75
   // ladder, which mislabelled its bands for any school passing above 80.
@@ -96,9 +90,13 @@ export default function AdminAnalytics() {
         </div>
       </div>
 
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
-        <Stat label="School average" value={summary.schoolAverage ?? '—'}
-          tone={toneFor(summary.schoolAverage, passingGrade)} hint={`Passing is ${passingGrade}`} />
+      {/* No school average. One number averaged over every subject in the
+          school moves for reasons nobody can name — a section split in two, a
+          quarter of Filipino not yet graded — and it invited the reading that
+          the school itself has a grade. An average is only actionable once it
+          has a teacher and a set of weights attached to it, which is what the
+          per-course-shell figures below carry. */}
+      <div className="grid grid-cols-3 gap-3 mb-6">
         <Stat label="Students" value={summary.studentCount} />
         <Stat label="Course Shells" value={summary.classCount} />
         <Stat label="Need support" value={summary.atRiskCount}
@@ -157,12 +155,18 @@ export default function AdminAnalytics() {
         <h2 className="font-display text-lg font-extrabold text-navy-700 mb-1 flex items-center gap-2">
           <Users className="w-4 h-4 text-navy-400" /> By course shell
         </h2>
-        <p className="text-xs text-navy-400 mb-4">Each course shell with its teacher and the weights in force.</p>
+        <p className="text-xs text-navy-400 mb-4">
+          Each course shell with its teacher and the weights in force. Open one for its learners.
+        </p>
         <div className="space-y-2">
+          {/* The whole row is the target rather than a small "view" link at the
+              end of it: the row already reads as one thing, and that thing is
+              what you want to open. */}
           {classes.map(c => (
-            <div key={c.classId} className="flex items-center gap-3 p-3 rounded-2xl border-2 border-slate-200">
+            <Link key={c.classId} to={`/admin/analytics/shell/${c.classId}`}
+              className="flex items-center gap-3 p-3 rounded-2xl border-2 border-slate-200 hover:border-royal-400 hover:bg-royal-50/40 transition-colors group">
               <div className="min-w-0 flex-1">
-                <p className="font-bold text-navy-700 text-sm truncate">{c.className}</p>
+                <p className="font-bold text-navy-700 text-sm truncate group-hover:text-royal-700">{c.className}</p>
                 <p className="text-xs text-navy-400 truncate">
                   {c.teacherName || 'No teacher'} · {c.sectionName} · {c.gradedStudents}/{c.studentCount} graded
                 </p>
@@ -178,92 +182,10 @@ export default function AdminAnalytics() {
               <span className={cn('font-display text-2xl font-extrabold shrink-0 w-12 text-right', toneFor(c.classAverage, passingGrade))}>
                 {c.classAverage ?? '—'}
               </span>
-            </div>
+              <ChevronRight className="w-4 h-4 text-navy-300 shrink-0 group-hover:text-royal-600" />
+            </Link>
           ))}
         </div>
-      </section>
-
-      {/* ── Every student ──
-          A coordinator can only intervene by naming a student and the teacher
-          to raise it with, so this is the whole roster rather than only the
-          students already below the line — a strong student sliding three
-          activities in a row is the one worth catching early. */}
-      <section className="bg-white rounded-3xl border-2 border-slate-200 p-5">
-        <h2 className="font-display text-lg font-extrabold text-navy-700 mb-1 flex items-center gap-2">
-          <AlertTriangle className="w-4 h-4 text-sun-600" /> Student performance
-        </h2>
-        <p className="text-xs text-navy-400 mb-4">
-          Lowest first. Averages and trends only — for a student's actual work, ask their teacher.
-        </p>
-
-        <div className="flex flex-wrap gap-2 mb-4">
-          <input
-            type="search" value={query} onChange={e => setQuery(e.target.value)}
-            placeholder="Search student or teacher..."
-            aria-label="Search students"
-            className="tg-input flex-1 min-w-[12rem] py-2 text-sm"
-          />
-          <select value={classFilter} onChange={e => setClassFilter(e.target.value)}
-            aria-label="Filter by course shell" className="tg-input w-auto py-2 text-sm">
-            <option value="">All course shells</option>
-            {classes.map(c => <option key={c.classId} value={c.classId}>{c.className}</option>)}
-          </select>
-          <button type="button" onClick={() => setOnlyRisk(v => !v)}
-            aria-pressed={onlyRisk}
-            className={cn('px-3.5 py-2 rounded-2xl text-sm font-bold border-2 transition-colors shrink-0',
-              onlyRisk ? 'border-red-500 bg-red-500 text-white' : 'border-slate-200 text-navy-500 hover:border-red-300')}>
-            Needs support
-          </button>
-        </div>
-
-        {visibleStudents.length === 0 ? (
-          <p className="text-sm text-navy-400 py-2">No students match that filter.</p>
-        ) : (
-          <div className="space-y-2">
-            {visibleStudents.map(s => (
-              <div key={`${s.studentId}-${s.classId}`}
-                className={cn('flex items-center gap-3 p-3 rounded-2xl border-2',
-                  s.needsSupport ? 'border-red-200 bg-red-50/50' : 'border-slate-200')}>
-                <span className={cn('w-8 h-8 rounded-xl grid place-items-center font-extrabold text-xs shrink-0',
-                  s.needsSupport ? 'bg-red-100 text-red-600' : 'bg-royal-100 text-royal-700')}>
-                  {(s.name || '?').charAt(0)}
-                </span>
-                <div className="min-w-0 flex-1">
-                  <p className="font-bold text-navy-700 text-sm truncate">{s.name}</p>
-                  <p className="text-xs text-navy-400 truncate">
-                    {s.className} · {s.teacherName || 'No teacher'}
-                  </p>
-                  <p className="text-[11px] text-navy-300">
-                    {s.gradedCount === 0 ? 'No graded work yet' : `${s.gradedCount} graded`}
-                  </p>
-                </div>
-                {/* A slide is worth flagging even while the average still looks fine. */}
-                {s.trend === 'down' && (
-                  <span title="Last three scores went down"
-                    className="flex items-center gap-1 text-[10px] font-extrabold text-red-700 bg-red-100 px-2 py-1 rounded-full shrink-0">
-                    <TrendingDown className="w-3 h-3" /> Slipping
-                  </span>
-                )}
-                {s.trend === 'up' && (
-                  <span title="Last three scores went up"
-                    className="flex items-center gap-1 text-[10px] font-extrabold text-aqua-800 bg-aqua-100 px-2 py-1 rounded-full shrink-0">
-                    <TrendingUp className="w-3 h-3" /> Improving
-                  </span>
-                )}
-                <span className={cn('font-display text-xl font-extrabold shrink-0 w-10 text-right',
-                  toneFor(s.average, passingGrade))}>
-                  {s.average ?? '—'}
-                </span>
-              </div>
-            ))}
-          </div>
-        )}
-
-        {students.length > visibleStudents.length && (
-          <p className="text-xs text-navy-400 mt-3">
-            Showing {visibleStudents.length} of {students.length} rows. A student appears once per class.
-          </p>
-        )}
       </section>
     </div>
   );

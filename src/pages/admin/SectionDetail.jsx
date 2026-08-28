@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import {
   ArrowLeft, Loader2, Pencil, Trash2, Check, X, UserPlus,
-  BookOpen, Users, GraduationCap, AlertTriangle, KeyRound, ArrowRightLeft,
+  BookOpen, Users, GraduationCap, FileText, KeyRound, ArrowRightLeft,
 } from 'lucide-react';
 import { API_URL, apiFetch } from '../../config';
 import { GRADE_LEVELS, formatSectionName } from '../../constants/school';
@@ -533,10 +533,14 @@ export default function AdminSectionDetail() {
                 <p className="text-sm font-medium text-brand-slate truncate">{s.name}</p>
                 <p className="text-[11px] text-slate-400 font-mono">{s.username}</p>
               </div>
+              {/* A submission count is a fact about the learner, not a fault:
+                  the warning triangle it used to carry read as "something is
+                  wrong with this child". The caveat it exists to raise — that
+                  removing them only unassigns — stays in the tooltip. */}
               {s._count.submissions > 0 && (
-                <span className="text-[10px] font-bold text-amber-600 bg-amber-50 px-2 py-0.5 rounded-full shrink-0 flex items-center gap-1"
+                <span className="text-[10px] font-bold text-brand-navy bg-blue-50 px-2 py-0.5 rounded-full shrink-0 flex items-center gap-1"
                   title="Has submitted work — removing keeps the account and only unassigns them">
-                  <AlertTriangle className="w-3 h-3" /> {s._count.submissions} submitted
+                  <FileText className="w-3 h-3" /> {s._count.submissions} submitted
                 </span>
               )}
               <button onClick={() => { setTransferChoice(null); setTransferring(s); }} disabled={busy}

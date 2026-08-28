@@ -3,6 +3,7 @@ import { useParams, useNavigate, Link } from 'react-router-dom';
 import {
   ArrowLeft, ArrowRightLeft, Loader2, Pencil, Trash2, Check, X, KeyRound, UserPlus,
   BookOpen, Users, GraduationCap, AlertTriangle, Copy, Plus, Sparkles, ChevronDown,
+  ChevronRight,
 } from 'lucide-react';
 import { API_URL, apiFetch } from '../../config';
 import { GRADE_LEVELS, SUBJECTS, SCHOOL_YEARS, DEFAULT_SCHOOL_YEAR, formatSectionName } from '../../constants/school';
@@ -878,10 +879,14 @@ export default function AdminTeacherDetail() {
                       </span>
                     </button>
                     <div className="flex items-center gap-1 shrink-0">
+                      {/* A button, not an underlined word. It sits in a row of
+                          icon buttons that all act on this section, and a bare
+                          text link beside them read as a caption rather than as
+                          the control it is. */}
                       <Link to={`/admin/sections/${section.id}`}
                         title="Open the section page"
-                        className="text-xs font-semibold text-brand-navy hover:underline px-1.5 hidden sm:inline">
-                        open →
+                        className="hidden sm:flex items-center gap-1 text-xs font-bold text-brand-navy bg-blue-50 border border-blue-100 px-2.5 py-1.5 rounded-lg hover:bg-brand-navy hover:text-white hover:border-brand-navy transition-colors">
+                        Open section <ChevronRight className="w-3.5 h-3.5" />
                       </Link>
                       {/* Edit, then add, then delete — the order they are
                           reached for, and the destructive one last rather than
