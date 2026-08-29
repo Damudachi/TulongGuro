@@ -1,0 +1,301 @@
+<!doctype html>
+<html><head><meta charset="utf-8">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    width: 1360px; background: #fff; padding: 26px 30px 22px;
+    font-family: "Segoe UI", Calibri, Arial, sans-serif; color: #0F172A;
+  }
+  .mono { font-family: Consolas, "Courier New", monospace; letter-spacing: .06em; }
+
+  .cols { display: grid; grid-template-columns: 1fr 26px 1fr 26px 1fr; align-items: start; }
+  .chev { font-size: 26px; color: #94A3B8; text-align: center; padding-top: 150px; }
+
+  .colhead { font-size: 12.5px; font-weight: 700; margin-bottom: 3px; }
+  .colsub  { font-size: 11px; color: #64748B; margin-bottom: 11px; line-height: 1.35; }
+  .c-in .colhead { color: #1E3A8A; } .c-pr .colhead { color: #B45309; } .c-ou .colhead { color: #047857; }
+
+  .card {
+    border: 1px solid #E2E8F0; border-left: 3px solid #CBD5E1; border-radius: 4px;
+    padding: 9px 11px; margin-bottom: 9px; background: #fff;
+  }
+  .c-in .card { border-left-color: #1E3A8A; background: #F8FAFF; }
+  .c-pr .card { border-left-color: #B45309; background: #FFFCF5; }
+  .c-ou .card { border-left-color: #047857; background: #F7FDFA; }
+
+  .ct { font-size: 12.5px; font-weight: 700; margin-bottom: 4px; }
+  .cb { font-size: 11.2px; line-height: 1.5; color: #334155; }
+  .cb i { color: #64748B; }
+  ul { margin: 2px 0 0 14px; } li { margin-bottom: 1px; }
+
+  .step { display: flex; gap: 8px; align-items: flex-start; }
+  .num {
+    flex: 0 0 19px; height: 19px; border-radius: 50%; background: #B45309; color: #fff;
+    font-size: 11px; font-weight: 700; display: flex; align-items: center; justify-content: center;
+    margin-top: 1px;
+  }
+  .down { text-align: center; color: #D97706; font-size: 13px; line-height: 1; margin: -4px 0 5px; }
+
+  .evalgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 7px; }
+  .chip {
+    border: 1px solid #FCD34D; background: #FFFBEB; border-radius: 3px;
+    padding: 6px 8px; font-size: 10.4px; line-height: 1.42; color: #334155;
+  }
+  .chip b { display: block; font-size: 10.8px; color: #92400E; margin-bottom: 2px; }
+
+  .tag {
+    display: inline-block; font-size: 9.5px; padding: 1px 6px; border-radius: 8px;
+    border: 1px solid #CBD5E1; color: #475569; margin: 3px 3px 0 0; background: #fff;
+  }
+  .c-ou .tag { border-color: #A7F3D0; color: #047857; background: #ECFDF5; }
+
+
+  .returnbar { position: relative; height: 30px; margin-top: 16px; }
+  .returnbar:before {
+    content: ""; position: absolute; left: 16px; right: 16px; top: 13px;
+    border-top: 2px dashed #B45309;
+  }
+  .returnbar .stubL, .returnbar .stubR {
+    content: ""; position: absolute; top: 13px; width: 2px; height: 12px; background: #B45309;
+  }
+  .returnbar .stubL { left: 16px; } .returnbar .stubR { right: 16px; }
+  .returnbar .head {
+    position: absolute; left: 8px; top: 4px; color: #B45309; font-size: 17px; line-height: 1;
+  }
+  .returnbar .lbl {
+    position: absolute; left: 50%; transform: translateX(-50%); top: 5px; background: #fff;
+    padding: 0 12px; font-size: 11.2px; color: #B45309; font-weight: 600;
+  }
+
+  .loops { margin-top: 20px; border-top: 1px solid #E2E8F0; padding-top: 15px; }
+  .loophead { font-size: 12.5px; font-weight: 700; color: #475569; margin-bottom: 9px; }
+  .loopgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  .loop { border: 1px solid #E2E8F0; border-left: 3px solid #334155; border-radius: 4px; padding: 9px 11px; background: #F8FAFC; }
+  .loop.artifact { border-left-color: #6D28D9; background: #FAF9FF; }
+  .loop .lt { font-size: 12px; font-weight: 700; margin-bottom: 3px; }
+  .loop .path { font-size: 10.4px; color: #B45309; font-weight: 600; margin-bottom: 4px; }
+  .loop.artifact .path { color: #6D28D9; }
+  .loop .lb { font-size: 11px; line-height: 1.5; color: #334155; }
+  .warn { font-size: 10.4px; color: #6D28D9; font-style: italic; margin-top: 4px; display: block; }
+
+  .bound {
+    margin-top: 15px; border: 1px dashed #CBD5E1; border-radius: 4px;
+    padding: 8px 11px; background: #F8FAFC; font-size: 10.6px; color: #475569; line-height: 1.5;
+  }
+  .bound b { color: #334155; }
+</style></head>
+<body>
+
+<div class="cols">
+
+  <!-- ─────────── INPUT ─────────── -->
+  <div class="c-in">
+    <div class="colhead mono">01 — INPUT</div>
+    <div class="colsub">What the study draws upon</div>
+
+    <div class="card">
+      <div class="ct">Knowledge Base</div>
+      <div class="cb">Justificatory theory the design answers to:
+        <ul>
+          <li>Teacher workload as a structural barrier to timely formative assessment</li>
+          <li>Feedback value residing in timeliness and qualitative substance, not scores alone</li>
+          <li>The Human-in-the-Loop principle — educational AI supports, never replaces, teacher judgment</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="ct">Policy and Curriculum</div>
+      <div class="cb">
+        DepEd Order No. 8, s. 2015 — component weights (WW / PT / QA), performance descriptor
+        bands, transmutation tables.<br>
+        DepEd Grade 6 English curriculum standards and competencies.
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="ct">Empirical Materials</div>
+      <div class="cb">
+        <ul>
+          <li>Grade 6 English rubrics in use at the participating schools, validated by Head Coordinators</li>
+          <li>Four competency domains <i>derived by grouping those rubric criteria</i>, not imposed externally</li>
+          <li>Teacher-established reference grades</li>
+          <li>Baseline manual grading-time logs</li>
+          <li>Learner constructed responses — handwritten, typewritten, digital</li>
+          <li>Institutional, section and roster data</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="ct">Technical and Environmental Context</div>
+      <div class="cb">
+        A pre-trained multimodal vision-language model accessed by API — the study's AI work is
+        model selection and prompt engineering, <i>not model training</i>.<br><br>
+        The design environment: large classes, paper-based outputs, intermittent connectivity,
+        mixed-device rather than 1:1 classrooms.
+      </div>
+    </div>
+  </div>
+
+  <div class="chev">&rsaquo;</div>
+
+  <!-- ─────────── PROCESS ─────────── -->
+  <div class="c-pr">
+    <div class="colhead mono">02 — PROCESS</div>
+    <div class="colsub">Design Science Research cycle · Agile within Design and Development</div>
+
+    <div class="card"><div class="step"><div class="num">1</div><div>
+      <div class="ct">Problem Explication</div>
+      <div class="cb">The grading-workload problem and its cost to feedback quality, established from
+        literature and from practicing teachers.</div>
+    </div></div></div>
+    <div class="down">&#9660;</div>
+
+    <div class="card"><div class="step"><div class="num">2</div><div>
+      <div class="ct">Requirements Definition</div>
+      <div class="cb">Policy, pedagogy and the HITL constraint translated into requirements for the artifact.</div>
+    </div></div></div>
+    <div class="down">&#9660;</div>
+
+    <div class="card"><div class="step"><div class="num">3</div><div>
+      <div class="ct">Design and Development</div>
+      <div class="cb"><i>Agile sprints.</i> Progressive web application; three role-specific interfaces;
+        Human-in-the-Loop review architecture; AI-assisted checking pipeline; iterative prompt and
+        rubric engineering. Pipeline parameters are specified in Methods.</div>
+    </div></div></div>
+    <div class="down">&#9660;</div>
+
+    <div class="card"><div class="step"><div class="num">4</div><div>
+      <div class="ct">Demonstration</div>
+      <div class="cb">Closed Alpha technical benchmarking, then a one-week Beta field deployment across
+        three elementary schools — two DepEd public, one private — with three Grade 6 English teachers.</div>
+    </div></div></div>
+    <div class="down">&#9660;</div>
+
+    <div class="card"><div class="step"><div class="num">5</div><div>
+      <div class="ct">Evaluation</div>
+      <div class="cb">Four measurement strands, one per objective:</div>
+      <div class="evalgrid">
+        <div class="chip"><b>Grading reliability</b>Raw AI score vs teacher reference grade, both banded:
+          accuracy, per-band precision and recall, macro F1, MAE, normalized MAE, mean signed deviation</div>
+        <div class="chip"><b>Perceived usability</b>System Usability Scale, administered separately
+          to the users of each interface</div>
+        <div class="chip"><b>Grading workload</b>Quasi-experimental paired comparison of manual vs
+          assisted time — per paper, per class set, and turnaround</div>
+        <div class="chip"><b>Quality and privacy</b>ISO/IEC 25010:2023 weighted evaluation;
+          Data Privacy Officer implementation assessment</div>
+      </div>
+    </div></div></div>
+
+    <div class="card" style="border-left-color:#64748B;background:#F8FAFC;margin-top:9px">
+      <div class="cb"><b>Directional claim.</b> Raw AI reliability is a property of the model;
+      workload reduction is the outcome of interest; <b>HITL review is the mediating condition</b>
+      between them. Workload falls without autonomous accuracy because the review gate converts an
+      imperfect draft into a defensible grade.</div>
+    </div>
+  </div>
+
+  <div class="chev">&rsaquo;</div>
+
+  <!-- ─────────── OUTPUT ─────────── -->
+  <div class="c-ou">
+    <div class="colhead mono">03 — OUTPUT</div>
+    <div class="colsub">What the study produces — evaluated knowledge, not screens</div>
+
+    <div class="card">
+      <div class="ct">Evaluated Artifact</div>
+      <div class="cb">
+        A tri-interface LMS gradebook: Administrator scaffolding · Teacher gradebook and HITL
+        workspace · Learner dashboard.<br><br>
+        A paper is collected <b>PENDING</b>, stays PENDING while the AI drafts against a
+        human-authored rubric, becomes <b>GRADED</b> only on teacher validation, and is seen by the
+        learner only when the reviewed set is <b>released</b>. Every transition is written to an
+        append-only audit log.
+      </div>
+      <span class="tag">Artifact contribution</span>
+    </div>
+
+    <div class="card">
+      <div class="ct">Empirical Findings</div>
+      <div class="cb">
+        <ul>
+          <li>Agreement of raw AI grades with teacher reference grades</li>
+          <li>Perceived usability of each interface</li>
+          <li>Grading time and feedback turnaround, manual vs assisted</li>
+          <li>AI processing time per paper</li>
+        </ul>
+      </div>
+      <span class="tag">Descriptive, within stated bounds</span>
+    </div>
+
+    <div class="card">
+      <div class="ct">Design Knowledge</div>
+      <div class="cb">Transferable propositions that outlive this build:
+        <ul>
+          <li>At current VLM reliability, the value lies in <b>decision support, not autonomous grading</b></li>
+          <li>The review gate is the <b>condition of a grade's defensibility</b>, not a precaution added to it</li>
+          <li>Withholding publication until a set is complete protects consistency across a class</li>
+          <li>Viability in low-resource classrooms requires designing for mixed devices and
+              intermittent connectivity from the outset</li>
+        </ul>
+      </div>
+      <span class="tag">Prescriptive knowledge</span>
+    </div>
+
+    <div class="card">
+      <div class="ct">Recommendations</div>
+      <div class="cb">For system development, for schools and DepEd, and for further research.</div>
+    </div>
+  </div>
+
+</div>
+
+
+<div class="returnbar">
+  <span class="stubL"></span><span class="stubR"></span>
+  <span class="head">&#9664;</span>
+  <span class="lbl">DSR ITERATION &mdash; evaluation findings return to Requirements Definition and Design</span>
+</div>
+
+<!-- ─────────── FEEDBACK ─────────── -->
+
+<div class="loops" style="border-top:none;padding-top:4px">
+  <div class="loophead">Feedback — two loops, at different levels</div>
+  <div class="loopgrid">
+
+    <div class="loop">
+      <div class="lt">Research-level: DSR iteration</div>
+      <div class="path mono">OUTPUT &rarr; 02 Requirements Definition &amp; Design</div>
+      <div class="lb">Findings from Demonstration and Evaluation return to requirements and design, so
+        each cycle refines the artifact and its requirements together. <b>This is the loop that makes
+        the study iterative.</b></div>
+    </div>
+
+    <div class="loop artifact">
+      <div class="lt">Artifact-level: adaptive few-shot prompting</div>
+      <div class="path mono">inside 03 Design and Development &mdash; self-loop</div>
+      <div class="lb">
+        <b>Channel 1 · teacher-adjusted evaluations.</b> A validated override of ≥5 points, or a
+        substantive feedback edit, stores the AI draft and the teacher's revision as a calibration
+        pair; a moving window of the 3 most recent pairs for that teacher, activity type and grade
+        level is injected into later prompts.<br>
+        <b>Channel 2 · section context baseline.</b> The 3 most recently approved submissions from
+        the same section supply demonstrations of that cohort's level.
+        <span class="warn">A mechanism inside the artifact — not a research activity, and not the
+        arrow that carries findings back into design.</span>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<div class="bound">
+  <b>BOUNDARY CONDITIONS.</b> Grade 6 English · rubric-scored constructed responses, not answer-key
+  instruments · decision support, not autonomous grading · dependence on a third-party cloud
+  vision-language model whose pricing, uptime and policies lie outside the researchers' control ·
+  three teachers across three schools over one week. These bound the range over which the
+  framework's propositions are asserted to hold.
+</div>
+
+</body></html>
