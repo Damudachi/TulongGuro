@@ -53,17 +53,8 @@ tbody tr:not(.phase):hover td { background:#EDF2F7; }
 tbody tr.section:hover td { background:#DCE5F5; }
 
 /* Bar cells */
-td.bar-main { background:#452873 !important; } /* Consistent purple-navy matching reference image */
-tr.phase td.bar-main { background:#614393 !important; } /* slightly lighter for dark bg on phase rows */
-
-/* Milestone */
-td.milestone-cell {
-  background:#DAA520 !important; position:relative; border-color:#B8860B !important;
-}
-td.milestone-cell::after {
-  content:'◆'; color:#fff; font-size:12px;
-  position:absolute; top:50%; left:50%; transform:translate(-50%,-50%);
-}
+td.bar-main { background:#1B2A4A !important; } /* Consistent dark blue matching reference image */
+tr.phase td.bar-main { background:#3B5998 !important; } /* lighter blue for dark bg on phase rows */
 
 /* Date & days */
 td.date-cell { font-size:10px; color:#4B5563; white-space:nowrap; }
@@ -395,11 +386,7 @@ function render() {
     for (let c = 0; c < TOTAL_COLS; c++) {
       const td = document.createElement('td');
       if (colSet.has(c)) {
-        if (t.milestone && c === Math.max(...colSet)) {
-          td.className = 'milestone-cell';
-        } else {
-          td.className = barClass;
-        }
+        td.className = barClass;
       }
       tr.appendChild(td);
     }
