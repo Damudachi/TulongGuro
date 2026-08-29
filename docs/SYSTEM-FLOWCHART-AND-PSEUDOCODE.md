@@ -130,6 +130,58 @@ flowchart TD
 
 ---
 
+### Figure 5. Human-in-the-Loop Validation and Class-Wide Release
+
+```mermaid
+flowchart TD
+    S([Teacher opens HITL Workspace<br/>for one activity]) --> L[Load the activity's papers:<br/>learner work beside the AI draft<br/>score, criteria breakdown, feedback]
+    L --> P{Next paper<br/>in the set?}
+
+    P -- No --> RG{All papers<br/>reviewed?}
+    P -- Yes --> D[Teacher reviews the paper:<br/>approve as-is, edit the score,<br/>edit the feedback, or override both]
+
+    D --> G{Did the AI actually<br/>draft this paper?<br/>aiScore IS NOT NULL}
+    G -- "No — teacher graded it directly" --> U
+    G -- Yes --> T{Score changed by 5+ points<br/>OR feedback substantively edited?}
+
+    T -- No --> U
+    T -- "Yes — a real correction" --> C[(Store calibration pair in<br/>GradingExample: teacherId,<br/>activityType, gradeLevel,<br/>aiScore, teacherScore)]
+    C -.->|"feeds Channel 1 of the<br/>next prompt for this teacher"| L
+
+    C --> U[UPDATE Submission:<br/>hitlScore, hitlFeedback,<br/>status = GRADED]
+    U --> A[(Append GradingAuditLog:<br/>TEACHER_VALIDATED<br/>actor, score, timestamp)]
+    A --> P
+
+    RG -- "No — defer the rest" --> HOLD[Validated papers stay stored<br/>and remain invisible to learners]
+    RG -- Yes --> REL{Release scope}
+
+    REL -- "Whole class" --> RC[Select papers WHERE<br/>status = GRADED<br/>AND releasedAt IS NULL]
+    REL -- "One paper" --> RS{Is this paper<br/>status = GRADED?}
+    RS -- No --> RJ[Refuse:<br/>Validate this paper<br/>before releasing it]
+    RS -- Yes --> RC
+
+    RC --> SET[SET releasedAt = NOW]
+    SET --> AL[(Append GradingAuditLog:<br/>RELEASED, one row per paper)]
+    AL --> N[Notify each learner:<br/>GRADE_RELEASED]
+    N --> V[Learner dashboard shows the grade,<br/>criteria breakdown, feedback and badges.<br/>Student queries only ever match<br/>releasedAt IS NOT NULL]
+    V --> E([END])
+
+    HOLD --> E
+    RJ --> E
+
+    MAN([Teacher enters a score directly<br/>— no AI draft exists]) --> MAN2[status = GRADED,<br/>gradedAt and releasedAt set together:<br/>validating and publishing are one act]
+    MAN2 --> N
+
+    classDef gate fill:#FFF4E5,stroke:#C77700,color:#3A2A00
+    classDef store fill:#EAF2FF,stroke:#2B59C3,color:#0A2463
+    classDef stop fill:#FDECEC,stroke:#B3261E,color:#410E0B
+    class G,T,RS,REL,RG,P gate
+    class C,A,AL store
+    class RJ stop
+```
+
+---
+
 ## 2. Modular Pseudocode
 
 ### Module 1 — Main System Entry & Role Routing
