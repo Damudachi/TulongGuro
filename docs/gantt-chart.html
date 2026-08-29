@@ -6,65 +6,63 @@
 <title>TulongGuro — Development Gantt Chart</title>
 <style>
 * { margin:0; padding:0; box-sizing:border-box; }
-body { font-family:'Segoe UI',Tahoma,Geneva,Verdana,sans-serif; background:#f5f6fa; padding:24px; color:#23272f; }
+body { font-family:'Segoe UI',Tahoma,Geneva,Verdana,sans-serif; background:#f5f6fa; padding:20px; color:#23272f; }
 
 .gantt-wrapper {
   background:#fff; border-radius:10px; box-shadow:0 2px 16px rgba(0,0,0,0.07);
-  overflow-x:auto; padding:28px 24px 20px;
+  overflow-x:auto; padding:24px 20px 18px;
 }
-.title { text-align:center; font-size:20px; font-weight:700; color:#1B2A4A; margin-bottom:4px; letter-spacing:0.3px; }
-.subtitle { text-align:center; font-size:13px; color:#6B7280; margin-bottom:18px; }
+.title { text-align:center; font-size:19px; font-weight:700; color:#1B2A4A; margin-bottom:3px; letter-spacing:0.3px; }
+.subtitle { text-align:center; font-size:12px; color:#6B7280; margin-bottom:14px; }
 
 /* Legend */
 .legend {
-  display:flex; flex-wrap:wrap; gap:16px; justify-content:center;
-  margin-bottom:16px; padding:10px 16px; background:#F3F4F6; border-radius:6px; font-size:12px; color:#4B5563;
+  display:flex; flex-wrap:wrap; gap:14px; justify-content:center;
+  margin-bottom:14px; padding:8px 14px; background:#F3F4F6; border-radius:6px; font-size:11px; color:#4B5563;
 }
-.legend-item { display:flex; align-items:center; gap:5px; }
-.swatch { display:inline-block; width:18px; height:12px; border-radius:2px; }
+.legend-item { display:flex; align-items:center; gap:4px; }
+.swatch { display:inline-block; width:16px; height:10px; border-radius:2px; }
 .swatch-phase { background:#1B2A4A; }
 .swatch-dev { background:#3B5998; }
 .swatch-field { background:#2E7D32; }
 .swatch-report { background:#D84315; }
-.swatch-milestone { background:#DAA520; color:#fff; font-size:10px; text-align:center; line-height:12px; width:14px; height:14px; border-radius:2px; }
+.swatch-milestone { background:#DAA520; color:#fff; font-size:9px; text-align:center; line-height:10px; width:12px; height:12px; border-radius:2px; }
 
 /* Table */
-table { border-collapse:collapse; width:100%; min-width:1400px; font-size:11.5px; }
+table { border-collapse:collapse; width:100%; min-width:1700px; font-size:11px; }
 
 /* Headers */
 thead th {
-  padding:6px 3px; text-align:center; font-weight:600; border:1px solid #2B4570;
+  padding:5px 2px; text-align:center; font-weight:600; border:1px solid #2B4570;
   position:sticky; top:0; z-index:10;
 }
-.hdr-month { background:#1B2A4A; color:#fff; font-size:12px; letter-spacing:1.2px; text-transform:uppercase; }
-.hdr-week { background:#2B4570; color:#E5E7EB; font-size:10px; min-width:28px; width:28px; }
+.hdr-month { background:#1B2A4A; color:#fff; font-size:11px; letter-spacing:1px; text-transform:uppercase; }
+.hdr-week { background:#2B4570; color:#E5E7EB; font-size:9.5px; min-width:24px; width:24px; }
 .hdr-week.current { background:#C0392B; color:#fff; font-weight:700; }
 .hdr-info { background:#1B2A4A; color:#fff; }
-.hdr-wbs { min-width:48px; width:48px; }
-.hdr-task { min-width:340px; text-align:left; padding-left:10px; }
-.hdr-date { min-width:96px; width:96px; }
-.hdr-days { min-width:40px; width:40px; }
+.hdr-wbs { min-width:42px; width:42px; }
+.hdr-task { min-width:320px; text-align:left; padding-left:8px; }
+.hdr-date { min-width:86px; width:86px; font-size:10.5px; }
+.hdr-days { min-width:36px; width:36px; }
 
 /* Body cells */
-tbody td { padding:5px 4px; border:1px solid #E5E7EB; text-align:center; vertical-align:middle; height:26px; }
+tbody td { padding:4px 3px; border:1px solid #E5E7EB; text-align:center; vertical-align:middle; height:24px; }
 
 /* Row types */
 tr.phase td { background:#1B2A4A; color:#fff; font-weight:700; border-color:#2B4570; }
-tr.phase td.task-cell { text-align:left; padding-left:10px; font-size:12px; }
+tr.phase td.task-cell { text-align:left; padding-left:8px; font-size:11.5px; }
 
 tr.section td { background:#E8EEF7; font-weight:700; color:#1B2A4A; }
-tr.section td.task-cell { text-align:left; padding-left:22px; }
+tr.section td.task-cell { text-align:left; padding-left:20px; }
 
 tr.task td { font-weight:400; color:#23272f; }
-tr.task td.task-cell { text-align:left; padding-left:22px; }
+tr.task td.task-cell { text-align:left; padding-left:20px; }
 
 tr.subtask td { font-weight:400; color:#4B5563; }
-tr.subtask td.task-cell { text-align:left; padding-left:38px; font-size:11px; }
+tr.subtask td.task-cell { text-align:left; padding-left:34px; font-size:10.5px; }
 
-/* Zebra on non-phase rows */
 tbody tr:not(.phase):nth-child(even) td { background:#FAFBFC; }
 tbody tr:not(.phase):hover td { background:#EDF2F7; }
-/* Keep section bg on hover */
 tbody tr.section:hover td { background:#DCE5F5; }
 
 /* Bar cells */
@@ -72,8 +70,6 @@ td.bar-phase { background:#1B2A4A !important; }
 td.bar-dev   { background:#3B5998 !important; }
 td.bar-field { background:#2E7D32 !important; }
 td.bar-report{ background:#D84315 !important; }
-
-/* For phase rows, bars are already on dark bg; make them slightly lighter */
 tr.phase td.bar-phase { background:#3B5998 !important; }
 
 /* Milestone */
@@ -81,28 +77,26 @@ td.milestone-cell {
   background:#DAA520 !important; position:relative; border-color:#B8860B !important;
 }
 td.milestone-cell::after {
-  content:'◆'; color:#fff; font-size:13px;
+  content:'◆'; color:#fff; font-size:12px;
   position:absolute; top:50%; left:50%; transform:translate(-50%,-50%);
 }
 
 /* Date & days */
-td.date-cell { font-size:10.5px; color:#4B5563; white-space:nowrap; }
+td.date-cell { font-size:10px; color:#4B5563; white-space:nowrap; }
 td.days-cell { font-weight:600; color:#2B4570; }
-
-/* Phase row overrides for date/days */
 tr.phase td.date-cell { color:#E5E7EB; }
 tr.phase td.days-cell { color:#93C5FD; }
 
 /* Note */
 .note {
-  margin-top:14px; padding:10px 14px; background:#FFFBEB; border-left:4px solid #D97706;
-  border-radius:0 6px 6px 0; font-size:11.5px; color:#92400E;
+  margin-top:12px; padding:8px 12px; background:#FFFBEB; border-left:4px solid #D97706;
+  border-radius:0 6px 6px 0; font-size:11px; color:#92400E; line-height:1.5;
 }
 
 @media print {
   body { padding:0; background:#fff; }
-  .gantt-wrapper { box-shadow:none; padding:8px; }
-  table { font-size:9px; min-width:unset; }
+  .gantt-wrapper { box-shadow:none; padding:6px; }
+  table { font-size:8px; min-width:unset; }
 }
 </style>
 </head>
@@ -132,106 +126,235 @@ tr.phase td.days-cell { color:#93C5FD; }
 
 <script>
 // ============================================================
-//  Month/Week column structure (MAY–OCTOBER)
+//  Month/Week column structure  (DEC 2025 → SEP 2026, no OCT)
+// ============================================================
+//  DEC(4) JAN(4) FEB(4) MAR(4) APR(4) MAY(4) JUN(4) JUL(5) AUG(4) SEP(4)
+//  cols 0-3  4-7  8-11  12-15  16-19  20-23  24-27  28-32  33-36  37-40
 // ============================================================
 const MONTHS = [
-  { label:'MAY 2026',   weeks:4 },
-  { label:'JUNE',       weeks:4 },
-  { label:'JULY',       weeks:5 },
-  { label:'AUGUST',     weeks:4 },
-  { label:'SEPTEMBER',  weeks:4 },
-  { label:'OCTOBER',    weeks:5 }
+  { label:'DEC 2025',    weeks:4 },
+  { label:'JANUARY',     weeks:4 },
+  { label:'FEBRUARY',    weeks:4 },
+  { label:'MARCH',       weeks:4 },
+  { label:'APRIL',       weeks:4 },
+  { label:'MAY',         weeks:4 },
+  { label:'JUNE',        weeks:4 },
+  { label:'JULY',        weeks:5 },
+  { label:'AUGUST',      weeks:4 },
+  { label:'SEPTEMBER',   weeks:4 }
 ];
-const TOTAL_COLS = MONTHS.reduce((s,m) => s + m.weeks, 0); // 26
+const TOTAL_COLS = MONTHS.reduce((s,m) => s + m.weeks, 0); // 41
 
-// Current week column (Aug 29 → AUG W4 → col 16)
-const CURRENT_COL = 16;
+// Current week: Aug 29 → AUG W4 → col 36
+const CURRENT_COL = 36;
 
 // ============================================================
-//  WBS Task Data
-//  barType: 'phase'|'dev'|'field'|'report'
-//  cols: array of 0-based column indices to fill
-//  milestone: true → show gold diamond instead of bar
+//  Column index reference:
+//  DEC: 0(W1) 1(W2) 2(W3) 3(W4)
+//  JAN: 4(W1) 5(W2) 6(W3) 7(W4)
+//  FEB: 8(W1) 9(W2) 10(W3) 11(W4)
+//  MAR: 12(W1) 13(W2) 14(W3) 15(W4)
+//  APR: 16(W1) 17(W2) 18(W3) 19(W4)
+//  MAY: 20(W1) 21(W2) 22(W3) 23(W4)
+//  JUN: 24(W1) 25(W2) 26(W3) 27(W4)
+//  JUL: 28(W1) 29(W2) 30(W3) 31(W4) 32(W5)
+//  AUG: 33(W1) 34(W2) 35(W3) 36(W4)
+//  SEP: 37(W1) 38(W2) 39(W3) 40(W4)
 // ============================================================
+
+// Helper to generate range array
+function range(a, b) { const r=[]; for(let i=a;i<=b;i++) r.push(i); return r; }
+
 const TASKS = [
-  // ── Phase 1 ──────────────────────────────────────
-  { wbs:'1', name:'Project Planning, Analysis and Design', start:'Dec 8, 2025', end:'Apr 30, 2026', days:'—', row:'phase', barType:'phase', cols:[] },
-  { wbs:'1.1', name:'Title proposal and ideation', start:'Dec 8, 2025', end:'Dec 21, 2025', days:14, row:'task', barType:'dev', cols:[] },
-  { wbs:'1.2', name:'Proposal preparation and writing', start:'Dec 22, 2025', end:'Mar 1, 2026', days:70, row:'task', barType:'dev', cols:[] },
-  { wbs:'1.2.1', name:'Introduction and Review of Related Literature', start:'Dec 22, 2025', end:'Feb 1, 2026', days:42, row:'subtask', barType:'dev', cols:[] },
-  { wbs:'1.2.2', name:'Methodology', start:'Feb 2, 2026', end:'Mar 1, 2026', days:28, row:'subtask', barType:'dev', cols:[] },
-  { wbs:'1.3', name:'Title defense', start:'Mar 10, 2026', end:'Mar 10, 2026', days:1, row:'task', barType:'dev', cols:[], milestone:true },
-  { wbs:'1.4', name:'Proposal revisions and final submission', start:'Mar 11, 2026', end:'Mar 24, 2026', days:14, row:'task', barType:'dev', cols:[] },
-  { wbs:'1.5', name:'Requirements definition and rubric sourcing (MES)', start:'Mar 25, 2026', end:'Apr 30, 2026', days:37, row:'task', barType:'dev', cols:[] },
+  // ── Phase 1: Project Planning, Analysis and Design ──
+  { wbs:'1', name:'Project Planning, Analysis and Design',
+    start:'Dec 8, 2025', end:'Apr 30, 2026', days:'—',
+    row:'phase', barType:'phase', cols:range(1,19) },
 
-  // ── Phase 2: System Development ──────────────────
-  { wbs:'2', name:'System Development — Agile Scrum, 16 one-week sprints', start:'May 8, 2026', end:'Aug 13, 2026', days:98, row:'phase', barType:'phase', cols:[1,2,3,4,5,6,7,8,9,10,11,12,13,14] },
-  // 2.1
-  { wbs:'2.1', name:'Foundation and core Teacher interface', start:'May 8, 2026', end:'Jun 4, 2026', days:28, row:'section', barType:'dev', cols:[1,2,3,4] },
-  { wbs:'2.1.1', name:'Sprint 1 — Establish the initial TulongGuro system', start:'May 8, 2026', end:'May 14, 2026', days:7, row:'subtask', barType:'dev', cols:[1] },
-  { wbs:'2.1.2', name:'Sprint 2 — Develop the core Teacher Interface', start:'May 15, 2026', end:'May 21, 2026', days:7, row:'subtask', barType:'dev', cols:[2] },
-  { wbs:'2.1.3', name:'Sprint 3 — Refine AI-assisted grading', start:'May 22, 2026', end:'May 28, 2026', days:7, row:'subtask', barType:'dev', cols:[3] },
-  { wbs:'2.1.4', name:'Sprint 4 — Improve the Teacher grading workflow', start:'May 29, 2026', end:'Jun 4, 2026', days:7, row:'subtask', barType:'dev', cols:[4] },
-  // 2.2
-  { wbs:'2.2', name:'AI refinement and Teacher usability', start:'Jun 5, 2026', end:'Jun 25, 2026', days:21, row:'section', barType:'dev', cols:[5,6,7] },
-  { wbs:'2.2.1', name:'Sprint 5 — AI feedback and assessment processing', start:'Jun 5, 2026', end:'Jun 11, 2026', days:7, row:'subtask', barType:'dev', cols:[5] },
-  { wbs:'2.2.2', name:'Sprint 6 — Teacher usability and onboarding', start:'Jun 12, 2026', end:'Jun 18, 2026', days:7, row:'subtask', barType:'dev', cols:[6] },
-  { wbs:'2.2.3', name:'Sprint 7 — Core Teacher assessment workflow', start:'Jun 19, 2026', end:'Jun 25, 2026', days:7, row:'subtask', barType:'dev', cols:[7] },
-  // 2.3
-  { wbs:'2.3', name:'Batch processing and curriculum integration', start:'Jun 26, 2026', end:'Jul 16, 2026', days:21, row:'section', barType:'dev', cols:[8,9,10] },
-  { wbs:'2.3.1', name:'Sprint 8 — Introduce batch assessment processing', start:'Jun 26, 2026', end:'Jul 2, 2026', days:7, row:'subtask', barType:'dev', cols:[8] },
-  { wbs:'2.3.2', name:'Sprint 9 — Curriculum, activities and rubrics', start:'Jul 3, 2026', end:'Jul 9, 2026', days:7, row:'subtask', barType:'dev', cols:[9] },
-  { wbs:'2.3.3', name:'Sprint 10 — Strengthen the assessment workflow', start:'Jul 10, 2026', end:'Jul 16, 2026', days:7, row:'subtask', barType:'dev', cols:[10] },
-  // 2.4
-  { wbs:'2.4', name:'Analytics and data architecture', start:'Jul 17, 2026', end:'Jul 30, 2026', days:14, row:'section', barType:'dev', cols:[11,12] },
-  { wbs:'2.4.1', name:'Sprint 11 — Analytics and data architecture', start:'Jul 17, 2026', end:'Jul 23, 2026', days:7, row:'subtask', barType:'dev', cols:[11] },
-  { wbs:'2.4.2', name:'Sprint 12 — Database migration and security', start:'Jul 24, 2026', end:'Jul 30, 2026', days:7, row:'subtask', barType:'dev', cols:[12] },
-  // 2.5
-  { wbs:'2.5', name:'Deployment and feature completion', start:'Jul 31, 2026', end:'Aug 13, 2026', days:14, row:'section', barType:'dev', cols:[13,14] },
-  { wbs:'2.5.1', name:'Sprint 13 — Deployment and multi-school support', start:'Jul 31, 2026', end:'Aug 6, 2026', days:7, row:'subtask', barType:'dev', cols:[13] },
-  { wbs:'2.5.2', name:'Sprint 14 — Major features and reliability', start:'Aug 7, 2026', end:'Aug 13, 2026', days:7, row:'subtask', barType:'dev', cols:[14] },
+  { wbs:'1.1', name:'Title proposal and ideation',
+    start:'Dec 8, 2025', end:'Dec 21, 2025', days:14,
+    row:'task', barType:'dev', cols:range(1,2) },
 
-  // ── Phase 3: Testing & QA ───────────────────────
-  { wbs:'3', name:'Testing, Quality Assurance and Verification', start:'Aug 14, 2026', end:'Aug 28, 2026', days:15, row:'phase', barType:'phase', cols:[15,16] },
-  { wbs:'3.1', name:'Sprint 15 — QA evaluation and QA-driven revisions', start:'Aug 14, 2026', end:'Aug 20, 2026', days:7, row:'task', barType:'dev', cols:[15] },
-  { wbs:'3.1.1', name:'Functional and Regression Testing (170 test cases)', start:'Aug 14, 2026', end:'Aug 20, 2026', days:7, row:'subtask', barType:'dev', cols:[15] },
-  { wbs:'3.2', name:'Sprint 16 — Developer unit testing and refinements', start:'Aug 21, 2026', end:'Aug 27, 2026', days:7, row:'task', barType:'dev', cols:[16] },
-  { wbs:'3.2.1', name:'Unit and Component Testing (32 test cases)', start:'Aug 21, 2026', end:'Aug 27, 2026', days:7, row:'subtask', barType:'dev', cols:[16] },
-  { wbs:'3.3', name:'Final QA Verification', start:'Aug 28, 2026', end:'Aug 28, 2026', days:1, row:'task', barType:'dev', cols:[16], milestone:true },
+  { wbs:'1.2', name:'Proposal preparation and writing',
+    start:'Dec 22, 2025', end:'Mar 1, 2026', days:70,
+    row:'task', barType:'dev', cols:range(3,12) },
 
-  // ── Phase 4: Demonstration & Field Evaluation ───
-  { wbs:'4', name:'Demonstration and Field Evaluation (DSR Stages 4–5)', start:'Aug 14, 2026', end:'Aug 28, 2026', days:15, row:'phase', barType:'phase', cols:[15,16] },
-  { wbs:'4.1', name:'Rubric validation by Head Coordinators', start:'Aug 14, 2026', end:'Aug 16, 2026', days:3, row:'task', barType:'field', cols:[15] },
-  { wbs:'4.2', name:'System demonstration to participants', start:'Aug 17, 2026', end:'Aug 18, 2026', days:2, row:'task', barType:'field', cols:[15] },
-  { wbs:'4.3', name:'Beta field evaluation — three schools, one week', start:'Aug 18, 2026', end:'Aug 24, 2026', days:7, row:'task', barType:'field', cols:[15,16] },
-  { wbs:'4.4', name:'Pre- and post-deployment grading time logs', start:'Aug 14, 2026', end:'Aug 26, 2026', days:13, row:'task', barType:'field', cols:[15,16] },
-  { wbs:'4.5', name:'SUS administration — Teacher, Student, Admin', start:'Aug 25, 2026', end:'Aug 28, 2026', days:4, row:'task', barType:'field', cols:[16] },
+  { wbs:'1.2.1', name:'Introduction and Review of Related Literature',
+    start:'Dec 22, 2025', end:'Feb 1, 2026', days:42,
+    row:'subtask', barType:'dev', cols:range(3,8) },
 
-  // ── Phase 5: Data Analysis & Reporting ──────────
-  { wbs:'5', name:'Data Analysis and Reporting', start:'Aug 22, 2026', end:'Sep 3, 2026', days:13, row:'phase', barType:'phase', cols:[16,17] },
-  { wbs:'5.1', name:'Data analysis and computation', start:'Aug 22, 2026', end:'Aug 25, 2026', days:4, row:'task', barType:'report', cols:[16] },
-  { wbs:'5.2', name:'Results and Discussion writing', start:'Aug 23, 2026', end:'Aug 27, 2026', days:5, row:'task', barType:'report', cols:[16] },
-  { wbs:'5.3', name:'Adviser consultation and revisions', start:'Aug 26, 2026', end:'Aug 28, 2026', days:3, row:'task', barType:'report', cols:[16] },
-  { wbs:'5.4', name:'Final thesis submission', start:'Aug 29, 2026', end:'Aug 29, 2026', days:1, row:'task', barType:'report', cols:[16], milestone:true },
-  { wbs:'5.5', name:'Oral defense', start:'Sep 3, 2026', end:'Sep 3, 2026', days:1, row:'task', barType:'report', cols:[17], milestone:true },
+  { wbs:'1.2.2', name:'Methodology',
+    start:'Feb 2, 2026', end:'Mar 1, 2026', days:28,
+    row:'subtask', barType:'dev', cols:range(9,12) },
+
+  { wbs:'1.3', name:'Title defense',
+    start:'Mar 10, 2026', end:'Mar 10, 2026', days:1,
+    row:'task', barType:'dev', cols:[13], milestone:true },
+
+  { wbs:'1.4', name:'Proposal revisions and final submission',
+    start:'Mar 11, 2026', end:'Mar 24, 2026', days:14,
+    row:'task', barType:'dev', cols:range(13,15) },
+
+  { wbs:'1.5', name:'Requirements definition and rubric sourcing (MES)',
+    start:'Mar 25, 2026', end:'Apr 30, 2026', days:37,
+    row:'task', barType:'dev', cols:range(15,19) },
+
+  // ── Phase 2: System Development ─────────────────────
+  { wbs:'2', name:'System Development — Agile Scrum, 16 one-week sprints',
+    start:'May 8, 2026', end:'Aug 13, 2026', days:98,
+    row:'phase', barType:'phase', cols:range(21,34) },
+
+  // 2.1 Foundation
+  { wbs:'2.1', name:'Foundation and core Teacher interface',
+    start:'May 8, 2026', end:'Jun 4, 2026', days:28,
+    row:'section', barType:'dev', cols:range(21,24) },
+  { wbs:'2.1.1', name:'Sprint 1 — Establish the initial TulongGuro system',
+    start:'May 8, 2026', end:'May 14, 2026', days:7,
+    row:'subtask', barType:'dev', cols:[21] },
+  { wbs:'2.1.2', name:'Sprint 2 — Develop the core Teacher Interface',
+    start:'May 15, 2026', end:'May 21, 2026', days:7,
+    row:'subtask', barType:'dev', cols:[22] },
+  { wbs:'2.1.3', name:'Sprint 3 — Refine AI-assisted grading',
+    start:'May 22, 2026', end:'May 28, 2026', days:7,
+    row:'subtask', barType:'dev', cols:[23] },
+  { wbs:'2.1.4', name:'Sprint 4 — Improve the Teacher grading workflow',
+    start:'May 29, 2026', end:'Jun 4, 2026', days:7,
+    row:'subtask', barType:'dev', cols:[24] },
+
+  // 2.2 AI refinement
+  { wbs:'2.2', name:'AI refinement and Teacher usability',
+    start:'Jun 5, 2026', end:'Jun 25, 2026', days:21,
+    row:'section', barType:'dev', cols:range(25,27) },
+  { wbs:'2.2.1', name:'Sprint 5 — AI feedback and assessment processing',
+    start:'Jun 5, 2026', end:'Jun 11, 2026', days:7,
+    row:'subtask', barType:'dev', cols:[25] },
+  { wbs:'2.2.2', name:'Sprint 6 — Teacher usability and onboarding',
+    start:'Jun 12, 2026', end:'Jun 18, 2026', days:7,
+    row:'subtask', barType:'dev', cols:[26] },
+  { wbs:'2.2.3', name:'Sprint 7 — Core Teacher assessment workflow',
+    start:'Jun 19, 2026', end:'Jun 25, 2026', days:7,
+    row:'subtask', barType:'dev', cols:[27] },
+
+  // 2.3 Batch processing
+  { wbs:'2.3', name:'Batch processing and curriculum integration',
+    start:'Jun 26, 2026', end:'Jul 16, 2026', days:21,
+    row:'section', barType:'dev', cols:range(28,30) },
+  { wbs:'2.3.1', name:'Sprint 8 — Introduce batch assessment processing',
+    start:'Jun 26, 2026', end:'Jul 2, 2026', days:7,
+    row:'subtask', barType:'dev', cols:[28] },
+  { wbs:'2.3.2', name:'Sprint 9 — Curriculum, activities and rubrics',
+    start:'Jul 3, 2026', end:'Jul 9, 2026', days:7,
+    row:'subtask', barType:'dev', cols:[29] },
+  { wbs:'2.3.3', name:'Sprint 10 — Strengthen the assessment workflow',
+    start:'Jul 10, 2026', end:'Jul 16, 2026', days:7,
+    row:'subtask', barType:'dev', cols:[30] },
+
+  // 2.4 Analytics
+  { wbs:'2.4', name:'Analytics and data architecture',
+    start:'Jul 17, 2026', end:'Jul 30, 2026', days:14,
+    row:'section', barType:'dev', cols:range(31,32) },
+  { wbs:'2.4.1', name:'Sprint 11 — Analytics and data architecture',
+    start:'Jul 17, 2026', end:'Jul 23, 2026', days:7,
+    row:'subtask', barType:'dev', cols:[31] },
+  { wbs:'2.4.2', name:'Sprint 12 — Database migration and security',
+    start:'Jul 24, 2026', end:'Jul 30, 2026', days:7,
+    row:'subtask', barType:'dev', cols:[32] },
+
+  // 2.5 Deployment
+  { wbs:'2.5', name:'Deployment and feature completion',
+    start:'Jul 31, 2026', end:'Aug 13, 2026', days:14,
+    row:'section', barType:'dev', cols:range(33,34) },
+  { wbs:'2.5.1', name:'Sprint 13 — Deployment and multi-school support',
+    start:'Jul 31, 2026', end:'Aug 6, 2026', days:7,
+    row:'subtask', barType:'dev', cols:[33] },
+  { wbs:'2.5.2', name:'Sprint 14 — Major features and reliability',
+    start:'Aug 7, 2026', end:'Aug 13, 2026', days:7,
+    row:'subtask', barType:'dev', cols:[34] },
+
+  // ── Phase 3: Testing & QA ──────────────────────────
+  { wbs:'3', name:'Testing, Quality Assurance and Verification',
+    start:'Aug 14, 2026', end:'Aug 28, 2026', days:15,
+    row:'phase', barType:'phase', cols:range(35,36) },
+  { wbs:'3.1', name:'Sprint 15 — QA evaluation and QA-driven revisions',
+    start:'Aug 14, 2026', end:'Aug 20, 2026', days:7,
+    row:'task', barType:'dev', cols:[35] },
+  { wbs:'3.1.1', name:'Functional and Regression Testing (170 test cases)',
+    start:'Aug 14, 2026', end:'Aug 20, 2026', days:7,
+    row:'subtask', barType:'dev', cols:[35] },
+  { wbs:'3.2', name:'Sprint 16 — Developer unit testing and refinements',
+    start:'Aug 21, 2026', end:'Aug 27, 2026', days:7,
+    row:'task', barType:'dev', cols:[36] },
+  { wbs:'3.2.1', name:'Unit and Component Testing (32 test cases)',
+    start:'Aug 21, 2026', end:'Aug 27, 2026', days:7,
+    row:'subtask', barType:'dev', cols:[36] },
+  { wbs:'3.3', name:'Final QA Verification',
+    start:'Aug 28, 2026', end:'Aug 28, 2026', days:1,
+    row:'task', barType:'dev', cols:[36], milestone:true },
+
+  // ── Phase 4: Demonstration & Field Evaluation ──────
+  { wbs:'4', name:'Demonstration and Field Evaluation (DSR Stages 4–5)',
+    start:'Aug 14, 2026', end:'Aug 28, 2026', days:15,
+    row:'phase', barType:'phase', cols:range(35,36) },
+  { wbs:'4.1', name:'Rubric validation by Head Coordinators',
+    start:'Aug 14, 2026', end:'Aug 16, 2026', days:3,
+    row:'task', barType:'field', cols:[35] },
+  { wbs:'4.2', name:'System demonstration to participants',
+    start:'Aug 17, 2026', end:'Aug 18, 2026', days:2,
+    row:'task', barType:'field', cols:[35] },
+  { wbs:'4.3', name:'Beta field evaluation — three schools, one week',
+    start:'Aug 18, 2026', end:'Aug 24, 2026', days:7,
+    row:'task', barType:'field', cols:range(35,36) },
+  { wbs:'4.4', name:'Pre- and post-deployment grading time logs',
+    start:'Aug 14, 2026', end:'Aug 26, 2026', days:13,
+    row:'task', barType:'field', cols:range(35,36) },
+  { wbs:'4.5', name:'SUS administration — Teacher, Student, Admin',
+    start:'Aug 25, 2026', end:'Aug 28, 2026', days:4,
+    row:'task', barType:'field', cols:[36] },
+
+  // ── Phase 5: Data Analysis & Reporting ─────────────
+  { wbs:'5', name:'Data Analysis and Reporting',
+    start:'Aug 22, 2026', end:'Sep 3, 2026', days:13,
+    row:'phase', barType:'phase', cols:range(36,37) },
+  { wbs:'5.1', name:'Data analysis and computation',
+    start:'Aug 22, 2026', end:'Aug 25, 2026', days:4,
+    row:'task', barType:'report', cols:[36] },
+  { wbs:'5.2', name:'Results and Discussion writing',
+    start:'Aug 23, 2026', end:'Aug 27, 2026', days:5,
+    row:'task', barType:'report', cols:[36] },
+  { wbs:'5.3', name:'Adviser consultation and revisions',
+    start:'Aug 26, 2026', end:'Aug 28, 2026', days:3,
+    row:'task', barType:'report', cols:[36] },
+  { wbs:'5.4', name:'Final thesis submission',
+    start:'Aug 29, 2026', end:'Aug 29, 2026', days:1,
+    row:'task', barType:'report', cols:[36], milestone:true },
+  { wbs:'5.5', name:'Oral defense',
+    start:'Sep 3, 2026', end:'Sep 3, 2026', days:1,
+    row:'task', barType:'report', cols:[37], milestone:true },
 ];
 
 // ============================================================
-//  Render
+//  Render table
 // ============================================================
 function render() {
   const table = document.getElementById('gantt-table');
 
-  // ── THEAD ────────────────────────────────────────
+  // ── THEAD ──
   const thead = document.createElement('thead');
 
-  // Row 1: Month headers
+  // Row 1: info headers + month headers
   const r1 = document.createElement('tr');
-  ['WBS #','Task Name','Start','End','Days'].forEach((txt,i) => {
+  const infoHeaders = [
+    { text:'WBS #', cls:'hdr-info hdr-wbs' },
+    { text:'Task Name', cls:'hdr-info hdr-task' },
+    { text:'Start', cls:'hdr-info hdr-date' },
+    { text:'End', cls:'hdr-info hdr-date' },
+    { text:'Days', cls:'hdr-info hdr-days' }
+  ];
+  infoHeaders.forEach(h => {
     const th = document.createElement('th');
-    th.textContent = txt;
+    th.textContent = h.text;
     th.rowSpan = 2;
-    th.className = 'hdr-info' + (i===0?' hdr-wbs':'') + (i===1?' hdr-task':'') + ([2,3].includes(i)?' hdr-date':'') + (i===4?' hdr-days':'');
+    th.className = h.cls;
     r1.appendChild(th);
   });
   MONTHS.forEach(m => {
@@ -243,7 +366,7 @@ function render() {
   });
   thead.appendChild(r1);
 
-  // Row 2: Week numbers
+  // Row 2: week numbers
   const r2 = document.createElement('tr');
   let colIdx = 0;
   MONTHS.forEach(m => {
@@ -258,37 +381,33 @@ function render() {
   thead.appendChild(r2);
   table.appendChild(thead);
 
-  // ── TBODY ────────────────────────────────────────
+  // ── TBODY ──
   const tbody = document.createElement('tbody');
 
   TASKS.forEach(t => {
     const tr = document.createElement('tr');
-    tr.className = t.row; // phase | section | task | subtask
+    tr.className = t.row;
 
-    // WBS cell
+    // Info cells
     const tdWbs = document.createElement('td');
     tdWbs.textContent = t.wbs;
     tr.appendChild(tdWbs);
 
-    // Task name
     const tdName = document.createElement('td');
     tdName.className = 'task-cell';
     tdName.textContent = t.name;
     tr.appendChild(tdName);
 
-    // Start
     const tdStart = document.createElement('td');
     tdStart.className = 'date-cell';
     tdStart.textContent = t.start;
     tr.appendChild(tdStart);
 
-    // End
     const tdEnd = document.createElement('td');
     tdEnd.className = 'date-cell';
     tdEnd.textContent = t.end;
     tr.appendChild(tdEnd);
 
-    // Days
     const tdDays = document.createElement('td');
     tdDays.className = 'days-cell';
     tdDays.textContent = t.days;
@@ -296,18 +415,15 @@ function render() {
 
     // Bar columns
     const colSet = new Set(t.cols || []);
-    const barClass = t.barType === 'phase' ? 'bar-phase'
-                   : t.barType === 'field' ? 'bar-field'
+    const barClass = t.barType === 'phase'  ? 'bar-phase'
+                   : t.barType === 'field'  ? 'bar-field'
                    : t.barType === 'report' ? 'bar-report'
                    : 'bar-dev';
 
     for (let c = 0; c < TOTAL_COLS; c++) {
       const td = document.createElement('td');
       if (colSet.has(c)) {
-        if (t.milestone && colSet.size === 1 && c === [...colSet][0]) {
-          td.className = 'milestone-cell';
-        } else if (t.milestone && c === Math.max(...colSet)) {
-          // If milestone with multiple cols, last col is milestone
+        if (t.milestone && c === Math.max(...colSet)) {
           td.className = 'milestone-cell';
         } else {
           td.className = barClass;
