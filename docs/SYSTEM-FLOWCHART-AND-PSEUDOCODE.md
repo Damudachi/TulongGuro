@@ -25,7 +25,7 @@ flowchart TD
     %% SCHOOL ADMIN ROLE FLOW
     R -- School Admin --> AD1[Admin Dashboard]
     AD1 --> AD2[[Create Block Sections &<br/>Enroll Student Rosters]]
-    AD2 --> AD3[[Create Course Shells with default<br/>Subject — Section & Assign to Teachers]]
+    AD2 --> AD3[[Create Course Shells with default<br/>Subject GradeLevel - Section & Assign to Teachers]]
     AD3 --> AD4[Publish Curriculum Guides,<br/>Rubric Templates & Policies]
     AD4 --> DB
 
@@ -113,7 +113,7 @@ flowchart TD
     Y --> Z
     F -- No --> G[Pop next Submission from Queue]
     G --> H{Submission image / document<br/>accessible in Cloud Storage?}
-    H -- No --> I[Mark submission status = FAILED]
+    H -- No --> I[Mark submission status = ERROR]
     I --> F
     H -- Yes --> J[Assemble Multimodal Prompt:<br/>Rubric Criteria + Activity Instructions +<br/>Reference Key + Top 3 Teacher Calibration Pairs +<br/>Top 3 Recent Section Submissions]
     J --> K{AI Key / Model Rotation<br/>available in pool?}
@@ -124,7 +124,7 @@ flowchart TD
     N -- No --> O{Retry count <<br/>MAX_RETRIES?}
     O -- Yes --> M
     O -- No --> I
-    N -- Yes --> Q[Clamp score to 0-100 range,<br/>Flag if out-of-bounds,<br/>Save draft: status = AI_CHECKED]
+    N -- Yes --> Q[Clamp score to 0-100 range,<br/>Flag if out-of-bounds,<br/>Save aiScore as draft;<br/>status stays PENDING]
     Q --> F
 ```
 
@@ -261,7 +261,7 @@ PROCEDURE AdminCreateCourseShellAndAssign(admin, subject, gradeLevel, schoolYear
     section <- SELECT * FROM Section WHERE id = sectionId AND schoolId = admin.schoolId
     teacher <- SELECT * FROM User WHERE id = teacherId AND schoolId = admin.schoolId AND role = "TEACHER"
     
-    // Default name pattern: "Subject — Section" (e.g. "English — Newton")
+    // Default name pattern: "Subject GradeLevel - Section" (e.g. "English Grade 6 - Newton")
     bareSectionName <- RemoveGradePrefix(section.name)
     className <- subject + " — " + bareSectionName
 
@@ -301,7 +301,7 @@ END PROCEDURE
 
 PROCEDURE TeacherCreateActivity(teacher, classId)
     courseShell <- SELECT * FROM Class WHERE id = classId AND teacherId = teacher.id
-    INPUT title, instructions, componentType, maxScore, deadlineDate, referenceFiles
+    INPUT title, instructions, type, component, points, deadlineDate, lateUntilDate, referenceFiles
 
     // Human-Authored Rubric Selection (School Template, Custom Criteria, or Uploaded Doc)
     INPUT rubricChoice
@@ -319,9 +319,18 @@ PROCEDURE TeacherCreateActivity(teacher, classId)
         RETURN
     END IF
 
+    // `type` is the kind of task (Essay, Reflection, Short Response) and drives
+    // few-shot retrieval in Module 6; `component` is the DepEd grading bucket
+    // (WW, PT, QA) and drives the weighting in Module 8. They are separate columns.
+    // A lateUntil that is not strictly after the deadline is not a late window at
+    // all — a date-only deadline already runs to the end of its day — so it is
+    // discarded rather than stored.
+    IF lateUntilDate <= deadlineDate THEN lateUntilDate <- NULL END IF
+
     newActivity <- INSERT INTO Activity (classId = courseShell.id, title = title,
-                                         instructions = instructions, componentType = componentType,
-                                         maxScore = maxScore, deadline = deadlineDate,
+                                         instructions = instructions, type = type,
+                                         component = component, points = points,
+                                         deadline = deadlineDate, lateUntil = lateUntilDate,
                                          rubric = rubricCriteria, referenceFiles = referenceFiles)
 END PROCEDURE
 ```
@@ -334,9 +343,14 @@ END PROCEDURE
 PROCEDURE StudentSubmitWork(student, activityId)
     activity <- SELECT * FROM Activity WHERE id = activityId
     
-    // Check deadline (Manila boundary: 23:59:59 PHT) & attempt limits
-    IF CurrentDateTimeManila() > activity.deadline AND NOT activity.allowLate THEN
-        DISPLAY "Submission rejected: Deadline passed."; RETURN
+    // Check the submission window & attempt limits.
+    // A date-only deadline means the END of that day in Manila (23:59:59.999 PHT).
+    // activity.lateUntil is a DATE, not a flag: when set and strictly after the
+    // deadline it is the date the activity actually closes; otherwise the
+    // deadline itself closes it.
+    closesOn <- (activity.lateUntil > activity.deadline) ? activity.lateUntil : activity.deadline
+    IF CurrentDateTimeManila() > EndOfDayManila(closesOn) THEN
+        DISPLAY "Submission rejected: Activity is closed."; RETURN
     END IF
 
     // Ingest handwritten photo captures (PNG/JPEG) or digital files (PDF/DOCX)
@@ -363,12 +377,12 @@ PROCEDURE RunAiCheck(teacher, activityId)
         DISPLAY "Error: Cannot run AI check without an attached rubric."; RETURN
     END IF
 
-    pendingSubmissions <- SELECT * FROM Submission WHERE activityId = activity.id AND status IN ("PENDING", "FAILED")
+    pendingSubmissions <- SELECT * FROM Submission WHERE activityId = activity.id AND status IN ("PENDING", "ERROR")
     
     // Channel 1: Top 3 past teacher correction pairs
     calibrationExamples <- SELECT TOP 3 * FROM GradingExample
                             WHERE teacherId    = teacher.id
-                              AND activityType = activity.componentType
+                              AND activityType = activity.type
                               AND gradeLevel   = courseShell.gradeLevel
                             ORDER BY createdAt DESC
 
@@ -390,11 +404,12 @@ PROCEDURE RunAiCheck(teacher, activityId)
             UPDATE Submission SET 
                 aiScore          = draftScore,
                 aiFeedback       = aiResponse.overallFeedback,
-                aiCriteriaScores = aiResponse.criteriaBreakdown,
-                status           = "AI_CHECKED"
+                aiCriteriaScores = aiResponse.criteriaBreakdown
+                // status deliberately stays "PENDING": the draft is identified by
+                // aiScore being set, and only teacher validation moves it to "GRADED".
             WHERE id = submission.id
         ELSE
-            UPDATE Submission SET status = "FAILED" WHERE id = submission.id
+            UPDATE Submission SET status = "ERROR" WHERE id = submission.id
         END IF
     END FOR
 END PROCEDURE
@@ -408,16 +423,25 @@ END PROCEDURE
 PROCEDURE TeacherValidateSubmission(teacher, submissionId, finalScore, finalFeedback)
     submission <- SELECT * FROM Submission WHERE id = submissionId
     
-    // Record correction pair if score changed >= 5 pts or feedback text was modified
-    IF ABS(finalScore - submission.aiScore) >= 5 OR (finalFeedback <> submission.aiFeedback) THEN
-        INSERT INTO GradingExample (teacherId = teacher.id, activityType = submission.activity.componentType,
-                                    gradeLevel = submission.activity.class.gradeLevel,
-                                    aiScore = submission.aiScore, aiFeedback = submission.aiFeedback,
-                                    teacherScore = finalScore, teacherFeedback = finalFeedback)
+    // Record a correction pair only if the AI actually produced a draft for this
+    // paper. Without this guard, a paper graded straight from the review screen
+    // (or after the daily AI quota ran out) has aiScore = NULL, and the delta
+    // against it equals the whole grade — storing a correction that never
+    // happened and teaching the model its own scores run catastrophically low.
+    IF submission.aiScore IS NOT NULL THEN
+        // >= 5 points, or a substantive edit to the feedback text (whitespace
+        // and formatting-only changes do not count).
+        IF ABS(finalScore - submission.aiScore) >= 5
+           OR FeedbackSubstantivelyChanged(finalFeedback, submission.aiFeedback) THEN
+            INSERT INTO GradingExample (teacherId = teacher.id, activityType = submission.activity.type,
+                                        gradeLevel = submission.activity.class.gradeLevel,
+                                        aiScore = ROUND(submission.aiScore), aiFeedback = submission.aiFeedback,
+                                        teacherScore = ROUND(finalScore), teacherFeedback = finalFeedback)
+        END IF
     END IF
 
     UPDATE Submission SET hitlScore = finalScore, hitlFeedback = finalFeedback,
-                          status = "GRADED", validatedAt = CurrentDateTime()
+                          status = "GRADED"
                       WHERE id = submission.id
 
     LOG GradingAuditLog(teacherId = teacher.id, submissionId = submission.id, score = finalScore)
@@ -449,11 +473,15 @@ FUNCTION ComputeQuarterlyGrade(studentId, classId)
 
     FOR EACH comp IN components DO
         submissions <- SELECT * FROM Submission s JOIN Activity a ON s.activityId = a.id
-                       WHERE s.studentId = studentId AND a.classId = classId AND a.componentType = comp
+                       WHERE s.studentId = studentId AND a.classId = classId AND a.component = comp
                          AND s.status = "GRADED" AND s.releasedAt IS NOT NULL AND s.excusedAt IS NULL
 
-        IF SUM(submissions.activity.maxScore) > 0 THEN
-            pct <- (SUM(submissions.hitlScore) / SUM(submissions.activity.maxScore)) * 100
+        // Percentage Score is POOLED POINTS, not the mean of each activity's
+        // percentage: a 5-point quiz must not weigh the same as a 100-point essay.
+        // hitlScore is stored as a PERCENT, so it is converted back to points earned.
+        IF SUM(submissions.activity.points) > 0 THEN
+            pct <- (SUM((submissions.hitlScore / 100) * submissions.activity.points)
+                    / SUM(submissions.activity.points)) * 100
             weightedSum <- weightedSum + (pct * weights[comp])
             activeWeightTotal <- activeWeightTotal + weights[comp]
         END IF
@@ -465,10 +493,14 @@ FUNCTION ComputeQuarterlyGrade(studentId, classId)
 
     // DepEd DO 8 s. 2015 Two-Segment Linear Transmutation
     IF policy.useTransmutation THEN
+        // Two linear segments. FLOOR, not ROUND: the published table is banded
+        // ("98.40-99.99 -> 99"), so rounding pushes every boundary one grade too
+        // high. ROUND-TO-6-DP guards the IEEE 754 edge: 38.4/1.6 is 23.999...,
+        // which would floor to 23 and cost the learner a grade point.
         IF initialGrade >= 60.0 THEN
-            finalGrade <- 75.0 + FLOOR((initialGrade - 60.0) / 1.6)
+            finalGrade <- 75.0 + FLOOR(ROUND((initialGrade - 60.0) / 1.6, 6))
         ELSE
-            finalGrade <- 60.0 + FLOOR(initialGrade / 4.0)
+            finalGrade <- 60.0 + FLOOR(ROUND(initialGrade / 4.0, 6))
         END IF
         finalGrade <- Clamp(finalGrade, 60.0, 100.0)
     ELSE

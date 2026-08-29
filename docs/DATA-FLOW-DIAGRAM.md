@@ -18,7 +18,7 @@ shape; when redrawing in Visio or draw.io, use the standard open-ended rectangle
 | **E1** | **Learner** | Accesses assigned activities, captures and uploads handwritten/digital work, views released grades, criteria breakdowns, qualitative feedback, and earned skill badges. |
 | **E2** | **Teacher** | Accesses assigned course shells, designs activities and selects/customizes rubrics, sets deadlines, triggers AI checking, reviews and overrides AI drafts in the HITL workspace, and releases final grades. |
 | **E3** | **School Administrator** | Manages teacher accounts, creates block sections and rosters, creates course shells and assigns them to subject teachers, reassigns course shells/advisers, establishes curriculum and rubric templates, and configures DepEd grading policies. |
-| **E4** | **Platform Administrator / Operator** | Verifies school registrations against the official DepEd eBEIS master list, reviews institutional DepEd School ID proof documents, approves/rejects onboarding requests, assigns frozen unique school codes (`slug`), and manages platform operators. |
+| **E4** | **Platform Administrator / Operator** | Reviews school registrations that the server has already matched against the bundled DepEd eBEIS master list, reviews institutional DepEd School ID proof documents, approves/rejects onboarding requests, assigns frozen unique school codes (`slug`), and manages platform operators. |
 | **E5** | **Cloud VLM Service** | External Multimodal Vision-Language Model (Gemini Flash pool with model rotation) that processes student submission images/documents alongside rubric prompts to return structured draft scores and formative feedback. |
 
 ---
@@ -27,10 +27,10 @@ shape; when redrawing in Visio or draw.io, use the standard open-ended rectangle
 
 | ID | Process | Description |
 |----|---------|-------------|
-| **1.0** | **Manage Registration and Access Control** | Handles school registration against DepEd eBEIS registry, platform operator vetting, frozen school slug assignment (`School.slug`), institutional domain email isolation, account provisioning, authentication, and role-based access control (`PLATFORM`, `ADMIN`, `TEACHER`, `STUDENT`). |
-| **2.0** | **Manage Sections, Course Shells, and Assessments** | Centralizes admin-driven section creation, school-scoped student ID generation (`<SLUG>-<YY>-<NNNN>`), course shell creation with default naming (`Subject — Section`), teacher assignment/reassignment, curriculum/rubric template ingestion, and teacher activity authoring. |
+| **1.0** | **Manage Registration and Access Control** | Handles school registration with an automated lookup against the bundled DepEd eBEIS registry, platform operator vetting, frozen school slug assignment (`School.slug`), institutional domain email isolation, account provisioning, authentication, and role-based access control (`PLATFORM`, `ADMIN`, `TEACHER`, `STUDENT`). |
+| **2.0** | **Manage Sections, Course Shells, and Assessments** | Centralizes admin-driven section creation, school-scoped student ID generation (`<SLUG>-<YY>-<NNNN>`), course shell creation with default naming (`Subject GradeLevel - Section`), teacher assignment/reassignment, curriculum/rubric template ingestion, and teacher activity authoring. |
 | **3.0** | **Receive and Ingest Assessment Output** | Ingests handwritten photo captures, scanned documents, and direct digital submissions (`PNG`, `JPEG`, `PDF`, `DOCX`), validates deadlines and attempt constraints, executes automated server-side preprocessing (EXIF rotation, stitching, 1920px width cap, 88% JPEG compression), and stores artifacts securely. |
-| **4.0** | **Perform AI-Assisted Checking** | Assembles contextual grading prompts (rubrics, instructions, reference keys, and two-channel few-shot calibration: top 3 teacher correction pairs + section memory), calls the rotated Cloud VLM pool, validates JSON payloads, and persists draft evaluations (`status = AI_CHECKED`). |
+| **4.0** | **Perform AI-Assisted Checking** | Assembles contextual grading prompts (rubrics, instructions, reference keys, and two-channel few-shot calibration: top 3 teacher correction pairs + section memory), calls the rotated Cloud VLM pool, validates JSON payloads, and persists draft evaluations (`aiScore` set; `status` stays `PENDING` until a teacher validates). |
 | **5.0** | **Validate and Release Grades (HITL)** | Facilitates teacher review and override of AI drafts in the HITL workspace, captures teacher corrections for model calibration (`GradingExample`), records append-only grading audit logs, and controls deliberate class-wide grade release to learners. |
 | **6.0** | **Compute Grades and Analytics** | Applies DepEd Order No. 8, s. 2015 weighting (WW, PT, QA) and linear transmutation formulas, computes student competency progress and badges, generates exportable electronic gradebooks (`.xlsx`), and delivers school-wide and course shell analytics (`ShellAnalytics`). |
 
@@ -46,7 +46,7 @@ shape; when redrawing in Visio or draw.io, use the standard open-ended rectangle
 | **D4** | **Activity Records** | `Activity` |
 | **D5** | **Submission Records** | `Submission` |
 | **D6** | **Submission Image & Document Store** | Cloud Object Storage (Supabase Storage submission photographs and digital files) |
-| **D7** | **Grading Calibration Examples** | `GradingExample` (Few-shot teacher correction pairs filtered by teacher, subject, and grade level) |
+| **D7** | **Grading Calibration Examples** | `GradingExample` (Few-shot teacher correction pairs filtered by teacher, activity type, and grade level) |
 | **D8** | **Notification and Audit Log** | `Notification`, `PushSubscription`, `GradingAuditLog`, `AdminAuditLog`, `AiRequestLog` |
 
 ---
@@ -155,7 +155,7 @@ flowchart LR
     D2 -- "section memory context" --> P4
     P4 -- "multimodal grading prompt" --> E5
     E5 -- "structured draft evaluation (JSON)" --> P4
-    P4 -- "draft evaluation (AI_CHECKED)" --> D5
+    P4 -- "draft evaluation (aiScore set,<br/>status still PENDING)" --> D5
     P4 -- "AI token & latency log" --> D8
     P4 -- "job progress status" --> E2
 
@@ -189,7 +189,7 @@ flowchart LR
 | Flow # | Source | Data Flow Content | Destination |
 |:------:|:-------|:------------------|:------------|
 | 1.1 | E2 Teacher / Applicant | School registration details, DepEd School ID, proof document | 1.0 |
-| 1.2 | 1.0 | Pending school registration data, DepEd eBEIS registry match, and proof document | E4 Platform Administrator / Operator |
+| 1.2 | 1.0 | Pending school registration data, the server's automated DepEd eBEIS registry match, and proof document | E4 Platform Administrator / Operator |
 | 1.3 | E4 Platform Administrator | Institutional verification decision (Approve / Reject) and assigned unique school slug (`School.slug`) | 1.0 |
 | 1.4 | 1.0 | Verified school entity with unique slug and initial admin account record | D1 User and School Records |
 | 1.5 | E1 / E2 / E3 / E4 | User credentials (Username / School-scoped Domain Email / Password) | 1.0 |
@@ -210,7 +210,7 @@ flowchart LR
 | 2.4 | 2.0 | Provisioned learner account records prefixed by school slug (`<SLUG>-<YY>-<NNNN>`) | D1 User and School Records |
 | 2.5 | 2.0 | Learner login credentials table (one-time display and copyable export) | E3 School Administrator |
 | 2.6 | E3 School Administrator | Course shell creation specs (Subject, Grade Level, Section ID, Teacher ID, Curriculum ID) | 2.0 |
-| 2.7 | 2.0 | Course shell record (`Class`) with default naming `Subject — Section`, linked to Section and Assigned Teacher | D2 Section, Shell & Roster |
+| 2.7 | 2.0 | Course shell record (`Class`) with default naming `Subject GradeLevel - Section`, linked to Section and Assigned Teacher | D2 Section, Shell & Roster |
 | 2.8 | E3 School Administrator | Curriculum guide, lesson competencies, school rubric templates, DepEd grading policy weights | 2.0 |
 | 2.9 | 2.0 | Curriculum hierarchy, lesson competencies, and school rubric template records | D3 Curriculum, Rubric & Policy |
 | 2.10 | D2 Section, Shell & Roster | Assigned course shells (`Class.teacherId`) and section student rosters | 2.0 |
@@ -248,7 +248,7 @@ flowchart LR
 | 4.6 | D2 Section, Shell & Roster | Top 3 most recently approved submissions in section (cohort baseline memory) | 4.0 |
 | 4.7 | 4.0 | Multimodal grading prompt (Submission + Rubric Criteria + Reference Keys + 2-Channel Calibration) | E5 Cloud VLM Service |
 | 4.8 | E5 Cloud VLM Service | Structured JSON grading response (Criteria scores, total draft score, qualitative feedback) | 4.0 |
-| 4.9 | 4.0 | AI draft evaluation (`aiScore`, `aiFeedback`, `criteriaScores`, `status = AI_CHECKED`) | D5 Submission Records |
+| 4.9 | 4.0 | AI draft evaluation (`aiScore`, `aiFeedback`, `criteriaScores`; `status` remains `PENDING`) | D5 Submission Records |
 | 4.10 | 4.0 | Telemetry log (Tokens consumed, model rotation ID, latency, prompt version) | D8 Notification & Audit Log |
 | 4.11 | 4.0 | Real-time batch grading progress and completion notification | E2 Teacher |
 
