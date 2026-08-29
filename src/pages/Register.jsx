@@ -111,18 +111,80 @@ const sanitizeName = (value) =>
  * itself and can never be told the wrong thing.
  *
  * `required` is about the person, not the format: everyone has a surname and a
- * first name. A middle initial is normal on DepEd records and absent on plenty
- * of real ones, and a suffix belongs to a minority — demanding either would
- * make people invent one.
+ * first name. A middle name is normal on DepEd records and absent on plenty of
+ * real ones, and a suffix belongs to a minority — demanding either would make
+ * people invent one.
+ *
+ * The middle box asks for the whole name and stores only its initial — see
+ * middleInitialOf. Asking for "Middle Initial" and being handed "Antonio"
+ * was the likelier outcome of the two, and it produced "Dela Cruz, Juan
+ * Antonio", where every other record at the school reads "Dela Cruz, Juan A."
  */
 const NAME_PARTS = [
   { key: 'last',   label: 'Last Name',      placeholder: 'Dela Cruz', required: true,  span: 'sm:col-span-3', max: 60 },
   { key: 'first',  label: 'First Name',     placeholder: 'Juan',      required: true,  span: 'sm:col-span-3', max: 60 },
-  { key: 'middle', label: 'Middle Initial', placeholder: 'A.',        required: false, span: 'sm:col-span-3', max: 20 },
+  { key: 'middle', label: 'Middle Name',    placeholder: 'Antonio',   required: false, span: 'sm:col-span-3', max: 60 },
   { key: 'suffix', label: 'Suffix',         placeholder: 'Jr.',       required: false, span: 'sm:col-span-3', max: 12 },
 ];
 
 const EMPTY_NAME_PARTS = { last: '', first: '', middle: '', suffix: '' };
+
+/**
+ * A name in the case it belongs in, whatever case it was typed in.
+ *
+ * Registrants type their own name in every case there is: all lower on a phone
+ * with autocapitalise off, ALL CAPS because that is how it appears on the DepEd
+ * form they are copying from. Both then sit in class lists and released grades
+ * next to properly-cased names, so this normalises rather than trusts.
+ *
+ * Runs over letter RUNS, not space-separated words, so the separators inside a
+ * name are capitalised through: "dela cruz-reyes" becomes "Dela Cruz-Reyes" and
+ * "d'souza" becomes "D'Souza", where splitting on spaces alone would have left
+ * "Cruz-reyes".
+ *
+ * A run that is already mixed case is left alone below its first letter. That
+ * is what keeps a deliberate "McDonald" or "MacArthur" intact — flattening
+ * every tail to lowercase would quietly misspell them, and a form that
+ * misspells a name it was given correctly is worse than one that leaves an
+ * all-caps name alone.
+ */
+function capitalizeName(value) {
+  return String(value ?? '').replace(/\p{L}[\p{L}\p{M}]*/gu, (run) => {
+    const tail = run.slice(1);
+    const uniform = tail === tail.toLowerCase() || tail === tail.toUpperCase();
+    return run[0].toUpperCase() + (uniform ? tail.toLowerCase() : tail);
+  });
+}
+
+/** Suffix generations are Roman numerals, which title case would ruin. */
+const ROMAN_SUFFIX = /^(?:i{1,3}|iv|vi{0,3}|ix|xi{0,2})$/i;
+
+/** Like capitalizeName, but "iii" stays "III" rather than becoming "Iii". */
+function capitalizeSuffix(value) {
+  return capitalizeName(value).replace(/\p{L}+/gu,
+    (run) => (ROMAN_SUFFIX.test(run) ? run.toUpperCase() : run));
+}
+
+/**
+ * A middle name reduced to the initial DepEd's School Form 1 prints.
+ *
+ * Mirrors middleInitial() in server/rosterSheet.js deliberately, and the
+ * agreement matters: that function is what abbreviates a learner imported from
+ * a School Form, so a registrant typing their middle name in full has to land
+ * on the same letter the importer would have produced. Two conventions for one
+ * field would show up as two spellings of the same staff member.
+ *
+ * One letter, not "D.C." for "Dela Cruz" — the form has one box for it. A name
+ * already written as an initial ("A", "A.") lands on the same letter, so the
+ * box is safe to hand either.
+ *
+ * Returns '' for a blank, so the caller drops the segment rather than appending
+ * a stray full stop.
+ */
+function middleInitialOf(value) {
+  const letter = String(value ?? '').match(/\p{L}/u);
+  return letter ? `${letter[0].toUpperCase()}.` : '';
+}
 
 /**
  * The parts, assembled into the one string the rest of the system stores.
@@ -135,8 +197,14 @@ const EMPTY_NAME_PARTS = { last: '', first: '', middle: '', suffix: '' };
  */
 function joinFullName(parts) {
   const clean = (v) => (parts[v] || '').trim().replace(/\s+/g, ' ');
-  const last = [clean('last'), clean('suffix')].filter(Boolean).join(' ');
-  const given = [clean('first'), clean('middle')].filter(Boolean).join(' ');
+  // Cased here as well as on blur, so the preview under the boxes and the
+  // string actually submitted are correct from the first keystroke — a
+  // registrant who never leaves the last box would otherwise submit whatever
+  // case they typed.
+  const last = [capitalizeName(clean('last')), capitalizeSuffix(clean('suffix'))]
+    .filter(Boolean).join(' ');
+  const given = [capitalizeName(clean('first')), middleInitialOf(clean('middle'))]
+    .filter(Boolean).join(' ');
   if (!last || !given) return '';
   return `${last}, ${given}`;
 }
@@ -156,8 +224,11 @@ function namePartProblem(key, value) {
   const { label, required } = NAME_PARTS.find((f) => f.key === key);
   if (!v) return required ? `Please enter your ${label.toLowerCase()}.` : null;
   if (key === 'suffix') return /[A-Za-zÀ-ÖØ-öø-ÿÑñ]/.test(v) ? null : 'Please write your suffix in letters.';
+  // Either form is accepted: the box asks for the whole middle name, but
+  // someone copying off a DepEd form will type the initial that is printed
+  // there, and middleInitialOf reduces both to the same letter anyway.
   if (key === 'middle') return hasLetters(v) || /^[A-Za-zÀ-ÖØ-öø-ÿÑñ]\.?$/.test(v)
-    ? null : 'Please write your middle initial in letters.';
+    ? null : 'Please write your middle name in letters.';
   if (v.length < 2 || !hasLetters(v)) return `Please write your ${label.toLowerCase()} in letters.`;
   return null;
 }
@@ -1133,7 +1204,7 @@ export default function Register() {
                   gave the surname and first name a third of the row each and
                   the initial and suffix a sixth, on the theory that a box
                   should hint at how much goes in it. Sized like that the four
-                  fitted on one row, and "Middle Initial (optional)" then wrapped
+                  fitted on one row, and the middle box's "(optional)" label then wrapped
                   in its narrow column while "Last Name" did not — so that one
                   input sat a line below its neighbours. Equal columns and the
                   one-line label rule below are what keep the row straight. */}
@@ -1146,7 +1217,7 @@ export default function Register() {
                           Each cell stacks label over input, so a label that
                           wraps to two lines pushes its own input a line lower
                           than the ones beside it — which is exactly what
-                          "Middle Initial (optional)" did next to "Last Name"
+                          the middle box's label did next to "Last Name"
                           while these boxes were a sixth of the row wide. One
                           line always, so every input in a row starts at the
                           same height. At half-width none of the four comes
@@ -1179,9 +1250,20 @@ export default function Register() {
                           // "Del" a bad surname while it is still being typed.
                           if (nameErrors[key]) setNameErrors({ ...nameErrors, [key]: null });
                         }}
-                        onBlur={(e) => setNameErrors({
-                          ...nameErrors, [key]: namePartProblem(key, e.target.value),
-                        })}
+                        // Cased on blur rather than per keystroke. Per keystroke
+                        // it fights the typist mid-word — a tail that is still
+                        // uniform gets flattened, so "McDonald" cannot be typed
+                        // past its second letter. On blur the box simply settles
+                        // into the case it will be stored in.
+                        onBlur={(e) => {
+                          const cased = key === 'suffix'
+                            ? capitalizeSuffix(e.target.value)
+                            : capitalizeName(e.target.value);
+                          if (cased !== e.target.value) {
+                            setNameParts((prev) => ({ ...prev, [key]: cased }));
+                          }
+                          setNameErrors({ ...nameErrors, [key]: namePartProblem(key, cased) });
+                        }}
                       />
                       {nameErrors[key] && (
                         <p className="flex items-start gap-1.5 text-xs font-semibold text-red-600 mt-1.5">
