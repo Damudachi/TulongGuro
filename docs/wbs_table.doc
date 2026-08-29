@@ -1,0 +1,357 @@
+<html xmlns:o="urn:schemas-microsoft-com:office:office"
+xmlns:w="urn:schemas-microsoft-com:office:word"
+xmlns="http://www.w3.org/TR/REC-html40">
+<head>
+    <meta charset="utf-8">
+    <title>WBS Table</title>
+    <style>
+        table { border-collapse: collapse; width: 100%; font-family: "Times New Roman", Times, serif; font-size: 11pt; }
+        th, td { border: 1px solid black; padding: 6px; text-align: left; vertical-align: top; }
+        th { background-color: #1B2A4A; color: white; font-weight: bold; }
+        tr.phase td { font-weight: bold; background-color: #E8EAF6; }
+        tr.section td { font-weight: bold; background-color: #F5F5F5; }
+        td.wbs { width: 10%; }
+        td.name { width: 50%; }
+        td.date { width: 15%; }
+        td.days { width: 10%; text-align: center; }
+    </style>
+</head>
+<body>
+    <h2>TulongGuro: Work Breakdown Structure (WBS)</h2>
+    <table>
+        <thead>
+            <tr>
+                <th class="wbs">WBS #</th>
+                <th class="name">Task Name</th>
+                <th class="date">Start</th>
+                <th class="date">End</th>
+                <th class="days">Days</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr class="phase">
+                <td class="wbs">1</td>
+                <td class="name">Project Planning, Analysis and Design</td>
+                <td class="date">Dec 8, 2025</td>
+                <td class="date">Apr 30, 2026</td>
+                <td class="days">—</td>
+            </tr>
+            <tr class="task">
+                <td class="wbs">1.1</td>
+                <td class="name">Title proposal and ideation</td>
+                <td class="date">Dec 8, 2025</td>
+                <td class="date">Dec 21, 2025</td>
+                <td class="days">14</td>
+            </tr>
+            <tr class="task">
+                <td class="wbs">1.2</td>
+                <td class="name">Proposal preparation and writing</td>
+                <td class="date">Dec 22, 2025</td>
+                <td class="date">Mar 1, 2026</td>
+                <td class="days">70</td>
+            </tr>
+            <tr class="task">
+                <td class="wbs">1.2.1</td>
+                <td class="name">Introduction and Review of Related Literature</td>
+                <td class="date">Dec 22, 2025</td>
+                <td class="date">Feb 1, 2026</td>
+                <td class="days">42</td>
+            </tr>
+            <tr class="task">
+                <td class="wbs">1.2.2</td>
+                <td class="name">Methodology</td>
+                <td class="date">Feb 2, 2026</td>
+                <td class="date">Mar 1, 2026</td>
+                <td class="days">28</td>
+            </tr>
+            <tr class="task">
+                <td class="wbs">1.3</td>
+                <td class="name">Title defense</td>
+                <td class="date">Mar 10, 2026</td>
+                <td class="date">Mar 10, 2026</td>
+                <td class="days">1</td>
+            </tr>
+            <tr class="task">
+                <td class="wbs">1.4</td>
+                <td class="name">Proposal revisions and final submission</td>
+                <td class="date">Mar 11, 2026</td>
+                <td class="date">Mar 24, 2026</td>
+                <td class="days">14</td>
+            </tr>
+            <tr class="task">
+                <td class="wbs">1.5</td>
+                <td class="name">Requirements definition and rubric sourcing (MES)</td>
+                <td class="date">Mar 25, 2026</td>
+                <td class="date">Apr 30, 2026</td>
+                <td class="days">37</td>
+            </tr>
+            <tr class="phase">
+                <td class="wbs">2</td>
+                <td class="name">System Development — Agile Scrum, 16 one-week sprints</td>
+                <td class="date">May 8, 2026</td>
+                <td class="date">Aug 13, 2026</td>
+                <td class="days">98</td>
+            </tr>
+            <tr class="section">
+                <td class="wbs">2.1</td>
+                <td class="name">Foundation and core Teacher interface</td>
+                <td class="date">May 8, 2026</td>
+                <td class="date">Jun 4, 2026</td>
+                <td class="days">28</td>
+            </tr>
+            <tr class="task">
+                <td class="wbs">2.1.1</td>
+                <td class="name">Sprint 1 — Establish the initial TulongGuro system</td>
+                <td class="date">May 8, 2026</td>
+                <td class="date">May 14, 2026</td>
+                <td class="days">7</td>
+            </tr>
+            <tr class="task">
+                <td class="wbs">2.1.2</td>
+                <td class="name">Sprint 2 — Develop the core Teacher Interface</td>
+                <td class="date">May 15, 2026</td>
+                <td class="date">May 21, 2026</td>
+                <td class="days">7</td>
+            </tr>
+            <tr class="task">
+                <td class="wbs">2.1.3</td>
+                <td class="name">Sprint 3 — Refine AI-assisted grading</td>
+                <td class="date">May 22, 2026</td>
+                <td class="date">May 28, 2026</td>
+                <td class="days">7</td>
+            </tr>
+            <tr class="task">
+                <td class="wbs">2.1.4</td>
+                <td class="name">Sprint 4 — Improve the Teacher grading workflow</td>
+                <td class="date">May 29, 2026</td>
+                <td class="date">Jun 4, 2026</td>
+                <td class="days">7</td>
+            </tr>
+            <tr class="section">
+                <td class="wbs">2.2</td>
+                <td class="name">AI refinement and Teacher usability</td>
+                <td class="date">Jun 5, 2026</td>
+                <td class="date">Jun 25, 2026</td>
+                <td class="days">21</td>
+            </tr>
+            <tr class="task">
+                <td class="wbs">2.2.1</td>
+                <td class="name">Sprint 5 — AI feedback and assessment processing</td>
+                <td class="date">Jun 5, 2026</td>
+                <td class="date">Jun 11, 2026</td>
+                <td class="days">7</td>
+            </tr>
+            <tr class="task">
+                <td class="wbs">2.2.2</td>
+                <td class="name">Sprint 6 — Teacher usability and onboarding</td>
+                <td class="date">Jun 12, 2026</td>
+                <td class="date">Jun 18, 2026</td>
+                <td class="days">7</td>
+            </tr>
+            <tr class="task">
+                <td class="wbs">2.2.3</td>
+                <td class="name">Sprint 7 — Core Teacher assessment workflow</td>
+                <td class="date">Jun 19, 2026</td>
+                <td class="date">Jun 25, 2026</td>
+                <td class="days">7</td>
+            </tr>
+            <tr class="section">
+                <td class="wbs">2.3</td>
+                <td class="name">Batch processing and curriculum integration</td>
+                <td class="date">Jun 26, 2026</td>
+                <td class="date">Jul 16, 2026</td>
+                <td class="days">21</td>
+            </tr>
+            <tr class="task">
+                <td class="wbs">2.3.1</td>
+                <td class="name">Sprint 8 — Introduce batch assessment processing</td>
+                <td class="date">Jun 26, 2026</td>
+                <td class="date">Jul 2, 2026</td>
+                <td class="days">7</td>
+            </tr>
+            <tr class="task">
+                <td class="wbs">2.3.2</td>
+                <td class="name">Sprint 9 — Curriculum, activities and rubrics</td>
+                <td class="date">Jul 3, 2026</td>
+                <td class="date">Jul 9, 2026</td>
+                <td class="days">7</td>
+            </tr>
+            <tr class="task">
+                <td class="wbs">2.3.3</td>
+                <td class="name">Sprint 10 — Strengthen the assessment workflow</td>
+                <td class="date">Jul 10, 2026</td>
+                <td class="date">Jul 16, 2026</td>
+                <td class="days">7</td>
+            </tr>
+            <tr class="section">
+                <td class="wbs">2.4</td>
+                <td class="name">Analytics and data architecture</td>
+                <td class="date">Jul 17, 2026</td>
+                <td class="date">Jul 30, 2026</td>
+                <td class="days">14</td>
+            </tr>
+            <tr class="task">
+                <td class="wbs">2.4.1</td>
+                <td class="name">Sprint 11 — Analytics and data architecture</td>
+                <td class="date">Jul 17, 2026</td>
+                <td class="date">Jul 23, 2026</td>
+                <td class="days">7</td>
+            </tr>
+            <tr class="task">
+                <td class="wbs">2.4.2</td>
+                <td class="name">Sprint 12 — Database migration and security</td>
+                <td class="date">Jul 24, 2026</td>
+                <td class="date">Jul 30, 2026</td>
+                <td class="days">7</td>
+            </tr>
+            <tr class="section">
+                <td class="wbs">2.5</td>
+                <td class="name">Deployment and feature completion</td>
+                <td class="date">Jul 31, 2026</td>
+                <td class="date">Aug 13, 2026</td>
+                <td class="days">14</td>
+            </tr>
+            <tr class="task">
+                <td class="wbs">2.5.1</td>
+                <td class="name">Sprint 13 — Deployment and multi-school support</td>
+                <td class="date">Jul 31, 2026</td>
+                <td class="date">Aug 6, 2026</td>
+                <td class="days">7</td>
+            </tr>
+            <tr class="task">
+                <td class="wbs">2.5.2</td>
+                <td class="name">Sprint 14 — Major features and reliability</td>
+                <td class="date">Aug 7, 2026</td>
+                <td class="date">Aug 13, 2026</td>
+                <td class="days">7</td>
+            </tr>
+            <tr class="phase">
+                <td class="wbs">3</td>
+                <td class="name">Testing, Quality Assurance and Verification</td>
+                <td class="date">Aug 14, 2026</td>
+                <td class="date">Aug 28, 2026</td>
+                <td class="days">15</td>
+            </tr>
+            <tr class="task">
+                <td class="wbs">3.1</td>
+                <td class="name">Sprint 15 — QA evaluation and QA-driven revisions</td>
+                <td class="date">Aug 14, 2026</td>
+                <td class="date">Aug 20, 2026</td>
+                <td class="days">7</td>
+            </tr>
+            <tr class="task">
+                <td class="wbs">3.1.1</td>
+                <td class="name">Functional and Regression Testing (170 test cases)</td>
+                <td class="date">Aug 14, 2026</td>
+                <td class="date">Aug 20, 2026</td>
+                <td class="days">7</td>
+            </tr>
+            <tr class="task">
+                <td class="wbs">3.2</td>
+                <td class="name">Sprint 16 — Developer unit testing and refinements</td>
+                <td class="date">Aug 21, 2026</td>
+                <td class="date">Aug 27, 2026</td>
+                <td class="days">7</td>
+            </tr>
+            <tr class="task">
+                <td class="wbs">3.2.1</td>
+                <td class="name">Unit and Component Testing (32 test cases)</td>
+                <td class="date">Aug 21, 2026</td>
+                <td class="date">Aug 27, 2026</td>
+                <td class="days">7</td>
+            </tr>
+            <tr class="task">
+                <td class="wbs">3.3</td>
+                <td class="name">Final QA Verification</td>
+                <td class="date">Aug 28, 2026</td>
+                <td class="date">Aug 28, 2026</td>
+                <td class="days">1</td>
+            </tr>
+            <tr class="phase">
+                <td class="wbs">4</td>
+                <td class="name">Demonstration and Field Evaluation (DSR Stages 4–5)</td>
+                <td class="date">Aug 14, 2026</td>
+                <td class="date">Aug 28, 2026</td>
+                <td class="days">15</td>
+            </tr>
+            <tr class="task">
+                <td class="wbs">4.1</td>
+                <td class="name">Rubric validation by Head Coordinators</td>
+                <td class="date">Aug 14, 2026</td>
+                <td class="date">Aug 16, 2026</td>
+                <td class="days">3</td>
+            </tr>
+            <tr class="task">
+                <td class="wbs">4.2</td>
+                <td class="name">System demonstration to participants</td>
+                <td class="date">Aug 17, 2026</td>
+                <td class="date">Aug 18, 2026</td>
+                <td class="days">2</td>
+            </tr>
+            <tr class="task">
+                <td class="wbs">4.3</td>
+                <td class="name">Beta field evaluation — three schools, one week</td>
+                <td class="date">Aug 18, 2026</td>
+                <td class="date">Aug 24, 2026</td>
+                <td class="days">7</td>
+            </tr>
+            <tr class="task">
+                <td class="wbs">4.4</td>
+                <td class="name">Pre- and post-deployment grading time logs</td>
+                <td class="date">Aug 14, 2026</td>
+                <td class="date">Aug 26, 2026</td>
+                <td class="days">13</td>
+            </tr>
+            <tr class="task">
+                <td class="wbs">4.5</td>
+                <td class="name">SUS administration — Teacher, Student, Admin</td>
+                <td class="date">Aug 25, 2026</td>
+                <td class="date">Aug 28, 2026</td>
+                <td class="days">4</td>
+            </tr>
+            <tr class="phase">
+                <td class="wbs">5</td>
+                <td class="name">Data Analysis and Reporting</td>
+                <td class="date">Aug 22, 2026</td>
+                <td class="date">Sep 3, 2026</td>
+                <td class="days">13</td>
+            </tr>
+            <tr class="task">
+                <td class="wbs">5.1</td>
+                <td class="name">Data analysis and computation</td>
+                <td class="date">Aug 22, 2026</td>
+                <td class="date">Aug 25, 2026</td>
+                <td class="days">4</td>
+            </tr>
+            <tr class="task">
+                <td class="wbs">5.2</td>
+                <td class="name">Results and Discussion writing</td>
+                <td class="date">Aug 23, 2026</td>
+                <td class="date">Aug 27, 2026</td>
+                <td class="days">5</td>
+            </tr>
+            <tr class="task">
+                <td class="wbs">5.3</td>
+                <td class="name">Adviser consultation and revisions</td>
+                <td class="date">Aug 26, 2026</td>
+                <td class="date">Aug 28, 2026</td>
+                <td class="days">3</td>
+            </tr>
+            <tr class="task">
+                <td class="wbs">5.4</td>
+                <td class="name">Final thesis submission</td>
+                <td class="date">Aug 29, 2026</td>
+                <td class="date">Aug 29, 2026</td>
+                <td class="days">1</td>
+            </tr>
+            <tr class="task">
+                <td class="wbs">5.5</td>
+                <td class="name">Oral defense</td>
+                <td class="date">Sep 3, 2026</td>
+                <td class="date">Sep 3, 2026</td>
+                <td class="days">1</td>
+            </tr>
+        </tbody>
+    </table>
+</body>
+</html>
