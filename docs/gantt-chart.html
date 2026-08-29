@@ -1,0 +1,966 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TulongGuro Development Gantt Chart</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      background: #f0f4f8;
+      padding: 20px;
+      color: #2d3748;
+    }
+
+    .gantt-container {
+      background: white;
+      border-radius: 12px;
+      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
+      overflow-x: auto;
+      padding: 30px;
+    }
+
+    .gantt-title {
+      text-align: center;
+      margin-bottom: 8px;
+      font-size: 22px;
+      font-weight: 700;
+      color: #1a365d;
+      letter-spacing: 0.5px;
+    }
+
+    .gantt-subtitle {
+      text-align: center;
+      margin-bottom: 24px;
+      font-size: 14px;
+      color: #718096;
+    }
+
+    table {
+      border-collapse: collapse;
+      width: 100%;
+      min-width: 1600px;
+      font-size: 12px;
+    }
+
+    /* Header rows */
+    thead th {
+      background: #1a365d;
+      color: white;
+      padding: 8px 4px;
+      text-align: center;
+      font-weight: 600;
+      border: 1px solid #2d4a7a;
+      position: sticky;
+      top: 0;
+      z-index: 10;
+    }
+
+    thead th.month-header {
+      background: #2b6cb0;
+      font-size: 13px;
+      letter-spacing: 1px;
+      text-transform: uppercase;
+    }
+
+    thead th.week-header {
+      background: #3182ce;
+      font-size: 11px;
+      min-width: 32px;
+      width: 32px;
+    }
+
+    thead th.info-header {
+      background: #1a365d;
+      min-width: 50px;
+    }
+
+    thead th.wbs-header {
+      min-width: 50px;
+      width: 50px;
+    }
+
+    thead th.task-header {
+      min-width: 280px;
+      text-align: left;
+      padding-left: 12px;
+    }
+
+    thead th.date-header {
+      min-width: 90px;
+      width: 90px;
+    }
+
+    thead th.days-header {
+      min-width: 45px;
+      width: 45px;
+    }
+
+    /* Body rows */
+    tbody td {
+      padding: 6px 4px;
+      border: 1px solid #e2e8f0;
+      text-align: center;
+      vertical-align: middle;
+      height: 32px;
+    }
+
+    /* Phase rows (level 1) */
+    tr.phase-row {
+      background: #ebf4ff;
+    }
+
+    tr.phase-row td {
+      font-weight: 700;
+      color: #1a365d;
+      border-bottom: 2px solid #bee3f8;
+    }
+
+    tr.phase-row td.task-cell {
+      text-align: left;
+      padding-left: 12px;
+      font-size: 13px;
+    }
+
+    /* Task rows (level 2) */
+    tr.task-row td {
+      font-weight: 500;
+      color: #2d3748;
+    }
+
+    tr.task-row td.task-cell {
+      text-align: left;
+      padding-left: 24px;
+    }
+
+    /* Subtask rows (level 3) */
+    tr.subtask-row td {
+      color: #4a5568;
+      font-weight: 400;
+    }
+
+    tr.subtask-row td.task-cell {
+      text-align: left;
+      padding-left: 40px;
+      font-size: 11px;
+    }
+
+    /* Zebra striping */
+    tbody tr:nth-child(even):not(.phase-row) {
+      background: #f7fafc;
+    }
+
+    tbody tr:hover:not(.phase-row) {
+      background: #edf2f7;
+    }
+
+    /* Gantt bar cells */
+    td.bar-phase {
+      background: linear-gradient(135deg, #2b6cb0, #3182ce) !important;
+      border-color: #2b6cb0 !important;
+      position: relative;
+    }
+
+    td.bar-task-1 {
+      background: linear-gradient(135deg, #38a169, #48bb78) !important;
+      border-color: #38a169 !important;
+    }
+
+    td.bar-task-2 {
+      background: linear-gradient(135deg, #d69e2e, #ecc94b) !important;
+      border-color: #d69e2e !important;
+    }
+
+    td.bar-task-3 {
+      background: linear-gradient(135deg, #e53e3e, #fc8181) !important;
+      border-color: #e53e3e !important;
+    }
+
+    td.bar-task-4 {
+      background: linear-gradient(135deg, #805ad5, #9f7aea) !important;
+      border-color: #805ad5 !important;
+    }
+
+    td.bar-task-5 {
+      background: linear-gradient(135deg, #dd6b20, #ed8936) !important;
+      border-color: #dd6b20 !important;
+    }
+
+    td.bar-task-6 {
+      background: linear-gradient(135deg, #319795, #4fd1c5) !important;
+      border-color: #319795 !important;
+    }
+
+    td.bar-subtask {
+      background: linear-gradient(135deg, #63b3ed, #90cdf4) !important;
+      border-color: #63b3ed !important;
+    }
+
+    td.bar-milestone {
+      background: #e53e3e !important;
+      border-color: #c53030 !important;
+      position: relative;
+    }
+
+    td.bar-milestone::after {
+      content: '◆';
+      color: white;
+      font-size: 14px;
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+    }
+
+    /* Date & info cells */
+    td.date-cell {
+      font-size: 11px;
+      color: #4a5568;
+      white-space: nowrap;
+    }
+
+    td.days-cell {
+      font-weight: 600;
+      color: #2b6cb0;
+    }
+
+    /* Legend */
+    .legend {
+      margin-top: 24px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 16px;
+      justify-content: center;
+      padding: 16px;
+      background: #f7fafc;
+      border-radius: 8px;
+    }
+
+    .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      color: #4a5568;
+    }
+
+    .legend-color {
+      width: 20px;
+      height: 12px;
+      border-radius: 3px;
+    }
+
+    /* Current week indicator */
+    th.current-week {
+      background: #e53e3e !important;
+      animation: pulse 2s infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.7; }
+    }
+
+    /* Print styles */
+    @media print {
+      body { padding: 0; background: white; }
+      .gantt-container { box-shadow: none; padding: 10px; }
+      table { font-size: 9px; min-width: unset; }
+    }
+
+    .note {
+      margin-top: 16px;
+      padding: 12px 16px;
+      background: #fffff0;
+      border-left: 4px solid #d69e2e;
+      border-radius: 0 8px 8px 0;
+      font-size: 12px;
+      color: #744210;
+    }
+  </style>
+</head>
+<body>
+
+<div class="gantt-container">
+  <div class="gantt-title">TulongGuro: AI-Powered Assessment Checking System</div>
+  <div class="gantt-subtitle">Development Gantt Chart — December 2025 to October 2026</div>
+
+  <table>
+    <thead>
+      <!-- Month headers -->
+      <tr>
+        <th class="info-header wbs-header" rowspan="2">WBS #</th>
+        <th class="info-header task-header" rowspan="2">Task Name</th>
+        <th class="info-header date-header" rowspan="2">Start</th>
+        <th class="info-header date-header" rowspan="2">End</th>
+        <th class="info-header days-header" rowspan="2">Days</th>
+        <th class="month-header" colspan="4">DEC 2025</th>
+        <th class="month-header" colspan="4">JAN 2026</th>
+        <th class="month-header" colspan="4">FEB 2026</th>
+        <th class="month-header" colspan="5">MAR 2026</th>
+        <th class="month-header" colspan="4">APR 2026</th>
+        <th class="month-header" colspan="4">MAY 2026</th>
+        <th class="month-header" colspan="4">JUN 2026</th>
+        <th class="month-header" colspan="5">JUL 2026</th>
+        <th class="month-header" colspan="4">AUG 2026</th>
+        <th class="month-header" colspan="4">SEP 2026</th>
+        <th class="month-header" colspan="5">OCT 2026</th>
+      </tr>
+      <!-- Week headers -->
+      <tr>
+        <!-- DEC 2025 (4 weeks) -->
+        <th class="week-header">1</th><th class="week-header">2</th><th class="week-header">3</th><th class="week-header">4</th>
+        <!-- JAN 2026 (4 weeks) -->
+        <th class="week-header">1</th><th class="week-header">2</th><th class="week-header">3</th><th class="week-header">4</th>
+        <!-- FEB 2026 (4 weeks) -->
+        <th class="week-header">1</th><th class="week-header">2</th><th class="week-header">3</th><th class="week-header">4</th>
+        <!-- MAR 2026 (5 weeks) -->
+        <th class="week-header">1</th><th class="week-header">2</th><th class="week-header">3</th><th class="week-header">4</th><th class="week-header">5</th>
+        <!-- APR 2026 (4 weeks) -->
+        <th class="week-header">1</th><th class="week-header">2</th><th class="week-header">3</th><th class="week-header">4</th>
+        <!-- MAY 2026 (4 weeks) -->
+        <th class="week-header">1</th><th class="week-header">2</th><th class="week-header">3</th><th class="week-header">4</th>
+        <!-- JUN 2026 (4 weeks) -->
+        <th class="week-header">1</th><th class="week-header">2</th><th class="week-header">3</th><th class="week-header">4</th>
+        <!-- JUL 2026 (5 weeks) -->
+        <th class="week-header">1</th><th class="week-header">2</th><th class="week-header">3</th><th class="week-header">4</th><th class="week-header">5</th>
+        <!-- AUG 2026 (4 weeks) -->
+        <th class="week-header">1</th><th class="week-header">2</th><th class="week-header">3</th><th class="week-header">4</th>
+        <!-- SEP 2026 (4 weeks) -->
+        <th class="week-header">1</th><th class="week-header">2</th><th class="week-header">3</th><th class="week-header">4</th>
+        <!-- OCT 2026 (5 weeks) -->
+        <th class="week-header">1</th><th class="week-header">2</th><th class="week-header">3</th><th class="week-header">4</th><th class="week-header">5</th>
+      </tr>
+    </thead>
+    <tbody>
+
+      <!-- ============================================ -->
+      <!-- PHASE 1: Project Planning, Analysis & Design -->
+      <!-- ============================================ -->
+      <tr class="phase-row">
+        <td>1</td>
+        <td class="task-cell">Project Planning, Analysis and Design</td>
+        <td class="date-cell">Dec 8, 2025</td>
+        <td class="date-cell">Mar 24, 2026</td>
+        <td class="days-cell">107</td>
+        <!-- DEC: W1 blank, W2-W4 filled -->
+        <td></td><td class="bar-phase"></td><td class="bar-phase"></td><td class="bar-phase"></td>
+        <!-- JAN: all filled -->
+        <td class="bar-phase"></td><td class="bar-phase"></td><td class="bar-phase"></td><td class="bar-phase"></td>
+        <!-- FEB: all filled -->
+        <td class="bar-phase"></td><td class="bar-phase"></td><td class="bar-phase"></td><td class="bar-phase"></td>
+        <!-- MAR: W1-W4 filled, W5 blank -->
+        <td class="bar-phase"></td><td class="bar-phase"></td><td class="bar-phase"></td><td class="bar-phase"></td><td></td>
+        <!-- APR-OCT: blank -->
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td><td></td>
+      </tr>
+
+      <!-- 1.1 Title proposal and ideation -->
+      <tr class="task-row">
+        <td>1.1</td>
+        <td class="task-cell">Title proposal and ideation</td>
+        <td class="date-cell">Dec 8, 2025</td>
+        <td class="date-cell">Dec 21, 2025</td>
+        <td class="days-cell">14</td>
+        <!-- DEC: W1 blank, W2-W3 filled, W4 blank -->
+        <td></td><td class="bar-task-1"></td><td class="bar-task-1"></td><td></td>
+        <!-- JAN-OCT: blank -->
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td><td></td>
+      </tr>
+
+      <!-- 1.2 Proposal preparation and writing -->
+      <tr class="task-row">
+        <td>1.2</td>
+        <td class="task-cell">Proposal preparation and writing</td>
+        <td class="date-cell">Dec 22, 2025</td>
+        <td class="date-cell">Mar 1, 2026</td>
+        <td class="days-cell">70</td>
+        <!-- DEC: W1-W3 blank, W4 filled -->
+        <td></td><td></td><td></td><td class="bar-task-2"></td>
+        <!-- JAN: all filled -->
+        <td class="bar-task-2"></td><td class="bar-task-2"></td><td class="bar-task-2"></td><td class="bar-task-2"></td>
+        <!-- FEB: all filled -->
+        <td class="bar-task-2"></td><td class="bar-task-2"></td><td class="bar-task-2"></td><td class="bar-task-2"></td>
+        <!-- MAR: W1 filled only -->
+        <td class="bar-task-2"></td><td></td><td></td><td></td><td></td>
+        <!-- APR-OCT: blank -->
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td><td></td>
+      </tr>
+
+      <!-- 1.2.1 Introduction and RRL -->
+      <tr class="subtask-row">
+        <td>1.2.1</td>
+        <td class="task-cell">Introduction and Review of Related Literature</td>
+        <td class="date-cell">Dec 22, 2025</td>
+        <td class="date-cell">Feb 1, 2026</td>
+        <td class="days-cell">42</td>
+        <!-- DEC: W1-W3 blank, W4 filled -->
+        <td></td><td></td><td></td><td class="bar-subtask"></td>
+        <!-- JAN: all filled -->
+        <td class="bar-subtask"></td><td class="bar-subtask"></td><td class="bar-subtask"></td><td class="bar-subtask"></td>
+        <!-- FEB: W1 filled -->
+        <td class="bar-subtask"></td><td></td><td></td><td></td>
+        <!-- MAR-OCT: blank -->
+        <td></td><td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td><td></td>
+      </tr>
+
+      <!-- 1.2.2 Methodology -->
+      <tr class="subtask-row">
+        <td>1.2.2</td>
+        <td class="task-cell">Methodology</td>
+        <td class="date-cell">Feb 2, 2026</td>
+        <td class="date-cell">Mar 1, 2026</td>
+        <td class="days-cell">28</td>
+        <!-- DEC: blank -->
+        <td></td><td></td><td></td><td></td>
+        <!-- JAN: blank -->
+        <td></td><td></td><td></td><td></td>
+        <!-- FEB: W1 blank, W2-W4 filled -->
+        <td></td><td class="bar-subtask"></td><td class="bar-subtask"></td><td class="bar-subtask"></td>
+        <!-- MAR: W1 filled -->
+        <td class="bar-subtask"></td><td></td><td></td><td></td><td></td>
+        <!-- APR-OCT: blank -->
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td><td></td>
+      </tr>
+
+      <!-- 1.3 Title defense -->
+      <tr class="task-row">
+        <td>1.3</td>
+        <td class="task-cell">Title defense</td>
+        <td class="date-cell">Mar 10, 2026</td>
+        <td class="date-cell">Mar 10, 2026</td>
+        <td class="days-cell">1</td>
+        <!-- DEC-FEB: blank -->
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <!-- MAR: W1 blank, W2 milestone, rest blank -->
+        <td></td><td class="bar-milestone"></td><td></td><td></td><td></td>
+        <!-- APR-OCT: blank -->
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td><td></td>
+      </tr>
+
+      <!-- 1.4 Proposal revisions and final submission -->
+      <tr class="task-row">
+        <td>1.4</td>
+        <td class="task-cell">Proposal revisions and final submission</td>
+        <td class="date-cell">Mar 11, 2026</td>
+        <td class="date-cell">Mar 24, 2026</td>
+        <td class="days-cell">14</td>
+        <!-- DEC-FEB: blank -->
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <!-- MAR: W1-W2 blank, W3-W4 filled, W5 blank -->
+        <td></td><td></td><td class="bar-task-3"></td><td class="bar-task-3"></td><td></td>
+        <!-- APR-OCT: blank -->
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td><td></td>
+      </tr>
+
+      <!-- ============================================ -->
+      <!-- PHASE 2: System Development -->
+      <!-- ============================================ -->
+      <tr class="phase-row">
+        <td>2</td>
+        <td class="task-cell">System Development</td>
+        <td class="date-cell">Apr 1, 2026</td>
+        <td class="date-cell">Jul 31, 2026</td>
+        <td class="days-cell">122</td>
+        <!-- DEC-MAR: blank -->
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td><td></td>
+        <!-- APR: all filled -->
+        <td class="bar-phase"></td><td class="bar-phase"></td><td class="bar-phase"></td><td class="bar-phase"></td>
+        <!-- MAY: all filled -->
+        <td class="bar-phase"></td><td class="bar-phase"></td><td class="bar-phase"></td><td class="bar-phase"></td>
+        <!-- JUN: all filled -->
+        <td class="bar-phase"></td><td class="bar-phase"></td><td class="bar-phase"></td><td class="bar-phase"></td>
+        <!-- JUL: all filled -->
+        <td class="bar-phase"></td><td class="bar-phase"></td><td class="bar-phase"></td><td class="bar-phase"></td><td class="bar-phase"></td>
+        <!-- AUG-OCT: blank -->
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td><td></td>
+      </tr>
+
+      <!-- 2.1 UI/UX Design & Prototyping -->
+      <tr class="task-row">
+        <td>2.1</td>
+        <td class="task-cell">UI/UX Design &amp; Prototyping</td>
+        <td class="date-cell">Apr 1, 2026</td>
+        <td class="date-cell">Apr 28, 2026</td>
+        <td class="days-cell">28</td>
+        <!-- DEC-MAR: blank -->
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td><td></td>
+        <!-- APR: all filled -->
+        <td class="bar-task-4"></td><td class="bar-task-4"></td><td class="bar-task-4"></td><td class="bar-task-4"></td>
+        <!-- MAY-OCT: blank -->
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td><td></td>
+      </tr>
+
+      <!-- 2.2 Database & Backend Development -->
+      <tr class="task-row">
+        <td>2.2</td>
+        <td class="task-cell">Database &amp; Backend Development (Supabase)</td>
+        <td class="date-cell">Apr 15, 2026</td>
+        <td class="date-cell">Jun 15, 2026</td>
+        <td class="days-cell">62</td>
+        <!-- DEC-MAR: blank -->
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td><td></td>
+        <!-- APR: W1-W2 blank, W3-W4 filled -->
+        <td></td><td></td><td class="bar-task-5"></td><td class="bar-task-5"></td>
+        <!-- MAY: all filled -->
+        <td class="bar-task-5"></td><td class="bar-task-5"></td><td class="bar-task-5"></td><td class="bar-task-5"></td>
+        <!-- JUN: W1-W2 filled, W3-W4 blank -->
+        <td class="bar-task-5"></td><td class="bar-task-5"></td><td></td><td></td>
+        <!-- JUL-OCT: blank -->
+        <td></td><td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td><td></td>
+      </tr>
+
+      <!-- 2.3 Frontend Development -->
+      <tr class="task-row">
+        <td>2.3</td>
+        <td class="task-cell">Frontend Development (React + Vite)</td>
+        <td class="date-cell">May 1, 2026</td>
+        <td class="date-cell">Jul 15, 2026</td>
+        <td class="days-cell">76</td>
+        <!-- DEC-APR: blank -->
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <!-- MAY: all filled -->
+        <td class="bar-task-6"></td><td class="bar-task-6"></td><td class="bar-task-6"></td><td class="bar-task-6"></td>
+        <!-- JUN: all filled -->
+        <td class="bar-task-6"></td><td class="bar-task-6"></td><td class="bar-task-6"></td><td class="bar-task-6"></td>
+        <!-- JUL: W1-W2 filled, W3-W5 blank -->
+        <td class="bar-task-6"></td><td class="bar-task-6"></td><td></td><td></td><td></td>
+        <!-- AUG-OCT: blank -->
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td><td></td>
+      </tr>
+
+      <!-- 2.4 AI Grading Engine Integration -->
+      <tr class="task-row">
+        <td>2.4</td>
+        <td class="task-cell">AI Grading Engine &amp; HITL Integration</td>
+        <td class="date-cell">Jun 1, 2026</td>
+        <td class="date-cell">Jul 20, 2026</td>
+        <td class="days-cell">50</td>
+        <!-- DEC-MAY: blank -->
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <!-- JUN: all filled -->
+        <td class="bar-task-1"></td><td class="bar-task-1"></td><td class="bar-task-1"></td><td class="bar-task-1"></td>
+        <!-- JUL: W1-W3 filled, W4-W5 blank -->
+        <td class="bar-task-1"></td><td class="bar-task-1"></td><td class="bar-task-1"></td><td></td><td></td>
+        <!-- AUG-OCT: blank -->
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td><td></td>
+      </tr>
+
+      <!-- 2.5 DepEd Grading & Analytics Module -->
+      <tr class="task-row">
+        <td>2.5</td>
+        <td class="task-cell">DepEd Grading &amp; Analytics Module</td>
+        <td class="date-cell">Jul 1, 2026</td>
+        <td class="date-cell">Jul 31, 2026</td>
+        <td class="days-cell">31</td>
+        <!-- DEC-JUN: blank -->
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <!-- JUL: all filled -->
+        <td class="bar-task-2"></td><td class="bar-task-2"></td><td class="bar-task-2"></td><td class="bar-task-2"></td><td class="bar-task-2"></td>
+        <!-- AUG-OCT: blank -->
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td><td></td>
+      </tr>
+
+      <!-- ============================================ -->
+      <!-- PHASE 3: Testing & Quality Assurance -->
+      <!-- ============================================ -->
+      <tr class="phase-row">
+        <td>3</td>
+        <td class="task-cell">Testing &amp; Quality Assurance</td>
+        <td class="date-cell">Aug 1, 2026</td>
+        <td class="date-cell">Sep 15, 2026</td>
+        <td class="days-cell">46</td>
+        <!-- DEC-JUL: blank -->
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td><td></td>
+        <!-- AUG: all filled -->
+        <td class="bar-phase"></td><td class="bar-phase"></td><td class="bar-phase"></td><td class="bar-phase"></td>
+        <!-- SEP: W1-W2 filled, W3-W4 blank -->
+        <td class="bar-phase"></td><td class="bar-phase"></td><td></td><td></td>
+        <!-- OCT: blank -->
+        <td></td><td></td><td></td><td></td><td></td>
+      </tr>
+
+      <!-- 3.1 Unit & Integration Testing -->
+      <tr class="task-row">
+        <td>3.1</td>
+        <td class="task-cell">Unit &amp; Integration Testing</td>
+        <td class="date-cell">Aug 1, 2026</td>
+        <td class="date-cell">Aug 21, 2026</td>
+        <td class="days-cell">21</td>
+        <!-- DEC-JUL: blank -->
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td><td></td>
+        <!-- AUG: W1-W3 filled, W4 blank -->
+        <td class="bar-task-3"></td><td class="bar-task-3"></td><td class="bar-task-3"></td><td></td>
+        <!-- SEP-OCT: blank -->
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td><td></td>
+      </tr>
+
+      <!-- 3.2 User Acceptance Testing -->
+      <tr class="task-row">
+        <td>3.2</td>
+        <td class="task-cell">User Acceptance Testing (UAT)</td>
+        <td class="date-cell">Aug 18, 2026</td>
+        <td class="date-cell">Sep 7, 2026</td>
+        <td class="days-cell">21</td>
+        <!-- DEC-JUL: blank -->
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td><td></td>
+        <!-- AUG: W1-W2 blank, W3-W4 filled -->
+        <td></td><td></td><td class="bar-task-4"></td><td class="bar-task-4"></td>
+        <!-- SEP: W1 filled, W2-W4 blank -->
+        <td class="bar-task-4"></td><td></td><td></td><td></td>
+        <!-- OCT: blank -->
+        <td></td><td></td><td></td><td></td><td></td>
+      </tr>
+
+      <!-- 3.3 Bug Fixing & Optimization -->
+      <tr class="task-row">
+        <td>3.3</td>
+        <td class="task-cell">Bug Fixing &amp; Optimization</td>
+        <td class="date-cell">Sep 1, 2026</td>
+        <td class="date-cell">Sep 15, 2026</td>
+        <td class="days-cell">15</td>
+        <!-- DEC-AUG: blank -->
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <!-- SEP: W1-W2 filled, W3-W4 blank -->
+        <td class="bar-task-5"></td><td class="bar-task-5"></td><td></td><td></td>
+        <!-- OCT: blank -->
+        <td></td><td></td><td></td><td></td><td></td>
+      </tr>
+
+      <!-- ============================================ -->
+      <!-- PHASE 4: Documentation & Deployment -->
+      <!-- ============================================ -->
+      <tr class="phase-row">
+        <td>4</td>
+        <td class="task-cell">Documentation &amp; Deployment</td>
+        <td class="date-cell">Sep 1, 2026</td>
+        <td class="date-cell">Oct 15, 2026</td>
+        <td class="days-cell">45</td>
+        <!-- DEC-AUG: blank -->
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <!-- SEP: all filled -->
+        <td class="bar-phase"></td><td class="bar-phase"></td><td class="bar-phase"></td><td class="bar-phase"></td>
+        <!-- OCT: W1-W2 filled, W3-W5 blank -->
+        <td class="bar-phase"></td><td class="bar-phase"></td><td></td><td></td><td></td>
+      </tr>
+
+      <!-- 4.1 System Documentation -->
+      <tr class="task-row">
+        <td>4.1</td>
+        <td class="task-cell">System Documentation &amp; User Manual</td>
+        <td class="date-cell">Sep 1, 2026</td>
+        <td class="date-cell">Sep 28, 2026</td>
+        <td class="days-cell">28</td>
+        <!-- DEC-AUG: blank -->
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <!-- SEP: all filled -->
+        <td class="bar-task-6"></td><td class="bar-task-6"></td><td class="bar-task-6"></td><td class="bar-task-6"></td>
+        <!-- OCT: blank -->
+        <td></td><td></td><td></td><td></td><td></td>
+      </tr>
+
+      <!-- 4.2 Final Deployment -->
+      <tr class="task-row">
+        <td>4.2</td>
+        <td class="task-cell">Final Deployment &amp; Configuration</td>
+        <td class="date-cell">Oct 1, 2026</td>
+        <td class="date-cell">Oct 10, 2026</td>
+        <td class="days-cell">10</td>
+        <!-- DEC-SEP: blank -->
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <!-- OCT: W1-W2 filled, W3-W5 blank -->
+        <td class="bar-task-1"></td><td class="bar-task-1"></td><td></td><td></td><td></td>
+      </tr>
+
+      <!-- ============================================ -->
+      <!-- PHASE 5: Final Defense -->
+      <!-- ============================================ -->
+      <tr class="phase-row">
+        <td>5</td>
+        <td class="task-cell">Final Defense &amp; Submission</td>
+        <td class="date-cell">Oct 12, 2026</td>
+        <td class="date-cell">Oct 31, 2026</td>
+        <td class="days-cell">20</td>
+        <!-- DEC-SEP: blank -->
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <!-- OCT: W1-W2 blank, W3-W5 filled -->
+        <td></td><td></td><td class="bar-phase"></td><td class="bar-phase"></td><td class="bar-phase"></td>
+      </tr>
+
+      <!-- 5.1 Final Defense Preparation -->
+      <tr class="task-row">
+        <td>5.1</td>
+        <td class="task-cell">Final Defense Preparation</td>
+        <td class="date-cell">Oct 12, 2026</td>
+        <td class="date-cell">Oct 20, 2026</td>
+        <td class="days-cell">9</td>
+        <!-- DEC-SEP: blank -->
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <!-- OCT: W1-W2 blank, W3 filled, W4-W5 blank -->
+        <td></td><td></td><td class="bar-task-3"></td><td></td><td></td>
+      </tr>
+
+      <!-- 5.2 Final Defense -->
+      <tr class="task-row">
+        <td>5.2</td>
+        <td class="task-cell">Final Defense</td>
+        <td class="date-cell">Oct 21, 2026</td>
+        <td class="date-cell">Oct 21, 2026</td>
+        <td class="days-cell">1</td>
+        <!-- DEC-SEP: blank -->
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <!-- OCT: W1-W3 blank, W4 milestone, W5 blank -->
+        <td></td><td></td><td></td><td class="bar-milestone"></td><td></td>
+      </tr>
+
+      <!-- 5.3 Final Revisions & Submission -->
+      <tr class="task-row">
+        <td>5.3</td>
+        <td class="task-cell">Final Revisions &amp; Submission</td>
+        <td class="date-cell">Oct 22, 2026</td>
+        <td class="date-cell">Oct 31, 2026</td>
+        <td class="days-cell">10</td>
+        <!-- DEC-SEP: blank -->
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <td></td><td></td><td></td><td></td>
+        <!-- OCT: W1-W3 blank, W4-W5 filled -->
+        <td></td><td></td><td></td><td class="bar-task-4"></td><td class="bar-task-4"></td>
+      </tr>
+
+    </tbody>
+  </table>
+
+  <!-- Legend -->
+  <div class="legend">
+    <div class="legend-item">
+      <div class="legend-color" style="background: linear-gradient(135deg, #2b6cb0, #3182ce);"></div>
+      <span>Phase (Summary)</span>
+    </div>
+    <div class="legend-item">
+      <div class="legend-color" style="background: linear-gradient(135deg, #38a169, #48bb78);"></div>
+      <span>Planning / Ideation</span>
+    </div>
+    <div class="legend-item">
+      <div class="legend-color" style="background: linear-gradient(135deg, #d69e2e, #ecc94b);"></div>
+      <span>Proposal / Documentation</span>
+    </div>
+    <div class="legend-item">
+      <div class="legend-color" style="background: linear-gradient(135deg, #e53e3e, #fc8181);"></div>
+      <span>Revisions / Testing</span>
+    </div>
+    <div class="legend-item">
+      <div class="legend-color" style="background: linear-gradient(135deg, #805ad5, #9f7aea);"></div>
+      <span>Design / UAT</span>
+    </div>
+    <div class="legend-item">
+      <div class="legend-color" style="background: linear-gradient(135deg, #dd6b20, #ed8936);"></div>
+      <span>Backend Development</span>
+    </div>
+    <div class="legend-item">
+      <div class="legend-color" style="background: linear-gradient(135deg, #319795, #4fd1c5);"></div>
+      <span>Frontend / Docs</span>
+    </div>
+    <div class="legend-item">
+      <div class="legend-color" style="background: linear-gradient(135deg, #63b3ed, #90cdf4);"></div>
+      <span>Subtask</span>
+    </div>
+    <div class="legend-item">
+      <div class="legend-color" style="background: #e53e3e; position: relative;"><span style="position:absolute;top:-2px;left:4px;color:white;font-size:10px;">◆</span></div>
+      <span>Milestone</span>
+    </div>
+  </div>
+
+  <div class="note">
+    <strong>Note:</strong> Phase 1 dates are based on actual project timeline (started 2nd week of December 2025, title defense on March 10, 2026).
+    Phases 2–5 dates are projected estimates and subject to adjustment.
+  </div>
+</div>
+
+</body>
+</html>
