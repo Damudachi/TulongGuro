@@ -10,10 +10,12 @@ import { passwordChecklist, passwordStrength } from '../constants/password';
  * classes; the four things are listed from the first keystroke and tick over
  * as they are met, so the field is answerable before it is submitted.
  *
- * The bar is deliberately a second, softer signal. Meeting all four turns the
- * list green and unblocks the form — the bar past that point is advice about
- * length and variety, not a gate, because a meter that refuses is just a rule
- * with worse manners. See constants/password.js.
+ * The bar agrees with the list rather than second-guessing it: meeting all four
+ * turns the list green, unblocks the form, and reads "Strong" — a meter saying
+ * "Fair" over a fully-ticked checklist is a form contradicting itself, and it
+ * used to. Above that there is one more step for length or a symbol, which is
+ * advice and not a gate, because a meter that refuses is just a rule with worse
+ * manners. See constants/password.js for the scale.
  *
  * Renders nothing until something is typed: four red crosses sitting under an
  * empty box reads as four errors the user has already made.
@@ -29,11 +31,9 @@ export default function PasswordStrength({ value, className = '' }) {
   // signal, and a red that lightens in dark mode stops reading as a warning.
   const barTone = score === 0 ? 'bg-rose-500'
     : score === 1 ? 'bg-amber-500'
-    : score <= 3 ? 'bg-lime-500'
     : 'bg-emerald-500';
   const textTone = score === 0 ? 'text-rose-600'
     : score === 1 ? 'text-amber-600'
-    : score <= 3 ? 'text-lime-700'
     : 'text-emerald-700';
 
   return (

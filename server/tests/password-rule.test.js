@@ -72,17 +72,30 @@ describe('the strength meter', () => {
     expect(passwordStrength('password').score).toBe(0);
   });
 
-  it('rewards length and variety above the floor without gating on them', () => {
-    const bare = passwordStrength('Passwor1').score;
-    const longer = passwordStrength('PasswordLong1').score;
-    const symbols = passwordStrength('PasswordLong1!').score;
-    expect(bare).toBeGreaterThan(0);
-    expect(longer).toBeGreaterThan(bare);
-    expect(symbols).toBeGreaterThan(longer);
+  it('calls a password strong the moment it meets the four requirements', () => {
+    // The point of the meter's shape: the checklist and the bar have to agree.
+    // Anything that clears passwordProblem() is accepted by the form, so the
+    // bar saying "Fair" over four green ticks was the form contradicting
+    // itself and reading as "keep typing".
+    const bare = passwordStrength('Passwor1');
+    expect(passwordProblem('Passwor1')).toBeNull();
+    expect(bare.label).toBe('Strong');
+    expect(bare.score).toBe(3);
+  });
+
+  it('keeps one step above that for length or a symbol, as advice not a gate', () => {
+    expect(passwordStrength('PasswordLong1').label).toBe('Very strong');
+    expect(passwordStrength('Passwor1!').label).toBe('Very strong');
+    expect(passwordStrength('PasswordLong1').score)
+      .toBeGreaterThan(passwordStrength('Passwor1').score);
   });
 
   it('does not call a repeated run strong just because it is long', () => {
+    // The one case where the meter declines to agree with the checklist. It is
+    // still accepted — the rule is the rule — but it is not strong.
+    expect(passwordProblem('aaaaaaaaaaaaA1')).toBeNull();
     expect(passwordStrength('aaaaaaaaaaaaA1').score).toBe(1);
+    expect(passwordStrength('aaaaaaaaaaaaA1').label).toBe('Weak');
   });
 
   it('lists four requirements, in a stable order', () => {

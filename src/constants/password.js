@@ -59,20 +59,45 @@ export function passwordChecklist(password) {
   ];
 }
 
-/** How strong the password is once it clears the rule — 0-4, drives the bar. */
+/**
+ * How strong a password is once it is acceptable at all — the meter.
+ *
+ * ── Why meeting the four requirements reads as "Strong" ──
+ * It used to score 1 of 4 and read "Fair", with the points above it bought by
+ * length and symbols. That was defensible as advice and wrong as feedback: the
+ * four requirements ARE the rule, so someone who had just satisfied every one
+ * of them, watched the checklist go green, and was free to submit was told by
+ * the thing next to it that their password was middling. People read that as
+ * "not finished yet" and kept typing, or assumed the form was refusing them.
+ * A meter must not contradict the checklist it sits above.
+ *
+ * So the floor of acceptable is "Strong", and the headroom above it is one
+ * step, not three:
+ *
+ *   0  Too weak     fails passwordProblem() — the form will not take it
+ *   1  Weak         clears the rule on a technicality (see the run check)
+ *   3  Strong       all four requirements met. The form takes it.
+ *   4  Very strong  and long enough, or with a symbol, to be worth more
+ *
+ * 2 is deliberately unused: nothing sits between "we accept this" and "this
+ * only technically qualifies", and leaving the gap keeps the bar's four
+ * segments reading as distinct states rather than a continuum.
+ */
 export function passwordStrength(password) {
   const value = typeof password === 'string' ? password : '';
   if (passwordProblem(value)) {
     return { score: 0, label: 'Too weak', unmet: passwordChecklist(value).filter((c) => !c.met) };
   }
-  let score = 1;
-  if (value.length >= 12) score += 1;
-  if (value.length >= 16) score += 1;
-  if (/[^A-Za-z0-9]/.test(value)) score += 1;
-  if (/^(.)\1+$/.test(value.replace(/[^A-Za-z]/g, '').toLowerCase())) score = 1;
-  score = Math.min(score, 4);
-  const label = score >= 4 ? 'Strong' : score >= 2 ? 'Good' : 'Fair';
-  return { score, label, unmet: [] };
+  // A password whose letters are one character repeated ("aaaaaaaA1") passes
+  // every class check and is still trivially guessed. It is accepted — the
+  // rule is the rule — but it is the one case the meter refuses to call strong.
+  if (/^(.)\1+$/.test(value.replace(/[^A-Za-z]/g, '').toLowerCase())) {
+    return { score: 1, label: 'Weak', unmet: [] };
+  }
+  // Past the rule, length is what actually buys resistance to guessing; a
+  // symbol is the cheaper way to the same place, so either earns the last step.
+  const strong = value.length >= 12 || /[^A-Za-z0-9]/.test(value);
+  return { score: strong ? 4 : 3, label: strong ? 'Very strong' : 'Strong', unmet: [] };
 }
 
 /**

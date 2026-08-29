@@ -9,6 +9,8 @@ import {
   suggestSchoolCode, schoolCodeProblem, schoolCodeMatchProblem, studentPrefixFor,
   MAX_SCHOOL_CODE_LENGTH,
 } from '../constants/schoolCode';
+import { passwordProblem } from '../constants/password';
+import PasswordStrength from '../components/PasswordStrength';
 
 /**
  * Suggested school colours — the admin can still pick any hex via the picker
@@ -80,32 +82,91 @@ function cn(...cls) { return cls.filter(Boolean).join(' '); }
  *
  * What survives the filter is deliberately wider than A-Z. Philippine names
  * carry ñ (Santo Niño), hyphens (Dela Cruz-Reyes), apostrophes (D'Souza) and
- * full stops (Jr., A.) — and the comma the format itself depends on. Stripping
- * those in the name of "no special characters" would misspell real people,
- * which is a worse failure than the one being prevented.
+ * full stops (Jr., A.). Stripping those in the name of "no special characters"
+ * would misspell real people, which is a worse failure than the one being
+ * prevented.
+ *
+ * The comma is the one thing that used to be allowed and no longer is. It is
+ * the separator joinFullName() writes between surname and given names, so a
+ * comma inside a box would produce a name with two of them — exactly the shape
+ * the old single field kept being given by mistake.
  */
-const NAME_DISALLOWED = /[^A-Za-zÀ-ÖØ-öø-ÿÑñ ,.'-]/g;
+const NAME_DISALLOWED = /[^A-Za-zÀ-ÖØ-öø-ÿÑñ .'-]/g;
 
 const sanitizeName = (value) =>
-  value.replace(NAME_DISALLOWED, '').replace(/\s{2,}/g, ' ').replace(/,{2,}/g, ',');
+  value.replace(NAME_DISALLOWED, '').replace(/\s{2,}/g, ' ');
 
 /**
- * What is wrong with this name, or null if nothing is. Returns the sentence to
- * show rather than a boolean, so the field can say which half is missing
- * instead of "invalid".
+ * The four boxes the name is typed into, in the order they are shown.
+ *
+ * ── Why four boxes and not one ──
+ * This used to be a single "Your Full Name" field that had to be typed as
+ * "Lastname, First Name MI", with the comma load-bearing: the server, the
+ * rosters and every alphabetical list read the part before it as the surname.
+ * A registrant who typed their name the way they say it out loud got an error
+ * about punctuation, and the error was the only place the rule was ever
+ * explained. Filipino surnames make that worse than it sounds — "Dela Cruz
+ * Santos" splits in two defensible places, and only the person typing it knows
+ * which. Asking for the parts separately means the form assembles the comma
+ * itself and can never be told the wrong thing.
+ *
+ * `required` is about the person, not the format: everyone has a surname and a
+ * first name. A middle initial is normal on DepEd records and absent on plenty
+ * of real ones, and a suffix belongs to a minority — demanding either would
+ * make people invent one.
  */
-function fullNameProblem(value) {
-  const v = (value || '').trim().replace(/\s+/g, ' ');
-  if (!v) return 'Please enter your full name.';
-  const parts = v.split(',');
-  if (parts.length < 2) return 'Add a comma after your last name — for example "Dela Cruz, Juan A."';
-  if (parts.length > 2) return 'Use one comma only — "Lastname, First Name MI".';
-  const [last, given] = parts.map(s => s.trim());
-  if (last.length < 2) return 'Please write your last name before the comma.';
-  if (given.length < 2) return 'Please write your first name after the comma.';
-  // A name made only of punctuation passes every check above.
-  if (!/[A-Za-zÀ-ÖØ-öø-ÿÑñ]{2}/.test(last) || !/[A-Za-zÀ-ÖØ-öø-ÿÑñ]{2}/.test(given)) {
-    return 'Please write your name in letters.';
+const NAME_PARTS = [
+  { key: 'last',   label: 'Last Name',      placeholder: 'Dela Cruz', required: true,  span: 'sm:col-span-2', max: 60 },
+  { key: 'first',  label: 'First Name',     placeholder: 'Juan',      required: true,  span: 'sm:col-span-2', max: 60 },
+  { key: 'middle', label: 'Middle Initial', placeholder: 'A.',        required: false, span: '',              max: 20 },
+  { key: 'suffix', label: 'Suffix',         placeholder: 'Jr.',       required: false, span: '',              max: 12 },
+];
+
+const EMPTY_NAME_PARTS = { last: '', first: '', middle: '', suffix: '' };
+
+/**
+ * The parts, assembled into the one string the rest of the system stores.
+ *
+ * Still "Lastname, First Name MI" — the format did not change, only who has to
+ * get it right. The suffix rides with the surname rather than trailing the
+ * whole name ("Dela Cruz Jr., Juan A."), which is how DepEd records and PSA
+ * documents write it, and it keeps the part before the comma equal to the
+ * complete surname the school will sort and search on.
+ */
+function joinFullName(parts) {
+  const clean = (v) => (parts[v] || '').trim().replace(/\s+/g, ' ');
+  const last = [clean('last'), clean('suffix')].filter(Boolean).join(' ');
+  const given = [clean('first'), clean('middle')].filter(Boolean).join(' ');
+  if (!last || !given) return '';
+  return `${last}, ${given}`;
+}
+
+/** Two letters somewhere in it — a name made only of punctuation is not one. */
+const hasLetters = (v) => /[A-Za-zÀ-ÖØ-öø-ÿÑñ]{2}/.test(v);
+
+/**
+ * What is wrong with one box, or null if nothing is.
+ *
+ * Per box rather than per name, so the message can sit under the field it is
+ * about instead of naming a field the reader then has to find. A suffix is the
+ * one exception to the two-letter rule: "II" and "IV" are real ones.
+ */
+function namePartProblem(key, value) {
+  const v = (value || '').trim();
+  const { label, required } = NAME_PARTS.find((f) => f.key === key);
+  if (!v) return required ? `Please enter your ${label.toLowerCase()}.` : null;
+  if (key === 'suffix') return /[A-Za-zÀ-ÖØ-öø-ÿÑñ]/.test(v) ? null : 'Please write your suffix in letters.';
+  if (key === 'middle') return hasLetters(v) || /^[A-Za-zÀ-ÖØ-öø-ÿÑñ]\.?$/.test(v)
+    ? null : 'Please write your middle initial in letters.';
+  if (v.length < 2 || !hasLetters(v)) return `Please write your ${label.toLowerCase()} in letters.`;
+  return null;
+}
+
+/** The first box with something wrong with it, as `[key, message]`, or null. */
+function firstNameProblem(parts) {
+  for (const { key } of NAME_PARTS) {
+    const problem = namePartProblem(key, parts[key]);
+    if (problem) return [key, problem];
   }
   return null;
 }
@@ -145,7 +206,6 @@ export default function Register() {
   // to sit on this school's @admin.<code>.edu.ph, and a form that accepts
   // anything and refuses it on submit teaches the rule one rejection at a time.
   const [formData, setFormData] = useState({
-    name: '',
     email: '',
     password: '',
     // Typed again, never sent. A registration password is set once, by someone
@@ -239,9 +299,16 @@ export default function Register() {
   // rather than from typing. Drives the "filled from DepEd records" note, and
   // is cleared the moment the registrant edits it themselves.
   const [nameFromLookup, setNameFromLookup] = useState(false);
-  // The name field's own complaint, shown under it rather than in the form-wide
-  // error banner at the bottom — it belongs next to the field it is about.
-  const [nameError, setNameError] = useState(null);
+  // ── The registrant's name, in parts ──
+  // Kept out of formData because it is not a field: the four boxes are joined
+  // into the single `name` the server takes, at submit, by joinFullName(). See
+  // NAME_PARTS for why it is asked for this way.
+  const [nameParts, setNameParts] = useState(EMPTY_NAME_PARTS);
+  const fullName = joinFullName(nameParts);
+  // Each box's own complaint, keyed by NAME_PARTS key and shown under that box
+  // rather than in the form-wide banner at the bottom — it belongs next to the
+  // field it is about.
+  const [nameErrors, setNameErrors] = useState({});
   // Which of STEPS is on screen. 1-based, to match what the indicator shows.
   const [step, setStep] = useState(1);
   // Whether the registrant has asked to correct the name the DepEd lookup
@@ -433,7 +500,7 @@ export default function Register() {
    *
    * The server re-checks every one of these — this only decides whether
    * "Continue" moves. It returns the sentence to show rather than a boolean,
-   * for the same reason fullNameProblem does: "please complete this step" makes
+   * for the same reason namePartProblem does: "please complete this step" makes
    * someone hunt for the gap, and the gap is usually one field.
    *
    * Ordered the way each step reads, so the message names the first gap rather
@@ -460,13 +527,20 @@ export default function Register() {
       return null;
     }
     if (which === 2) {
-      const nameProblem = fullNameProblem(formData.name);
-      if (nameProblem) return nameProblem;
+      const nameProblem = firstNameProblem(nameParts);
+      if (nameProblem) return nameProblem[1];
       if (!formData.email.trim()) return 'Please choose the name part of your admin email address.';
       if (!idConsent) return 'Please tick the box agreeing to upload your ID, then attach it.';
       if (!registrantId) return 'Please attach a photo of your school or employee ID.';
       if (!formData.contactEmail.trim()) return 'Please give a school contact email we can reach you on.';
       if (!formData.password) return 'Please set a password.';
+      // The same four requirements the meter under the box is ticking off, and
+      // the same ones the server re-checks. Without this the form would let
+      // someone past a checklist still showing red crosses and let the server
+      // deliver the news three steps later, with the whole registration —
+      // uploads included — to redo.
+      const pwProblem = passwordProblem(formData.password);
+      if (pwProblem) return pwProblem;
       if (!formData.confirmPassword) return 'Please type your password a second time to confirm it.';
       if (formData.password !== formData.confirmPassword) return 'The two passwords do not match.';
       return null;
@@ -477,16 +551,26 @@ export default function Register() {
   };
 
   /**
+   * Mark whichever name box is wrong, so a refusal at the bottom of step 2 is
+   * also visible at the field it is about. Only the first — four red boxes for
+   * one empty surname reads as four mistakes.
+   */
+  const markNameProblem = () => {
+    const problem = firstNameProblem(nameParts);
+    setNameErrors(problem ? { [problem[0]]: problem[1] } : {});
+  };
+
+  /**
    * Move to the next step, or refuse and say why.
    *
-   * The name field marks itself as well as the banner — a message about the
+   * The name fields mark themselves as well as the banner — a message about the
    * name that only appears at the bottom of the step names a problem the reader
    * then has to go looking for.
    */
   const goNext = () => {
     const problem = stepProblem(step);
     if (problem) {
-      if (step === 2) setNameError(fullNameProblem(formData.name));
+      if (step === 2) markNameProblem();
       return setError(problem);
     }
     setError('');
@@ -560,7 +644,7 @@ export default function Register() {
       const problem = stepProblem(number);
       if (problem) {
         setStep(number);
-        if (number === 2) setNameError(fullNameProblem(formData.name));
+        if (number === 2) markNameProblem();
         window.scrollTo({ top: 0, behavior: 'smooth' });
         return setError(problem);
       }
@@ -569,8 +653,9 @@ export default function Register() {
     setIsSubmitting(true);
     try {
       const body = new FormData();
-      // The full address, not the local part the field holds.
-      const account = { ...formData, email: adminEmail };
+      // The full address, not the local part the field holds; and the four
+      // name boxes joined into the one string the server stores.
+      const account = { ...formData, name: fullName, email: adminEmail };
       // The confirmation copy stays on the form. It exists to catch a typo
       // before the request is made; sending it would only put the password in
       // the body twice, and anything holding a copy of this request would hold
@@ -1037,34 +1122,68 @@ export default function Register() {
               </>)}
 
               {step === 2 && (<>
-              <div>
-                <label className="tg-label">Your Full Name</label>
-                <input
-                  type="text"
-                  required
-                  className="tg-input"
-                  placeholder="Dela Cruz, Juan A."
-                  aria-describedby="full-name-hint"
-                  // Controlled, which it was not before — without `value` the
-                  // filtered string never made it back to the field, so a typed
-                  // digit would have stayed on screen.
-                  value={formData.name}
-                  onChange={(e) => setFormData({ ...formData, name: sanitizeName(e.target.value) })}
-                  // Checked on blur, not per keystroke: "Dela" is an incomplete
-                  // name, not a wrong one, and saying so while someone is still
-                  // typing it is nagging rather than helping.
-                  onBlur={() => setNameError(fullNameProblem(formData.name))}
-                />
-                {nameError ? (
-                  <p className="flex items-start gap-1.5 text-xs font-semibold text-red-600 mt-1.5">
-                    <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" /> {nameError}
-                  </p>
-                ) : (
-                  <p id="full-name-hint" className="text-xs text-navy-400 mt-1.5 font-semibold">
-                    Lastname, First Name MI — as it appears on your DepEd records.
-                  </p>
-                )}
-              </div>
+              {/* ── Your name, in four boxes ──
+                  Laid out on a six-column grid so surname and first name take
+                  half the width each and the two optional boxes share the row
+                  below, which is the shape of a DepEd form and puts the two
+                  required fields first. It collapses to one column on a phone,
+                  where side-by-side boxes this narrow are unusable. */}
+              <fieldset>
+                <legend className="tg-label">Your Full Name</legend>
+                <div className="grid grid-cols-1 sm:grid-cols-6 gap-3">
+                  {NAME_PARTS.map(({ key, label, placeholder, required, span, max }) => (
+                    <div key={key} className={span}>
+                      <label className="block text-xs font-bold text-navy-500 mb-1" htmlFor={`register-name-${key}`}>
+                        {label}{!required && <span className="font-semibold text-navy-400"> (optional)</span>}
+                      </label>
+                      <input
+                        id={`register-name-${key}`}
+                        type="text"
+                        required={required}
+                        maxLength={max}
+                        autoComplete={
+                          key === 'last' ? 'family-name'
+                            : key === 'first' ? 'given-name'
+                            : key === 'middle' ? 'additional-name'
+                            : 'honorific-suffix'
+                        }
+                        className={cn('tg-input', nameErrors[key] && 'border-red-400 focus:border-red-400')}
+                        placeholder={placeholder}
+                        aria-invalid={!!nameErrors[key] || undefined}
+                        // Controlled, so the sanitized string makes it back to
+                        // the box — without `value` a typed digit would be
+                        // stripped from state and stay on screen.
+                        value={nameParts[key]}
+                        onChange={(e) => {
+                          setNameParts({ ...nameParts, [key]: sanitizeName(e.target.value) });
+                          // Clear this box's complaint as soon as it is being
+                          // answered. Re-checking per keystroke would call
+                          // "Del" a bad surname while it is still being typed.
+                          if (nameErrors[key]) setNameErrors({ ...nameErrors, [key]: null });
+                        }}
+                        onBlur={(e) => setNameErrors({
+                          ...nameErrors, [key]: namePartProblem(key, e.target.value),
+                        })}
+                      />
+                      {nameErrors[key] && (
+                        <p className="flex items-start gap-1.5 text-xs font-semibold text-red-600 mt-1.5">
+                          <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" /> {nameErrors[key]}
+                        </p>
+                      )}
+                    </div>
+                  ))}
+                </div>
+                {/* The assembled name, shown back rather than described. It is
+                    what rosters, gradebooks and released grades will carry, and
+                    the surname/given-name split is the half a registrant would
+                    most want to correct — seeing it is the only way to notice
+                    the form guessed the boundary differently than they meant. */}
+                <p id="full-name-hint" className="text-xs text-navy-400 mt-2 font-semibold">
+                  {fullName
+                    ? <>Saved on your DepEd records as <span className="text-navy-600">{fullName}</span>.</>
+                    : 'As it appears on your DepEd records.'}
+                </p>
+              </fieldset>
 
               <div>
                 <label className="tg-label">Admin Email Address</label>
@@ -1226,6 +1345,14 @@ export default function Register() {
                     {showPassword ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
                   </button>
                 </div>
+                {/* ── The requirements, ticking over as they are typed ──
+                    This box had no feedback at all: the four rules existed only
+                    on the server, so a registrant three steps and two uploads
+                    deep learned about the capital letter from a rejected
+                    submit. The list appears from the first keystroke and the
+                    bar reads "Strong" the moment all four are met — see
+                    PasswordStrength for why those two must not disagree. */}
+                <PasswordStrength value={formData.password} />
               </div>
 
               <div>
