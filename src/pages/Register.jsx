@@ -116,10 +116,10 @@ const sanitizeName = (value) =>
  * make people invent one.
  */
 const NAME_PARTS = [
-  { key: 'last',   label: 'Last Name',      placeholder: 'Dela Cruz', required: true,  span: 'sm:col-span-2', max: 60 },
-  { key: 'first',  label: 'First Name',     placeholder: 'Juan',      required: true,  span: 'sm:col-span-2', max: 60 },
-  { key: 'middle', label: 'Middle Initial', placeholder: 'A.',        required: false, span: '',              max: 20 },
-  { key: 'suffix', label: 'Suffix',         placeholder: 'Jr.',       required: false, span: '',              max: 12 },
+  { key: 'last',   label: 'Last Name',      placeholder: 'Dela Cruz', required: true,  span: 'sm:col-span-3', max: 60 },
+  { key: 'first',  label: 'First Name',     placeholder: 'Juan',      required: true,  span: 'sm:col-span-3', max: 60 },
+  { key: 'middle', label: 'Middle Initial', placeholder: 'A.',        required: false, span: 'sm:col-span-3', max: 20 },
+  { key: 'suffix', label: 'Suffix',         placeholder: 'Jr.',       required: false, span: 'sm:col-span-3', max: 12 },
 ];
 
 const EMPTY_NAME_PARTS = { last: '', first: '', middle: '', suffix: '' };
@@ -1123,17 +1123,35 @@ export default function Register() {
 
               {step === 2 && (<>
               {/* ── Your name, in four boxes ──
-                  Laid out on a six-column grid so surname and first name take
-                  half the width each and the two optional boxes share the row
-                  below, which is the shape of a DepEd form and puts the two
-                  required fields first. It collapses to one column on a phone,
-                  where side-by-side boxes this narrow are unusable. */}
+                  A 2×2 grid: the two required boxes on the first row, the two
+                  optional ones on the second, which is the shape of a DepEd
+                  form and puts what everyone has to fill in first. Collapses to
+                  a single column on a phone, where four boxes across is
+                  unusable.
+
+                  Every cell is the same width on purpose. The first attempt
+                  gave the surname and first name a third of the row each and
+                  the initial and suffix a sixth, on the theory that a box
+                  should hint at how much goes in it. Sized like that the four
+                  fitted on one row, and "Middle Initial (optional)" then wrapped
+                  in its narrow column while "Last Name" did not — so that one
+                  input sat a line below its neighbours. Equal columns and the
+                  one-line label rule below are what keep the row straight. */}
               <fieldset>
                 <legend className="tg-label">Your Full Name</legend>
                 <div className="grid grid-cols-1 sm:grid-cols-6 gap-3">
                   {NAME_PARTS.map(({ key, label, placeholder, required, span, max }) => (
                     <div key={key} className={span}>
-                      <label className="block text-xs font-bold text-navy-500 mb-1" htmlFor={`register-name-${key}`}>
+                      {/* `truncate` is here for alignment, not for shortening.
+                          Each cell stacks label over input, so a label that
+                          wraps to two lines pushes its own input a line lower
+                          than the ones beside it — which is exactly what
+                          "Middle Initial (optional)" did next to "Last Name"
+                          while these boxes were a sixth of the row wide. One
+                          line always, so every input in a row starts at the
+                          same height. At half-width none of the four comes
+                          near overflowing, so nothing is actually clipped. */}
+                      <label className="block truncate text-xs font-bold text-navy-500 mb-1" htmlFor={`register-name-${key}`}>
                         {label}{!required && <span className="font-semibold text-navy-400"> (optional)</span>}
                       </label>
                       <input
