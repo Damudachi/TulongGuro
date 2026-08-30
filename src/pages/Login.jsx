@@ -4,12 +4,16 @@ import { UserCircle, GraduationCap, Eye, EyeOff, Building2, ArrowLeft, ArrowRigh
 import Logo from '../components/Logo';
 import { API_URL, apiFetch, setSession } from '../config';
 
+// The staff placeholders carry the school-code domain, not the flat legacy one.
+// Both shapes still sign in — see LEGACY_*_EMAIL_DOMAIN in constants/accountEmails.js
+// — but flat addresses only exist at schools that predate codes and none are issued
+// now, so showing @teacher.edu.ph taught every new school the wrong rule.
 const ROLES = {
   teacher: {
     label: 'Teacher', icon: UserCircle,
     accent: 'text-royal-600', chip: 'bg-royal-500', panel: 'bg-royal-500',
     button: 'bg-royal-500 hover:bg-royal-600 text-white',
-    idLabel: 'Email Address', idPlaceholder: 'name@teacher.edu.ph', idType: 'email',
+    idLabel: 'Email Address', idPlaceholder: 'name@teacher.school-code.edu.ph', idType: 'email',
     home: '/teacher/dashboard',
     blurb: 'Your review queue, sections, and rubrics are waiting.',
   },
@@ -17,11 +21,14 @@ const ROLES = {
     label: 'Student', icon: GraduationCap,
     accent: 'text-aqua-700', chip: 'bg-aqua-500', panel: 'bg-aqua-600',
     button: 'bg-aqua-600 hover:bg-aqua-700 text-white',
-    // Placeholder matches the ID format actually issued now (<SCHOOL>-<YY>-<NNNN>).
+    // Placeholder matches the ID format actually issued now (<SCHOOL-CODE>-<YY>-<NNNN>,
+    // the school's own code uppercased — see studentPrefixFor in server/schoolSlug.js).
+    // ABC is deliberately not a code any school could hold, so the sample cannot be
+    // mistaken for a real ID and typed in as one.
     // The server accepts it in any case and with the dashes left out, so a child
     // copying it off a printed slip does not get "Invalid credentials" for
     // punctuation.
-    idLabel: 'Student ID', idPlaceholder: 'e.g. AS-26-0001', idType: 'text',
+    idLabel: 'Student ID', idPlaceholder: 'e.g. ABC-26-0001', idType: 'text',
     home: '/student/dashboard',
     blurb: 'Check your feedback, awards, and what’s due next.',
   },
@@ -29,7 +36,7 @@ const ROLES = {
     label: 'Admin', icon: Building2,
     accent: 'text-navy-700', chip: 'bg-brand-chrome', panel: 'bg-brand-chrome',
     button: 'bg-brand-chrome hover:bg-ink-800 text-white',
-    idLabel: 'Email Address', idPlaceholder: 'name@admin.com', idType: 'email',
+    idLabel: 'Email Address', idPlaceholder: 'name@admin.school-code.edu.ph', idType: 'email',
     home: '/admin/dashboard',
     blurb: 'Manage teachers, sections, curricula, and rubrics.',
   },
