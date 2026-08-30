@@ -23,12 +23,13 @@ const ROLES = {
     button: 'bg-aqua-600 hover:bg-aqua-700 text-white',
     // Placeholder matches the ID format actually issued now (<SCHOOL-CODE>-<YY>-<NNNN>,
     // the school's own code uppercased — see studentPrefixFor in server/schoolSlug.js).
-    // ABC is deliberately not a code any school could hold, so the sample cannot be
-    // mistaken for a real ID and typed in as one.
+    // The code is spelled out rather than sampled: real ones run to two segments
+    // (SFES-FELI-26-0001), so a one-word stand-in would have taught the wrong shape,
+    // and a realistic one could be mistaken for an actual ID and typed in as it is.
     // The server accepts it in any case and with the dashes left out, so a child
     // copying it off a printed slip does not get "Invalid credentials" for
     // punctuation.
-    idLabel: 'Student ID', idPlaceholder: 'e.g. ABC-26-0001', idType: 'text',
+    idLabel: 'Student ID', idPlaceholder: 'e.g. SCHOOL-CODE-26-0001', idType: 'text',
     home: '/student/dashboard',
     blurb: 'Check your feedback, awards, and what’s due next.',
   },
