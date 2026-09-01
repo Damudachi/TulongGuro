@@ -2538,7 +2538,13 @@ export default function HITLWorkspace() {
           <form onSubmit={handleChatSubmit} className="relative">
             <input type="text" value={chatInput} onChange={e => setChatInput(e.target.value)}
               placeholder="Ask a question, or say how to change the feedback…"
-              className="w-full pl-4 pr-12 py-3 bg-slate-100 border-none rounded-xl focus:ring-2 focus:ring-brand-navy outline-none text-sm"
+              /* text-base below md, not text-sm. Mobile Safari zooms the page
+                 in on any input it focuses whose font-size is under 16px, and
+                 does not zoom back out when the field is dismissed — so asking
+                 the assistant one question left the whole workspace magnified
+                 and scrolled sideways. 14px is fine from md up, where no
+                 browser does this. */
+              className="w-full pl-4 pr-12 py-3 bg-slate-100 border-none rounded-xl focus:ring-2 focus:ring-brand-navy outline-none text-base md:text-sm"
               disabled={isChatLoading} />
             <button type="submit" disabled={isChatLoading || !chatInput.trim()}
               className="absolute right-2 top-1/2 -translate-y-1/2 p-2 bg-brand-navy text-white rounded-lg hover:bg-blue-900 disabled:opacity-50 transition-colors">
