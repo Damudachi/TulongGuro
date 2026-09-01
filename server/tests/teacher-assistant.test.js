@@ -275,3 +275,143 @@ describe('the review screen drawer', () => {
     expect(workspace).toContain('history,');
   });
 });
+
+/**
+ * The transcription cache — why a follow-up is fast.
+ *
+ * The model is stateless, so the paper used to go up as an image on every
+ * message of the conversation: a multi-megabyte upload and a full vision pass
+ * to answer "why?". The first message now transcribes the paper alongside its
+ * answer and every message after it sends that text instead.
+ *
+ * Two things have to hold for that to be safe rather than merely fast, and
+ * both are pinned below: a transcription must never outlive the page it was
+ * read from, and the store must not grow without bound in a long-lived
+ * process.
+ */
+describe('the transcription cache', () => {
+  // The three helpers share one Map and its constants, so they are lifted as
+  // one block rather than individually the way parseAssistantTurn is.
+  function liftCache() {
+    const start = SERVER_SRC.indexOf('const ASSIST_TRANSCRIPT_TTL_MS');
+    const tail = SERVER_SRC.indexOf('function writeAssistTranscript(');
+    if (start === -1 || tail === -1) throw new Error('transcription cache not found in server.js');
+    let depth = 0, end = -1;
+    for (let j = SERVER_SRC.indexOf('{', tail); j < SERVER_SRC.length; j++) {
+      if (SERVER_SRC[j] === '{') depth++;
+      else if (SERVER_SRC[j] === '}' && --depth === 0) { end = j + 1; break; }
+    }
+    return new Function('process', `${SERVER_SRC.slice(start, end)};
+      return { assistTranscriptKey, readAssistTranscript, writeAssistTranscript, assistantTranscripts };`
+    )({ env: {} });
+  }
+
+  it('keys on the stored image, so a redaction cannot serve the old reading', () => {
+    // The whole point of redacting is that what was covered is gone. A cache
+    // keyed on the submission alone would have kept quoting the name that had
+    // just been painted out, because the id does not change when the page does.
+    const c = liftCache();
+    const before = c.assistTranscriptKey('sub-1', 'papers/original.jpg');
+    const after = c.assistTranscriptKey('sub-1', 'papers/redacted-1730000000.jpg');
+    expect(before).not.toBe(after);
+
+    c.writeAssistTranscript(before, 'My name is written at the top.');
+    expect(c.readAssistTranscript(after)).toBeNull();
+    expect(c.readAssistTranscript(before)).toBe('My name is written at the top.');
+  });
+
+  it('expires an entry rather than serving it forever', () => {
+    const c = liftCache();
+    const key = c.assistTranscriptKey('sub-2', 'papers/a.jpg');
+    c.writeAssistTranscript(key, 'The boy learns that lying makes people lose trust in you.');
+    expect(c.readAssistTranscript(key)).toContain('lying makes people');
+
+    // Age the entry past the TTL in place, rather than waiting six hours.
+    c.assistantTranscripts.get(key).at = Date.now() - (7 * 60 * 60 * 1000);
+    expect(c.readAssistTranscript(key)).toBeNull();
+    expect(c.assistantTranscripts.has(key)).toBe(false);
+  });
+
+  it('evicts the least recently read paper, not the one written longest ago', () => {
+    // A teacher working down a class list comes back to the paper they are
+    // arguing about. Evicting by write order would drop exactly that one.
+    const c = liftCache();
+    const keys = [];
+    for (let i = 0; i < 300; i++) {
+      const k = c.assistTranscriptKey(`sub-${i}`, `papers/${i}.jpg`);
+      keys.push(k);
+      c.writeAssistTranscript(k, `paper ${i}`);
+    }
+    expect(c.assistantTranscripts.size).toBe(300);
+
+    // Touch the oldest, then push the store over its ceiling.
+    expect(c.readAssistTranscript(keys[0])).toBe('paper 0');
+    c.writeAssistTranscript(c.assistTranscriptKey('sub-300', 'papers/300.jpg'), 'paper 300');
+
+    expect(c.assistantTranscripts.size).toBe(300);
+    expect(c.readAssistTranscript(keys[0])).toBe('paper 0');   // read, so kept
+    expect(c.readAssistTranscript(keys[1])).toBeNull();        // untouched, so dropped
+  });
+
+  it('ignores an empty transcription instead of caching a blank paper', () => {
+    // A model that returned "" would otherwise poison every later message in
+    // the conversation with a paper that has nothing in it.
+    const c = liftCache();
+    const key = c.assistTranscriptKey('sub-3', 'papers/b.jpg');
+    c.writeAssistTranscript(key, '   ');
+    expect(c.readAssistTranscript(key)).toBeNull();
+  });
+});
+
+describe('parseAssistantTurn — the transcription rides along', () => {
+  it('surfaces a transcription without letting it reach the teacher', () => {
+    const turn = parseAssistantTurn(JSON.stringify({
+      action: 'answer',
+      reply: 'Length landed on 2 because the closing paragraph is one sentence.',
+      revisedFeedback: null,
+      transcription: 'Once upon a time there was a boy who told lies.',
+    }));
+    expect(turn.transcription).toBe('Once upon a time there was a boy who told lies.');
+    // It is a cache payload, not part of the conversation.
+    expect(turn.reply).not.toContain('Once upon a time');
+    expect(turn.action).toBe('answer');
+  });
+
+  it('is null when the model did not send one', () => {
+    const turn = parseAssistantTurn(JSON.stringify({
+      action: 'answer', reply: 'Yes.', revisedFeedback: null,
+    }));
+    expect(turn.transcription).toBeNull();
+  });
+
+  it('is null when the reply was not JSON at all', () => {
+    const turn = parseAssistantTurn('The rubric weights organization at 20 points.');
+    expect(turn.transcription).toBeNull();
+    expect(turn.reply).toContain('organization');
+  });
+});
+
+describe('the assistant handler asks for a transcription only when it needs one', () => {
+  const handler = SERVER_SRC.slice(
+    SERVER_SRC.indexOf('const teacherAssistantHandler'),
+    SERVER_SRC.indexOf("app.post('/api/teacher/assistant'"),
+  );
+
+  it('only transcribes when an image is actually attached', () => {
+    // A cached paper, a typed submission and a paper that could not be opened
+    // all have nothing to read; asking for a transcription would buy output
+    // tokens for text that already exists or does not.
+    expect(handler).toContain('const wantsTranscription = Boolean(paperFilePart && paper.key)');
+  });
+
+  it('sends the cached text in place of the image', () => {
+    expect(handler).toContain('const paperText = paper.cachedText');
+    expect(handler).toContain('scrub(paperText)');
+  });
+
+  it('scrubs the name out of a transcription before storing it', () => {
+    // The prompt asks the model to leave a name off the page out of its
+    // transcription. This is the layer that does not depend on it obeying.
+    expect(handler).toContain('writeAssistTranscript(paper.key, scrub(turn.transcription))');
+  });
+});

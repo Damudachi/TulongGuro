@@ -12869,7 +12869,7 @@ function parseAssistantTurn(rawText, { isStructured } = {}) {
   } catch { /* not JSON — handled below */ }
 
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    return { action: 'answer', reply: text, revisedFeedback: null };
+    return { action: 'answer', reply: text, revisedFeedback: null, transcription: null };
   }
 
   const action = parsed.action === 'revise' ? 'revise' : 'answer';
@@ -12896,6 +12896,11 @@ function parseAssistantTurn(rawText, { isStructured } = {}) {
     action: revisedFeedback ? 'revise' : 'answer',
     reply,
     revisedFeedback,
+    // Only asked for on the message that carries the image, and never shown to
+    // anyone — the caller keeps it so later messages can skip the vision pass.
+    transcription: typeof parsed.transcription === 'string' && parsed.transcription.trim()
+      ? parsed.transcription.trim()
+      : null,
   };
 }
 
@@ -12991,8 +12996,88 @@ function nameScrubber(rawName) {
  * chat that 500s because a photo moved is worse than one that answers with
  * slightly less to go on, and the reply says what it could see.
  */
+/**
+ * Papers the assistant has already read, as plain text.
+ *
+ * ── Why this exists ──
+ *
+ * The model is stateless, so before this the photographed paper was downloaded
+ * out of storage, base64-encoded and uploaded again on EVERY message of the
+ * conversation, and re-read by the vision model each time. A stitched
+ * multi-page scan is several megabytes; "why?" as a follow-up cost exactly as
+ * much as the question that opened the chat, and the teacher waited through it
+ * with a spinner. That was the single biggest thing making this too slow to
+ * hold a conversation with.
+ *
+ * So the paper is read properly once. The first message sends the image and
+ * asks for a transcription alongside the answer — one call, not two — and
+ * every message after that sends the transcription as text. A text turn skips
+ * the storage download, the encode, the upload and the vision pass.
+ *
+ * ── What it costs ──
+ *
+ * Follow-ups see the transcription, not the page. Anything that depends on how
+ * the work LOOKS rather than what it says — handwriting legibility, crossings
+ * out, layout, a diagram — is weaker after the first message, and a word the
+ * model misread stays misread for the rest of the conversation. The prompt
+ * tells it to say so when a question needs the page itself; that is the honest
+ * trade for a follow-up that answers in seconds instead of half a minute.
+ *
+ * ── Where it lives ──
+ *
+ * In this process's memory, not the database. A transcription of a child's
+ * handwriting is new personal data, and putting it at rest in the shared
+ * Postgres is a decision about retention and disclosure, not a cache. Here it
+ * dies with the process, is capped, expires, and is scrubbed of the learner's
+ * name on the way in like everything else the assistant touches. The cost of
+ * that choice is that a restart makes the next message slow again.
+ */
+const ASSIST_TRANSCRIPT_TTL_MS = Number(process.env.ASSIST_TRANSCRIPT_TTL_MS || 6 * 60 * 60 * 1000);
+/** Entries, not bytes. Each is one paper's text, capped below. */
+const ASSIST_TRANSCRIPT_MAX_ENTRIES = Number(process.env.ASSIST_TRANSCRIPT_MAX_ENTRIES || 300);
+/** The same ceiling the prompt already applied to a typed submission. */
+const ASSIST_TRANSCRIPT_MAX_CHARS = 12000;
+const assistantTranscripts = new Map();
+
+/**
+ * Keyed on the stored image as well as the submission.
+ *
+ * imageUrl changes whenever the paper does — a redaction re-uploads under a new
+ * filename, so does Edit Upload — which means a stale transcription cannot
+ * outlive the page it was read from. Keying on submissionId alone would have
+ * let the assistant keep quoting a name the teacher had just redacted out.
+ */
+function assistTranscriptKey(submissionId, imageUrl) {
+  return String(submissionId) + '::' + String(imageUrl || '');
+}
+
+function readAssistTranscript(key) {
+  const hit = assistantTranscripts.get(key);
+  if (!hit) return null;
+  if (Date.now() - hit.at > ASSIST_TRANSCRIPT_TTL_MS) {
+    assistantTranscripts.delete(key);
+    return null;
+  }
+  // Re-inserting moves the entry to the end: a Map iterates in insertion order,
+  // so this is what makes the eviction below drop the least recently used
+  // paper rather than the one read longest ago.
+  assistantTranscripts.delete(key);
+  assistantTranscripts.set(key, hit);
+  return hit.text;
+}
+
+function writeAssistTranscript(key, text) {
+  const clean = String(text || '').trim();
+  if (!clean) return;
+  assistantTranscripts.delete(key);
+  assistantTranscripts.set(key, { text: clean.slice(0, ASSIST_TRANSCRIPT_MAX_CHARS), at: Date.now() });
+  while (assistantTranscripts.size > ASSIST_TRANSCRIPT_MAX_ENTRIES) {
+    assistantTranscripts.delete(assistantTranscripts.keys().next().value);
+  }
+}
+
 async function loadAssistantPaper(submissionId, teacherId) {
-  const none = { scrub: nameScrubber(''), part: null, cleanup: async () => {} };
+  const none = { scrub: nameScrubber(''), part: null, cachedText: null, key: null, cleanup: async () => {} };
   if (!submissionId) return none;
 
   let sub;
@@ -13011,6 +13096,13 @@ async function loadAssistantPaper(submissionId, teacherId) {
   const scrub = nameScrubber(sub.student?.name);
   if (!sub.imageUrl || sub.privacyViolation) return { ...none, scrub };
 
+  // Read once, then reuse. Checked before anything touches storage, so a
+  // follow-up costs one database lookup rather than a download and a
+  // multi-megabyte upload — see the note on assistantTranscripts.
+  const key = assistTranscriptKey(submissionId, sub.imageUrl);
+  const cachedText = readAssistTranscript(key);
+  if (cachedText) return { ...none, scrub, key, cachedText };
+
   let resolved;
   try {
     resolved = await resolveLocalImagePath(sub.imageUrl);
@@ -13019,13 +13111,15 @@ async function loadAssistantPaper(submissionId, teacherId) {
     return {
       scrub,
       part,
+      key,
+      cachedText: null,
       cleanup: async () => {
         if (resolved.isTemp) { try { fs.unlinkSync(resolved.path); } catch { /* best effort */ } }
       },
     };
   } catch {
     if (resolved?.isTemp) { try { fs.unlinkSync(resolved.path); } catch { /* best effort */ } }
-    return { ...none, scrub };
+    return { ...none, scrub, key };
   }
 }
 
@@ -13055,6 +13149,23 @@ const teacherAssistantHandler = async (req, res) => {
     // naturally; only a real file needs its own part.
     const paperIsText = typeof paper.part === 'string';
     const paperFilePart = paperIsText ? null : paper.part;
+    // Text the assistant can read without a vision pass: a Word file's extracted
+    // text on the first turn, or the transcription kept from an earlier one.
+    const paperText = paper.cachedText || (paperIsText ? paper.part : null);
+    // Only a first look at a photographed page needs transcribing, and only
+    // then is it worth the extra output tokens. A cached paper, a typed
+    // submission and a paper we could not open all skip it.
+    const wantsTranscription = Boolean(paperFilePart && paper.key);
+    // Says which of the two costs this message is paying, because the
+    // difference between them is the whole point of the cache and it is
+    // otherwise invisible from the outside.
+    if (submissionId) {
+      console.log(paper.cachedText
+        ? '\u2699 assistant: reusing the transcription \u2014 no image sent'
+        : paperFilePart
+          ? '\u2699 assistant: reading the paper (first look) \u2014 image sent, transcribing'
+          : '\u2699 assistant: no paper attached to this message');
+    }
 
     // The last few turns, so follow-ups ("shorten that", "why?") mean
     // something. Capped and truncated: this is a side conversation about one
@@ -13111,11 +13222,13 @@ RULES FOR "reply" (what the teacher reads):
 THE STUDENT'S WORK:
 ${paperFilePart
     ? '- The student\'s actual paper is attached to this message. Read it. It is the primary evidence for anything you say about the writing — quote from it exactly, and never invent a sentence they did not write.\n- If the handwriting is unclear in places, say so rather than guessing at a word and building an argument on it.'
-    : paperIsText
-      ? '- The student\'s typed submission is included below, between the BEGIN/END markers. It is the primary evidence for anything you say about the writing — quote from it exactly, and never invent a sentence they did not write.'
-      : '- The paper itself is NOT available on this message. Work from the rubric scores and the feedback below, and say plainly that you cannot see the writing itself if the teacher asks something only the paper could answer. Do not ask them to paste it in unless they offer.'}
+    : paper.cachedText
+      ? '- A transcription of the student\'s paper is included below, between the BEGIN/END markers. You made it yourself earlier in this conversation, reading the page directly.\n- Treat it as the words the student wrote, and quote from it exactly. But it is a transcription, not the page: it does not carry handwriting, crossings out, layout, drawings, or anything else about how the work LOOKS. If the teacher asks something only the page itself could answer, say plainly that you are working from your transcription of it rather than guessing at what the page shows.'
+      : paperIsText
+        ? '- The student\'s typed submission is included below, between the BEGIN/END markers. It is the primary evidence for anything you say about the writing — quote from it exactly, and never invent a sentence they did not write.'
+        : '- The paper itself is NOT available on this message. Work from the rubric scores and the feedback below, and say plainly that you cannot see the writing itself if the teacher asks something only the paper could answer. Do not ask them to paste it in unless they offer.'}
 - Reading the paper does not make you the grader. The scores are the teacher's; use the work to explain, illustrate and improve the feedback, never to argue a mark up or down unless the teacher asks you to.
-${paperIsText ? `${scrub(paper.part).slice(0, 12000)}\n` : ''}
+${paperText ? `${scrub(paperText).slice(0, 12000)}\n` : ''}
 --- THIS PAPER ---
 ${scrub(String(screenContext || 'No additional context was provided.').slice(0, 4000))}
 
@@ -13125,11 +13238,19 @@ ${priorTurns ? `\n--- CONVERSATION SO FAR ---\n${priorTurns}\n` : ''}
 --- TEACHER'S MESSAGE ---
 ${scrub(teacherPrompt)}
 
+${wantsTranscription ? `
+TRANSCRIPTION (this message only):
+Alongside your answer, transcribe the attached paper into "transcription" so this conversation does not have to re-read the image on every message.
+- Every word the student wrote, in order, their spelling and punctuation left exactly as they are. Errors are the evidence this assistant exists to talk about; correcting them silently destroys it.
+- Blank line between paragraphs. No commentary, no marking up, no summarising, and nothing about the handwriting itself.
+- A word you genuinely cannot read becomes [illegible]. Do not guess one in.
+- If a name is written anywhere on the page, leave it out. It is not part of the writing being discussed, and it does not belong in anything kept after this message.
+` : ''}
 Return ONLY a valid JSON object, nothing else:
 {
   "action": "answer" | "revise",
   "reply": "<what you say to the teacher, plain conversational text>",
-  "revisedFeedback": null | ${revisionSchema}
+  "revisedFeedback": null | ${revisionSchema}${wantsTranscription ? ',\n  "transcription": "<the full transcription described above>"' : ''}
 }`;
 
     let reply = null;
@@ -13157,6 +13278,14 @@ Return ONLY a valid JSON object, nothing else:
         action = turn.action;
         reply = turn.reply;
         revisedFeedback = turn.revisedFeedback;
+
+        // Scrubbed on the way in like everything else that leaves this handler
+        // with the paper in it: the prompt asks the model to leave a name off
+        // the page out of the transcription, and this is the layer that does
+        // not depend on it having obeyed.
+        if (turn.transcription && paper.key) {
+          writeAssistTranscript(paper.key, scrub(turn.transcription));
+        }
 
         if (!reply) {
           reply = revisedFeedback
