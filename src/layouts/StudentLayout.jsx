@@ -123,7 +123,7 @@ export default function StudentLayout() {
           </span>
         </Link>
 
-        <div className="flex-1 px-3 space-y-1 overflow-y-auto">
+        <div className="tg-nav-scroll flex-1 px-3 space-y-1 overflow-y-auto">
           {renderNavLink(navItems[0])}
 
           {/* Subjects sits second — it's where students spend most of their time */}

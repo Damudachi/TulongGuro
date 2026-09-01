@@ -8,6 +8,7 @@ import { API_URL, apiFetch } from '../../config';
 import { showAlert, showConfirm } from '../../utils/dialog';
 import { GRADE_LEVELS, SUBJECTS, SCHOOL_YEARS, DEFAULT_SCHOOL_YEAR, courseShellName } from '../../constants/school';
 import { foldForSearch } from '../../utils/roster';
+import { sectionOptionLabel } from '../../utils/sectionLabel';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
 
@@ -623,10 +624,7 @@ export default function AdminClasses() {
                   className="w-full border border-slate-200 p-2.5 rounded-lg outline-none focus:ring-2 focus:ring-brand-navy text-sm">
                   <option value="">-- Choose a section --</option>
                   {sections.map(s => (
-                    <option key={s.id} value={s.id}>
-                      {s.name}{s.gradeLevel ? ` · ${s.gradeLevel}` : ''} · {s._count?.students ?? 0} students
-                      {s.teacher?.name ? ` · adviser ${s.teacher.name}` : ''}
-                    </option>
+                    <option key={s.id} value={s.id}>{sectionOptionLabel(s)}</option>
                   ))}
                 </select>
                 {/* Every section in the school, not only the ones this teacher

@@ -91,7 +91,7 @@ export default function TeacherLayout() {
           </span>
         </Link>
 
-        <div className="flex-1 px-3 space-y-1 overflow-y-auto">
+        <div className="tg-nav-scroll flex-1 px-3 space-y-1 overflow-y-auto">
           {navItems.map((item) => {
             const isActive = location.pathname.startsWith(item.path);
             const badge = item.name === 'Analytics' ? warningCount : 0;

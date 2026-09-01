@@ -18,6 +18,7 @@ import {
 
 import { showAlert, showConfirm } from '../../utils/dialog';
 import { generatePassword } from '../../constants/password';
+import { sectionOptionLabel } from '../../utils/sectionLabel';
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
 
 /**
@@ -635,10 +636,7 @@ export default function AdminTeacherDetail() {
                 className="w-full border border-slate-200 p-2 rounded-lg text-sm outline-none focus:ring-2 focus:ring-brand-navy">
                 <option value="">-- Choose a section --</option>
                 {schoolSections.map(s => (
-                  <option key={s.id} value={s.id}>
-                    {s.name}{s.gradeLevel ? ` · ${s.gradeLevel}` : ''} · {s._count?.students ?? 0} students
-                    {s.teacher?.name ? ` · adviser ${s.teacher.name}` : ''}
-                  </option>
+                  <option key={s.id} value={s.id}>{sectionOptionLabel(s)}</option>
                 ))}
               </select>
               {/* Every section in the school, not only the ones this teacher

@@ -90,7 +90,7 @@ export default function AdminLayout() {
           </div>
         </div>
 
-        <div className="flex-1 px-3 space-y-1 overflow-y-auto">
+        <div className="tg-nav-scroll flex-1 px-3 space-y-1 overflow-y-auto">
           {NAV.map(item => {
             const isActive = location.pathname.startsWith(item.path);
             return (
