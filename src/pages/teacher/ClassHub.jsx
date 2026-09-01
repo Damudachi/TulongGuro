@@ -317,13 +317,21 @@ export default function ClassHub() {
                   e.preventDefault();
                   navigate(openHref);
                 }}
-                className="bg-white p-4 rounded-xl border border-slate-200 flex items-center justify-between hover:shadow-sm transition-shadow cursor-pointer"
+                // Stacks below sm. Side by side, the action row is shrink-0 and
+                // the title column is not, so a phone gave the whole deficit to
+                // the title — it wrapped one word per line while "Grade & View"
+                // still ran off the right edge.
+                className="bg-white p-4 rounded-xl border border-slate-200 flex flex-col gap-3 sm:flex-row sm:items-center sm:gap-4 justify-between hover:shadow-sm transition-shadow cursor-pointer"
               >
-                <div className="flex items-start">
+                <div className="flex items-start min-w-0">
                   <div className={`p-3 rounded-lg mr-4 shrink-0 ${isStudentSubmit ? 'bg-green-50' : 'bg-blue-50'}`}>
                     <FileText className={`w-6 h-6 ${isStudentSubmit ? 'text-brand-green' : 'text-brand-navy'}`} />
                   </div>
-                  <div>
+                  {/* min-w-0: a flex item floors at its min-content width, which
+                      for a long title is the longest word — without this the
+                      column refuses to narrow and pushes the row wider than the
+                      screen instead of wrapping. */}
+                  <div className="min-w-0">
                     <div className="flex items-center gap-2 flex-wrap mb-0.5">
                       <h3 className="font-bold text-brand-slate">{activity.title}</h3>
                       <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${isStudentSubmit ? 'bg-green-100 text-green-700' : 'bg-blue-100 text-blue-700'}`}>
@@ -386,7 +394,7 @@ export default function ClassHub() {
                     </div>
                   </div>
                 </div>
-                <div className="flex items-center gap-2 shrink-0">
+                <div className="flex items-center gap-2 w-full sm:w-auto sm:shrink-0">
                   {/* Quick edit, asked for by name.
                       Secondary styling and second in the row: opening an
                       activity to grade it is the everyday act, changing its
@@ -396,7 +404,7 @@ export default function ClassHub() {
                     type="button"
                     onClick={(e) => { e.stopPropagation(); openEditModal(activity); }}
                     title={`Edit "${activity.title}"`}
-                    className="text-sm border border-slate-200 text-slate-600 px-3 py-1.5 rounded-md font-medium hover:bg-slate-50 hover:text-brand-slate transition-colors flex items-center gap-1">
+                    className="text-sm border border-slate-200 text-slate-600 px-3 py-1.5 rounded-md font-medium hover:bg-slate-50 hover:text-brand-slate transition-colors flex flex-1 sm:flex-none items-center justify-center gap-1">
                     <PenLine className="w-4 h-4" /> Edit activity
                   </button>
 
@@ -407,13 +415,13 @@ export default function ClassHub() {
                     // No papers to scan — this one goes straight to the score sheet.
                     <Link to={openHref}
                       onClick={(e) => e.stopPropagation()}
-                      className="text-sm bg-lilac-500 text-white px-3 py-1.5 rounded-md font-medium hover:bg-lilac-600 transition-colors flex items-center gap-1">
+                      className="text-sm bg-lilac-500 text-white px-3 py-1.5 rounded-md font-medium hover:bg-lilac-600 transition-colors flex flex-1 sm:flex-none items-center justify-center gap-1">
                       <PenLine className="w-4 h-4" /> Enter Scores
                     </Link>
                   ) : (
                     <Link to={openHref}
                       onClick={(e) => e.stopPropagation()}
-                      className="text-sm bg-brand-navy text-white px-3 py-1.5 rounded-md font-medium hover:bg-blue-900 transition-colors flex items-center gap-1">
+                      className="text-sm bg-brand-navy text-white px-3 py-1.5 rounded-md font-medium hover:bg-blue-900 transition-colors flex flex-1 sm:flex-none items-center justify-center gap-1">
                       <UploadCloud className="w-4 h-4" /> {isStudentSubmit ? 'Grade & View' : 'Grade'}
                     </Link>
                   )}

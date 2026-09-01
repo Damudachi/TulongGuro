@@ -333,6 +333,18 @@ export default function HITLWorkspace() {
   // Holds the finished pages when an upload fails, so a retry resends what the
   // teacher already drew instead of making them do the whole paper again.
   const [redactError, setRedactError] = useState(null);
+  // Page count of the last successful save, or null.
+  //
+  // Success used to be silent: the overlay vanished and the pane repainted
+  // underneath. But the repaint is the *point* of a redaction — the boxes are
+  // already drawn on the image the teacher was looking at, so the after looks
+  // near enough to the before that a save which never happened and one that did
+  // are indistinguishable. Failure had an overlay and success did not, which
+  // left "nothing happened" reading as either. It is acknowledged explicitly
+  // rather than with a toast because this is the step that removes a child's
+  // name from a photo before anyone else sees it, and the teacher is entitled
+  // to be told plainly that it took.
+  const [redactSaved, setRedactSaved] = useState(null);
 
   /**
    * Open the redactor over this submission, one page at a time.
@@ -409,6 +421,7 @@ export default function HITLWorkspace() {
     if (!submission?.id || !pageBlobs?.length) return;
     setRedactSaving(true);
     setRedactError(null);
+    setRedactSaved(null);
     try {
       const form = new FormData();
       pageBlobs.forEach((b, i) => form.append('images', b, `page-${i + 1}.jpg`));
@@ -423,6 +436,9 @@ export default function HITLWorkspace() {
       // because re-stitching can change where the boundaries fall.
       setSubmission(prev => ({ ...(prev || {}), imageUrl: data.imageUrl, pageBreaks: data.pageBreaks ?? prev?.pageBreaks }));
       closeRedactor();
+      // After closeRedactor, which clears redactQueue — so the count is read
+      // from what was actually uploaded, not from the queue that is now gone.
+      setRedactSaved(pageBlobs.length);
     } catch {
       // Kept, not discarded: this is several minutes of a teacher's careful
       // work, and losing it to one dropped request would mean redrawing every
@@ -462,6 +478,16 @@ export default function HITLWorkspace() {
   const [isSaving, setIsSaving] = useState(false);
   /** Why the last validate attempt did not record a mark. '' when all is well. */
   const [saveError, setSaveError] = useState('');
+  // The footer that carries this message is only pinned from md up. On a phone
+  // it scrolls with the paper now, so a failure raised while the teacher is
+  // reading the rubric halfway up would appear off-screen and the run would look
+  // like it had simply stopped. Bringing it into view is what the pinning used
+  // to do for free.
+  const saveErrorRef = useRef(null);
+  useEffect(() => {
+    if (!saveError) return;
+    saveErrorRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }, [saveError]);
   const [covData, setCovData] = useState(null);
   const [skillAnalysisOpen, setSkillAnalysisOpen] = useState(false);
   // Read straight from the onboarding store on first render: shown once, so
@@ -2258,22 +2284,31 @@ export default function HITLWorkspace() {
         </div>
 
         {/* Footer Buttons */}
-        <div className="bg-white border-t border-slate-200 sticky bottom-0 z-10">
-        {/* Sits directly above the button that failed, inside the sticky
-            footer, so it cannot be scrolled out of sight — a save failure the
-            teacher does not see is the same as no message at all. */}
+        {/* Pinned from md up, in the normal flow below it.
+            On a phone it was pinned too, and paid for the privilege twice: the
+            layout wrapper already carries pb-24 to clear the dock, and
+            tg-above-dock added another 5rem on top, so the bar hovered ~176px
+            above the dock with dead space under it and a strip of the paper
+            permanently hidden behind it. A phone screen cannot spare that for a
+            control the teacher uses once per paper, so here it simply ends the
+            page. The desktop pane is a fixed-height column with room to spare
+            and no dock beneath it, so it stays pinned there. */}
+        <div className="bg-white border-t border-slate-200 md:sticky md:bottom-0 md:z-10">
+        {/* Sits directly above the button that failed — a save failure the
+            teacher does not see is the same as no message at all. It can no
+            longer rely on a pinned bar to stay visible on a phone, so the effect
+            on saveErrorRef scrolls it into view instead. */}
         {saveError && (
-          <div role="alert" className="mx-4 mt-4 flex items-start gap-2 rounded-xl border-2 border-red-200 bg-red-50 px-3 py-2.5 text-sm font-bold text-red-700">
+          <div ref={saveErrorRef} role="alert" className="mx-4 mt-4 flex items-start gap-2 rounded-xl border-2 border-red-200 bg-red-50 px-3 py-2.5 text-sm font-bold text-red-700">
             <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
             <span className="min-w-0">{saveError}</span>
           </div>
         )}
-        {/* tg-above-dock, and px/pt rather than p-4: the mobile dock is fixed at
-            bottom-0 with z-40 and is painted after the page, so this bar's
-            buttons — the ones that finish a grading run — sat underneath it on a
-            phone. The utility lifts the contents clear and adds the iOS
-            home-indicator inset; a plain `p-4` would override the padding-bottom
-            it works through. */}
+        {/* tg-above-dock is still what clears the dock, even unpinned: the pane
+            is max-h-screen inside a wrapper that is not, so its last inch of
+            scroll ends underneath the fixed dock. As trailing padding it also
+            carries the iOS home-indicator inset. px/pt rather than p-4, which
+            would override the padding-bottom it works through. */}
         <div className="tg-above-dock px-4 pt-4 flex gap-3">
           {queueActivityId ? (
             <button onClick={handleSkip}
@@ -2550,9 +2585,9 @@ export default function HITLWorkspace() {
           takes its place. Leaving it up with a spinner on top would have been
           less code, but it keeps a Cancel button on screen during an upload
           that cannot be cancelled, and invites a second click on Confirm. */}
-      {(redactSaving || redactError) && (
+      {(redactSaving || redactError || redactSaved) && (
         <div className="fixed inset-0 z-[130] bg-ink-900/85 flex items-center justify-center p-6">
-          <div className="bg-white rounded-2xl px-6 py-5 max-w-sm w-full text-center">
+          <div role={redactSaving ? undefined : 'alert'} className="bg-white rounded-2xl px-6 py-5 max-w-sm w-full text-center">
             {redactSaving ? (
               <>
                 <Loader2 className="w-7 h-7 animate-spin text-brand-green mx-auto" />
@@ -2564,7 +2599,7 @@ export default function HITLWorkspace() {
                   {' '}This can take a moment on a slow connection — please don't close this tab.
                 </p>
               </>
-            ) : (
+            ) : redactError ? (
               <>
                 <AlertTriangle className="w-7 h-7 text-red-500 mx-auto" />
                 <p className="font-bold text-slate-800 mt-3">{redactError.message}</p>
@@ -2582,6 +2617,27 @@ export default function HITLWorkspace() {
                     Try again
                   </button>
                 </div>
+              </>
+            ) : (
+              <>
+                <CheckCircle2 className="w-7 h-7 text-brand-green mx-auto" />
+                <p className="font-bold text-slate-800 mt-3">Redaction saved</p>
+                <p className="text-xs text-slate-500 mt-1">
+                  {redactSaved > 1
+                    ? `All ${redactSaved} pages were re-uploaded and stitched back together.`
+                    : 'The redacted page was re-uploaded.'}
+                  {' '}What you covered is gone from the stored photo — the paper below is
+                  the version anyone else will see.
+                </p>
+                {/* Dismissed by hand, not on a timer. The teacher may well be
+                    checking the paper behind this panel against what they meant
+                    to cover, and a confirmation that removes itself mid-read is
+                    one they cannot go back and finish reading. */}
+                <button type="button" autoFocus
+                  onClick={() => setRedactSaved(null)}
+                  className="w-full mt-4 py-2.5 rounded-lg bg-brand-green text-white font-bold text-sm hover:bg-emerald-600">
+                  Done
+                </button>
               </>
             )}
           </div>
