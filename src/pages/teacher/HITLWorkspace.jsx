@@ -1541,8 +1541,14 @@ export default function HITLWorkspace() {
 
   const hasSkillExplanations = isStructured && Object.keys(structuredFeedback.skillExplanations).length > 0;
 
+  // overflow-hidden only from md. It belongs to the desktop layout, where the
+  // row is exactly one viewport tall and each column scrolls inside itself. On
+  // a phone the columns stack, and clipping here is what forced them to scroll
+  // internally — so the paper had one scroll and the rubric had another, and
+  // the one that reached the Done button could not reach the paper. Unclipped,
+  // the phone gets a single page scroll from the scan through to the footer.
   return (
-    <div className="min-h-[calc(100vh-4rem)] md:h-[100dvh] md:min-h-0 flex flex-col md:flex-row bg-slate-100 relative overflow-hidden">
+    <div className="min-h-[calc(100vh-4rem)] md:h-[100dvh] md:min-h-0 flex flex-col md:flex-row bg-slate-100 relative md:overflow-hidden">
 
       {/* Left: Essay Image */}
       <div className="w-full md:w-5/12 lg:w-1/2 p-4 flex flex-col md:min-h-0 border-r border-slate-200 bg-slate-50">
@@ -1595,8 +1601,15 @@ export default function HITLWorkspace() {
             and the review panel beside it inherited that height — which is why
             scrolling down to read page three left the rubric and the Done
             button stranded above a screen of empty white. The two sides scroll
-            independently now. */}
-        <div className="flex-1 bg-slate-200 rounded-xl border border-slate-300 overflow-auto relative min-h-[70vh] md:min-h-0">
+            independently from md up.
+
+            On a phone there is nothing beside it to keep in step with, so it
+            takes its natural height and rides the page scroll instead — a
+            second scroller inside a column that already scrolls only means a
+            teacher can be at the bottom of one and the top of the other.
+            min-h-[70vh] stays for the empty state, which is positioned
+            absolutely and would otherwise have no box to sit in. */}
+        <div className="bg-slate-200 rounded-xl border border-slate-300 relative min-h-[70vh] md:flex-1 md:overflow-auto md:min-h-0">
           {/* Sticky rather than absolute: this pane scrolls a stitched
               multi-page scan, and an absolutely positioned control would be
               left behind on page one — where a name written at the top of
@@ -1646,7 +1659,11 @@ export default function HITLWorkspace() {
       </div>
 
       {/* Right: Review Panel */}
-      <div className="w-full md:w-7/12 lg:w-1/2 flex flex-col bg-white max-h-screen md:max-h-none md:h-full md:min-h-0 overflow-y-auto">
+      {/* max-h-screen + overflow-y-auto was the second scroller: it capped the
+          panel at a viewport on a phone and scrolled the rubric, feedback and
+          footer inside that cap, with the scan sealed off in the column above.
+          Both are md-only now. */}
+      <div className="w-full md:w-7/12 lg:w-1/2 flex flex-col bg-white md:h-full md:min-h-0 md:overflow-y-auto">
         <div className="p-6 md:p-8 flex-1 space-y-6">
 
           {/* AI Failure Banner — shows when AI grading failed (score 0 + error feedback) */}
@@ -2304,12 +2321,12 @@ export default function HITLWorkspace() {
             <span className="min-w-0">{saveError}</span>
           </div>
         )}
-        {/* tg-above-dock is still what clears the dock, even unpinned: the pane
-            is max-h-screen inside a wrapper that is not, so its last inch of
-            scroll ends underneath the fixed dock. As trailing padding it also
-            carries the iOS home-indicator inset. px/pt rather than p-4, which
-            would override the padding-bottom it works through. */}
-        <div className="tg-above-dock px-4 pt-4 flex gap-3">
+        {/* Not tg-above-dock. That utility is for a *fixed* bar overlapping the
+            dock, and says so where it is defined; this one is in the normal flow
+            of a page that scrolls as a whole, where the layout wrapper's pb-24
+            is already the dock clearance. Using both stacked one on the other
+            and left a band of dead space under the buttons. */}
+        <div className="px-4 pt-4 pb-4 md:pb-3 flex gap-3">
           {queueActivityId ? (
             <button onClick={handleSkip}
               title="Come back to this one at the end of the run (S)"
