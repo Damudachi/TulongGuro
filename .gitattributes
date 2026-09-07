@@ -1,0 +1,60 @@
+# Line endings and diff behaviour.
+#
+# Why this file exists: development happens on Windows, deployment on Linux
+# (Render and Vercel both build on Linux). Without a rule, git guesses per
+# file, and the guess drifted — every `npm install` re-wrote both lockfiles
+# with CRLF and git warned "LF will be replaced by CRLF" on each one. That
+# turns a two-line dependency change into a whole-file diff and makes real
+# changes impossible to review.
+#
+# `text=auto eol=lf` normalises to LF in the repository while leaving each
+# working copy alone, so a Windows editor still sees what it expects.
+
+* text=auto eol=lf
+
+# Files that MUST keep LF regardless of platform: a shell script or a
+# Dockerfile with CRLF fails at runtime on Linux with errors that name the
+# wrong thing entirely ("bad interpreter: /bin/sh^M").
+*.sh   text eol=lf
+*.yml  text eol=lf
+*.yaml text eol=lf
+
+# Windows-native. Forcing LF here breaks the tools that read them.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# Binary: never line-ending-converted, never diffed as text. Git's heuristics
+# usually get these right, but "usually" is what corrupted a PNG the one time
+# it did not.
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.ico  binary
+*.webp binary
+*.pdf  binary
+*.xlsx binary
+*.docx binary
+*.doc  binary
+*.woff  binary
+*.woff2 binary
+*.ttf   binary
+*.otf   binary
+*.keystore binary
+*.jks      binary
+
+# Generated. Collapsed in diffs and excluded from GitHub's language stats so
+# the repository reads as the JavaScript it is. `linguist-generated` also
+# hides them from pull request review by default, which is what you want for a
+# 150k-line lockfile.
+package-lock.json linguist-generated=true -diff
+server/package-lock.json linguist-generated=true -diff
+
+# 10 MB of crawled DepEd school records. Committed on purpose (see
+# .gitignore), but diffing it helps nobody and hangs a review page.
+server/data/deped-schools.json linguist-generated=true -diff
+
+# Thesis figures and documents, not source. Keeps GitHub's language bar
+# describing the app rather than the paper.
+docs/** linguist-documentation=true

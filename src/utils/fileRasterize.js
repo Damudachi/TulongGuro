@@ -3,19 +3,22 @@
 // same PII-redaction canvas tool (ImageRedactor) as a photograph, instead of
 // skipping redaction just because it isn't already an image — and so a
 // teacher reviewing it later gets a normal inline picture, not a download link.
+//
+// ── Load this module with import(), never a static import ──
+// The three libraries below are ~1.1 MB (300 KB gzipped), which is more than
+// the whole rest of the app. They are only reachable from here, so as long as
+// every caller reaches this file dynamically it stays out of the initial
+// bundle. The cheap "does this file even need rasterizing?" check lives in
+// utils/rasterizable.js precisely so asking the question does not drag the
+// answer's dependencies along with it; utils/rasterizable.js also has the
+// prefetch that keeps this working offline.
 import * as pdfjsLib from 'pdfjs-dist';
 import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import mammoth from 'mammoth';
 import html2canvas from 'html2canvas';
+import { isPdf, isDocx } from './rasterizable';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
-
-const isPdf = (file) => file.type === 'application/pdf' || /\.pdf$/i.test(file.name || '');
-const isDocx = (file) =>
-  file.type === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' ||
-  /\.docx$/i.test(file.name || '');
-
-export const isRasterizable = (file) => isPdf(file) || isDocx(file);
 
 function baseName(name) {
   const stripped = String(name || 'document').replace(/\.[^./\\]+$/, '');

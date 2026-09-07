@@ -6,7 +6,7 @@ import { getStoredUser } from '../../utils/session';
 import SubmissionImage from '../../components/SubmissionImage';
 import ImageRedactor from '../../components/ImageRedactor';
 import { deadlineInstant, formatDeadline, submissionWindow } from '../../utils/deadlines';
-import { isRasterizable, rasterizeToPageImages } from '../../utils/fileRasterize';
+import { isRasterizable, prefetchRasterizer } from '../../utils/rasterizable';
 import { enqueue, buildJob } from '../../utils/offlineQueue';
 import { saveActivitySnapshot, readActivitySnapshot } from '../../utils/offlineSnapshot';
 import { badgeLook } from '../../constants/badgeLook';
@@ -49,6 +49,14 @@ export default function SubmitWork() {
   // an empty list: "no activities yet" and "we couldn't reach yours" are
   // different facts, and a student offline was previously told the first one.
   const [listUnreachable, setListUnreachable] = useState(false);
+
+  // Warm the PDF/Word rasterizer's chunk while the student is still reading the
+  // activity, so choosing a PDF later costs nothing — and, more importantly, so
+  // the code is already in the service worker's cache if the signal drops
+  // before they submit. Cheap to get wrong in the harmless direction: a student
+  // who only ever uploads photos fetches one chunk in the background and never
+  // uses it.
+  useEffect(() => { prefetchRasterizer(); }, []);
 
   useEffect(() => {
     const user = getStoredUser();
@@ -151,9 +159,19 @@ export default function SubmitWork() {
 
     if (toRasterize.length > 0) {
       setIsPreparingFiles(true);
+      // Loaded here rather than at the top of the file: it pulls in pdfjs,
+      // mammoth and html2canvas, which no student who photographs their work
+      // ever needs. Hoisted out of the loop so five PDFs fetch one chunk, and
+      // awaited inside the try below so a chunk that cannot be fetched (an
+      // offline phone that never had this page open online — see
+      // prefetchRasterizer) is reported as "couldn't open this file" like any
+      // other render failure, instead of throwing past the spinner and leaving
+      // it stuck on.
+      const rasterizer = import('../../utils/fileRasterize');
       for (const f of toRasterize) {
         try {
           const remaining = MAX_SUBMISSION_PAGES - images.length;
+          const { rasterizeToPageImages } = await rasterizer;
           const pages = await rasterizeToPageImages(f, Math.max(remaining, 1));
           images.push(...pages);
         } catch {

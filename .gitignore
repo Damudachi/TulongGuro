@@ -101,3 +101,9 @@ server/data/*-backup.json
 /new issues
 check.py
 check2.py
+
+# Per-developer Claude Code permissions. Machine-specific by nature — it
+# accumulates the exact commands one person approved, absolute paths and all.
+# It stayed out of the repo here only because this machine happens to carry a
+# global ignore rule for it; a collaborator without one would commit theirs.
+.claude/settings.local.json

@@ -7,7 +7,7 @@ import { getStoredUser } from '../../utils/session';
 import { saveClassSnapshot, readClassSnapshot } from '../../utils/offlineSnapshot';
 import SubmissionImage from '../../components/SubmissionImage';
 import ImageRedactor from '../../components/ImageRedactor';
-import { isRasterizable, rasterizeToPageImages } from '../../utils/fileRasterize';
+import { isRasterizable, prefetchRasterizer } from '../../utils/rasterizable';
 import { pageCountOf, isFileSubmission, splitSubmissionIntoPages } from '../../utils/submissionPages';
 
 import { showAlert, showConfirm } from '../../utils/dialog';
@@ -103,6 +103,11 @@ export default function BatchUpload() {
   const fileInputRef = useRef(null);
   const cameraInputRef = useRef(null);
   const pendingUploadStudentId = useRef(null);
+
+  // Warm the PDF/Word rasterizer's chunk on mount, same reasoning as
+  // student/SubmitWork.jsx — a teacher batch-uploading a class set of PDFs in a
+  // room with weak signal should not be waiting on a download at that moment.
+  useEffect(() => { prefetchRasterizer(); }, []);
 
   useEffect(() => {
     if (classId || !activityId) return;
@@ -544,9 +549,16 @@ export default function BatchUpload() {
     if (toRasterize.length > 0) {
       setPreparingFiles(true);
       const existingCount = (stagedByStudentId[targetStudentId]?.pages || []).length;
+      // See the same call in student/SubmitWork.jsx: pdfjs, mammoth and
+      // html2canvas are fetched only when a teacher actually picks a PDF or
+      // Word file, hoisted out of the loop so a batch of them costs one fetch,
+      // and awaited inside the try so a failed fetch is reported as a render
+      // failure rather than leaving the spinner up.
+      const rasterizer = import('../../utils/fileRasterize');
       for (const f of toRasterize) {
         try {
           const remaining = MAX_PAGES - existingCount - images.length;
+          const { rasterizeToPageImages } = await rasterizer;
           const pages = await rasterizeToPageImages(f, Math.max(remaining, 1));
           images.push(...pages);
         } catch {

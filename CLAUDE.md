@@ -28,21 +28,18 @@ route auth, and the unit tests together.
 
 ### Known-failing tests
 
-Verified 2026-08-29 over two full runs: **1348 tests across 75 files**,
-~60-100s. ESLint silent.
+**None.** Verified 2026-09-08 over two full runs: **1414 tests across 78 files**
+all green, ~40-50s. ESLint silent, `vite build` clean.
 
-One **confirmed pre-existing** failure, not yours:
+The suite is expected to be entirely green, so **anything red is yours**. Do not
+wave a failure through as pre-existing without evidence — confirm it with
+`git stash` + re-run first.
 
-- `tests/dark-mode.test.js > has no white-text panel painted with a scale that
-  inverts` — offenders at `pages/PlatformApprovals.jsx:1115, 1326, 1347`. It
-  came in with the PlatformApprovals commits.
-
-(A second test in that file, `has no translucent white left standing in for a
-sheen`, failed once during a run with other jobs in flight and did not
-reproduce across two clean runs. Re-run before chasing it.)
-
-Confirm a suspected pre-existing failure with `git stash` + re-run rather than
-assuming it. Anything else red is yours.
+(Superseded: the `tests/dark-mode.test.js > has no white-text panel painted with
+a scale that inverts` failure this file used to list as pre-existing, against
+`pages/PlatformApprovals.jsx`, no longer reproduces. It was fixed somewhere
+between 2026-08-29 and 2026-09-08. Left recorded only so the next person to read
+an old copy of this file knows it was retired deliberately, not forgotten.)
 
 ---
 
@@ -57,11 +54,11 @@ src/                    React 19, Vite, Tailwind v4. No TypeScript anywhere.
   utils/                session, theme, grading, offline queue, rubric helpers
   constants/            school codes, badge look, activity types
 server/
-  server.js             the API — one file, ~16.8k lines
+  server.js             the API — one file, ~17.4k lines
   grading.js            AI checking pipeline
   prisma/schema.prisma  ~20 models: School, User, Section, Class, Activity,
                         Submission, GradingAuditLog, RubricTemplate, ...
-  tests/                75 files, Vitest
+  tests/                78 files, Vitest
   scripts/              verify-*, backfill-*, DepEd masterlist import
 ```
 
