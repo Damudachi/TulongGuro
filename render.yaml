@@ -87,6 +87,19 @@ services:
       # and PLATFORM_ADMIN_KEY — it is a separate audience with no overlap.
       - key: DEV_ACCESS_KEY
         sync: false
+      # ── Bot challenge on school registration (Cloudflare Turnstile) ──
+      # The SECRET half of a Turnstile widget pair. The site key is public and
+      # belongs to the frontend build (VITE_TURNSTILE_SITE_KEY on Vercel);
+      # only this one may ever live here.
+      #
+      # Optional, and unset means OFF — /api/auth/register goes back to
+      # accepting any caller, protected only by the per-IP rate limits. That is
+      # a silent difference, so the boot log prints a 🛡 line saying which mode
+      # is live. Declared here for the same reason as the Gemini keys: a
+      # Blueprint sync must not be able to quietly drop it and turn the
+      # challenge off without failing the deploy.
+      - key: TURNSTILE_SECRET_KEY
+        sync: false
       # ── Web Push ──
       # Turns the in-app bell into a notification a closed phone can show. Both
       # are optional: with them unset the server logs that push is off at boot

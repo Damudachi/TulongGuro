@@ -34,6 +34,10 @@ const {
 } = require('./auth');
 const { classSchoolId, staffMayAccess, staffMayReadStudent, REAL_WORK } = require('./access');
 const { passwordProblem } = require('./passwordRule');
+const { requireCaptcha, captchaConfigured } = require('./captcha');
+const {
+  checkLockout, recordFailure, clearFailures, retryAfterMinutes,
+} = require('./loginLockout');
 const {
   TEACHER_EMAIL_DOMAIN, ADMIN_EMAIL_DOMAIN, accountDomain, normalizeEmail,
   validateAccountEmail, validateContactEmail,
@@ -2784,7 +2788,11 @@ const REGISTRANT_ID_MIME_TYPES = new Set([
   'image/jpeg', 'image/png', 'image/webp', 'image/heic', 'image/heif', 'application/pdf',
 ]);
 
-app.post('/api/auth/register', registerRateLimit, registerDailyRateLimit, (req, res, next) => {
+// requireCaptcha sits between the limiters and multer on purpose: after the
+// limiters because they are free and this makes a network call, and before the
+// upload branch because the token travels in a header precisely so a bot can
+// be turned away without first being allowed to send 8MB. See captcha.js.
+app.post('/api/auth/register', registerRateLimit, registerDailyRateLimit, requireCaptcha, (req, res, next) => {
   const ct = req.headers['content-type'] || '';
   if (ct.includes('multipart/form-data')) {
     registrationUpload(req, res, next);
@@ -4277,6 +4285,29 @@ app.post('/api/auth/login', loginRateLimit, async (req, res) => {
     if (role === 'PLATFORM') {
       return res.status(401).json({ success: false, error: 'Invalid credentials' });
     }
+
+    // ── Consecutive-failure lockout ──
+    //
+    // Checked here, before the account is even looked up, so a locked username
+    // costs neither a query nor a bcrypt hash — the compare is deliberately
+    // slow, and an account already under attack should not keep paying for it.
+    //
+    // 423 rather than 429: this is not "the endpoint is busy", which is what
+    // the rate limiters say and what a client might reasonably retry against.
+    // It is this one account being closed for a fixed period, and the distinct
+    // code lets the login screen say so plainly. See loginLockout.js for why
+    // pupils and staff are held to different numbers.
+    const lock = checkLockout(username, role);
+    if (lock.locked) {
+      const minutes = retryAfterMinutes(lock.retryAfterSeconds);
+      res.set('Retry-After', String(lock.retryAfterSeconds));
+      return res.status(423).json({
+        success: false,
+        code: 'ACCOUNT_LOCKED',
+        error: `Too many incorrect sign-in attempts. This account is locked for ${minutes} minute${minutes === 1 ? '' : 's'}. Please wait and try again, or ask your school admin to reset your password.`,
+      });
+    }
+
     // Include related section data so clients receive up-to-date section info on login
     let user = await prisma.user.findFirst({
       where: { username: typeof username === 'string' ? username.trim() : username, role },
@@ -4373,8 +4404,19 @@ app.post('/api/auth/login', loginRateLimit, async (req, res) => {
     }
 
     if (!user || !(await bcrypt.compare(password, user.password))) {
+      // Counted against what was *typed*, including a username that matches no
+      // row — a lockout that can only happen to real accounts is a way of
+      // asking which usernames exist. The reply is the same either way, and
+      // the attempt that trips the threshold still reads as "Invalid
+      // credentials": the lock is what the *next* one meets, so nobody is told
+      // which try was their last.
+      recordFailure(username, role);
       return res.status(401).json({ success: false, error: 'Invalid credentials' });
     }
+    // The right password ends the run, whatever happens after this point — the
+    // school-approval gate below refuses some correct sign-ins, and those are
+    // not failed attempts.
+    clearFailures(username, role);
 
     // ── School approval gate ──
     // Checked after the password so this never doubles as a way to probe which
@@ -17372,8 +17414,17 @@ if (require.main === module) startServer();
 function startServer() {
   return app.listen(port, () => {
     console.log(`TulongGuro API running on port ${port}`);
+    // Which mode the registration challenge is in. Said out loud because
+    // "unconfigured" is a silent pass, and the difference between "the captcha
+    // is off" and "the captcha is on and working" should be answerable from
+    // the boot log rather than by trying to register a fake school.
+    console.log(
+      captchaConfigured()
+        ? '🛡 Turnstile enabled — school registration is challenge-protected'
+        : '🛡 Turnstile not configured (no TURNSTILE_SECRET_KEY) — school registration accepts any caller'
+    );
     // ── This process assumes it is the only one ──
-    // Three pieces of state live in memory here with no shared store behind
+    // Four pieces of state live in memory here with no shared store behind
     // them, and each fails differently and silently once a second instance
     // exists. Said at boot because render.yaml's numInstances is easy to raise
     // months from now by someone who has never read that file's comments, and
@@ -17383,6 +17434,8 @@ function startServer() {
     //     a poll routed elsewhere 404s while the run is still burning quota.
     //   • the login and change-password rate-limit buckets in auth.js — the
     //     effective limit multiplies by the instance count.
+    //   • the consecutive-failure counters in loginLockout.js — same
+    //     multiplication, so five allowed failures become five per instance.
     //   • gradingPool[].used — each instance believes it owns the whole daily
     //     AI budget and spends its way into 429s.
     console.log(

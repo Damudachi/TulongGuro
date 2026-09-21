@@ -10,6 +10,7 @@ import {
   MAX_SCHOOL_CODE_LENGTH,
 } from '../constants/schoolCode';
 import { passwordProblem } from '../constants/password';
+import CaptchaGate, { CAPTCHA_ENABLED } from '../components/CaptchaGate';
 import PasswordStrength from '../components/PasswordStrength';
 
 /**
@@ -362,6 +363,13 @@ export default function Register() {
   const [logoPreview, setLogoPreview] = useState(null);
   const [brandColor, setBrandColor] = useState('');
   const [error, setError] = useState('');
+  // ── Bot challenge ──
+  // The token Turnstile hands back, and a counter that re-arms the widget.
+  // A token verifies once, so every refused submit spends it and the next
+  // attempt needs a fresh one — see CaptchaGate. Both are inert when
+  // VITE_TURNSTILE_SITE_KEY is unset, which is how local development runs.
+  const [captchaToken, setCaptchaToken] = useState('');
+  const [captchaReset, setCaptchaReset] = useState(0);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   // Set once the school is registered and awaiting operator approval.
@@ -720,6 +728,15 @@ export default function Register() {
         return setError(problem);
       }
     }
+    // Checked after the step validation so a person who has not solved the box
+    // is not told about it while three other fields are also wrong. The server
+    // refuses a missing token anyway; stopping here saves them an upload that
+    // is certain to bounce.
+    // No scroll here, unlike the step problems above: the box and the error
+    // banner are both at the foot of the form, already on screen.
+    if (CAPTCHA_ENABLED && !captchaToken) {
+      return setError('Please complete the "Confirm you are a person" box before registering.');
+    }
     setError('');
     setIsSubmitting(true);
     try {
@@ -748,7 +765,15 @@ export default function Register() {
       body.append('idConsent', String(idConsent));
       body.append('logoConsent', String(logoConsent));
 
-      const response = await apiFetch(`${API_URL}/api/auth/register`, { method: 'POST', body });
+      // The challenge token rides in a header, not in this FormData. The
+      // server has to be able to refuse a bot before multer has parsed the
+      // body, and until that parse finishes there is no body to read it from —
+      // by then the 8MB ID photo has already arrived. See server/captcha.js.
+      const response = await apiFetch(`${API_URL}/api/auth/register`, {
+        method: 'POST',
+        body,
+        headers: captchaToken ? { 'X-Captcha-Token': captchaToken } : undefined,
+      });
       const data = await response.json();
       // The server refuses a School ID it cannot find unless a document came
       // with it. Reveal the field rather than only saying so, so the fix is in
@@ -765,9 +790,20 @@ export default function Register() {
         });
       } else {
         setError(data.error || 'Registration failed. Please try again.');
+        // Whatever the refusal was, the token that came with it is spent — a
+        // Turnstile token verifies once. Re-arm the box so fixing the actual
+        // problem and pressing register again works, instead of turning every
+        // second attempt into "we could not confirm you are a person".
+        setCaptchaToken('');
+        setCaptchaReset(n => n + 1);
       }
     } catch {
       setError('Network Error. Please check your connection.');
+      // The request may or may not have reached Cloudflare's check. Treat the
+      // token as spent either way: re-arming costs a click, reusing a consumed
+      // token costs a refusal nobody can explain.
+      setCaptchaToken('');
+      setCaptchaReset(n => n + 1);
     } finally {
       setIsSubmitting(false);
     }
@@ -1607,6 +1643,21 @@ export default function Register() {
                 )}
               </div>
               </>)}
+
+              {/* ── Bot challenge ──
+                  Last step only: it is the only one with a submit button, and
+                  a token expires after a few minutes, so showing it at step 1
+                  would have it lapse while the person is still filling in the
+                  School ID. Rendered above the error banner and the buttons so
+                  it is the last thing read before registering. Draws nothing
+                  when VITE_TURNSTILE_SITE_KEY is unset. */}
+              {step === STEPS.length && (
+                <CaptchaGate
+                  onToken={setCaptchaToken}
+                  resetKey={captchaReset}
+                  onUnavailable={() => setCaptchaToken('')}
+                />
+              )}
 
               {error && (
                 <div role="alert" className="bg-red-50 border-2 border-red-200 text-red-700 text-sm font-bold rounded-2xl p-3.5 flex items-start gap-2">
