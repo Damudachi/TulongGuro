@@ -8,6 +8,7 @@ import { saveClassSnapshot, readClassSnapshot } from '../../utils/offlineSnapsho
 
 import { showAlert, showConfirm } from '../../utils/dialog';
 import { ACTIVITY_TYPES } from '../../constants/activityTypes';
+import { retentionSummary } from '../../constants/retention';
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
 
 /**
@@ -199,7 +200,17 @@ export default function ClassHub() {
       <div className="mb-6 flex items-start justify-between flex-wrap gap-3">
         <div>
           <h1 className="text-2xl font-bold text-brand-slate">{classData.name}</h1>
-          <p className="text-slate-500 text-sm">{classData.schoolYear} • {classData.section?.name} • {students.length} Students</p>
+          {/* The retention deadline joins the line rather than getting a panel
+              of its own: it is a property of this class in the same way its
+              school year and section are, and a teacher should meet it while
+              working rather than have to go looking. Derived from the school
+              year already on the object, so it costs no request — and reads
+              "kept to", never "deleted on", because nothing deletes it on a
+              schedule. See src/constants/retention.js. */}
+          <p className="text-slate-500 text-sm">
+            {classData.schoolYear} • {classData.section?.name} • {students.length} Students
+            {retentionSummary(classData.schoolYear) && <> • {retentionSummary(classData.schoolYear)}</>}
+          </p>
         </div>
       </div>
 

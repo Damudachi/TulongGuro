@@ -35,6 +35,7 @@ const {
 const { classSchoolId, staffMayAccess, staffMayReadStudent, REAL_WORK } = require('./access');
 const { passwordProblem } = require('./passwordRule');
 const { requireCaptcha, captchaConfigured } = require('./captcha');
+const { RETENTION_MONTHS, PURGE_GRACE_DAYS, computeRetainUntil } = require('./retention');
 const {
   checkLockout, recordFailure, clearFailures, retryAfterMinutes,
 } = require('./loginLockout');
@@ -1958,52 +1959,12 @@ const UNGRADED_RESET = {
   gradedAt: null,
 };
 
-/**
- * How long a submission is kept after the school year it belongs to closes.
- *
- * Six months. The one number the whole policy is expressed in, so changing the
- * period is this line and not date arithmetic scattered across the file.
- *
- * Shorter than the year this used to be, and deliberately: what is retained here
- * is a photograph of a child's handwritten paper, which is personal data under
- * the Data Privacy Act and is worth keeping only for as long as a grade could be
- * queried. The *grade* is not what this protects — see the note on
- * /api/admin/purge-grades about what survives a purge.
- */
-const RETENTION_MONTHS = 6;
-
-/**
- * Retention deadline for a submission: RETENTION_MONTHS past the end of the
- * school year the work belongs to.
- *
- * School years are stored as free text ("2024-2025"), so the end year is the
- * second number when there is one and the only number otherwise. Philippine
- * school years end in the calendar year named second — 2024-2025 ends mid-2025 —
- * and DepEd treats 31 March as the close of the year, so the window runs from
- * there: 2024-2025 work is kept until 30 September 2025.
- *
- * Anchored to the school year rather than to each upload on purpose. Counting
- * six months from the submission itself would delete the first term's papers
- * while the class that produced them is still running, and a teacher opening
- * last term's work to answer a grade query would find the paper gone and the
- * mark unexplainable. A year's work expires together, after the year is over.
- *
- * Returns null for an unparseable school year rather than guessing: a wrong
- * retainUntil either deletes records early or keeps them past what the Data
- * Privacy Act allows, and both are worse than leaving it for an admin to set.
- */
-function computeRetainUntil(schoolYear) {
-  const years = String(schoolYear || '').match(/\d{4}/g);
-  if (!years || years.length === 0) return null;
-  const endYear = Number(years[years.length - 1]);
-  if (!Number.isFinite(endYear)) return null;
-  // Months are 0-indexed and March is 2, so the month the window closes in is
-  // 2 + RETENTION_MONTHS. Day 0 of the month after that is the last day of it —
-  // which keeps the deadline on a month end whatever the period is set to.
-  // Naive month arithmetic would not: 31 March plus six months lands on a
-  // 30-day September and rolls forward to 1 October.
-  return new Date(Date.UTC(endYear, 2 + RETENTION_MONTHS + 1, 0, 23, 59, 59));
-}
+// RETENTION_MONTHS, PURGE_GRACE_DAYS and computeRetainUntil moved to
+// retention.js. They left this file because the client needs the same
+// arithmetic to show a teacher when the year's work reaches its deadline, and
+// a display copy that drifts from the stored value would put a wrong date in
+// front of somebody who repeats it to a parent. retention.js is the authority;
+// src/constants/retention.js mirrors it and a test fails if they disagree.
 
 /** Look up a submission's retention deadline from its activity's class. */
 async function retainUntilForActivity(activityId) {
@@ -15328,7 +15289,19 @@ app.get('/api/teacher/:teacherId/student/:studentId/gradebook', async (req, res)
           where: { studentId },
           select: {
             id: true, hitlScore: true, aiScore: true, status: true, createdAt: true,
-            isLate: true, excusedAt: true, excusedReason: true
+            isLate: true, excusedAt: true, excusedReason: true,
+            // ── Retention, as stored, not as recomputed ──
+            // The screen shows a per-submission deadline, and the stored value
+            // is the only one that can be right: it is null where the class's
+            // school year did not parse, and it can have been backfilled.
+            // Deriving it on the client from the school year would print a
+            // confident date for a row that actually has no deadline set,
+            // which is the one thing computeRetainUntil refuses to do.
+            retainUntil: true,
+            // Archived work is excluded from averages, exports and analytics
+            // everywhere else in the app and nothing has ever said so. Sent so
+            // the row can be marked rather than silently counting for nothing.
+            archivedAt: true,
           }
         }
       },
@@ -15394,6 +15367,14 @@ app.get('/api/teacher/:teacherId/student/:studentId/gradebook', async (req, res)
         fromPreviousSection: !!student.sectionId && a.class?.sectionId !== student.sectionId,
         carriedOver: false,
         fromSection: null,
+        // The stored deadline, passed straight through — null where the class's
+        // school year could not be parsed, which the screen shows as "not set"
+        // rather than inventing a date. See retention.js.
+        retainUntil: sub?.retainUntil || null,
+        // Archived work still appears here, because it is the learner's actual
+        // work and a teacher asking "where did that mark go" should find it.
+        // The flag is what lets the row say it is no longer counting.
+        archivedAt: sub?.archivedAt || null,
       };
     });
 
@@ -16402,6 +16383,13 @@ app.get('/api/teacher/:teacherId/gradebook/export', async (req, res) => {
       // enrolment, so a departed learner's work is right here.
       const roster = cls.section?.students || [];
       const rosterIds = new Set(roster.map(s => s.id));
+      // Counted, not just filtered. Every `!s.archivedAt` test below silently
+      // drops these rows from the table and the averages; without a count the
+      // sheet has no way to say so, and a learner whose earlier work was
+      // archived by a transfer looks like one who simply handed less in.
+      const archivedCount = activities
+        .flatMap(a => a.submissions || [])
+        .filter(s => s.archivedAt).length;
       const departedIds = [...new Set(
         activities
           .flatMap(a => a.submissions || [])
@@ -16600,7 +16588,7 @@ app.get('/api/teacher/:teacherId/gradebook/export', async (req, res) => {
         // the app used rather than a hardcoded 30/50/20.
         policy: exportPolicy,
         carriedActivities, carriedUnreviewedCount, carriedUnreviewedSections: [...carriedUnreviewedSections],
-        departedCount: departedStudents.length, untaggedExcluded,
+        departedCount: departedStudents.length, untaggedExcluded, archivedCount,
       });
     }
 
@@ -16709,7 +16697,7 @@ app.get('/api/teacher/:teacherId/gradebook/export', async (req, res) => {
       for (const {
         cls, activities, rows, passingGrade: exportPassing, unreviewedCount, useTransmutation,
         policy, carriedActivities, carriedUnreviewedCount, carriedUnreviewedSections, departedCount,
-        untaggedExcluded,
+        untaggedExcluded, archivedCount,
       } of classData) {
         const sheet = workbook.addWorksheet(safeSheetName(cls.name));
 
@@ -16796,6 +16784,40 @@ app.get('/api/teacher/:teacherId/gradebook/export', async (req, res) => {
           const leftRow = sheet.addRow(['Transferred out:', transferredOutNotice(departedCount)]);
           leftRow.getCell(1).font = { bold: true, color: { argb: 'FF6B7280' } };
           leftRow.getCell(2).font = { color: { argb: 'FF6B7280' } };
+        }
+        // ── Archived work ──
+        // Said on the sheet because these rows are filtered out above and
+        // nothing else would show it. A learner whose earlier work was
+        // archived by a section transfer has a lower total here than their
+        // record would suggest, and without this line the only explanation
+        // available to the teacher is that marks went missing.
+        if (archivedCount > 0) {
+          const archivedRow = sheet.addRow([
+            'Archived:',
+            `${archivedCount} submission(s) archived and excluded from this export and from the averages below. `
+            + 'Archived work is kept, not deleted — it is normally work that stayed with a previous section after a transfer.'
+          ]);
+          archivedRow.getCell(1).font = { bold: true, color: { argb: 'FF6B7280' } };
+          archivedRow.getCell(2).font = { color: { argb: 'FF6B7280' } };
+        }
+        // ── Retention ──
+        // The only place the data leaves the system, so it is the only place
+        // that can say the schedule stops at the door. A downloaded file is
+        // outside every control this application has: it is not archived, not
+        // purged, and not reachable by a guardian's request. Stated in the
+        // sheet because the person who will still have it in two years is the
+        // person reading this row now.
+        const exportRetainUntil = computeRetainUntil(cls.schoolYear);
+        if (exportRetainUntil) {
+          const retentionRow = sheet.addRow([
+            'Retention:',
+            `In TulongGuro, this work is kept until at least ${exportRetainUntil.toISOString().slice(0, 10)} `
+            + `(${RETENTION_MONTHS} months after SY ${cls.schoolYear} ends), then archived or deleted on the school's request. `
+            + 'This downloaded file is not covered by that — once saved it is the school\'s to keep, share and dispose of. '
+            + 'It contains learner names and grades: personal data under the Data Privacy Act (RA 10173).'
+          ]);
+          retentionRow.getCell(1).font = { bold: true, color: { argb: 'FF6B21A8' } };
+          retentionRow.getCell(2).font = { color: { argb: 'FF6B21A8' } };
         }
         sheet.addRow([]);
 
@@ -17075,7 +17097,7 @@ app.get('/api/teacher/:teacherId/gradebook/export', async (req, res) => {
       for (const {
         cls, activities, rows, unreviewedCount, useTransmutation, policy,
         carriedActivities, carriedUnreviewedCount, carriedUnreviewedSections, departedCount,
-        untaggedExcluded,
+        untaggedExcluded, archivedCount,
       } of classData) {
         lines.push(`# Class: ${cls.name}`);
         lines.push(`# Section: ${cls.section?.name || 'N/A'}`);
@@ -17102,6 +17124,23 @@ app.get('/api/teacher/:teacherId/gradebook/export', async (req, res) => {
         // lot of missing work.
         if (departedCount > 0) {
           lines.push(`# Transferred out: ${transferredOutNotice(departedCount)}`);
+        }
+        // Same two notices the .xlsx carries, for the same reasons — archived
+        // rows are filtered out of this file too, and a CSV leaves the system
+        // just as completely as a spreadsheet does.
+        if (archivedCount > 0) {
+          lines.push(
+            `# Archived: ${archivedCount} submission(s) archived and excluded from this file and from its averages. `
+            + 'Archived work is kept, not deleted — it is normally work that stayed with a previous section after a transfer.'
+          );
+        }
+        const csvRetainUntil = computeRetainUntil(cls.schoolYear);
+        if (csvRetainUntil) {
+          lines.push(
+            `# Retention: In TulongGuro this work is kept until at least ${csvRetainUntil.toISOString().slice(0, 10)} `
+            + `(${RETENTION_MONTHS} months after SY ${cls.schoolYear} ends), then archived or deleted on the school's request. `
+            + 'This downloaded file is not covered by that. It contains learner names and grades: personal data under the Data Privacy Act (RA 10173).'
+          );
         }
         lines.push('');
 
@@ -17353,11 +17392,14 @@ app.delete('/api/admin/purge-grades', async (req, res) => {
     requirePlatformKey(req);
     const { where: scopeWhere, scope } = resolveLifecycleScope(req);
     const now = new Date();
-    const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+    // The grace window between archiving and deletion. Archiving is reversible
+    // and this is not, so PURGE_GRACE_DAYS is the period in which somebody who
+    // only noticed because the marks left the averages can still say so.
+    const graceCutoff = new Date(now.getTime() - PURGE_GRACE_DAYS * 24 * 60 * 60 * 1000);
     const result = await prisma.submission.deleteMany({
       where: {
         archivedAt: { not: null },
-        retainUntil: { lte: thirtyDaysAgo },
+        retainUntil: { lte: graceCutoff },
         ...scopeWhere
       }
     });

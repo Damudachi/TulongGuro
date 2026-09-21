@@ -1,9 +1,10 @@
 import { useState } from 'react';
-import { Loader2, Lock, Eye, EyeOff, KeyRound, CheckCircle2, ShieldCheck } from 'lucide-react';
+import { Loader2, Lock, Eye, EyeOff, KeyRound, CheckCircle2, ShieldCheck, Archive } from 'lucide-react';
 import { API_URL, apiFetch, setSession } from '../../config';
 import { getStoredUser, updateStoredUser } from '../../utils/session';
 import { passwordProblem } from '../../constants/password';
 import PasswordStrength from '../../components/PasswordStrength';
+import RetentionNotice from '../../components/RetentionNotice';
 
 /**
  * The admin's own account page.
@@ -253,6 +254,23 @@ export default function AdminSettings() {
             Changing this signs you out on every other device you are still logged in on. This one stays signed in.
           </p>
         </form>
+      </div>
+
+      {/* ── Data retention ──
+          Here rather than on a school-settings screen because the admin is the
+          accountable party under the Data Privacy Act, and this is the page
+          they already open to manage their own account. A full paragraph is
+          appropriate on a settings page in a way it is not anywhere a teacher
+          is working. The copy lives in RetentionNotice so the teacher and
+          student versions cannot drift from this one. */}
+      <div className="bg-white border border-slate-200 rounded-xl p-5 md:p-6 mb-6">
+        <h2 className="font-bold text-brand-slate mb-1 flex items-center gap-2">
+          <Archive className="w-4 h-4 text-brand-navy" /> Data retention
+        </h2>
+        <p className="text-slate-500 text-sm mb-5">
+          How long your school&rsquo;s learner work is kept, and what happens to it afterwards.
+        </p>
+        <RetentionNotice audience="admin" />
       </div>
     </div>
   );

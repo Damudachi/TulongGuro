@@ -1,11 +1,43 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { FileText, Loader2, CalendarOff, Undo2 } from 'lucide-react';
+import { FileText, Loader2, CalendarOff, Undo2, Archive, Clock } from 'lucide-react';
 import { API_URL, apiFetch } from '../../config';
 import { getStoredUser } from '../../utils/session';
 import PageHeader from '../../components/PageHeader';
 
 import { showAlert, showConfirm, showPrompt } from '../../utils/dialog';
+import { formatRetentionDate, RETENTION_MONTHS } from '../../constants/retention';
+
+/**
+ * What this student's rows say about retention, as one sentence.
+ *
+ * Built from the retainUntil stored on each submission rather than recomputed
+ * from a school year: the stored value is null where the year did not parse,
+ * and a row with no deadline must not be described as having one. Where the
+ * rows disagree — a learner with work from two school years — the earliest is
+ * the one that matters, because it is the first thing that reaches its date.
+ *
+ * Returns null when there is nothing to say, so the caller renders nothing
+ * rather than a sentence about an empty set.
+ */
+function retentionFootnote(rows) {
+  const withWork = rows.filter(r => r.submissionId);
+  if (withWork.length === 0) return null;
+  const dates = withWork.map(r => r.retainUntil).filter(Boolean).map(d => new Date(d));
+  const unset = withWork.length - dates.length;
+  if (dates.length === 0) {
+    return 'No retention date is set on this work — its class has no readable school year. Ask your administrator to set one.';
+  }
+  const earliest = new Date(Math.min(...dates.map(d => d.getTime())));
+  // "at least", never "until": nothing deletes on a schedule. See
+  // src/constants/retention.js.
+  let text = `This work is kept until at least ${formatRetentionDate(earliest)}`
+    + ` — ${RETENTION_MONTHS} months after the school year ends. It is not deleted automatically.`;
+  if (unset > 0) {
+    text += ` ${unset} submission${unset === 1 ? ' has' : 's have'} no retention date set.`;
+  }
+  return text;
+}
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
 
 const STATUS_STYLES = {
@@ -147,6 +179,13 @@ export default function GradebookStudent() {
     rows.filter(row => row.carriedOver && row.fromSection).map(row => row.fromSection)
   )];
 
+  // Archived work still shows in the table — it is the learner's actual work —
+  // but it counts toward nothing, and until now nothing said so anywhere in
+  // the app. A teacher looking at a total that does not match what they
+  // remember awarding had no explanation available to them at all.
+  const archivedRows = rows.filter(row => row.archivedAt);
+  const retentionNote = retentionFootnote(rows);
+
   return (
     <>
       <PageHeader title={student?.name || 'Student'} subtitle={student?.username} back="/teacher/gradebook" />
@@ -160,6 +199,28 @@ export default function GradebookStudent() {
           </div>
         ) : (
           <>
+            {/* ── Why some marks are not counting ──
+                Above the table, because it changes how every number below it
+                should be read. Archiving happens when work stays with a
+                previous section after a transfer; the rows are kept because
+                they are a child's actual work, but they are excluded from
+                every average, export and analytic in the app. */}
+            {archivedRows.length > 0 && (
+              <div className="mb-4 rounded-2xl border-2 border-cream-300 bg-cream-50 p-4 flex items-start gap-3">
+                <Archive className="w-5 h-5 shrink-0 text-navy-500 mt-0.5" />
+                <div>
+                  <p className="text-sm font-extrabold text-navy-700">
+                    {archivedRows.length} submission{archivedRows.length === 1 ? ' is' : 's are'} archived
+                  </p>
+                  <p className="text-sm text-navy-500 leading-relaxed mt-0.5">
+                    Archived work is shown below but does not count toward this learner&rsquo;s averages,
+                    exports or analytics. This normally means the work stayed with a previous section
+                    after a transfer. It is kept, not deleted.
+                  </p>
+                </div>
+              </div>
+            )}
+
             {/* ── Mobile: one card per activity ── */}
             <div className="md:hidden space-y-3">
               {rows.filter(row => !row.carriedOver).map(row => {
@@ -170,6 +231,11 @@ export default function GradebookStudent() {
                       <div className="min-w-0">
                         <p className="font-bold text-navy-700">{row.activityTitle}</p>
                         {row.className && <p className="text-xs text-navy-400 font-semibold">{row.className}</p>}
+                        {row.archivedAt && (
+                          <p className="text-xs font-extrabold text-navy-400 mt-1 flex items-center gap-1">
+                            <Archive className="w-3 h-3" /> Archived — not counted
+                          </p>
+                        )}
                       </div>
                       <span className={cn('tg-pill shrink-0', statusInfo.className)}>{statusInfo.label}</span>
                     </div>
@@ -225,6 +291,11 @@ export default function GradebookStudent() {
                         <td className="px-4 py-3.5">
                           <p className="font-bold text-navy-700">{row.activityTitle}</p>
                           {row.className && <p className="text-xs text-navy-400 font-semibold">{row.className}</p>}
+                          {row.archivedAt && (
+                            <p className="text-xs font-extrabold text-navy-400 mt-1 flex items-center gap-1">
+                              <Archive className="w-3 h-3" /> Archived — not counted
+                            </p>
+                          )}
                         </td>
                         <td className="px-4 py-3.5 text-navy-600 font-semibold">{formatDate(row.deadline)}</td>
                         <td className="px-4 py-3.5 text-center">
@@ -250,6 +321,18 @@ export default function GradebookStudent() {
                 </tbody>
               </table>
             </div>
+
+            {/* ── How long this work is kept ──
+                Under the table on both layouts, from the retainUntil stored on
+                each submission rather than recomputed — see retentionFootnote.
+                Phrased "at least", because archiving and deletion are carried
+                out on request and nothing here happens on a schedule. */}
+            {retentionNote && (
+              <p className="mt-4 text-xs text-navy-400 font-semibold leading-relaxed flex items-start gap-1.5">
+                <Clock className="w-3.5 h-3.5 shrink-0 mt-px" />
+                <span>{retentionNote}</span>
+              </p>
+            )}
 
             {/* ── Carried over from a previous section ──
                 Read-only: marked by another teacher, so no Grade or Excuse

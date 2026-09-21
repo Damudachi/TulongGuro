@@ -1,10 +1,11 @@
 import { useState } from 'react';
-import { User, Shield, Lock, Eye, EyeOff, Loader2, Palette, CheckCircle2 } from 'lucide-react';
+import { User, Shield, Lock, Eye, EyeOff, Loader2, Palette, CheckCircle2, Archive } from 'lucide-react';
 import PageHeader from '../../components/PageHeader';
 import { API_URL, apiFetch, setSession } from '../../config';
 import ThemeToggle from '../../components/ThemeToggle';
 import { passwordProblem } from '../../constants/password';
 import PasswordStrength from '../../components/PasswordStrength';
+import RetentionNotice from '../../components/RetentionNotice';
 
 /**
  * The Bio field and the Notifications tab used to live here. Both wrote to
@@ -87,6 +88,10 @@ export default function Settings() {
     { id: 'profile', label: 'Profile Information', short: 'Profile', icon: User },
     { id: 'appearance', label: 'Appearance', short: 'Look', icon: Palette },
     { id: 'security', label: 'Security & Password', short: 'Security', icon: Shield },
+    // Its own tab rather than a paragraph under Profile: a teacher comes here
+    // to look this up — usually because a parent asked — and something they
+    // are searching for should be a destination, not a scroll.
+    { id: 'retention', label: 'Data & Privacy', short: 'Data', icon: Archive },
   ];
 
   return (
@@ -201,6 +206,17 @@ export default function Settings() {
                     Changing this signs you out on any other device you are still logged in on.
                   </p>
                 </form>
+              </>
+            )}
+
+            {activeTab === 'retention' && (
+              <>
+                <h2 className="font-display text-lg font-extrabold text-navy-700 mb-1">Data &amp; Privacy</h2>
+                <p className="text-sm text-navy-500 mb-5">
+                  What happens to the work your learners hand in. This is the answer to give a
+                  parent who asks.
+                </p>
+                <RetentionNotice audience="teacher" />
               </>
             )}
           </div>

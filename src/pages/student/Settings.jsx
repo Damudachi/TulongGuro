@@ -5,6 +5,7 @@ import { API_URL, apiFetch, setSession } from '../../config';
 import ThemeToggle from '../../components/ThemeToggle';
 import { passwordProblem } from '../../constants/password';
 import PasswordStrength from '../../components/PasswordStrength';
+import RetentionNotice from '../../components/RetentionNotice';
 
 /**
  * What a learner can actually change about their account.
@@ -274,6 +275,19 @@ export default function Settings() {
                   {isDownloading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
                   {isDownloading ? 'Preparing…' : 'Download Your Data'}
                 </button>
+
+                {/* ── How long it is kept ──
+                    Added to this tab rather than given its own: a learner who
+                    has come here has already asked "what do you have about
+                    me", and "for how long" is the other half of that question.
+                    Second person and short — the full account is the teacher's
+                    and the admin's to give. */}
+                <div className="mt-8 pt-6 border-t-2 border-cream-200">
+                  <h3 className="font-display text-base font-extrabold text-navy-700 mb-4">
+                    How long your work is kept
+                  </h3>
+                  <RetentionNotice audience="student" />
+                </div>
               </>
             )}
           </div>
