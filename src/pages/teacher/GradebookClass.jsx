@@ -205,10 +205,18 @@ export default function GradebookClass() {
    *
    * Both are now the same computation: computeGrade, over validated work only,
    * with the school's own weights and its transmutation setting. The raw
-   * earned/possible total that used to sit under the grade is gone: its
-   * denominator was the work validated so far, which is correct but reads as
-   * an inconsistency between two students at different points in the quarter.
-   * The grade is the number this column exists to show.
+   * points total is still shown underneath, because that is the number a
+   * teacher checks against a stack of marked papers — it is just no longer
+   * passed off as the grade.
+   *
+   * That points total carries a count of what it covers ("3 of 5 graded"),
+   * because its denominator is the work VALIDATED SO FAR. Two learners at
+   * different points in the quarter therefore carry different denominators —
+   * correct, but it reads as an inconsistency to anyone expecting the
+   * quarter's full total, and the count is what says it is progress instead.
+   * The grade above it already handles the same fact silently:
+   * componentPercentage pools over graded work, and initialGrade drops an
+   * ungraded component and renormalizes the rest.
    *
    * Excused work is dropped rather than zeroed, and a component with nothing
    * graded in it is dropped and its weight shared out over the rest — so a
@@ -217,21 +225,35 @@ export default function GradebookClass() {
    */
   function gradeFor(studentId) {
     const entries = [];
-    let anyMark = false, hasDraft = false;
+    let earned = 0, possible = 0, anyMark = false, hasDraft = false;
+    let graded = 0, expected = 0;
     for (const a of activities) {
       const cell = cellFor(studentId, a);
+      // Excused work is not work this learner was asked to do, so it is out of
+      // the "of N" denominator as well as out of the grade. Counting it would
+      // leave a learner excused from one task reading as permanently behind.
+      if (cell.state === 'excused') continue;
+      expected += 1;
       if (cell.state !== 'scored') continue;
       anyMark = true;
-      // A draft is visible in its cell but counts toward nothing. An
-      // unvalidated AI suggestion is not a mark, and letting it into the
-      // computation would put a number in the grade column that no teacher
-      // has agreed to.
+      // A draft is visible in its cell but counts toward nothing — not the
+      // grade, not the points line, and not the graded count. Letting the
+      // points include it while the grade excluded it would rebuild a small
+      // version of the discrepancy this whole change exists to remove: two
+      // numbers on one row, counting different work, with nothing saying so.
       if (cell.isDraft) { hasDraft = true; continue; }
+      earned += cell.points;
+      possible += a.points || 100;
+      graded += 1;
       entries.push({ percent: cell.percent, points: a.points || 100, component: a.component });
     }
     if (!anyMark) return null;
     const { initialGrade, finalGrade } = computeGrade(entries, policy, { transmute: useTransmutation });
     return {
+      earned: Math.round(earned * 10) / 10,
+      possible,
+      graded,
+      expected,
       // Null, not zero, when everything a student has is still a draft: they
       // have no grade of record yet, and a 0 would read as a failing one.
       grade: finalGrade,
@@ -427,19 +449,17 @@ export default function GradebookClass() {
                             <span className="text-navy-300">—</span>
                           ) : (
                             <>
-                              {/* The grade stands alone. A raw earned/possible
-                                  total used to sit under it as a check against
-                                  a stack of marked papers, but its denominator
-                                  is the points of the work VALIDATED SO FAR —
-                                  so two students mid-quarter legitimately show
-                                  different denominators, and the line reads as
-                                  an inconsistency to anyone who expects the
-                                  quarter's full total. The grade itself already
-                                  handles this correctly (componentPercentage
-                                  pools over graded work; initialGrade drops and
-                                  renormalizes an ungraded component), so the
-                                  points line added confusion without adding a
-                                  number the grade does not already carry. */}
+                              {/* The grade leads, the raw points follow, and
+                                  the points say what they cover. The points are
+                                  worth showing — it is what a teacher checks
+                                  against a stack of marked papers — but they are
+                                  not the grade, and showing them as one is what
+                                  made this table disagree with the exported
+                                  file. The "N of M graded" suffix exists because
+                                  the denominator is the work validated so far:
+                                  without it, two rows at different points in the
+                                  quarter look inconsistent rather than simply
+                                  further along. */}
                               <span className={cn('font-extrabold text-base tabular-nums', gradeTone(total.grade, passing))}
                                 title={total.grade === null
                                   ? 'Nothing validated yet — every mark here is still an AI draft.'
@@ -449,6 +469,11 @@ export default function GradebookClass() {
                                 {total.grade === null ? '—' : total.grade}
                                 {total.hasDraft && <span className="text-amber-600">*</span>}
                               </span>
+                              {total.possible > 0 && (
+                                <p className="text-[10px] font-bold text-navy-400 tabular-nums">
+                                  {total.earned}/{total.possible} pts · {total.graded} of {total.expected} graded
+                                </p>
+                              )}
                             </>
                           )}
                         </td>

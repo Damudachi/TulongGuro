@@ -329,6 +329,11 @@ export default function Analytics() {
                 // cards printed next to an average that had dropped it.
                 const graded = visibleSubmissions.filter(s => s.status === 'GRADED' && !s.excusedAt);
                 const excusedCount = visibleSubmissions.filter(s => s.excusedAt).length;
+                // What the learner was actually asked to do, in scope: excused
+                // work is out of the denominator the way it is out of the
+                // totals. Named once and used by both cards below — the Graded
+                // card used to inline the same subtraction.
+                const expected = visibleSubmissions.length - excusedCount;
                 const earned = graded.reduce((sum, s) => sum + toPoints(s.hitlScore ?? s.aiScore ?? 0, s.points), 0);
                 const possible = graded.reduce((sum, s) => sum + (s.points || 100), 0);
                 // Null only when a subject is in scope and nothing in it is
@@ -386,6 +391,19 @@ export default function Analytics() {
                       <p className="text-[11px] text-slate-500 mt-1.5">
                         Weighted by DepEd components{weightedEarned !== null && ` · ${pct(scopedAvg)}%`}
                       </p>
+                      {/* The denominator is the points of the work GRADED so
+                          far, not the points this subject will be worth by the
+                          end of the quarter. Without saying so, two learners at
+                          different stages show different totals and the card
+                          reads as inconsistent rather than as partway through.
+                          The Graded card beside this one carries the same two
+                          numbers, but a reader looking at this tile alone has
+                          no reason to go and find them. */}
+                      {possible > 0 && (
+                        <p className="text-[11px] text-slate-500">
+                          Covers {graded.length} of {expected} {expected === 1 ? 'activity' : 'activities'} graded so far
+                        </p>
+                      )}
                       {/* The unweighted sum, kept and labelled rather than
                           dropped: it is the honest answer to "how many marks
                           has this learner actually banked", and the gap between
@@ -409,7 +427,7 @@ export default function Analytics() {
                           totalSubmissions, which the server computes across
                           every subject — with a subject filtered it read as
                           "3/17 graded" beside a list holding four things. */}
-                      <p className="text-3xl font-extrabold text-sun-700">{graded.length}<span className="text-lg text-sun-400">/{visibleSubmissions.length - excusedCount}</span></p>
+                      <p className="text-3xl font-extrabold text-sun-700">{graded.length}<span className="text-lg text-sun-400">/{expected}</span></p>
                       <p className="text-[11px] text-slate-500 mt-1.5">
                         Activities returned{excusedCount > 0 && `, ${excusedCount} excused`}
                       </p>

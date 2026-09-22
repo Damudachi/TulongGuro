@@ -60,6 +60,7 @@ const {
   cellToText, extractRoster, readBirthday,
   looksLikeAName, looksLikeAHeaderRow, composeName, withSurnameComma, tidyRosterEntry,
 } = require('./rosterSheet');
+const { readRosterWorkbook } = require('./xlsxCompat');
 const { getAllTopics, getTopicById, getTopicsAIGuidance, parseTopicIds, formatTopicIds, lessonIdFromTopicId, lessonIdsFromTopics, termForWeek, lessonDisplayName } = require('./depedTopics');
 // getRubricTemplateById is gone with the grader's topic-recommended rubric
 // tier: a built-in sample is something a teacher may choose, never something
@@ -8251,9 +8252,20 @@ const extractStudentsHandler = async (req, res) => {
         });
       }
 
-      const ExcelJS = require('exceljs');
-      const workbook = new ExcelJS.Workbook();
-      await workbook.xlsx.readFile(req.file.path);
+      // readRosterWorkbook, not exceljs directly: a workbook that binds the
+      // SpreadsheetML namespace to a prefix rather than as the default one is
+      // valid and unreadable by exceljs, and used to surface here as a 500
+      // with a TypeError from inside the library. See xlsxCompat.js.
+      let workbook;
+      try {
+        workbook = await readRosterWorkbook(req.file.path);
+      } catch (readError) {
+        console.error('Roster workbook unreadable:', readError.message);
+        return res.status(422).json({
+          success: false,
+          error: 'That .xlsx file could not be opened. It may be corrupted, password-protected, or saved in a format this reader does not understand. Open it in Excel and use File → Save As → Excel Workbook (.xlsx), then upload it again — or upload a photo of the list instead.'
+        });
+      }
       const sheet = workbook.worksheets[0];
       if (!sheet) {
         return res.status(422).json({ success: false, error: 'That spreadsheet has no readable sheet.' });
