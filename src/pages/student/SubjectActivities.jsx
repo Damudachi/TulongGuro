@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
-import { CheckCircle2, Clock, AlertCircle, Loader2, FileText, ChevronRight, BookOpen, UserCheck } from 'lucide-react';
+import { CheckCircle2, Clock, AlertCircle, Loader2, FileText, ChevronRight, BookOpen, UserCheck, Paperclip } from 'lucide-react';
 import { API_URL, apiFetch } from '../../config';
 import { getStoredUser } from '../../utils/session';
 import { submissionWindow, formatDeadline } from '../../utils/deadlines';
@@ -123,6 +123,16 @@ export default function SubjectActivities() {
                               {isTeacherUpload && (
                                 <span className="text-[11px] font-medium px-2 py-0.5 rounded-full bg-slate-100 text-slate-500 flex items-center gap-1">
                                   <UserCheck className="w-3 h-3" /> Teacher submits
+                                </span>
+                              )}
+                              {/* A reading or a worksheet is often the thing a
+                                  learner is looking for in this list, and it is
+                                  only visible once the card is opened. Saying so
+                                  here is what makes it findable. */}
+                              {activity.materialCount > 0 && (
+                                <span className="text-[11px] font-medium px-2 py-0.5 rounded-full bg-blue-50 text-brand-navy flex items-center gap-1">
+                                  <Paperclip className="w-3 h-3" />
+                                  {activity.materialCount} material{activity.materialCount === 1 ? '' : 's'}
                                 </span>
                               )}
                             </div>

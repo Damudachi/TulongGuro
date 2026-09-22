@@ -5,6 +5,7 @@ import { API_URL, apiFetch } from '../../config';
 import { submissionWindow, formatDeadline } from '../../utils/deadlines';
 import { getStoredUser } from '../../utils/session';
 import { badgeLook } from '../../constants/badgeLook';
+import ActivityMaterials from '../../components/ActivityMaterials';
 
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
 
@@ -150,6 +151,11 @@ export default function ActivityDetails() {
           <p className="text-sm text-slate-600 leading-relaxed whitespace-pre-wrap">{activity.instructions}</p>
         </div>
       )}
+
+      {/* Anything the teacher attached. Directly below the instructions,
+          because on this page the two are one thing: the instructions say what
+          to do and these are what it is done to. */}
+      <ActivityMaterials materials={activity.materials} className="mb-6" />
 
       {/* Progress */}
       <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm">

@@ -9760,6 +9760,108 @@ async function resolveActivityBadge(body, teacherId, existing = null) {
   return { ok: true, changed: true, data: { badgeId: badge.id, badgePassingScore: passingScore } };
 }
 
+/**
+ * ── Activity attachments ──
+ *
+ * The teacher's attached files live on `Activity.additionalFiles` as a JSON
+ * array, and they serve two different audiences out of that one column: the
+ * class, who need the reading or the worksheet to do the work at all, and the
+ * checker, which reads the same files as grading context.
+ *
+ * The column began life as an array of bare URL strings, and every activity
+ * created before per-file visibility existed still holds that shape. Both are
+ * read here, and a bare string is taken as visible to the class — that is what
+ * the upload panel promised ("supplementary materials for students and AI
+ * grading context") at the moment the file was attached.
+ */
+
+/**
+ * A readable name for a stored file, recovered from its URL.
+ *
+ * The URL is the only place the name survives: safeUploadName() prefixes the
+ * original with Date.now() and nothing else records it, so a card would
+ * otherwise read "1754902334812-Reading-Passage.pdf" to a Grade 7 pupil.
+ */
+function fileNameFromUrl(url) {
+  let last = String(url || '').split(/[?#]/)[0].split('/').pop() || '';
+  try { last = decodeURIComponent(last); } catch { /* a name that won't decode is used as stored */ }
+  return last.replace(/^\d{10,}-/, '') || 'Attachment';
+}
+
+/** Every file attached to an activity, whoever it is for. */
+function parseActivityFiles(raw) {
+  if (!raw) return [];
+  let list;
+  try { list = JSON.parse(raw); } catch { return []; }
+  if (!Array.isArray(list)) return [];
+  return list.map(entry => {
+    const isObject = !!entry && typeof entry === 'object';
+    const url = typeof entry === 'string' ? entry : isObject ? entry.url : null;
+    if (!url || typeof url !== 'string') return null;
+    return {
+      url,
+      name: (isObject && typeof entry.name === 'string' && entry.name.trim()) || fileNameFromUrl(url),
+      // Absent means the entry predates the flag, and that means shown — see above.
+      studentVisible: isObject && 'studentVisible' in entry ? !!entry.studentVisible : true,
+    };
+  }).filter(Boolean);
+}
+
+/**
+ * The subset a learner may be handed, as name and link only.
+ *
+ * Student payloads carry this instead of the raw column, so a file the teacher
+ * marked teacher-only — an answer key attached purely as checker context, which
+ * the grading prompt explicitly anticipates — never reaches the class's browser
+ * at all, rather than being filtered on screen where the URL is still sitting
+ * in the response.
+ */
+function studentMaterials(activity) {
+  return parseActivityFiles(activity && activity.additionalFiles)
+    .filter(f => f.studentVisible)
+    .map(({ url, name }) => ({ url, name }));
+}
+
+/**
+ * The per-file "students can see this" flags that ride alongside an upload,
+ * index-aligned with the files in the same request.
+ *
+ * A client that sends none at all is an older one, and its files were attached
+ * under a panel that said they were for students — so the default is visible,
+ * not hidden. Defaulting the other way would quietly withdraw materials from
+ * classes that already depend on them.
+ */
+function parseFileVisibility(raw, count) {
+  let flags = [];
+  if (Array.isArray(raw)) {
+    flags = raw;
+  } else if (typeof raw === 'string' && raw.trim()) {
+    try {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) flags = parsed;
+    } catch { /* unreadable flags fall back to the default below */ }
+  }
+  return Array.from({ length: count }, (_, i) => (i < flags.length ? !!flags[i] : true));
+}
+
+/** Stores the list, or null when it is empty — the column's "nothing attached". */
+function serializeActivityFiles(files) {
+  return files.length ? JSON.stringify(files) : null;
+}
+
+/**
+ * Persist the files multer just wrote to disk, keeping the name the teacher
+ * uploaded them under and the visibility chosen for each.
+ */
+async function storeActivityUploads(files, visibilityRaw) {
+  const flags = parseFileVisibility(visibilityRaw, (files || []).length);
+  return Promise.all((files || []).map(async (f, i) => ({
+    url: await uploadToCloud(f.path, f.filename, { folder: 'activity-files', contentType: f.mimetype }),
+    name: f.originalname || fileNameFromUrl(f.filename),
+    studentVisible: flags[i],
+  })));
+}
+
 app.post('/api/teacher/activities', (req, res, next) => {
   const ct = req.headers['content-type'] || '';
   if (ct.includes('multipart/form-data')) {
@@ -9832,9 +9934,10 @@ app.post('/api/teacher/activities', (req, res, next) => {
     const due = normalizeDateInput(deadline);
     const lateWindow = resolveLateWindow(lateUntil, due);
 
-    const filePaths = await Promise.all(
-      (req.files || []).map(f => uploadToCloud(f.path, f.filename, { folder: 'activity-files', contentType: f.mimetype }))
-    );
+    // Names and per-file visibility are kept alongside the URL — see the
+    // attachment helpers above for why the column holds objects now and why a
+    // bare string from before that still reads as a file the class may open.
+    const attachedFiles = await storeActivityUploads(req.files, req.body.additionalFileVisibility);
     const activity = await prisma.activity.create({
       data: {
         title, type,
@@ -9850,7 +9953,7 @@ app.post('/api/teacher/activities', (req, res, next) => {
         submissionMode: submissionMode || 'TEACHER_UPLOAD',
         component: normalizeComponent(component),
         maxAttempts: normalizeMaxAttempts(maxAttempts),
-        additionalFiles: filePaths.length ? JSON.stringify(filePaths) : null,
+        additionalFiles: serializeActivityFiles(attachedFiles),
         rubric: resolvedRubric || null,
         classLessonId: classLessonId || null,
         ...(badgeChoice.data || {})
@@ -9863,7 +9966,21 @@ app.post('/api/teacher/activities', (req, res, next) => {
 });
 
 // Update activity details (deadline, instructions)
-app.put('/api/teacher/activities/:activityId', async (req, res) => {
+//
+// Multipart, on the same terms as the create route above, because attachments
+// have to be changeable after publishing. Until this accepted files, the
+// Additional Materials panel was live in Edit Activity but its uploads went
+// nowhere — the edit request was JSON, so the files were dropped in the
+// browser and the teacher was told the activity saved. A JSON request still
+// works and still leaves the attachments exactly as they were.
+app.put('/api/teacher/activities/:activityId', (req, res, next) => {
+  const ct = req.headers['content-type'] || '';
+  if (ct.includes('multipart/form-data')) {
+    upload.array('additionalFiles', 10)(req, res, next);
+  } else {
+    next();
+  }
+}, async (req, res) => {
   try {
     const owned = await teacherOwnsActivity(req.params.activityId, req.auth.sub);
     if (!owned.ok) return res.status(owned.code).json({ success: false, error: owned.error });
@@ -9977,6 +10094,45 @@ app.put('/api/teacher/activities/:activityId', async (req, res) => {
       });
       const due = updateData.deadline !== undefined ? updateData.deadline : existing?.deadline;
       updateData.lateUntil = resolveLateWindow(lateUntil, due);
+    }
+
+    /**
+     * Attachments, rewritten only when the request actually carries them.
+     *
+     * `materials` is the list of already-stored files that survive this save,
+     * with their visibility as the teacher left it; anything omitted from it is
+     * being detached. A request with neither field — an older client, or a save
+     * from a screen that doesn't show attachments — leaves the column alone,
+     * rather than reading "said nothing" as "remove everything".
+     *
+     * Kept entries are matched against what this activity already holds and a
+     * URL that isn't there is dropped. The list is a record of what was
+     * uploaded, not a free-text field: the checker fetches every URL in it on
+     * every submission, so accepting an arbitrary one would turn this into a
+     * way to make the server fetch somewhere of the caller's choosing.
+     */
+    if (req.body.materials !== undefined || (req.files || []).length) {
+      const stored = new Map(parseActivityFiles(owned.activity.additionalFiles).map(f => [f.url, f]));
+      let kept = [...stored.values()];
+      if (req.body.materials !== undefined) {
+        let requested = req.body.materials;
+        if (typeof requested === 'string') {
+          try { requested = JSON.parse(requested); } catch { requested = []; }
+        }
+        kept = (Array.isArray(requested) ? requested : [])
+          .map(entry => {
+            const url = typeof entry === 'string' ? entry : entry?.url;
+            const known = stored.get(url);
+            if (!known) return null;
+            const visible = entry && typeof entry === 'object' && 'studentVisible' in entry
+              ? !!entry.studentVisible
+              : known.studentVisible;
+            return { ...known, studentVisible: visible };
+          })
+          .filter(Boolean);
+      }
+      const added = await storeActivityUploads(req.files, req.body.additionalFileVisibility);
+      updateData.additionalFiles = serializeActivityFiles([...kept, ...added]);
     }
 
     const updated = await prisma.activity.update({
@@ -10702,7 +10858,13 @@ app.get('/api/activities/:activityId', async (req, res) => {
   const gradedCount = await prisma.submission.count({
     where: { activityId: req.params.activityId, status: 'GRADED' }
   });
-  res.json({ success: true, activity: owned.activity, gradedCount });
+  // Parsed here rather than in the browser so Activity Builder and the student
+  // screens agree on what is attached, what it is called, and who may see it.
+  res.json({
+    success: true,
+    activity: { ...owned.activity, materials: parseActivityFiles(owned.activity.additionalFiles) },
+    gradedCount,
+  });
 });
 
 app.get('/api/activities/:activityId/submissions', async (req, res) => {
@@ -11212,9 +11374,12 @@ async function generateSubmissionFeedback(imagePaths, activityId, studentId) {
     // every single submission graded against this activity.
     let additionalMaterialParts = [];
     if (activity?.additionalFiles) {
-      let fileUrls = [];
-      try { fileUrls = JSON.parse(activity.additionalFiles); } catch { /* not JSON, ignore */ }
-      if (Array.isArray(fileUrls) && fileUrls.length) {
+      // Every attached file, not just the ones the class can see: a file the
+      // teacher marked teacher-only — an answer key, a marking guide — is
+      // hidden from the learner precisely so that it can be given to the
+      // checker, so filtering here would defeat what the flag is for.
+      const fileUrls = parseActivityFiles(activity.additionalFiles).map(f => f.url);
+      if (fileUrls.length) {
         for (const url of fileUrls.slice(0, 3)) {
           let temp = null;
           try {
@@ -15546,10 +15711,17 @@ app.get('/api/student/:studentId/activities', async (req, res) => {
     });
     const submissionMap = {};
     mySubmissions.forEach(s => { submissionMap[s.activityId] = maskUnreleasedForStudent(s, req.auth); });
-    const activitiesWithStatus = activities.map(a => ({
-      ...a,
-      mySubmission: submissionMap[a.id] || null
-    }));
+    const activitiesWithStatus = activities.map(a => {
+      // The raw column is dropped and the shareable subset put in its place —
+      // see studentMaterials() for why a teacher-only file must not travel in
+      // a student response at all.
+      const { additionalFiles, ...rest } = a;
+      return {
+        ...rest,
+        materials: studentMaterials(a),
+        mySubmission: submissionMap[a.id] || null
+      };
+    });
     res.json({ success: true, activities: activitiesWithStatus });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
@@ -15689,6 +15861,10 @@ app.get('/api/student/:studentId/subjects', async (req, res) => {
           points: a.points || 100,
           deadline: a.deadline,
           submissionMode: a.submissionMode,
+          // Just the count. The list screen only needs to say that something is
+          // attached; the files themselves come with the activity the card
+          // opens, which is where they can actually be read.
+          materialCount: studentMaterials(a).length,
           submission
         };
       });
@@ -15758,9 +15934,17 @@ app.get('/api/student/:studentId/activities/:activityId', async (req, res) => {
       select: { id: true, status: true, imageUrl: true, hitlScore: true, aiScore: true, attemptCount: true, updatedAt: true, releasedAt: true }
     });
 
+    // Same rule as the list above: the shareable subset travels, the raw
+    // column does not.
+    const { additionalFiles, ...activityForStudent } = activity;
     res.json({
       success: true,
-      activity: { ...activity, className: activity.class?.name || '', mySubmission: maskUnreleasedForStudent(mySubmission, req.auth) || null }
+      activity: {
+        ...activityForStudent,
+        className: activity.class?.name || '',
+        materials: studentMaterials(activity),
+        mySubmission: maskUnreleasedForStudent(mySubmission, req.auth) || null
+      }
     });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
@@ -17556,4 +17740,9 @@ module.exports = {
   // literal exists.
   exportFileName, fileNamePart, safeSheetName, contentDisposition, colLetter,
   parseAssistantTurn,
+  // Exported for tests: what a learner is allowed to see of an activity's
+  // attachments is a rule, and the column it is read out of holds two shapes
+  // (see the attachment helpers) — asserting it through a route would test the
+  // mocking, not the rule.
+  parseActivityFiles, studentMaterials, parseFileVisibility, fileNameFromUrl,
 };

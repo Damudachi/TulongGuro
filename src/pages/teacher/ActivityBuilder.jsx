@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 import { useNavigate, useSearchParams, useParams, Link } from 'react-router-dom';
-import { ArrowLeft, CheckCircle2, Plus, Camera, Users, Upload, FileText, X, Trash2, Loader2, Save, PenLine, Medal } from 'lucide-react';
+import { ArrowLeft, CheckCircle2, Plus, Camera, Users, Upload, FileText, X, Trash2, Loader2, Save, PenLine, Medal, Eye, EyeOff } from 'lucide-react';
 import { API_URL, apiFetch } from '../../config';
 import { ACTIVITY_TYPES } from '../../constants/activityTypes';
 import { parseTopicIds, formatTopicIds, lessonTopicId, lessonIdFromTopicId, isLessonTopicId, termForWeek, readCompetencies, lessonDisplayName } from '../../utils/topics';
@@ -605,7 +605,12 @@ export default function ActivityBuilder() {
   // correctly not an edit.
   const templateEdited = !!templateBaseline
     && JSON.stringify(rubricCriteria) !== JSON.stringify(templateBaseline);
-  const [additionalFiles, setAdditionalFiles] = useState([]); // { file, name }[]
+  const [additionalFiles, setAdditionalFiles] = useState([]); // { file, name, studentVisible }[]
+  // Files already stored on this activity, in edit mode. Kept apart from the
+  // ones picked in this session because these have a URL and no File behind
+  // them: the save sends the survivors back by URL rather than re-uploading
+  // anything. [{ url, name, studentVisible }]
+  const [savedMaterials, setSavedMaterials] = useState([]);
   const [rubricFile, setRubricFile] = useState(null);
 
   // Upload rubric extraction state
@@ -729,6 +734,10 @@ export default function ActivityBuilder() {
           // blank field the save would then refuse.
           badgePassingScore: activity.badgePassingScore ?? 75,
         });
+        // Whatever is already attached, so the panel below shows the real
+        // state of the activity rather than an empty dropzone that implies
+        // nothing was ever uploaded.
+        setSavedMaterials(Array.isArray(activity.materials) ? activity.materials : []);
         // Pre-fill rubric if it exists. This is the activity's rubric of
         // record, so nothing may overwrite it.
         if (activity.rubric) {
@@ -1009,9 +1018,21 @@ export default function ActivityBuilder() {
   // ── Additional files ──
   const handleAdditionalFiles = (e) => {
     const picked = Array.from(e.target.files || []);
-    setAdditionalFiles(prev => [...prev, ...picked.map(f => ({ file: f, name: f.name }))]);
+    // Shared with the class by default. This panel's own description says the
+    // files are for students, so anything else would be a surprise — the
+    // teacher turns a file *off* when it is an answer key or a marking guide
+    // meant only for the checker.
+    setAdditionalFiles(prev => [...prev, ...picked.map(f => ({ file: f, name: f.name, studentVisible: true }))]);
+    // Cleared so picking the same file again after removing it still fires a
+    // change event — the input otherwise reports no change and nothing happens.
+    e.target.value = '';
   };
   const removeAdditionalFile = (idx) => setAdditionalFiles(prev => prev.filter((_, i) => i !== idx));
+  const toggleAdditionalFile = (idx) => setAdditionalFiles(prev =>
+    prev.map((f, i) => (i === idx ? { ...f, studentVisible: !f.studentVisible } : f)));
+  const removeSavedMaterial = (url) => setSavedMaterials(prev => prev.filter(f => f.url !== url));
+  const toggleSavedMaterial = (url) => setSavedMaterials(prev =>
+    prev.map(f => (f.url === url ? { ...f, studentVisible: !f.studentVisible } : f)));
 
   /**
    * A range rubric scores through its bands, so its criteria carry no weight of
@@ -1149,17 +1170,59 @@ export default function ActivityBuilder() {
         })
       : null;
 
+    /**
+     * The attachments, appended to whichever request is about to go out.
+     *
+     * The visibility flags travel as a separate array rather than on the files
+     * themselves because a multipart part carries no metadata — the server
+     * lines the two up by position, which holds because FormData preserves
+     * append order and multer hands `req.files` back in it.
+     *
+     * The uploaded rubric rides along in the same field, as it always has: the
+     * checker is given the original document alongside the extracted criteria.
+     * It is appended last and flagged teacher-only, because it was never
+     * offered under the Additional Materials panel and publishing it to the
+     * class as a handout would be a decision the teacher never made.
+     */
+    const appendMaterials = (fd) => {
+      const visibility = additionalFiles.map(f => f.studentVisible !== false);
+      additionalFiles.forEach(f => fd.append('additionalFiles', f.file));
+      if (rubricFile && rubricMode === 'upload') {
+        fd.append('additionalFiles', rubricFile);
+        visibility.push(false);
+      }
+      fd.append('additionalFileVisibility', JSON.stringify(visibility));
+    };
+
     try {
       if (isEditMode) {
-        // UPDATE existing activity via JSON
+        /**
+         * UPDATE via FormData, not JSON, so attachments can be changed after
+         * publishing — until this did, the Additional Materials panel was on
+         * screen in Edit Activity and its uploads went nowhere at all.
+         *
+         * Every field arrives as a string either way, which is what the server
+         * already assumes: the create route below has always posted this same
+         * form as multipart. The one thing that has to be said explicitly is
+         * "no value" — FormData has no null, so an empty string stands for it,
+         * and the server reads '' as null for the rubric, the lesson and the
+         * dates alike. Sending nothing instead would mean "leave this field
+         * alone", which is not the same thing and would make clearing any of
+         * them impossible.
+         */
+        const fd = new FormData();
+        Object.entries(form).forEach(([k, v]) => fd.append(k, v ?? ''));
+        fd.append('classLessonId', selectedLessonId || '');
+        fd.append('rubric', rubricForSubmit || '');
+        // The stored files that survive this save. Sent even when empty —
+        // that is how detaching the last one is distinguished from a request
+        // that simply doesn't mention attachments.
+        fd.append('materials', JSON.stringify(savedMaterials));
+        appendMaterials(fd);
+
         const res = await apiFetch(`${API_URL}/api/teacher/activities/${editActivityId}`, {
           method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            ...form,
-            classLessonId: selectedLessonId || null,
-            rubric: rubricForSubmit
-          })
+          body: fd
         });
         const data = await res.json();
         if (data.success) navigate(exitTo);
@@ -1176,8 +1239,7 @@ export default function ActivityBuilder() {
         // that cannot be read rather than as no rubric.
         if (rubricForSubmit) fd.append('rubric', rubricForSubmit);
 
-        additionalFiles.forEach(f => fd.append('additionalFiles', f.file));
-        if (rubricFile && rubricMode === 'upload') fd.append('additionalFiles', rubricFile);
+        appendMaterials(fd);
 
         const res = await apiFetch(`${API_URL}/api/teacher/activities`, { method: 'POST', body: fd });
         const data = await res.json();
@@ -1975,10 +2037,45 @@ export default function ActivityBuilder() {
           )}
         </div>
 
-        {/* ── ADDITIONAL FILES ── */}
+        {/* ── ADDITIONAL FILES ──
+            Two lists, because they are two different things: files already
+            stored on this activity (edit mode) are sent back by URL and can be
+            detached, while files picked in this session still have to be
+            uploaded. Both carry the same per-file choice about whether the
+            class may open them. */}
         <div className="bg-white p-6 rounded-xl border border-slate-200">
           <h2 className="text-base font-bold text-brand-slate mb-1">Additional Materials</h2>
-          <p className="text-xs text-slate-500 mb-4">Attach readings, reference images, or supplementary materials for students and AI grading context.</p>
+          <p className="text-xs text-slate-500 mb-4">
+            Attach readings, reference images, or supplementary materials. Shared files appear on the
+            student's activity screen for them to open; the AI checker reads every file here either
+            way, so an answer key or a marking guide can be attached and kept hidden.
+          </p>
+
+          {savedMaterials.length > 0 && (
+            <div className="mb-4 space-y-2">
+              <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Already attached</p>
+              {savedMaterials.map(f => (
+                <div key={f.url} className="flex items-center justify-between gap-2 p-2 bg-slate-50 rounded-lg border border-slate-200">
+                  {/* The name is a link, so a teacher can check what a file
+                      actually is before deciding whether the class sees it —
+                      the stored name is often the only clue left. */}
+                  <a href={f.url} target="_blank" rel="noopener noreferrer"
+                    className="flex items-center gap-2 min-w-0 text-sm text-slate-700 hover:text-brand-navy hover:underline">
+                    <FileText className="w-4 h-4 text-brand-navy shrink-0" />
+                    <span className="truncate">{f.name}</span>
+                  </a>
+                  <div className="flex items-center gap-1 shrink-0">
+                    <VisibilityToggle visible={f.studentVisible} onToggle={() => toggleSavedMaterial(f.url)} />
+                    <button type="button" onClick={() => removeSavedMaterial(f.url)}
+                      aria-label={`Remove ${f.name}`}
+                      className="p-1.5 text-slate-400 hover:text-red-500 transition-colors">
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
 
           <div onClick={() => fileInputRef.current?.click()}
             className="border-2 border-dashed border-slate-200 rounded-xl p-6 flex flex-col items-center cursor-pointer hover:border-brand-navy hover:bg-blue-50/30 transition-all">
@@ -1991,14 +2088,19 @@ export default function ActivityBuilder() {
           {additionalFiles.length > 0 && (
             <div className="mt-3 space-y-2">
               {additionalFiles.map((f, i) => (
-                <div key={i} className="flex items-center justify-between p-2 bg-slate-50 rounded-lg border border-slate-200">
-                  <div className="flex items-center gap-2">
-                    <FileText className="w-4 h-4 text-brand-navy" />
-                    <span className="text-sm text-slate-700 truncate max-w-[200px]">{f.name}</span>
+                <div key={i} className="flex items-center justify-between gap-2 p-2 bg-slate-50 rounded-lg border border-slate-200">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <FileText className="w-4 h-4 text-brand-navy shrink-0" />
+                    <span className="text-sm text-slate-700 truncate">{f.name}</span>
                   </div>
-                  <button type="button" onClick={() => removeAdditionalFile(i)} className="text-slate-400 hover:text-red-500 transition-colors">
-                    <X className="w-4 h-4" />
-                  </button>
+                  <div className="flex items-center gap-1 shrink-0">
+                    <VisibilityToggle visible={f.studentVisible} onToggle={() => toggleAdditionalFile(i)} />
+                    <button type="button" onClick={() => removeAdditionalFile(i)}
+                      aria-label={`Remove ${f.name}`}
+                      className="p-1.5 text-slate-400 hover:text-red-500 transition-colors">
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
                 </div>
               ))}
             </div>
@@ -2477,5 +2579,30 @@ export default function ActivityBuilder() {
         </div>
       </form>
     </div>
+  );
+}
+
+/**
+ * Whether the class can open one attached file.
+ *
+ * Labelled, not a bare eye. The two states mean "the students get this" and
+ * "only the checker gets this", and an eye with a line through it leaves a
+ * teacher to guess which way round that reads — on a control whose wrong
+ * setting either withholds the reading the work depends on or hands out the
+ * answer key.
+ */
+function VisibilityToggle({ visible, onToggle }) {
+  return (
+    <button type="button" onClick={onToggle} aria-pressed={visible}
+      title={visible
+        ? 'Students can open this file. Tap to hide it from them.'
+        : 'Hidden from students. The AI checker still reads it. Tap to share it.'}
+      className={cn('flex items-center gap-1 px-2 py-1.5 rounded-lg text-[11px] font-bold border transition-colors',
+        visible
+          ? 'bg-green-50 text-green-700 border-green-200 hover:bg-green-100'
+          : 'bg-slate-100 text-slate-500 border-slate-200 hover:bg-slate-200')}>
+      {visible ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5" />}
+      {visible ? 'Shared' : 'Hidden'}
+    </button>
   );
 }

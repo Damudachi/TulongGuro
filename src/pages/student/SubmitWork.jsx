@@ -10,6 +10,7 @@ import { isRasterizable, prefetchRasterizer } from '../../utils/rasterizable';
 import { enqueue, buildJob } from '../../utils/offlineQueue';
 import { saveActivitySnapshot, readActivitySnapshot } from '../../utils/offlineSnapshot';
 import { badgeLook } from '../../constants/badgeLook';
+import ActivityMaterials from '../../components/ActivityMaterials';
 
 import { showAlert } from '../../utils/dialog';
 function cn(...cls) { return cls.filter(Boolean).join(' '); }
@@ -502,6 +503,12 @@ export default function SubmitWork() {
             <p className="text-sm text-navy-600 leading-relaxed whitespace-pre-wrap">{selected.instructions}</p>
           </div>
         )}
+
+        {/* ── Materials ──
+            Between the instructions and the upload form, which is the order the
+            work happens in: read what the teacher gave you, then hand something
+            back. */}
+        <ActivityMaterials materials={selected.materials} variant="card" className="mb-5" />
 
         {savedListNotice}
 
