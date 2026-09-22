@@ -205,9 +205,10 @@ export default function GradebookClass() {
    *
    * Both are now the same computation: computeGrade, over validated work only,
    * with the school's own weights and its transmutation setting. The raw
-   * points total is still shown underneath, because that is the number a
-   * teacher checks against a stack of marked papers — it is just no longer
-   * passed off as the grade.
+   * earned/possible total that used to sit under the grade is gone: its
+   * denominator was the work validated so far, which is correct but reads as
+   * an inconsistency between two students at different points in the quarter.
+   * The grade is the number this column exists to show.
    *
    * Excused work is dropped rather than zeroed, and a component with nothing
    * graded in it is dropped and its weight shared out over the rest — so a
@@ -216,26 +217,21 @@ export default function GradebookClass() {
    */
   function gradeFor(studentId) {
     const entries = [];
-    let earned = 0, possible = 0, anyMark = false, hasDraft = false;
+    let anyMark = false, hasDraft = false;
     for (const a of activities) {
       const cell = cellFor(studentId, a);
       if (cell.state !== 'scored') continue;
       anyMark = true;
-      // A draft is visible in its cell but counts toward nothing — not the
-      // grade, and not the points line either. Letting the points include it
-      // while the grade excluded it would rebuild a small version of the
-      // discrepancy this whole change exists to remove: two numbers on one
-      // row, counting different work, with nothing saying so.
+      // A draft is visible in its cell but counts toward nothing. An
+      // unvalidated AI suggestion is not a mark, and letting it into the
+      // computation would put a number in the grade column that no teacher
+      // has agreed to.
       if (cell.isDraft) { hasDraft = true; continue; }
-      earned += cell.points;
-      possible += a.points || 100;
       entries.push({ percent: cell.percent, points: a.points || 100, component: a.component });
     }
     if (!anyMark) return null;
     const { initialGrade, finalGrade } = computeGrade(entries, policy, { transmute: useTransmutation });
     return {
-      earned: Math.round(earned * 10) / 10,
-      possible,
       // Null, not zero, when everything a student has is still a draft: they
       // have no grade of record yet, and a 0 would read as a failing one.
       grade: finalGrade,
@@ -431,12 +427,19 @@ export default function GradebookClass() {
                             <span className="text-navy-300">—</span>
                           ) : (
                             <>
-                              {/* The grade leads, the raw points follow. The
-                                  points are still worth showing — it is what a
-                                  teacher checks against a stack of marked
-                                  papers — but they are not the grade, and
-                                  showing them as one is what made this table
-                                  disagree with the exported file. */}
+                              {/* The grade stands alone. A raw earned/possible
+                                  total used to sit under it as a check against
+                                  a stack of marked papers, but its denominator
+                                  is the points of the work VALIDATED SO FAR —
+                                  so two students mid-quarter legitimately show
+                                  different denominators, and the line reads as
+                                  an inconsistency to anyone who expects the
+                                  quarter's full total. The grade itself already
+                                  handles this correctly (componentPercentage
+                                  pools over graded work; initialGrade drops and
+                                  renormalizes an ungraded component), so the
+                                  points line added confusion without adding a
+                                  number the grade does not already carry. */}
                               <span className={cn('font-extrabold text-base tabular-nums', gradeTone(total.grade, passing))}
                                 title={total.grade === null
                                   ? 'Nothing validated yet — every mark here is still an AI draft.'
@@ -446,11 +449,6 @@ export default function GradebookClass() {
                                 {total.grade === null ? '—' : total.grade}
                                 {total.hasDraft && <span className="text-amber-600">*</span>}
                               </span>
-                              {total.possible > 0 && (
-                                <p className="text-[10px] font-bold text-navy-400 tabular-nums">
-                                  {total.earned}/{total.possible} pts
-                                </p>
-                              )}
                             </>
                           )}
                         </td>

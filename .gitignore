@@ -107,3 +107,4 @@ check2.py
 # It stayed out of the repo here only because this machine happens to carry a
 # global ignore rule for it; a collaborator without one would commit theirs.
 .claude/settings.local.json
+TulongGuro - Final_Manuscript (1).pdf
