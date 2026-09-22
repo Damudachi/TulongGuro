@@ -136,6 +136,15 @@ export default function AdminDashboard() {
   // ── Is the school built yet ──
   // Ordered the way it has to be done: a section needs an adviser, and a shell
   // needs a section to be taught to.
+  //
+  // Curriculum sits ahead of the shells, which is the pair that used to be the
+  // wrong way round here. Opening a shell is where the school curriculum gets
+  // copied in — the "Apply your school curriculum" box in admin/Classes.jsx is
+  // only drawn when one is already published for that subject and grade level,
+  // so a checklist that sent an admin to the shells first had them open every
+  // class of the year empty, before the lessons those classes mark against
+  // existed. Nothing refuses it and nothing warns about it; the shells are
+  // simply built without the thing that was meant to be in them.
   const steps = [
     { key: 'teachers', done: teachers.length > 0, title: 'Add your teachers',
       body: 'Every section needs an adviser and every course shell needs a teacher, so this comes first.',
@@ -143,12 +152,12 @@ export default function AdminDashboard() {
     { key: 'sections', done: sections.length > 0, title: 'Create the block sections',
       body: 'One homeroom group per section, with its class list. The learners get their accounts from it.',
       to: '/admin/sections', cta: 'Create a section' },
-    { key: 'shells', done: shells.length > 0, title: 'Open the course shells',
-      body: 'One subject taught to one section by one teacher. This is what appears on a teacher’s dashboard.',
-      to: '/admin/classes', cta: 'Open a course shell' },
     { key: 'curriculum', done: curriculums.length > 0, title: 'Publish a curriculum',
-      body: 'Lessons the whole school marks against, so a Grade 6 English score means the same in every section.',
+      body: 'Lessons the whole school marks against, so a Grade 6 English score means the same in every section. Publish it before the shells below — each new shell copies in the curriculum that matches its subject and grade level.',
       to: '/admin/curriculum', cta: 'Publish a curriculum' },
+    { key: 'shells', done: shells.length > 0, title: 'Open the course shells',
+      body: 'One subject taught to one section by one teacher. This is what appears on a teacher’s dashboard, and it opens already holding the lessons from the curriculum you published.',
+      to: '/admin/classes', cta: 'Open a course shell' },
   ];
   const doneCount = steps.filter(s => s.done).length;
   const nextStep = steps.find(s => !s.done) || null;

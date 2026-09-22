@@ -1338,7 +1338,7 @@ export default function Register() {
                     autoComplete="off"
                     aria-describedby="admin-email-hint"
                     className="flex-1 min-w-0 px-4 py-3 outline-none text-navy-700 font-semibold"
-                    placeholder="principal"
+                    placeholder="admin"
                     onChange={(e) => setFormData({ ...formData, email: localPartOf(e.target.value) })}
                   />
                   <span
@@ -1349,7 +1349,7 @@ export default function Register() {
                   </span>
                 </div>
                 <p id="admin-email-hint" className="text-xs text-navy-400 mt-1.5 font-semibold break-words">
-                  Your account will sign in as {adminEmail || `principal@${accountDomain('ADMIN', schoolCodeValue)}`}.
+                  Your account will sign in as {adminEmail || `admin@${accountDomain('ADMIN', schoolCodeValue)}`}.
                   Teachers you create later get @{accountDomain('TEACHER', schoolCodeValue)} addresses.
                 </p>
               </div>

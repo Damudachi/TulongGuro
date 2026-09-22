@@ -406,7 +406,7 @@ export default function AdminRubrics() {
       {/* Built-in starting points */}
       {builtins.length > 0 && (
         <>
-          <h2 className="text-sm font-bold text-slate-400 uppercase tracking-wider mb-3">Start from a DepEd template</h2>
+          <h2 className="text-sm font-bold text-slate-400 uppercase tracking-wider mb-3">Standard template</h2>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             {builtins.map(t => (
               <button key={t.id} onClick={() => startFromBuiltin(t)}
