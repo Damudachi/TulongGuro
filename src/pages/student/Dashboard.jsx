@@ -142,7 +142,12 @@ export default function StudentDashboard() {
   const avgGradeSubjectsTotal = data?.avgGradeSubjectsTotal || 0;
   const upcomingDeadlines = data?.upcomingDeadlines || savedUpcoming || [];
   const pendingSubmissions = data?.pendingSubmissions || [];
-  const latestStrategy = data?.latestStrategy || null;
+  // The server already drops placeholder strategies, but this screen renders
+  // whatever it is handed inside quotation marks — so a stale payload or an
+  // older cached dashboard would still print `"N/A"` at a child. Checked again
+  // here because the cost of being wrong lands on the learner, not on us.
+  const rawStrategy = String(data?.latestStrategy || '').trim().replace(/^["'“‘]+|["'”’]+$/g, '').trim();
+  const latestStrategy = /^(n\/?\.?a\.?|none|not applicable|-|—|null)$/i.test(rawStrategy) ? '' : rawStrategy;
 
   // Teacher-upload activities have nothing for the student to submit, so they
   // open a read-only detail page instead of the submit form.
@@ -212,18 +217,28 @@ export default function StudentDashboard() {
           hint={avgGradePartial ? `${avgGradeSubjectsIncluded} of ${avgGradeSubjectsTotal} subjects` : undefined} />
       </div>
 
-      {/* ── Reading strategy tip ── */}
-      {latestStrategy && (
-        <div className="bg-sun-100 border-2 border-sun-200 rounded-3xl p-5 mb-6 flex items-start gap-4">
-          <div className="bg-sun-400 text-ink-900 p-2.5 rounded-2xl shrink-0 shadow-pop">
-            <Lightbulb className="w-5 h-5" />
-          </div>
-          <div>
-            <p className="font-display font-extrabold text-navy-700 mb-1">Your Latest Reading Strategy</p>
-            <p className="text-sm text-navy-600 leading-relaxed">"{latestStrategy}"</p>
-          </div>
+      {/* ── Reading strategy tip ──
+          Never an empty card and never a placeholder. A strategy when the
+          learner's work has produced one; otherwise something worth reading,
+          because "N/A" in the place a child looks for advice is worse than
+          saying nothing and the card is a fixed part of the page they know. */}
+      <div className="bg-sun-100 border-2 border-sun-200 rounded-3xl p-5 mb-6 flex items-start gap-4">
+        <div className="bg-sun-400 text-ink-900 p-2.5 rounded-2xl shrink-0 shadow-pop">
+          <Lightbulb className="w-5 h-5" />
         </div>
-      )}
+        <div>
+          <p className="font-display font-extrabold text-navy-700 mb-1">
+            {latestStrategy ? 'Your Latest Reading Strategy' : 'A Tip While You Wait'}
+          </p>
+          <p className="text-sm text-navy-600 leading-relaxed">
+            {latestStrategy
+              ? `"${latestStrategy}"`
+              : submissions.length > 0
+                ? 'Your next reading strategy will appear here after your teacher returns your next piece of writing. Until then: when you read something new, stop at the end of each part and say in your own words what just happened.'
+                : 'Your reading strategies will appear here once your teacher returns your first activity. Until then: read a little every day, and ask yourself what the writer wanted you to feel.'}
+          </p>
+        </div>
+      </div>
 
       {/* ── Skill progress ── */}
       {/* The list under the chart is capped at the latest few. "See all" goes

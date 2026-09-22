@@ -61,6 +61,24 @@ const {
   looksLikeAName, looksLikeAHeaderRow, composeName, withSurnameComma, tidyRosterEntry,
 } = require('./rosterSheet');
 const { readRosterWorkbook } = require('./xlsxCompat');
+
+/**
+ * Placeholders a model writes when a field does not apply. They are answers to
+ * the schema, not to the learner, and none of them belong on a child's screen.
+ */
+const STRATEGY_NON_ANSWERS = new Set(['n/a', 'na', 'n.a.', 'none', 'not applicable', '-', '—', 'null']);
+
+/**
+ * Whether a reading strategy is something a learner can actually act on.
+ *
+ * Quotes are stripped before comparing because the model sometimes returns its
+ * own, and the student dashboard adds a second pair around whatever it is
+ * given — so a stored `"N/A"` and a stored `N/A` have to fail the same way.
+ */
+function isUsableStrategy(text) {
+  const trimmed = String(text || '').trim().replace(/^["'“‘]+|["'”’]+$/g, '').trim();
+  return trimmed.length > 0 && !STRATEGY_NON_ANSWERS.has(trimmed.toLowerCase());
+}
 const { getAllTopics, getTopicById, getTopicsAIGuidance, parseTopicIds, formatTopicIds, lessonIdFromTopicId, lessonIdsFromTopics, termForWeek, lessonDisplayName } = require('./depedTopics');
 // getRubricTemplateById is gone with the grader's topic-recommended rubric
 // tier: a built-in sample is something a teacher may choose, never something
@@ -14655,8 +14673,22 @@ app.get('/api/student/:studentId/dashboard', async (req, res) => {
       avgSkills[skill] = vals.length ? Math.round(vals.reduce((a, b) => a + b, 0) / vals.length) : null;
     });
 
-    // Extract latestStrategy from the most recent graded submission
-    const latestStrategy = submissions[0]?.readingStrategy || null;
+    // The most recent graded submission that actually carries a strategy.
+    //
+    // The grading prompt tells the model to answer "N/A" when a page held no
+    // readable text, and that string used to reach the dashboard verbatim: a
+    // learner whose newest paper was blank or a drawing read `Your Latest
+    // Reading Strategy: "N/A"`. Taking submissions[0] unconditionally made the
+    // card a lottery on what the last upload happened to be.
+    //
+    // Walking back to the most recent usable one is the honest reading of what
+    // the card claims. An earlier paper's strategy is still the latest advice
+    // written FOR this learner, and it is advice they can act on — which a
+    // placeholder is not. Null when none of their work produced one, and the
+    // dashboard shows encouragement instead.
+    const latestStrategy = submissions
+      .map(s => s.readingStrategy)
+      .find(isUsableStrategy) || null;
 
     // Fetch upcoming deadlines (all deadlines that are not in the past)
     const classIds = student?.section?.classes?.map(c => c.id) || [];
@@ -15645,6 +15677,15 @@ app.get('/api/student/:studentId/subjects', async (req, res) => {
           id: a.id,
           title: a.title,
           type: a.type || 'Activity',
+          // The grading term and the DepEd component the mark counts toward.
+          // Sent because the learner's gradebook filters by term and shows the
+          // component beside each score: without them the student's own record
+          // book cannot be read the way their teacher's is, and a learner
+          // cannot tell why a 9/10 moved their average less than an 8/10 did.
+          // Null term means the activity predates terms; null component is
+          // treated as Written Work, the same default the grade engine uses.
+          term: a.term ?? null,
+          component: a.component || 'WW',
           points: a.points || 100,
           deadline: a.deadline,
           submissionMode: a.submissionMode,
