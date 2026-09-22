@@ -10900,8 +10900,16 @@ function kindForPath(filePath) {
  * sent as text. Formatting is lost in that case, which is an acceptable trade —
  * a typed essay is assessed on its words, and the rubric criteria are about
  * content, organisation and language rather than layout.
+ *
+ * `label` names what the extracted text *is*, and defaults to the student's
+ * own work because that is what almost every caller sends. It has to be
+ * settable: the teacher's reference files come through here too, and a source
+ * passage handed over as a .docx was arriving fenced in "BEGIN TYPED
+ * SUBMISSION" — telling the model, in the most explicit words available, that
+ * the passage was the paper. The fence around a file is most of what
+ * distinguishes it from the one after it, so it has to say which one it is.
  */
-async function buildFilePart(localPath) {
+async function buildFilePart(localPath, { label = 'TYPED SUBMISSION' } = {}) {
   const kind = kindForPath(localPath);
   if (kind === 'text') {
     const { value } = await mammoth.extractRawText({ path: localPath });
@@ -10909,7 +10917,7 @@ async function buildFilePart(localPath) {
     if (!text) {
       throw new AiUnavailableError('IMAGE', 'That Word document has no readable text in it, so there was nothing to check.');
     }
-    return `\n--- BEGIN TYPED SUBMISSION ---\n${text}\n--- END TYPED SUBMISSION ---\n`;
+    return `\n--- BEGIN ${label} ---\n${text}\n--- END ${label} ---\n`;
   }
   const ext = path.extname(localPath).toLowerCase();
   const mimeType = kind === 'pdf' ? 'application/pdf'
@@ -11385,7 +11393,9 @@ async function generateSubmissionFeedback(imagePaths, activityId, studentId) {
           try {
             const { path: localPath, isTemp } = await resolveLocalImagePath(url);
             if (isTemp) temp = localPath;
-            additionalMaterialParts.push(await buildFilePart(localPath));
+            additionalMaterialParts.push(
+              await buildFilePart(localPath, { label: 'TEACHER REFERENCE MATERIAL (NOT STUDENT WORK)' })
+            );
           } catch (err) {
             // A missing or unreadable attachment must not stop grading — the
             // submission still gets checked against the rubric, just without
@@ -11658,14 +11668,14 @@ LANGUAGE:
 ${toneOverride}
 ${activityContext}
 ${topicFocusRule}
-${additionalMaterialParts.length ? `\nREFERENCE MATERIAL RULE:\nThe teacher has attached ${additionalMaterialParts.length} reference file(s) for this activity — sent after this prompt and before the student's ${paperCount > 1 ? 'papers' : 'paper'}, introduced by a "[TEACHER-PROVIDED REFERENCE MATERIAL]" marker. This may be a source passage, an answer key, a diagram, a worksheet, or a required format/template the student's output must follow.\n- Read it FIRST, before grading, and treat any concrete requirement it states — a required structure, required phrases, a required number of parts, a fact the student's answer must match — as MANDATORY, with the same force as the rubric itself, not as optional background.\n- Check the student's submission against every such requirement explicitly. If the student's work deviates from a stated requirement, you MUST name that specific deviation by number/name in areasForGrowth (e.g. "the assignment sheet requires each paragraph to open with 'X'; paragraph 2 does not") — do not fold it into generic writing-quality commentary where it could be mistaken for an ordinary style note.\n- Do NOT grade, transcribe, or critique the reference material itself as if it were student work — it is the standard the student is held to, not something being scored.\n` : ''}
+${additionalMaterialParts.length ? `\nREFERENCE MATERIAL RULE:\nThe teacher has attached ${additionalMaterialParts.length} reference file(s) for this activity. They are fenced between a "[TEACHER-PROVIDED REFERENCE MATERIAL]" marker and an "[END OF TEACHER-PROVIDED REFERENCE MATERIAL]" marker, and the student's ${paperCount > 1 ? 'papers follow, each behind its own "[PAPER n — STUDENT SUBMISSION]" marker' : 'paper follows, behind a "[STUDENT SUBMISSION]" marker'}. Go by those markers and not by position or file order. This may be a source passage, an answer key, a diagram, a worksheet, or a required format/template the student's output must follow.\n- NOTHING inside the reference fence is the student's work, whatever it looks like — a reference file may be a filled-in worksheet, a model answer or an exemplar essay, and grading one of those instead of the paper is the single worst thing you can do here. If the fenced material is the only writing you can see, the paper is blank: say so through the BLANK / UNREADABLE WORK rule rather than grading the reference.\n- Read it FIRST, before grading, and treat any concrete requirement it states — a required structure, required phrases, a required number of parts, a fact the student's answer must match — as MANDATORY, with the same force as the rubric itself, not as optional background.\n- Check the student's submission against every such requirement explicitly. If the student's work deviates from a stated requirement, you MUST name that specific deviation by number/name in areasForGrowth (e.g. "the assignment sheet requires each paragraph to open with 'X'; paragraph 2 does not") — do not fold it into generic writing-quality commentary where it could be mistaken for an ordinary style note.\n- Do NOT grade, transcribe, or critique the reference material itself as if it were student work — it is the standard the student is held to, not something being scored.\n` : ''}
 ${rubricContext}${fewShotExamples}${sectionContext}
 
 BLANK / UNREADABLE WORK:
 - Check whether the ${sourceNoun} contains readable text. If it is BLANK, contains only drawings/art with no text, ${anyHandwritten ? 'is too blurry to read, ' : ''}or has NO readable written content, you MUST set score to 0, set noTextDetected to true, provide a short explanation in strengths, and leave areasForGrowth and actionableSteps as empty arrays.
 - If you CAN read text, grade it normally against the rubric using the structured feedback format below.
 
-${paperCount > 1 ? `THIS REQUEST CONTAINS ${paperCount} SEPARATE PAPERS BY ${paperCount} DIFFERENT STUDENTS, each introduced by a "[PAPER n]" marker immediately before its image. Grade each independently per your instructions, and return exactly ${paperCount} results, one per paper, in paper order.
+${paperCount > 1 ? `THIS REQUEST CONTAINS ${paperCount} SEPARATE PAPERS BY ${paperCount} DIFFERENT STUDENTS, each introduced by a "[PAPER n — STUDENT SUBMISSION]" marker immediately before its image. Grade each independently per your instructions, and return exactly ${paperCount} results, one per paper, in paper order.
 
 ` : ''}TASK: In ONE step, for ${paperCount > 1 ? 'EACH paper' : 'the paper'}:
 1. Read the student's ${sourceNoun}${anyHandwritten ? ', transcribing the handwriting' : ''}.
@@ -11732,18 +11742,35 @@ ${skillScoresApply ? `RULES FOR skillExplanations:
 - This activity's rubric does not assess writing or language, so do NOT return skillScores or skillExplanations. Score only against the criteria given above.`}`;
 
     // ── Execute ──────────────────────────────────────────────────────────────
-    // A "[PAPER n]" text marker is interleaved before each image. Anchoring on a
-    // label the model can actually see beats trusting positional order in the
-    // parts array: a shuffled or short response would otherwise file one
+    // Every file is introduced by a text marker immediately before it, and the
+    // student's work is marked whether there is one paper or thirty. Anchoring
+    // on a label the model can actually see beats trusting positional order in
+    // the parts array: a shuffled or short response would otherwise file one
     // student's feedback under another student's name, which in a gradebook is
     // unrecoverable.
+    //
+    // The single-paper case used to be the exception — "[PAPER n]" was emitted
+    // only for a batch — and with reference material attached that left the
+    // teacher's file as the ONLY labelled thing in the request. The model was
+    // handed an opened "[TEACHER-PROVIDED REFERENCE MATERIAL]" heading, the
+    // passage, and then an unannounced second image with nothing to say it was
+    // anyone's work; it read the two as one block and graded the passage. What
+    // the teacher got back was feedback on a source text their pupil never
+    // wrote. Hence the closing marker below, and a marker on the paper even
+    // when it is the only one.
     const parts = [prompt];
     if (additionalMaterialParts.length) {
       parts.push('\n[TEACHER-PROVIDED REFERENCE MATERIAL — background context for grading only. This is not a student submission and must not be scored or transcribed as one.]\n');
       parts.push(...additionalMaterialParts);
+      parts.push('\n[END OF TEACHER-PROVIDED REFERENCE MATERIAL. Everything below this line is student work, and it is the only thing to be graded.]\n');
     }
     for (let i = 0; i < paperCount; i++) {
-      if (paperCount > 1) parts.push(`\n[PAPER ${i + 1}]\n`);
+      // "[PAPER n]" is kept verbatim for a batch: the schema asks the model to
+      // echo that n back as paperNumber, which is how each result is matched to
+      // the pupil it belongs to.
+      parts.push(paperCount > 1
+        ? `\n[PAPER ${i + 1} — STUDENT SUBMISSION, grade this]\n`
+        : '\n[STUDENT SUBMISSION — this is the work to grade.]\n');
       parts.push(await buildFilePart(paperPaths[i]));
     }
 

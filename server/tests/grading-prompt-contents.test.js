@@ -268,6 +268,29 @@ const promptTextOf = (body) =>
 const inlinePartsOf = (body) =>
   body.contents.flatMap(c => c.parts).filter(p => p.inlineData);
 
+/** The user turn exactly as it is laid out: text and files interleaved, in the
+ *  order the model reads them. What a file *is* is decided entirely by the text
+ *  immediately before it, so the order is the behaviour. */
+const orderedPartsOf = (body) =>
+  body.contents.flatMap(c => c.parts).map(p =>
+    (typeof p.text === 'string' ? { kind: 'text', text: p.text } : { kind: 'file' }));
+
+/** The text introducing the nth file in the request. */
+function labelBeforeFile(body, fileIndex) {
+  const parts = orderedPartsOf(body);
+  let seen = -1;
+  for (let i = 0; i < parts.length; i++) {
+    if (parts[i].kind !== 'file') continue;
+    seen++;
+    if (seen !== fileIndex) continue;
+    for (let back = i - 1; back >= 0; back--) {
+      if (parts[back].kind === 'text') return parts[back].text;
+    }
+    return '';
+  }
+  return null;
+}
+
 describe('what the AI checker sends to Gemini', () => {
   it('sends the grade level and the subject', async () => {
     const prompt = promptTextOf(await runCheck());
@@ -368,6 +391,54 @@ describe('what the AI checker sends to Gemini', () => {
     const paper = inline[inline.length - 1];
     expect(paper.inlineData.mimeType).toBe('image/jpeg');
     expect(paper.inlineData.data).toBe(ONE_PIXEL_JPEG.toString('base64'));
+  });
+
+  /**
+   * ── Which file is the student's ──
+   *
+   * The reported failure: with a reference file attached, the checker graded
+   * the reference file. Nothing in the request was wrong except the labelling.
+   * The reference material was introduced by a marker and the paper was
+   * introduced by nothing at all — a single paper got no "[PAPER n]", that was
+   * emitted only for a batch — so the model saw an opened reference heading
+   * followed by two images and read them as one block. Teachers got feedback,
+   * and a mark, on a source passage their pupil never wrote.
+   *
+   * The count assertions above all passed while that was happening, because
+   * both files were present and in the right order. Only the text between them
+   * says which is which, so that is what these pin down.
+   */
+  it("introduces the student's paper with its own marker, even when it is the only one", async () => {
+    const body = await runCheck();
+    const inline = inlinePartsOf(body);
+    expect(inline).toHaveLength(2);   // the reference passage, then the paper
+    expect(labelBeforeFile(body, 1)).toContain('[STUDENT SUBMISSION');
+  });
+
+  it('closes the reference fence before the paper begins', async () => {
+    // An opened marker with nothing closing it puts the paper inside the
+    // reference block, which is exactly how it got graded as reference.
+    const body = await runCheck();
+    const openedAt = promptTextOf(body).indexOf('[TEACHER-PROVIDED REFERENCE MATERIAL');
+    const closedAt = promptTextOf(body).indexOf('[END OF TEACHER-PROVIDED REFERENCE MATERIAL');
+    expect(openedAt).toBeGreaterThan(-1);
+    expect(closedAt).toBeGreaterThan(openedAt);
+    expect(labelBeforeFile(body, 1)).not.toContain('[TEACHER-PROVIDED REFERENCE MATERIAL');
+  });
+
+  it('marks the reference file as reference and the paper as work, one each', async () => {
+    const body = await runCheck();
+    expect(labelBeforeFile(body, 0)).toContain('[TEACHER-PROVIDED REFERENCE MATERIAL');
+    expect(labelBeforeFile(body, 0)).not.toContain('[STUDENT SUBMISSION');
+    expect(labelBeforeFile(body, 1)).toContain('[STUDENT SUBMISSION');
+  });
+
+  it('tells the model to go by the markers rather than by file order', async () => {
+    const prompt = promptTextOf(await runCheck());
+    expect(prompt).toContain('Go by those markers and not by position or file order');
+    // And says what to do when the only readable writing is the teacher's —
+    // report a blank paper, rather than grading the reference in its place.
+    expect(prompt).toMatch(/NOTHING inside the reference fence is the student's work/);
   });
 
   it('sends the evaluator persona as a system instruction, not as prompt text', async () => {
