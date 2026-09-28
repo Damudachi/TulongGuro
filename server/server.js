@@ -1197,12 +1197,30 @@ async function resolveLocalImagePath(imageUrl) {
 // ~17% fewer output tokens than 3.5 Flash for the same reasoning, so it is both
 // better and cheaper on output ($7.50 vs $9.00 per 1M) at identical input cost.
 //
-// Fallback is 3.5 Flash-Lite — deliberately a *different model*, not a smaller
-// copy of the same one. Gemini quota is metered per model, so when the primary
-// returns 429/503 the Lite tier still has its own budget. It is also ~5x cheaper
-// on input, which is what makes retrying a whole essay image affordable.
+// Fallback is 3.5 Flash — deliberately a *different model*, not a smaller copy
+// of the same one. Gemini quota is metered per model, so when the primary
+// returns 429/503 the fallback still has its own untouched daily budget. That
+// separation is the entire reason a second tier exists, and it holds for any
+// sibling model.
+//
+// This was 3.5 Flash-Lite until 2026-09-28, picked for being ~5x cheaper on
+// input, which is what made retrying a whole essay image affordable. Changed on
+// panel review, and the panel was right: price is the wrong axis to optimise on
+// THIS path. Every paper that reaches the fallback is one the primary could not
+// read, so the papers most at risk of being mis-transcribed were exactly the
+// ones handed to the lighter reader — and a pupil's mark came to depend on
+// which side of 3.6's daily quota their paper happened to land. 3.5 Flash is a
+// full Flash model, so a class is now read to one standard whichever tier
+// answers it.
+//
+// The honest cost: more per call than Lite was, and slightly more on output
+// than the primary itself ($9.00 vs $7.50 per 1M). That is the accepted price
+// of the two tiers agreeing with each other. The variable is still named LITE
+// because it is the *fallback slot*, not a claim about the model in it — the
+// env override GEMINI_LITE_MODEL keeps its name so existing deployments'
+// server/.env files are not silently ignored on the next restart.
 const PRIMARY_MODEL_ID = process.env.GEMINI_MODEL || 'gemini-3.6-flash';
-const LITE_MODEL_ID = process.env.GEMINI_LITE_MODEL || 'gemini-3.5-flash-lite';
+const LITE_MODEL_ID = process.env.GEMINI_LITE_MODEL || 'gemini-3.5-flash';
 
 // Grading runs against a rotation POOL, not a primary with a fallback bolted on.
 // Quota is metered per project per model — the 429 body names the quota
@@ -1520,7 +1538,7 @@ const gradingPool = GRADING_MODEL_IDS.flatMap(id =>
 );
 /**
  * gradingPool grouped into one tier per model, in GRADING_MODEL_IDS preference
- * order — [[3.6@k1, 3.6@k2], [lite@k1, lite@k2]].
+ * order — [[3.6@k1, 3.6@k2], [3.5@k1, 3.5@k2]].
  *
  * The pool array is already built model-major, but the rotation's guarantee is
  * that the WHOLE first tier is spent before the second is touched, and reading
@@ -2351,19 +2369,21 @@ async function generateContentWithRetry(genModel, parts, { retries = 2, baseDela
  *
  * So the offset moves along credentials, inside a tier, and the tiers stay in
  * preference order. Consecutive papers still open on different budgets —
- * 3.6@k1, 3.6@k2, 3.6@k1, … — and lite is reached only when every 3.6 bucket is
- * resting or has failed on this paper, which is what "fallback" was always
- * supposed to mean.
+ * 3.6@k1, 3.6@k2, 3.6@k1, … — and the fallback is reached only when every 3.6
+ * bucket is resting or has failed on this paper, which is what "fallback" was
+ * always supposed to mean.
  *
  * What this costs, honestly: the pool's total daily capacity is unchanged, but
- * its SHAPE is. The 3.6 budgets are now spent first and lite is held in
+ * its SHAPE is. The 3.6 budgets are now spent first and the fallback is held in
  * reserve, so a deployment that checks more papers in a day than 3.6 can cover
  * meets the fallback as a cliff partway through the day rather than as a
- * gentle mix throughout it. On this deployment's measurements 3.6 is also the
- * slower reader (~25-36s a paper against lite's ~5-10s), so a batch that used
- * to average the two now runs at 3.6's pace until 3.6 runs out. Both are the
- * price of every paper in a class being read by the same model, which is the
- * trade this function is making on purpose.
+ * gentle mix throughout it. 3.6 is also the slower reader — measured at ~25-36s
+ * a paper against the ~5-10s of the Flash-Lite that used to sit in the fallback
+ * slot — so a batch that used to average the two now runs at 3.6's pace until
+ * 3.6 runs out. That gap narrowed when the fallback became 3.5 Flash on
+ * 2026-09-28: a full Flash model is not the sprinter Lite was, which is the
+ * point. Both are the price of every paper in a class being read by the same
+ * model, which is the trade this function is making on purpose.
  */
 function gradingRotation() {
   rollPoolDayIfNeeded();

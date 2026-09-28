@@ -32,7 +32,7 @@ TulongGuro is built using a modern, scalable JavaScript stack:
 **Database & Infrastructure**
 *   **Database:** PostgreSQL (Managed by Supabase)
 *   **Storage:** Supabase Object Storage (for scanned outputs and rubrics)
-*   **AI Engine:** Google Gemini (1.5 Flash & Pro via Google Generative AI SDK)
+*   **AI Engine:** Google Gemini via the Google Generative AI SDK — checking runs a rotation of `gemini-3.6-flash` (primary) then `gemini-3.5-flash` (fallback), both full Flash models so a class is read to one standard whichever tier answers
 
 ---
 
