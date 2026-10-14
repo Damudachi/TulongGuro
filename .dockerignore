@@ -1,0 +1,14 @@
+node_modules
+dist
+.git
+
+# The API has its own image built from server/ — keep it, and its .env, out
+# of the frontend build context.
+server
+
+.env
+.env.*
+!.env.example
+
+docs
+research

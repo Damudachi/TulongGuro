@@ -1,0 +1,23 @@
+node_modules
+npm-debug.log
+
+# Secrets come in at run time via --env-file, never through the image.
+.env
+.env.*
+
+# Local runtime data. uploads/ holds pupils' work and private-uploads/ holds
+# registrant ID photos — personal data that must not end up in an image.
+uploads
+private-uploads
+observations
+
+# Tests and research evidence: not needed to serve requests.
+tests
+test-samples
+vlm-evidence
+image-optimization-evidence
+latency-analysis
+test-ai-grading.js
+vitest.config.mjs
+Dockerfile
+.dockerignore
